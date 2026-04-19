@@ -1,0 +1,77 @@
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Small" ContentClass="overflow-y-auto" Style="max-height: 90vh;">
+    <TitleContent>
+        <MudText Typo="Typo.h6">@(IsEdit ? "Edit business rule" : "New business rule")</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_model.Name" Label="Name" Variant="Variant.Outlined" Dense="true" />
+            <MudTextField @bind-Value="_model.Description" Label="Description" Lines="2" Variant="Variant.Outlined" Dense="true" />
+            <MudSelect T="string" @bind-Value="_model.RuleType" Label="Rule type" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("Required")">Required</MudSelectItem>
+                <MudSelectItem Value="@("Range")">Range</MudSelectItem>
+                <MudSelectItem Value="@("Pattern")">Pattern</MudSelectItem>
+                <MudSelectItem Value="@("Custom")">Custom</MudSelectItem>
+            </MudSelect>
+            <MudSelect T="string" @bind-Value="_model.Severity" Label="Severity" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                <MudSelectItem Value="@("Info")">Info</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="_model.FieldName" Label="Field name" Variant="Variant.Outlined" Dense="true" />
+            <MudSelect T="string" @bind-Value="_model.Operator" Label="Operator" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("Equals")">Equals</MudSelectItem>
+                <MudSelectItem Value="@("Contains")">Contains</MudSelectItem>
+                <MudSelectItem Value="@("GreaterThan")">GreaterThan</MudSelectItem>
+                <MudSelectItem Value="@("LessThan")">LessThan</MudSelectItem>
+                <MudSelectItem Value="@("Regex")">Regex</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="_model.ExpectedValue" Label="Expected value" Variant="Variant.Outlined" Dense="true" />
+            <MudSwitch @bind-Value="_model.IsEnabled" Label="Enabled" Color="Color.Primary" />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" FullWidth="true">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save" FullWidth="true">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public BusinessRuleItem Rule { get; set; } = new();
+    [Parameter] public bool IsEdit { get; set; }
+
+    private BusinessRuleItem _model = new();
+
+    protected override void OnParametersSet()
+    {
+        _model = Clone(Rule ?? new BusinessRuleItem());
+    }
+
+    private static BusinessRuleItem Clone(BusinessRuleItem r) => new()
+    {
+        Name = r.Name,
+        Description = r.Description,
+        RuleType = r.RuleType,
+        Severity = r.Severity,
+        IsEnabled = r.IsEnabled,
+        FieldName = r.FieldName,
+        Operator = r.Operator,
+        ExpectedValue = r.ExpectedValue
+    };
+
+    private void Save() => MudDialog.Close(DialogResult.Ok(_model));
+
+    private void Cancel() => MudDialog.Cancel();
+
+    public class BusinessRuleItem
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string RuleType { get; set; } = "Required";
+        public string Severity { get; set; } = "Error";
+        public bool IsEnabled { get; set; } = true;
+        public string FieldName { get; set; } = "";
+        public string Operator { get; set; } = "Equals";
+        public string ExpectedValue { get; set; } = "";
+    }
+}

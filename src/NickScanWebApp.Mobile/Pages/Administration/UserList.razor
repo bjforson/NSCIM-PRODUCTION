@@ -1,0 +1,17 @@
+@page "/admin/users/list"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminUsers)]
+@using NickScanWebApp.Mobile.Services
+@inject NavigationManager NavigationManager
+
+<PageTitle>User List - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <!-- Redirect to users management -->
+    @code {
+        protected override void OnInitialized()
+        {
+            NavigationManager.NavigateTo("/admin/users/management");
+        }
+    }
+</MudContainer>
+

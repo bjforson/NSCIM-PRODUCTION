@@ -1,0 +1,231 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.Mobile.Components.Containers
+@using ImageMetadata = NickScanWebApp.Shared.Models.ImageMetadata
+@inject IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+@inject ILogger<ImagesTab> Logger
+@inject IDialogService DialogService
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body2">Loading images...</MudText>
+        </MudStack>
+    }
+    else if (images?.Any() == true)
+    {
+        <MudStack Spacing="2" Class="pa-2">
+            @foreach (var image in images)
+            {
+                <MudPaper Elevation="1" Class="pa-2">
+                    <!-- Image Header -->
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                        <MudIcon Icon="@GetScannerIcon(image.ImageType)" Size="Size.Small" />
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">
+                            @image.ImageType Scanner
+                        </MudText>
+                        <MudSpacer />
+                        <MudChip T="string" Size="Size.Small">@FormatFileSize(image.FileSizeBytes)</MudChip>
+                    </MudStack>
+
+                    <!-- Image Display -->
+                    <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 250px; border-radius: 4px;">
+                        @if (imageLoadError.ContainsKey(image.Id) && imageLoadError[image.Id])
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-3">
+                                <MudIcon Icon="@Icons.Material.Filled.BrokenImage" Color="Color.Error" Size="Size.Medium" />
+                                <MudText Typo="Typo.caption" Color="Color.Error">Failed to load</MudText>
+                                <MudButton Size="Size.Small" 
+                                          Variant="Variant.Text" 
+                                          Color="Color.Primary" 
+                                          StartIcon="@Icons.Material.Filled.Refresh" 
+                                          OnClick="@(() => RetryImageLoad(image))">
+                                    Retry
+                                </MudButton>
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <img src="@image.ThumbnailUrl" 
+                                 alt="@GetImageDisplayName(image)"
+                                 style="max-width: 100%; max-height: 250px; cursor: pointer; object-fit: contain;"
+                                 @onclick="@(() => ViewFullImage(image))"
+                                 @onload="@(() => OnImageLoaded(image.Id))"
+                                 @onerror="@(() => OnImageError(image.Id))" />
+                        }
+                    </div>
+
+                    <!-- Image Info -->
+                    <MudStack Spacing="1" Class="mt-2">
+                        <MudText Typo="Typo.caption" Style="word-break: break-all;">
+                            @GetImageDisplayName(image)
+                        </MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @FormatFileSize(image.FileSizeBytes) • @image.CreatedAt.ToString("g")
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No images available for this container.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public int ImageCount { get; set; }
+
+    private List<ImageMetadata>? images;
+    private bool isLoading = false;
+    private Dictionary<int, bool> imageLoadError = new();
+    private Dictionary<int, bool> imageLoaded = new();
+    private Dictionary<int, string> imageErrorMessages = new();
+    private Dictionary<int, int> imageRetryCount = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadImages();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadImages();
+        }
+    }
+
+    private async Task LoadImages()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber))
+            return;
+
+        isLoading = true;
+        try
+        {
+            var response = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            images = response?.ToList();
+            
+            // Normalize image URLs
+            if (images != null)
+            {
+                var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+                foreach (var image in images)
+                {
+                    image.ThumbnailUrl = NormalizeImageUrl(image.ThumbnailUrl, apiBaseUrl);
+                    image.FullImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading images for container {Container}", ContainerNumber);
+            Snackbar.Add($"Error loading images: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private async Task ViewFullImage(ImageMetadata image)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = image.FullImageUrl,
+            ["ImageFileName"] = GetImageDisplayName(image)
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.False,
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        await DialogService.ShowAsync<FullscreenImageViewer>("Image Viewer", parameters, options);
+    }
+
+    private void OnImageLoaded(int imageId)
+    {
+        imageLoaded[imageId] = true;
+        imageLoadError[imageId] = false;
+    }
+
+    private void OnImageError(int imageId)
+    {
+        imageLoadError[imageId] = true;
+        StateHasChanged();
+    }
+
+    private async Task RetryImageLoad(ImageMetadata image)
+    {
+        if (!imageRetryCount.ContainsKey(image.Id))
+            imageRetryCount[image.Id] = 0;
+        imageRetryCount[image.Id]++;
+
+        imageLoadError[image.Id] = false;
+        imageErrorMessages.Remove(image.Id);
+
+        var cacheBuster = $"?retry={imageRetryCount[image.Id]}&t={DateTime.UtcNow.Ticks}";
+        if (!image.ThumbnailUrl.Contains("?"))
+        {
+            image.ThumbnailUrl += cacheBuster;
+        }
+        else
+        {
+            image.ThumbnailUrl = image.ThumbnailUrl.Split('?')[0] + cacheBuster;
+        }
+
+        StateHasChanged();
+        await Task.Delay(100);
+    }
+
+    private string GetImageDisplayName(ImageMetadata image)
+    {
+        return !string.IsNullOrEmpty(image.FileName) 
+            ? image.FileName 
+            : $"{image.ImageType} Scanner Image";
+    }
+
+    private string GetScannerIcon(string imageType)
+    {
+        return imageType?.ToUpper() switch
+        {
+            "FS6000" => Icons.Material.Filled.Scanner,
+            "ASE" => Icons.Material.Filled.CropFree,
+            "HEIMANN" or "HEIMANNSMITH" => Icons.Material.Filled.CameraAlt,
+            _ => Icons.Material.Filled.Image
+        };
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024.0):F1} MB";
+    }
+}

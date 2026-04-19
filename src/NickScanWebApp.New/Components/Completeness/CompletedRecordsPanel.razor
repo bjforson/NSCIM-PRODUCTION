@@ -1,0 +1,387 @@
+@using NickScanWebApp.Shared.Services
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject IConfiguration Configuration
+@implements IDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    
+    <!-- Header -->
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudGrid>
+            <MudItem xs="12" md="8">
+                <MudText Typo="Typo.h4" Color="Color.Primary">
+                    <MudIcon Icon="@Icons.Material.Outlined.DoneAll" Class="mr-2" />
+                    Completed Records
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    All audited records ready for ICUMS submission
+                </MudText>
+            </MudItem>
+            <MudItem xs="12" md="4" Class="d-flex align-center justify-end">
+                <MudTooltip Text="Refresh">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Refresh"
+                                   Color="Color.Primary"
+                                   OnClick="LoadCompletedRecords"
+                                   aria-label="Refresh records" />
+                </MudTooltip>
+                <MudTooltip Text="Export">
+                    <MudIconButton Icon="@Icons.Material.Outlined.FileDownload"
+                                   Color="Color.Primary"
+                                   aria-label="Export records"
+                                   Disabled="true" />
+                </MudTooltip>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Filters -->
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" 
+                          @bind-Value="_selectedDecision" 
+                          Label="Decision"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense">
+                    <MudSelectItem Value="@("All")">All Decisions</MudSelectItem>
+                    <MudSelectItem Value="@("Approved")">
+                        <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Success" Size="Size.Small" Class="mr-2" />
+                        Approved
+                    </MudSelectItem>
+                    <MudSelectItem Value="@("Rejected")">
+                        <MudIcon Icon="@Icons.Material.Outlined.Cancel" Color="Color.Error" Size="Size.Small" Class="mr-2" />
+                        Rejected
+                    </MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" 
+                          @bind-Value="_selectedScanner" 
+                          Label="Scanner Type"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense">
+                    <MudSelectItem Value="@("All")">All Scanners</MudSelectItem>
+                    <MudSelectItem Value="@("FS6000")">FS6000</MudSelectItem>
+                    <MudSelectItem Value="@("ASE")">ASE</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_searchTerm" 
+                             Label="Search BOE/Container" 
+                             Variant="Variant.Outlined"
+                             Adornment="Adornment.End"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             Margin="Margin.Dense"
+                             Immediate="true" />
+            </MudItem>
+            <MudItem xs="12" md="2" Class="d-flex align-center">
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary" 
+                          FullWidth="true"
+                          OnClick="ApplyFilters">
+                    Apply Filters
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Stats Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4">@_filteredRecords.Count</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Total Records</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4" Color="Color.Success">
+                        @_filteredRecords.Count(r => r.OverallDecision == "Approved")
+                    </MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Approved</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4" Color="Color.Error">
+                        @_filteredRecords.Count(r => r.OverallDecision == "Rejected")
+                    </MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Rejected</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4">@_filteredRecords.Count(r => r.AuditedBy == "AUTO-AUDITOR-SYSTEM")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Auto-Audited</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Completed Records -->
+    @if (_loading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (!_filteredRecords.Any())
+    {
+        <MudPaper Class="pa-8 text-center" Elevation="0">
+            <MudIcon Icon="@Icons.Material.Outlined.Inbox" Size="Size.Large" Color="Color.Secondary" />
+            <MudText Typo="Typo.h5" Class="mt-4">No Completed Records</MudText>
+            <MudText Typo="Typo.body1" Color="Color.Secondary">
+                Records will appear here after audit completion
+            </MudText>
+        </MudPaper>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Showing @_filteredRecords.Count of @_allRecords.Count records
+        </MudText>
+
+        @foreach (var record in _filteredRecords)
+        {
+            <MudPaper Class="pa-4 mb-3" Elevation="2">
+                <MudGrid>
+                    <!-- Header -->
+                    <MudItem xs="12">
+                        <MudGrid>
+                            <MudItem xs="12" md="8">
+                                <MudText Typo="Typo.h6">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Description" Size="Size.Small" Class="mr-2" />
+                                    @record.GroupIdentifier
+                                </MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                    @record.TotalContainers container(s) | Completed: @record.CompletedAt.ToString("MMM dd, yyyy HH:mm")
+                                </MudText>
+                            </MudItem>
+                            <MudItem xs="12" md="4" Class="d-flex align-center justify-end">
+                                <!-- Overall Decision Badge -->
+                                <MudChip T="string" Icon="@(record.OverallDecision == "Approved" ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)"
+                                        Color="@(record.OverallDecision == "Approved" ? Color.Success : Color.Error)"
+                                        Size="Size.Large">
+                                    @record.OverallDecision.ToUpper()
+                                </MudChip>
+                            </MudItem>
+                        </MudGrid>
+                    </MudItem>
+
+                    <!-- Audit Trail -->
+                    <MudItem xs="12" Class="mt-3">
+                        <MudDivider />
+                    </MudItem>
+
+                    <!-- Image Analyst Info -->
+                    <MudItem xs="12" md="6" Class="mt-2">
+                        <MudPaper Class="pa-3" Outlined="true">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">
+                                <MudIcon Icon="@Icons.Material.Outlined.Person" Size="Size.Small" Class="mr-1" />
+                                Image Analyst
+                            </MudText>
+                            <MudText Typo="Typo.body2"><strong>@record.ImageAnalyst</strong></MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Containers: @record.NormalCount Normal, @record.AbnormalCount Abnormal
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+
+                    <!-- Auditor Info -->
+                    <MudItem xs="12" md="6" Class="mt-2">
+                        <MudPaper Class="pa-3" Outlined="true" Style="@(record.AuditedBy == "AUTO-AUDITOR-SYSTEM" ? "background: #fff3e0;" : "")">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">
+                                <MudIcon Icon="@(record.AuditedBy == "AUTO-AUDITOR-SYSTEM" ? Icons.Material.Outlined.SmartToy : Icons.Material.Outlined.Verified)" 
+                                        Size="Size.Small" Class="mr-1" />
+                                @(record.AuditedBy == "AUTO-AUDITOR-SYSTEM" ? "Auto Auditor" : "Auditor")
+                            </MudText>
+                            <MudText Typo="Typo.body2"><strong>@record.AuditedBy</strong></MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Completed: @record.CompletedAt.ToString("MMM dd, yyyy HH:mm")
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+
+                    <!-- Container Details Expander -->
+                    <MudItem xs="12" Class="mt-3">
+                        <MudExpansionPanels>
+                            <MudExpansionPanel Text="View Detailed Audit Trail">
+                                <MudSimpleTable Dense="true" Bordered="true" Striped="true">
+                                    <thead>
+                                        <tr>
+                                            <th>Container</th>
+                                            <th>Image Analysis</th>
+                                            <th>Audit Decision</th>
+                                            <th>Image Notes</th>
+                                            <th>Audit Notes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var detail in record.AuditDetails)
+                                        {
+                                            <tr>
+                                                <td><strong>@detail.ContainerNumber</strong></td>
+                                                <td>
+                                                    <MudChip T="string" Size="Size.Small" 
+                                                            Color="@(detail.OriginalDecision == "Abnormal" ? Color.Error : Color.Success)">
+                                                        @detail.OriginalDecision
+                                                    </MudChip>
+                                                </td>
+                                                <td>
+                                                    <MudChip T="string" Size="Size.Small" 
+                                                            Color="@(detail.OriginalDecision == "Abnormal" ? Color.Error : Color.Success)">
+                                                        @detail.AuditDecision
+                                                    </MudChip>
+                                                </td>
+                                                <td>
+                                                    <MudText Typo="Typo.caption">@(detail.ImageAnalysisNotes ?? "-")</MudText>
+                                                </td>
+                                                <td>
+                                                    <MudText Typo="Typo.caption">@(detail.AuditNotes ?? "-")</MudText>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudExpansionPanel>
+                        </MudExpansionPanels>
+                    </MudItem>
+
+                    <!-- Actions -->
+                    <MudItem xs="12" Class="mt-2 d-flex justify-end">
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.CloudUpload"
+                                  Size="Size.Small"
+                                  Disabled="true">
+                            Prepare ICUMS Submission
+                        </MudButton>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        }
+    }
+
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private string _selectedDecision = "All";
+    private string _selectedScanner = "All";
+    private string _searchTerm = "";
+    
+    private List<CompletedRecordDto> _allRecords = new();
+    private List<CompletedRecordDto> _filteredRecords = new();
+    
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCompletedRecords();
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadCompletedRecords();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+
+    private async Task LoadCompletedRecords()
+    {
+        _loading = true;
+        try
+        {
+            var scannerParam = _selectedScanner != "All" ? $"scannerType={_selectedScanner}" : "";
+            var decisionParam = _selectedDecision != "All" ? $"decision={_selectedDecision}" : "";
+            var queryString = string.Join("&", new[] { scannerParam, decisionParam }.Where(s => !string.IsNullOrEmpty(s)));
+            var url = $"/api/AuditReview/completed{(string.IsNullOrEmpty(queryString) ? "" : "?" + queryString)}";
+            
+            var response = await ApiService.GetAsync<ApiResponse<List<CompletedRecordDto>>>(url);
+            
+            if (response?.Success == true && response.Data != null)
+            {
+                _allRecords = response.Data;
+                ApplyFilters();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading completed records: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        _filteredRecords = _allRecords.Where(r =>
+        {
+            // Decision filter
+            if (_selectedDecision != "All" && r.OverallDecision != _selectedDecision) return false;
+            
+            // Search filter
+            if (!string.IsNullOrWhiteSpace(_searchTerm))
+            {
+                var searchLower = _searchTerm.ToLower();
+                if (!r.GroupIdentifier.ToLower().Contains(searchLower) &&
+                    !r.AuditDetails.Any(d => d.ContainerNumber.ToLower().Contains(searchLower)))
+                {
+                    return false;
+                }
+            }
+            
+            return true;
+        }).ToList();
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    private class ApiResponse<T>
+    {
+        public bool Success { get; set; }
+        public T? Data { get; set; }
+    }
+
+    private class CompletedRecordDto
+    {
+        public string GroupIdentifier { get; set; } = "";
+        public string OverallDecision { get; set; } = "";
+        public DateTime CompletedAt { get; set; }
+        public string AuditedBy { get; set; } = "";
+        public string ImageAnalyst { get; set; } = "";
+        public int TotalContainers { get; set; }
+        public int ApprovedCount { get; set; } // Audit decisions: Approved
+        public int RejectedCount { get; set; } // Audit decisions: Rejected
+        public int NormalCount { get; set; } // ✅ Image Analysis: Normal
+        public int AbnormalCount { get; set; } // ✅ Image Analysis: Abnormal
+        public List<AuditDetailDto> AuditDetails { get; set; } = new();
+    }
+
+    private class AuditDetailDto
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string OriginalDecision { get; set; } = "";
+        public string AuditDecision { get; set; } = "";
+        public string? ImageAnalysisNotes { get; set; }
+        public string? AuditNotes { get; set; }
+    }
+}
+

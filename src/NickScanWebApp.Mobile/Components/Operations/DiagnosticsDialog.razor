@@ -1,0 +1,64 @@
+@using System.Text.Json
+
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Medium" ContentClass="overflow-y-auto" Style="max-height: 90vh;">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Assignment diagnostics</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            @if (CanReceiveAssignments)
+            {
+                <MudAlert Severity="Severity.Success" Dense="true" Class="ma-0">Ready to receive assignments.</MudAlert>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" Class="ma-0">
+                    @(string.IsNullOrWhiteSpace(PrimaryIssue) ? "Cannot receive assignments right now." : PrimaryIssue)
+                </MudAlert>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(PrimaryIssue) && CanReceiveAssignments)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@PrimaryIssue</MudText>
+            }
+
+            <MudText Typo="Typo.subtitle2">Diagnostics</MudText>
+            @if (Diagnostics == null)
+            {
+                <MudText Typo="Typo.body2" Color="Color.Secondary">No diagnostic payload.</MudText>
+            }
+            else
+            {
+                <MudPaper Elevation="0" Class="pa-2" Style="background: var(--mud-palette-background-grey);">
+                    <pre style="margin: 0; font-size: 11px; white-space: pre-wrap; word-break: break-word;">@FormatDiagnostics(Diagnostics)</pre>
+                </MudPaper>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Close" FullWidth="true">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public object? Diagnostics { get; set; }
+    [Parameter] public bool CanReceiveAssignments { get; set; }
+    [Parameter] public string PrimaryIssue { get; set; } = "";
+
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+    private void Close() => MudDialog.Close();
+
+    private static string FormatDiagnostics(object value)
+    {
+        try
+        {
+            return JsonSerializer.Serialize(value, value.GetType(), JsonOptions);
+        }
+        catch
+        {
+            return value.ToString() ?? "";
+        }
+    }
+}

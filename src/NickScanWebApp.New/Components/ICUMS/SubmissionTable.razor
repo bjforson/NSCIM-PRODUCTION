@@ -1,0 +1,126 @@
+@* Submission table component for displaying ICUMS submission queue items *@
+@using NickScanWebApp.New.Models.ICUMS
+
+<MudTable Items="@Items" Hover="true" Breakpoint="Breakpoint.Sm" Dense="@Dense" Loading="@Loading">
+    <HeaderContent>
+        <MudTh>Container Number</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh>Priority</MudTh>
+        <MudTh>Submission Type</MudTh>
+        <MudTh>Queued At</MudTh>
+        <MudTh>Attempts</MudTh>
+        @if (ShowError)
+        {
+            <MudTh>Error</MudTh>
+        }
+        <MudTh>Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate Context="item">
+        <MudTd DataLabel="Container">
+            <MudText Typo="Typo.body2" Style="font-weight: 500;">@item.ContainerNumber</MudText>
+        </MudTd>
+        <MudTd DataLabel="Status">
+            <MudChip T="string" 
+                     Size="Size.Small" 
+                     Color="@GetStatusColor(item.Status)"
+                     Variant="Variant.Filled">
+                @item.Status
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Priority">
+            <MudChip T="string" 
+                     Size="Size.Small" 
+                     Color="@GetPriorityColor(item.Priority)"
+                     Variant="Variant.Outlined">
+                @GetPriorityLabel(item.Priority)
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Type">
+            <MudText Typo="Typo.body2">@(item.SubmissionType ?? "Standard")</MudText>
+        </MudTd>
+        <MudTd DataLabel="Queued At">
+            <MudText Typo="Typo.body2">@item.QueuedAt.ToString("MM/dd HH:mm")</MudText>
+        </MudTd>
+        <MudTd DataLabel="Attempts">
+            <MudText Typo="Typo.body2">
+                @item.RetryCount / @item.MaxRetries
+            </MudText>
+        </MudTd>
+        @if (ShowError && !string.IsNullOrEmpty(item.LastErrorMessage))
+        {
+            <MudTd DataLabel="Error">
+                <MudTooltip Text="@item.LastErrorMessage">
+                    <MudIcon Icon="@Icons.Material.Outlined.Error" Color="Color.Error" Size="Size.Small" />
+                </MudTooltip>
+            </MudTd>
+        }
+        <MudTd DataLabel="Actions">
+            <MudStack Row="true" Spacing="1">
+                @if (OnRetry != null && item.Status == "Failed")
+                {
+                    <MudTooltip Text="Retry submission">
+                        <MudIconButton Icon="@Icons.Material.Outlined.Replay" 
+                                       Size="Size.Small" 
+                                       Color="Color.Primary"
+                                       aria-label="Retry submission"
+                                       OnClick="@(() => OnRetry(item.Id))" />
+                    </MudTooltip>
+                }
+                @if (OnCancel != null && (item.Status == "Pending" || item.Status == "Processing"))
+                {
+                    <MudTooltip Text="Cancel submission">
+                        <MudIconButton Icon="@Icons.Material.Outlined.Cancel" 
+                                       Size="Size.Small" 
+                                       Color="Color.Warning"
+                                       aria-label="Cancel submission"
+                                       OnClick="@(() => OnCancel(item.Id))" />
+                    </MudTooltip>
+                }
+            </MudStack>
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Typo="Typo.body2" Align="Align.Center" Class="pa-4">
+            No submission items found
+        </MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    [Parameter] public IEnumerable<SubmissionQueueItem> Items { get; set; } = Array.Empty<SubmissionQueueItem>();
+    [Parameter] public Func<int, Task>? OnRetry { get; set; }
+    [Parameter] public Func<int, Task>? OnCancel { get; set; }
+    [Parameter] public bool ShowError { get; set; } = false;
+    [Parameter] public bool Dense { get; set; } = false;
+    [Parameter] public bool Loading { get; set; } = false;
+
+    private static Color GetStatusColor(string? status) => status?.ToLower() switch
+    {
+        "pending" => Color.Warning,
+        "processing" => Color.Info,
+        "completed" => Color.Success,
+        "failed" => Color.Error,
+        "submitted" => Color.Success,
+        "cancelled" => Color.Default,
+        _ => Color.Default
+    };
+
+    private static Color GetPriorityColor(int priority) => priority switch
+    {
+        0 => Color.Default,
+        1 => Color.Primary,
+        2 => Color.Warning,
+        3 => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string GetPriorityLabel(int priority) => priority switch
+    {
+        0 => "Normal",
+        1 => "High",
+        2 => "Urgent",
+        3 => "Critical",
+        _ => "Unknown"
+    };
+}
+

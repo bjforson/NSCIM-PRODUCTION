@@ -1,0 +1,26 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 1.14.0 — Record Completeness backfill from ICUMS
+--
+-- This script runs in two phases against the two NSCIM databases:
+--
+--   Phase 1 (nickscan_downloads): export all IM/EX BOE container rows to a CSV
+--                                 via \copy so nickscan_production can ingest it
+--   Phase 2 (nickscan_production): load the CSV into a temp table, then build
+--                                 RecordCompletenessStatus + RecordExpectedContainer
+--                                 rows from it, preserving any existing state the
+--                                 container-level pipeline has already captured.
+--
+-- Idempotent: both phases use ON CONFLICT DO NOTHING so re-runs are safe.
+--
+-- Run order:
+--   PGPASSWORD=... psql -h localhost -U postgres -d nickscan_downloads \
+--     -v ON_ERROR_STOP=1 \
+--     -f tools/migrations/record-completeness/02a-export-from-icums.sql
+--
+--   PGPASSWORD=... psql -h localhost -U postgres -d nickscan_production \
+--     -v ON_ERROR_STOP=1 \
+--     -f tools/migrations/record-completeness/02b-import-to-production.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- This file is intentionally a README. The actual SQL lives in 02a / 02b.
+SELECT 'Run 02a-export-from-icums.sql against nickscan_downloads first, then 02b-import-to-production.sql against nickscan_production' AS instructions;

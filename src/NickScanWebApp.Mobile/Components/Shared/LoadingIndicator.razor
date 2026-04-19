@@ -1,0 +1,36 @@
+<!-- Loading Indicator Component - Mobile optimized -->
+
+@if (FullPage)
+{
+    <div class="loading-state-modern" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 9999;">
+        <MudProgressCircular Color="@Color" Size="@Size" Indeterminate="true" />
+        @if (!string.IsNullOrEmpty(Message))
+        {
+            <MudText Typo="Typo.body1" Class="mt-3">@Message</MudText>
+        }
+    </div>
+}
+else if (UseSkeleton)
+{
+    <div class="pa-3">
+        <MudSkeleton Height="100px" Width="100%" />
+    </div>
+}
+else
+{
+    <div class="loading-state-modern">
+        <MudProgressCircular Color="@Color" Size="@Size" Indeterminate="true" />
+        @if (!string.IsNullOrEmpty(Message))
+        {
+            <MudText Typo="Typo.caption" Class="mt-2">@Message</MudText>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public bool FullPage { get; set; } = false;
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public Color Color { get; set; } = Color.Primary;
+    [Parameter] public Size Size { get; set; } = Size.Medium;
+    [Parameter] public bool UseSkeleton { get; set; } = false;
+}

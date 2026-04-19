@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MailKit" Version="4.9.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.12" />
+    <PackageReference Include="QuestPDF" Version="2024.12.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NickHR.Core\NickHR.Core.csproj" />
+    <ProjectReference Include="..\NickHR.Infrastructure\NickHR.Infrastructure.csproj" />
+    <ProjectReference Include="..\NickHR.Services.Payroll\NickHR.Services.Payroll.csproj" />
+    <ProjectReference Include="..\NickHR.Services.Recruitment\NickHR.Services.Recruitment.csproj" />
+  </ItemGroup>
+
+</Project>

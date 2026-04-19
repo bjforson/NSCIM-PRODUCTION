@@ -1,0 +1,353 @@
+@page "/services/access-review"
+@page "/admin/access-review"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesAccessReview)]
+@using MudBlazor
+@using System.Text.Json
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<AccessReview> Logger
+
+<PageTitle>NICKSCAN ERP — NSCIS — Access Review</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Security" Class="mr-2" />
+        Access Review & Audit
+    </MudText>
+
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        <MudText>Review and manage user access requests for security and compliance.</MudText>
+    </MudAlert>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading access reviews...</MudText>
+    }
+    else
+    {
+        <!-- Summary Cards -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Pending Reviews</MudText>
+                        <MudText Typo="Typo.h5">@(_pendingReviews?.Count ?? 0)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Approved</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Success">@(_approvedCount ?? 0)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Rejected</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Error">@(_rejectedCount ?? 0)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Reviews</MudText>
+                        <MudText Typo="Typo.h5">@((_pendingReviews?.Count ?? 0) + (_approvedCount ?? 0) + (_rejectedCount ?? 0))</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Pending Reviews Table -->
+        @if (_pendingReviews != null && _pendingReviews.Any())
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">Pending Access Reviews</MudText>
+                <MudTable Items="@_pendingReviews" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>User</MudTh>
+                        <MudTh>Email</MudTh>
+                        <MudTh>Role</MudTh>
+                        <MudTh>Permissions</MudTh>
+                        <MudTh>Last Login</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        @{
+                            var review = context;
+                        }
+                        <MudTd DataLabel="User">
+                            <MudText Typo="Typo.body2">
+                                @GetUserDisplayName(review)
+                            </MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Email">
+                            <MudText Typo="Typo.body2">@GetUserEmail(review)</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Role">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary">
+                                @GetUserRole(review)
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Permissions">
+                            <MudText Typo="Typo.body2">@GetPermissionCount(review)</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Last Login">
+                            <MudText Typo="Typo.caption">@FormatDateTime(GetLastLogin(review))</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Success" 
+                                     OnClick="@(() => ApproveAccess(GetUserId(review)))">
+                                Approve
+                            </MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" 
+                                     OnClick="@(() => RejectAccess(GetUserId(review)))">
+                                Revoke
+                            </MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info">No pending access reviews.</MudAlert>
+        }
+
+        <MudStack Row="true" Justify="Justify.FlexEnd" Class="mt-4">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadReviews">
+                Refresh
+            </MudButton>
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private List<UserReviewItem>? _pendingReviews;
+    private int? _approvedCount;
+    private int? _rejectedCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadReviews();
+    }
+
+    private async Task LoadReviews()
+    {
+        try
+        {
+            _isLoading = true;
+            
+            var response = await ApiService.GetAsync<AccessReviewResponse>("api/accessreview/users?includeInactive=false&page=1&pageSize=100");
+            
+            if (response != null && response.Users != null)
+            {
+                _pendingReviews = response.Users.Select(u => new UserReviewItem
+                {
+                    Id = GetIntProperty(u, "Id"),
+                    FirstName = GetStringProperty(u, "FirstName") ?? "",
+                    LastName = GetStringProperty(u, "LastName") ?? "",
+                    Email = GetStringProperty(u, "Email") ?? "",
+                    RoleName = GetStringProperty(u, "RoleName") ?? "",
+                    PermissionCount = GetIntProperty(u, "PermissionCount"),
+                    LastLogin = GetDateTimeProperty(u, "LastLogin")
+                }).ToList();
+                
+                if (response.Summary != null)
+                {
+                    _approvedCount = GetIntProperty(response.Summary, "ActiveUsers");
+                    _rejectedCount = GetIntProperty(response.Summary, "InactiveUsers");
+                }
+                else
+                {
+                    _approvedCount = 0;
+                    _rejectedCount = 0;
+                }
+            }
+            else
+            {
+                _pendingReviews = new List<UserReviewItem>();
+                _approvedCount = 0;
+                _rejectedCount = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading access reviews");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+            _pendingReviews = new List<UserReviewItem>();
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+    
+    // Helper methods to safely extract properties from JsonElement or dynamic objects
+    private string? GetStringProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return null;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                return prop.GetValue(obj)?.ToString();
+            }
+        }
+        return null;
+    }
+    
+    private int GetIntProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return 0;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.Number)
+                    return property.GetInt32();
+                if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is int intValue) return intValue;
+                if (value != null && int.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return 0;
+    }
+    
+    private DateTime? GetDateTimeProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return null;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.String && DateTime.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is DateTime dt) return dt;
+                if (value != null && DateTime.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return null;
+    }
+    
+    // Helper methods for template access
+    private int GetUserId(UserReviewItem review) => review.Id;
+    private string GetUserDisplayName(UserReviewItem review) => $"{review.FirstName} {review.LastName}".Trim();
+    private string GetUserEmail(UserReviewItem review) => review.Email;
+    private string GetUserRole(UserReviewItem review) => review.RoleName;
+    private int GetPermissionCount(UserReviewItem review) => review.PermissionCount;
+    private DateTime? GetLastLogin(UserReviewItem review) => review.LastLogin;
+    
+    // Response DTO for AccessReview API
+    private class AccessReviewResponse
+    {
+        public List<object>? Users { get; set; }
+        public object? Pagination { get; set; }
+        public object? Summary { get; set; }
+    }
+    
+    // User Review Item model
+    private class UserReviewItem
+    {
+        public int Id { get; set; }
+        public string FirstName { get; set; } = string.Empty;
+        public string LastName { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string RoleName { get; set; } = string.Empty;
+        public int PermissionCount { get; set; }
+        public DateTime? LastLogin { get; set; }
+    }
+
+    private async Task ApproveAccess(int userId)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Approve Access",
+            "Are you sure you want to approve this access request?",
+            yesText: "Approve", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        try
+        {
+            // Use correct endpoint: api/accessreview/users/{userId}/approve
+            // Send request body with ReviewerId (using 0 as placeholder - API will use current user from auth context)
+            var requestBody = new { ReviewerId = 0, Notes = "Approved via Access Review page" };
+            await ApiService.PostAsync<object, object>($"api/accessreview/users/{userId}/approve", requestBody);
+            Snackbar.Add("Access approved", Severity.Success);
+            await LoadReviews();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving access");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task RejectAccess(int userId)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Revoke Access",
+            "Are you sure you want to revoke this user's access?",
+            yesText: "Revoke", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        try
+        {
+            // Use correct endpoint: api/accessreview/users/{userId}/revoke (not reject)
+            // Send request body with ReviewerId and Reason
+            var requestBody = new { ReviewerId = 0, Reason = "Access revoked via Access Review page" };
+            await ApiService.PostAsync<object, object>($"api/accessreview/users/{userId}/revoke", requestBody);
+            Snackbar.Add("Access revoked", Severity.Success);
+            await LoadReviews();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error revoking access");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+}

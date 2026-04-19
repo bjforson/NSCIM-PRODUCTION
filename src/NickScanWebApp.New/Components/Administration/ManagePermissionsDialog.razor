@@ -1,0 +1,324 @@
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="3">
+            <MudAlert Severity="Severity.Info" Dense="true">
+                Configure permissions for: <b>@RoleName</b>
+            </MudAlert>
+
+            @if (_isLoading)
+            {
+                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="py-8">
+                    <MudProgressCircular Size="Size.Medium" Indeterminate="true" Color="Color.Primary" />
+                    <MudText Typo="Typo.body2">Loading permissions...</MudText>
+                </MudStack>
+            }
+            else if (!string.IsNullOrEmpty(_loadError))
+            {
+                <MudAlert Severity="Severity.Error" Class="py-4">
+                    <MudText Typo="Typo.body1">@_loadError</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        You cannot save changes until this error is resolved. Please refresh the page and try again.
+                    </MudText>
+                </MudAlert>
+            }
+            else
+            {
+                <MudPaper Elevation="0" Class="pa-2" Style="background-color: #f5f5f5;">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2">
+                            <b>@_selectedPermissions.Count</b> of <b>@_allPermissions.Count</b> permissions selected
+                        </MudText>
+                        <MudStack Row="true" Spacing="2">
+                            <MudButton Size="Size.Small" 
+                                       Variant="Variant.Text" 
+                                       OnClick="SelectAll"
+                                       StartIcon="@Icons.Material.Outlined.CheckBox">
+                                Select All
+                            </MudButton>
+                            <MudButton Size="Size.Small" 
+                                       Variant="Variant.Text" 
+                                       OnClick="DeselectAll"
+                                       StartIcon="@Icons.Material.Outlined.CheckBoxOutlineBlank">
+                                Deselect All
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <MudTextField @bind-Value="_searchText" 
+                              Placeholder="Search permissions..." 
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Immediate="true" />
+
+                <div style="max-height: 500px; overflow-y: auto;">
+                    @foreach (var category in _permissionsByCategory.OrderBy(c => c.Key))
+                    {
+                        var categoryPermissions = category.Value
+                            .Where(p => string.IsNullOrEmpty(_searchText) || 
+                                       p.DisplayName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                                       p.Description.Contains(_searchText, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        if (categoryPermissions.Any())
+                        {
+                            <MudPaper Elevation="1" Class="mb-2 pa-3">
+                                <MudText Typo="Typo.subtitle1" Color="Color.Primary" Class="mb-2">
+                                    <b>@category.Key</b> (@categoryPermissions.Count(p => _selectedPermissions.Contains(p.Name))/@categoryPermissions.Count)
+                                </MudText>
+                                
+                                <MudStack Spacing="1">
+                                    @foreach (var permission in categoryPermissions)
+                                    {
+                                        <MudCheckBox T="bool" 
+                                                     Value="@_selectedPermissions.Contains(permission.Name)"
+                                                     ValueChanged="@((bool val) => TogglePermission(permission.Name, val))"
+                                                     Label="@permission.DisplayName"
+                                                     Color="Color.Primary"
+                                                     Dense="true">
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="ml-7">
+                                                @permission.Description
+                                            </MudText>
+                                        </MudCheckBox>
+                                    }
+                                </MudStack>
+                            </MudPaper>
+                        }
+                    }
+                    
+                    @if (!_permissionsByCategory.Any() || !_permissionsByCategory.SelectMany(c => c.Value).Any(p => 
+                        string.IsNullOrEmpty(_searchText) || 
+                        p.DisplayName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                        p.Description.Contains(_searchText, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        <MudPaper Elevation="0" Class="pa-4">
+                            <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Secondary">
+                                No permissions found matching "@_searchText"
+                            </MudText>
+                        </MudPaper>
+                    }
+                </div>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" 
+                   Variant="Variant.Filled" 
+                   OnClick="Submit" 
+                   Disabled="@(_isLoading || _isSubmitting || !string.IsNullOrEmpty(_loadError))"
+                   StartIcon="@Icons.Material.Outlined.Save">
+            @if (_isSubmitting)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Saving...</span>
+            }
+            else
+            {
+                <span>Save Permissions</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int RoleId { get; set; }
+    [Parameter] public string RoleName { get; set; } = "";
+    [Parameter] public List<string> CurrentPermissions { get; set; } = new();
+    [Parameter] public string CurrentUsername { get; set; } = "admin";
+    [Parameter] public EventCallback OnPermissionsUpdated { get; set; }
+
+    private bool _isLoading = false;
+    private bool _isSubmitting = false;
+    private string _searchText = "";
+    private string? _loadError;
+
+    private List<PermissionItem> _allPermissions = new();
+    private Dictionary<string, List<PermissionItem>> _permissionsByCategory = new();
+    private HashSet<string> _selectedPermissions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPermissions();
+    }
+
+    private async Task LoadPermissions()
+    {
+        _isLoading = true;
+        _loadError = null;
+        try
+        {
+            Console.WriteLine("🔄 Loading all available permissions...");
+            var permissionsFromApi = await ApiService.GetAsync<List<PermissionDto>>("/api/Permissions/all");
+            if (permissionsFromApi != null && permissionsFromApi.Any())
+            {
+                _allPermissions = permissionsFromApi.Select(p => new PermissionItem
+                {
+                    Name = p.Name ?? "",
+                    DisplayName = p.DisplayName ?? "",
+                    Description = p.Description ?? "",
+                    Category = p.Category ?? "General"
+                }).ToList();
+
+                // Group by category
+                _permissionsByCategory = _allPermissions
+                    .GroupBy(p => p.Category)
+                    .ToDictionary(g => g.Key, g => g.ToList());
+
+                // Initialize selected permissions: always hydrate from API when possible
+                List<string>? rolePermissions = null;
+                try
+                {
+                    rolePermissions = await ApiService.GetAsync<List<string>>($"/api/Roles/{RoleId}/permissions");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ Could not load role permissions from API for role {RoleId}: {ex.Message}");
+                    _loadError = "Unable to load existing role permissions. Please verify you have permission to manage roles.";
+                }
+
+                var seedPermissions = rolePermissions ?? CurrentPermissions ?? new List<string>();
+                _selectedPermissions = seedPermissions.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                
+                Console.WriteLine($"✅ Loaded {_allPermissions.Count} permissions in {_permissionsByCategory.Count} categories");
+                Console.WriteLine($"   Currently selected: {_selectedPermissions.Count} permissions");
+
+                if (_loadError == null)
+                {
+                    var sourceLabel = rolePermissions != null ? "API" : (CurrentPermissions?.Any() == true ? "dialog parameter" : "none");
+                    Snackbar.Add($"Loaded {_selectedPermissions.Count} assigned permissions (source: {sourceLabel})",
+                        _selectedPermissions.Count > 0 ? Severity.Info : Severity.Warning);
+                }
+            }
+            else
+            {
+                _loadError = "Failed to load available permissions from the server.";
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading permissions: {ex.Message}");
+            _loadError = "An unexpected error occurred while loading permissions.";
+            Snackbar.Add($"❌ Error loading permissions: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void TogglePermission(string permissionName, bool isChecked)
+    {
+        if (isChecked)
+        {
+            _selectedPermissions.Add(permissionName);
+        }
+        else
+        {
+            _selectedPermissions.Remove(permissionName);
+        }
+        
+        StateHasChanged();
+    }
+
+    private void SelectAll()
+    {
+        var visiblePermissions = _allPermissions
+            .Where(p => string.IsNullOrEmpty(_searchText) || 
+                       p.DisplayName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                       p.Description.Contains(_searchText, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Name);
+        
+        foreach (var perm in visiblePermissions)
+        {
+            _selectedPermissions.Add(perm);
+        }
+        
+        StateHasChanged();
+    }
+
+    private void DeselectAll()
+    {
+        var visiblePermissions = _allPermissions
+            .Where(p => string.IsNullOrEmpty(_searchText) || 
+                       p.DisplayName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+                       p.Description.Contains(_searchText, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Name);
+        
+        foreach (var perm in visiblePermissions)
+        {
+            _selectedPermissions.Remove(perm);
+        }
+        
+        StateHasChanged();
+    }
+
+    private void Cancel()
+    {
+        // Dialog will close via the Cancel button
+    }
+
+    private async Task Submit()
+    {
+        if (!string.IsNullOrEmpty(_loadError))
+        {
+            Snackbar.Add("Cannot save permissions because the dialog failed to load role data.", Severity.Error);
+            return;
+        }
+
+        _isSubmitting = true;
+        try
+        {
+            var request = new
+            {
+                PermissionNames = _selectedPermissions.ToList(),
+                UpdatedBy = CurrentUsername
+            };
+
+            Console.WriteLine($"Updating permissions for role {RoleId}: {_selectedPermissions.Count} permissions");
+            await ApiService.PutAsync<object, object>($"/api/Roles/{RoleId}/permissions", request);
+            
+            Snackbar.Add($"✅ Permissions updated successfully! {_selectedPermissions.Count} permissions assigned. Close dialog to continue.", Severity.Success);
+            
+            // Notify parent to reload
+            await OnPermissionsUpdated.InvokeAsync();
+
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error updating permissions: {ex.Message}");
+            Snackbar.Add($"❌ Error updating permissions: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    // View Models
+    public class PermissionItem
+    {
+        public string Name { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Category { get; set; } = "";
+    }
+
+    // DTOs
+    public class PermissionDto
+    {
+        public int Id { get; set; }
+        public string? Name { get; set; }
+        public string? DisplayName { get; set; }
+        public string? Description { get; set; }
+        public string? Category { get; set; }
+        public bool IsActive { get; set; }
+    }
+}
+

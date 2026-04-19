@@ -1,0 +1,567 @@
+/* ============================================
+   HYBRID DESIGN SYSTEM: Glassmorphism + Material 3
+   ============================================
+   
+   This file contains hybrid design utilities that combine:
+   - Glassmorphism effects for modern, premium feel
+   - Material Design 3 foundation for familiarity and accessibility
+   
+   Usage:
+   - Apply glassmorphism to navigation, dialogs, overlays
+   - Use Material 3 for cards, buttons, forms
+   - Add gradient accents for visual interest
+*/
+
+/* ============================================
+   GLASSMORPHISM UTILITIES
+   ============================================ */
+
+/* Base Glass Effect */
+.glass-base {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Glass with Gradient Overlay */
+.glass-gradient {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 
+        0 8px 32px 0 rgba(31, 38, 135, 0.37),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+/* Strong Glass Effect (for dialogs, modals) */
+.glass-strong {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 
+        0 20px 60px rgba(0, 0, 0, 0.2),
+        0 8px 24px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* Dark Glass (for dark mode) */
+.glass-dark {
+    background: rgba(30, 30, 30, 0.8);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ============================================
+   HYBRID CARD STYLES
+   ============================================ */
+
+/* Material 3 Card with Glass Accent Border */
+.hybrid-card {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 
+        0 2px 8px rgba(0, 0, 0, 0.08),
+        0 4px 16px rgba(0, 0, 0, 0.04);
+    border-top: 3px solid transparent;
+    border-image: linear-gradient(135deg, #667eea 0%, #764ba2 100%) 1;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.hybrid-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    opacity: 1;
+    transition: height 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hybrid-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.12),
+        0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+.hybrid-card:hover::before {
+    height: 4px;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+}
+
+/* Hybrid Card with Glass Background */
+.hybrid-card-glass {
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-top: 3px solid;
+    border-image: linear-gradient(135deg, #667eea 0%, #764ba2 100%) 1;
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hybrid-card-glass:hover {
+    background: rgba(255, 255, 255, 0.95);
+    transform: translateY(-4px);
+    box-shadow: 
+        0 12px 32px rgba(0, 0, 0, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* ============================================
+   HYBRID BUTTON STYLES
+   ============================================ */
+
+/* Material 3 Button with Gradient */
+.hybrid-button {
+    background: var(--gradient-primary);
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-weight: 600;
+    box-shadow: 
+        0 2px 8px rgba(26, 35, 126, 0.3),
+        0 1px 4px rgba(26, 35, 126, 0.2);
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    color: white;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+}
+
+.hybrid-button:hover {
+    background: var(--accent-gradient-hover);
+    transform: translateY(-2px);
+    box-shadow: 
+        0 4px 12px rgba(26, 35, 126, 0.4),
+        0 2px 6px rgba(26, 35, 126, 0.3);
+}
+
+.hybrid-button:active {
+    transform: translateY(0);
+    box-shadow: 
+        0 2px 8px rgba(26, 35, 126, 0.3),
+        0 1px 4px rgba(26, 35, 126, 0.2);
+}
+
+/* Gradient Accent Button */
+.hybrid-button-gradient {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-weight: 600;
+    box-shadow: 
+        0 4px 15px rgba(102, 126, 234, 0.4),
+        0 2px 8px rgba(118, 75, 162, 0.3);
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    color: white;
+    cursor: pointer;
+}
+
+.hybrid-button-gradient:hover {
+    background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+    transform: translateY(-2px);
+    box-shadow: 
+        0 6px 20px rgba(102, 126, 234, 0.6),
+        0 4px 12px rgba(118, 75, 162, 0.4);
+}
+
+/* ============================================
+   GLASSMORPHISM APP BAR
+   ============================================ */
+
+.glass-appbar {
+    background: #ffffff !important;
+    border-bottom: 1px solid #E2E8F0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    position: relative;
+}
+
+.glass-appbar::before {
+    display: none;
+}
+
+/* ============================================
+   GLASSMORPHISM DIALOG
+   ============================================ */
+
+.glass-dialog {
+    background: rgba(255, 255, 255, 0.95) !important;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 
+        0 20px 60px rgba(0, 0, 0, 0.2),
+        0 8px 24px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    border-radius: 24px;
+}
+
+.glass-dialog-header {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.95) 0%, rgba(118, 75, 162, 0.95) 100%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: white;
+    padding: 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* ============================================
+   DARK MODE SUPPORT
+   ============================================ */
+
+[data-theme="dark"] .glass-base,
+[data-theme="dark"] .glass-gradient {
+    background: rgba(30, 30, 30, 0.8);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .glass-strong {
+    background: rgba(30, 30, 30, 0.95);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .hybrid-card,
+[data-theme="dark"] .hybrid-card-glass {
+    background: rgba(30, 30, 30, 0.9);
+    color: rgba(255, 255, 255, 0.87);
+}
+
+[data-theme="dark"] .glass-appbar {
+    background: rgba(26, 35, 126, 0.9) !important;
+}
+
+[data-theme="dark"] .glass-dialog {
+    background: rgba(30, 30, 30, 0.95) !important;
+}
+
+/* ============================================
+   MICRO-INTERACTIONS & ANIMATIONS
+   ============================================ */
+
+/* Hover Scale Effect */
+.hover-scale {
+    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-scale:hover {
+    transform: scale(1.05);
+}
+
+.hover-scale:active {
+    transform: scale(0.95);
+}
+
+/* Smooth Lift on Hover */
+.hover-lift {
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-lift:hover {
+    transform: translateY(-4px);
+    box-shadow: 
+        0 12px 32px rgba(0, 0, 0, 0.12),
+        0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Glass Shine Effect */
+.glass-shine {
+    position: relative;
+    overflow: hidden;
+}
+
+.glass-shine::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: linear-gradient(
+        45deg,
+        transparent 30%,
+        rgba(255, 255, 255, 0.3) 50%,
+        transparent 70%
+    );
+    transform: rotate(45deg);
+    transition: all 0.6s;
+    opacity: 0;
+}
+
+.glass-shine:hover::before {
+    animation: shine 0.6s ease-in-out;
+}
+
+@keyframes shine {
+    0% {
+        transform: translateX(-100%) translateY(-100%) rotate(45deg);
+        opacity: 0;
+    }
+    50% {
+        opacity: 1;
+    }
+    100% {
+        transform: translateX(100%) translateY(100%) rotate(45deg);
+        opacity: 0;
+    }
+}
+
+/* Gradient Border Animation */
+.gradient-border-animated {
+    position: relative;
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+}
+
+.gradient-border-animated::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    padding: 3px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: gradientRotate 3s linear infinite;
+}
+
+@keyframes gradientRotate {
+    0% {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    50% {
+        background: linear-gradient(225deg, #764ba2 0%, #667eea 100%);
+    }
+    100% {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+}
+
+/* Button Ripple Effect */
+.button-ripple {
+    position: relative;
+    overflow: hidden;
+}
+
+.button-ripple::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.5);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.button-ripple:active::after {
+    width: 300px;
+    height: 300px;
+}
+
+/* Card Glow on Hover */
+.card-glow {
+    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-glow:hover {
+    box-shadow: 
+        0 8px 24px rgba(102, 126, 234, 0.2),
+        0 4px 8px rgba(118, 75, 162, 0.15);
+}
+
+/* Smooth Fade In */
+.fade-in-smooth {
+    animation: fadeInSmooth 0.4s ease-out;
+}
+
+@keyframes fadeInSmooth {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Stagger Animation for Grid Items */
+.stagger-fade-in {
+    opacity: 0;
+    animation: fadeInSmooth 0.4s ease-out forwards;
+}
+
+.stagger-fade-in:nth-child(1) { animation-delay: 0.05s; }
+.stagger-fade-in:nth-child(2) { animation-delay: 0.1s; }
+.stagger-fade-in:nth-child(3) { animation-delay: 0.15s; }
+.stagger-fade-in:nth-child(4) { animation-delay: 0.2s; }
+.stagger-fade-in:nth-child(5) { animation-delay: 0.25s; }
+.stagger-fade-in:nth-child(6) { animation-delay: 0.3s; }
+
+/* ============================================
+   GLOBAL DIALOG STYLING
+   ============================================ */
+
+/* Apply glassmorphism to all MudDialogs */
+.mud-dialog {
+    border-radius: 24px !important;
+}
+
+.mud-dialog .mud-dialog-content {
+    background: rgba(255, 255, 255, 0.95) !important;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 
+        0 20px 60px rgba(0, 0, 0, 0.2),
+        0 8px 24px rgba(0, 0, 0, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.mud-dialog .mud-dialog-title {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.95) 0%, rgba(118, 75, 162, 0.95) 100%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: white;
+    padding: 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    margin: -24px -24px 24px -24px;
+}
+
+[data-theme="dark"] .mud-dialog .mud-dialog-content {
+    background: rgba(30, 30, 30, 0.95) !important;
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ============================================
+   PERFORMANCE OPTIMIZATIONS
+   ============================================ */
+
+/* Only apply backdrop-filter on supported browsers */
+@supports not (backdrop-filter: blur(10px)) {
+    .glass-base,
+    .glass-gradient,
+    .glass-strong,
+    .glass-appbar,
+    .glass-dialog {
+        background: rgba(255, 255, 255, 0.95);
+    }
+    
+    [data-theme="dark"] .glass-base,
+    [data-theme="dark"] .glass-gradient,
+    [data-theme="dark"] .glass-strong,
+    [data-theme="dark"] .glass-dialog {
+        background: rgba(30, 30, 30, 0.95);
+    }
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+    .hybrid-card,
+    .hybrid-card-glass,
+    .hybrid-button,
+    .hybrid-button-gradient,
+    .hover-scale,
+    .hover-lift,
+    .glass-shine,
+    .card-glow {
+        transition: none !important;
+        animation: none !important;
+    }
+    
+    .hybrid-card:hover,
+    .hybrid-card-glass:hover {
+        transform: none;
+    }
+}
+
+/* ============================================
+   FINAL POLISH: Enhanced Dark Mode
+   ============================================ */
+
+[data-theme="dark"] .glass-base,
+[data-theme="dark"] .glass-gradient {
+    background: rgba(30, 30, 30, 0.85);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .glass-strong {
+    background: rgba(30, 30, 30, 0.95);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .hybrid-card {
+    background: rgba(30, 30, 30, 0.9);
+    color: rgba(255, 255, 255, 0.87);
+    border-top-color: rgba(102, 126, 234, 0.6);
+}
+
+[data-theme="dark"] .hybrid-card-glass {
+    background: rgba(30, 30, 30, 0.85);
+    color: rgba(255, 255, 255, 0.87);
+}
+
+[data-theme="dark"] .glass-appbar {
+    background: rgba(26, 35, 126, 0.9) !important;
+}
+
+[data-theme="dark"] .glass-appbar::before {
+    background: linear-gradient(135deg, rgba(26, 35, 126, 0.95) 0%, rgba(40, 53, 147, 0.95) 100%);
+}
+
+/* ============================================
+   ACCESSIBILITY ENHANCEMENTS
+   ============================================ */
+
+/* Focus indicators for keyboard navigation */
+.hybrid-button:focus-visible,
+.hybrid-button-gradient:focus-visible {
+    outline: 3px solid rgba(102, 126, 234, 0.5);
+    outline-offset: 2px;
+}
+
+.hybrid-card:focus-visible,
+.hybrid-card-glass:focus-visible {
+    outline: 3px solid rgba(102, 126, 234, 0.5);
+    outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+    .hybrid-card,
+    .hybrid-card-glass {
+        border: 2px solid currentColor;
+    }
+    
+    .glass-base,
+    .glass-gradient,
+    .glass-strong {
+        border: 2px solid currentColor;
+    }
+}
+

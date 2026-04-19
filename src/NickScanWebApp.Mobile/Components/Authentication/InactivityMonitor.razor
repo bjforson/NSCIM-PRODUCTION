@@ -1,0 +1,129 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.JSInterop
+@using NickScanWebApp.Mobile.Services
+@inject InactivityTimerService InactivityTimer
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<InactivityMonitor> Logger
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+@code {
+    private bool _isAuthenticated = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Subscribe to authentication state changes
+        AuthStateProvider.AuthenticationStateChanged += OnAuthenticationStateChanged;
+        
+        // Check current auth state
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _isAuthenticated = authState.User.Identity?.IsAuthenticated ?? false;
+        
+        if (_isAuthenticated)
+        {
+            await InitializeTimer();
+        }
+    }
+
+    private async void OnAuthenticationStateChanged(Task<AuthenticationState> task)
+    {
+        try
+        {
+            var authState = await task;
+            var wasAuthenticated = _isAuthenticated;
+            _isAuthenticated = authState.User.Identity?.IsAuthenticated ?? false;
+
+            if (_isAuthenticated && !wasAuthenticated)
+            {
+                // User just logged in - initialize timer
+                await InitializeTimer();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error handling authentication state change");
+        }
+    }
+
+    private async Task InitializeTimer()
+    {
+        try
+        {
+            await InactivityTimer.InitializeAsync();
+            InactivityTimer.OnInactivityTimeout += HandleInactivityTimeout;
+            Logger.LogInformation("✅ Inactivity monitor initialized");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to initialize inactivity monitor");
+        }
+    }
+
+    private async Task HandleInactivityTimeout()
+    {
+        try
+        {
+            // ✅ FIX: Handle circuit disconnection gracefully
+            // If circuit is disconnected, user will need to refresh page anyway
+            await InvokeAsync(async () =>
+            {
+                try
+                {
+                    // Try to show snackbar - may fail if circuit is disconnected
+                    Snackbar.Add("You have been logged out due to inactivity", Severity.Warning);
+                    await Task.Delay(1000); // Give time for snackbar to show
+                }
+                catch (JSDisconnectedException)
+                {
+                    // Circuit disconnected - can't show snackbar, but that's OK
+                    Logger.LogDebug("Circuit disconnected - cannot show snackbar notification");
+                }
+                
+                try
+                {
+                    // Navigate with forceLoad - this should work even if circuit is disconnected
+                    // because it triggers a full page reload
+                    Navigation.NavigateTo("/login?reason=inactivity", forceLoad: true);
+                }
+                catch (JSDisconnectedException)
+                {
+                    // Circuit disconnected - user will need to manually refresh
+                    // This is expected when user is inactive and connection is lost
+                    Logger.LogDebug("Circuit disconnected - cannot navigate. User will need to refresh page to see login screen.");
+                }
+            });
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit already disconnected - can't invoke at all
+            // User will need to refresh the page to see login screen
+            Logger.LogDebug("Circuit disconnected - cannot handle inactivity timeout. User will need to refresh page.");
+        }
+        catch (Exception ex)
+        {
+            // Log other exceptions but don't throw
+            Logger.LogError(ex, "Error handling inactivity timeout");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            AuthStateProvider.AuthenticationStateChanged -= OnAuthenticationStateChanged;
+            
+            if (InactivityTimer != null)
+            {
+                InactivityTimer.OnInactivityTimeout -= HandleInactivityTimeout;
+                await InactivityTimer.DisposeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error disposing inactivity monitor");
+        }
+    }
+}
+

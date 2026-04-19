@@ -1,0 +1,36 @@
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_value"
+                      Label="@DialogTitle"
+                      Variant="Variant.Outlined"
+                      Lines="@MultilineLines"
+                      Required="@Required"
+                      RequiredError="Value is required" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit">OK</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public string DialogTitle { get; set; } = "";
+    [Parameter] public bool Required { get; set; }
+    [Parameter] public int MultilineLines { get; set; } = 3;
+
+    private string _value = "";
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Submit()
+    {
+        if (Required && string.IsNullOrWhiteSpace(_value))
+            return;
+
+        MudDialog.Close(DialogResult.Ok<string?>(string.IsNullOrWhiteSpace(_value) ? null : _value.Trim()));
+    }
+}

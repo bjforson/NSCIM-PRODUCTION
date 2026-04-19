@@ -1,0 +1,1255 @@
+@page "/images/viewer/{ContainerNumber}"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisView)]
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Services.Permissions
+@using System
+@using System.Linq
+@inject NavigationManager NavigationManager
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject PermissionGuard PermissionGuard
+
+<PageTitle>Image Viewer - @ContainerNumber</PageTitle>
+
+<!-- Full Screen Image Viewer -->
+<div style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.95); z-index: 2000; display: flex; flex-direction: column; overflow: hidden;">
+    
+    <!-- Toolbar (Fixed) -->
+    <MudPaper Elevation="4" Class="pa-2" Style="background: #2563EB; color: white; flex-shrink: 0; z-index: 10;">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                <MudIconButton Icon="@Icons.Material.Outlined.ArrowBack" 
+                              Color="Color.Inherit" 
+                              OnClick="@GoBack" />
+                <MudText Typo="Typo.h6">@ContainerNumber</MudText>
+                @if (!string.IsNullOrEmpty(_scannerType))
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@_scannerType</MudChip>
+                }
+            </MudStack>
+            
+            <!-- Image Tools -->
+            <MudStack Row="true" Spacing="1">
+                <MudIconButton Icon="@Icons.Material.Outlined.ZoomIn" 
+                              Color="Color.Inherit" 
+                              OnClick="@ZoomIn"
+                              Disabled="@(zoomLevel >= 5.0)"
+                              title="Zoom In" />
+                <MudIconButton Icon="@Icons.Material.Outlined.ZoomOut" 
+                              Color="Color.Inherit" 
+                              OnClick="@ZoomOut"
+                              Disabled="@(zoomLevel <= 0.25)"
+                              title="Zoom Out" />
+                <MudIconButton Icon="@Icons.Material.Outlined.FitScreen" 
+                              Color="Color.Inherit" 
+                              OnClick="@ResetZoom"
+                              title="Reset Zoom" />
+                <MudDivider Vertical="true" FlexItem="true" />
+                <MudIconButton Icon="@Icons.Material.Outlined.RotateLeft" 
+                              Color="Color.Inherit" 
+                              OnClick="@RotateLeft"
+                              title="Rotate Left" />
+                <MudIconButton Icon="@Icons.Material.Outlined.RotateRight" 
+                              Color="Color.Inherit" 
+                              OnClick="@RotateRight"
+                              title="Rotate Right" />
+                <MudDivider Vertical="true" FlexItem="true" />
+                <MudButton Variant="@(_drawMode ? Variant.Filled : Variant.Outlined)" 
+                           Color="@(_drawMode ? Color.Error : Color.Inherit)" 
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Outlined.CropSquare" 
+                           OnClick="ToggleDrawMode"
+                           Style="color: white; white-space: nowrap;">
+                    @(_drawMode ? "Drawing..." : "Mark Area")
+                </MudButton>
+                <MudDivider Vertical="true" FlexItem="true" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Refresh" 
+                              Color="Color.Inherit" 
+                              OnClick="@ResetAll"
+                              title="Reset All" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Download" 
+                              Color="Color.Inherit" 
+                              OnClick="@DownloadImage"
+                              title="Download" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Print" 
+                              Color="Color.Inherit" 
+                              OnClick="@PrintImage"
+                              title="Print" />
+            </MudStack>
+            
+            <MudText Typo="Typo.body2">Zoom: @((zoomLevel * 100).ToString("F0"))%</MudText>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Image Container (Fixed, 3/4 of remaining space) -->
+    <div style="flex: 3; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; min-height: 0; background: #1a1a1a;">
+        <div style="position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"
+             @onmousedown="HandleMouseDown"
+             @onmousemove="HandleMouseMove"
+             @onmouseup="HandleMouseUp"
+             @onmouseleave="HandleMouseLeave"
+             @onwheel="HandleWheel"
+             @ref="_imageContainer">
+            <img src="@GetImageUrl()" 
+                 alt="Container scan"
+                 style="@GetImageStyle()"
+                 @ref="_imageElement"
+                 draggable="false" />
+            
+            <!-- SVG Overlay for Object Detection -->
+            @if (_detectionResult != null && _detectionResult.Success)
+            {
+                <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10;">
+                    @foreach (var container in _detectionResult.ContainerRegions)
+                    {
+                        <g>
+                            <rect x="@container.X" y="@container.Y" 
+                                  width="@container.Width" height="@container.Height"
+                                  fill="none" stroke="green" stroke-width="2" opacity="0.8" />
+                            <text x="@(container.X + 5)" y="@(container.Y - 5)" 
+                                  fill="green" font-size="12" font-weight="bold">Container</text>
+                        </g>
+                    }
+                    @foreach (var vehicle in _detectionResult.VehicleRegions)
+                    {
+                        <g>
+                            <rect x="@vehicle.X" y="@vehicle.Y" 
+                                  width="@vehicle.Width" height="@vehicle.Height"
+                                  fill="none" stroke="blue" stroke-width="2" opacity="0.8" />
+                            <text x="@(vehicle.X + 5)" y="@(vehicle.Y - 5)" 
+                                  fill="blue" font-size="12" font-weight="bold">Vehicle</text>
+                        </g>
+                    }
+                    @foreach (var anomaly in _detectionResult.Anomalies)
+                    {
+                        <g>
+                            <rect x="@anomaly.X" y="@anomaly.Y" 
+                                  width="@anomaly.Width" height="@anomaly.Height"
+                                  fill="rgba(255,0,0,0.2)" stroke="red" stroke-width="3" opacity="0.9" />
+                            <text x="@(anomaly.X + 5)" y="@(anomaly.Y - 5)" 
+                                  fill="red" font-size="14" font-weight="bold">⚠️ Anomaly</text>
+                        </g>
+                    }
+                </svg>
+            }
+
+            <!-- SVG Overlay for Rectangles (User Annotations) -->
+            <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 20;">
+                @foreach (var rect in _rectangles)
+                {
+                    <g>
+                        <rect x="@(rect.X)" 
+                              y="@(rect.Y)" 
+                              width="@(rect.Width)" 
+                              height="@(rect.Height)"
+                              fill="none"
+                              stroke="red"
+                              stroke-width="3"
+                              opacity="0.8" />
+                        
+                        @if (_selectedRectIndex == _rectangles.IndexOf(rect))
+                        {
+                            <!-- Resize handles -->
+                            <circle cx="@(rect.X)" cy="@(rect.Y)" r="6" fill="red" style="pointer-events: all; cursor: nwse-resize;" @onmousedown="@((e) => StartResize(e, _rectangles.IndexOf(rect), ResizeHandle.TopLeft))" @onmousedown:stopPropagation="true" />
+                            <circle cx="@(rect.X + rect.Width)" cy="@(rect.Y)" r="6" fill="red" style="pointer-events: all; cursor: nesw-resize;" @onmousedown="@((e) => StartResize(e, _rectangles.IndexOf(rect), ResizeHandle.TopRight))" @onmousedown:stopPropagation="true" />
+                            <circle cx="@(rect.X)" cy="@(rect.Y + rect.Height)" r="6" fill="red" style="pointer-events: all; cursor: nesw-resize;" @onmousedown="@((e) => StartResize(e, _rectangles.IndexOf(rect), ResizeHandle.BottomLeft))" @onmousedown:stopPropagation="true" />
+                            <circle cx="@(rect.X + rect.Width)" cy="@(rect.Y + rect.Height)" r="6" fill="red" style="pointer-events: all; cursor: nwse-resize;" @onmousedown="@((e) => StartResize(e, _rectangles.IndexOf(rect), ResizeHandle.BottomRight))" @onmousedown:stopPropagation="true" />
+                            
+                            <!-- Delete button -->
+                            <PermissionGate Permission="PermissionIds.Images.Edit">
+                                <g transform="translate(@(rect.X + rect.Width - 25), @(rect.Y - 25))" style="pointer-events: all; cursor: pointer;" @onclick="@(() => DeleteRectangle(_rectangles.IndexOf(rect)))" @onclick:stopPropagation="true">
+                                    <circle cx="12" cy="12" r="12" fill="darkred" />
+                                    <line x1="8" y1="8" x2="16" y2="16" stroke="white" stroke-width="2" />
+                                    <line x1="16" y1="8" x2="8" y2="16" stroke="white" stroke-width="2" />
+                                </g>
+                            </PermissionGate>
+                        }
+                    </g>
+                }
+                
+                <!-- Current drawing rectangle -->
+                @if (_isDrawing && _currentRect != null)
+                {
+                    <rect x="@(_currentRect.X)" 
+                          y="@(_currentRect.Y)" 
+                          width="@(_currentRect.Width)" 
+                          height="@(_currentRect.Height)"
+                          fill="none"
+                          stroke="red"
+                          stroke-width="3"
+                          stroke-dasharray="5,5"
+                          opacity="0.6" />
+                }
+            </svg>
+        </div>
+    </div>
+    
+    <!-- Scrollable Controls Section (1/4 of remaining space) -->
+    <div style="flex: 1; overflow-y: auto; overflow-x: hidden; background: #2d2d2d; flex-shrink: 0; min-height: 0;">
+        <div style="padding: 16px;">
+            <MudStack Spacing="3">
+                <!-- OCR Results Alert -->
+                @if (_ocrResult != null && _ocrResult.Success)
+                {
+                    <MudAlert Severity="@(_ocrResult.MatchesExpected ? Severity.Success : Severity.Warning)" Variant="Variant.Filled">
+                        <MudStack Spacing="2">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.TextFields" Size="Size.Medium" />
+                                <MudText Typo="Typo.h6"><strong>🔍 OCR Detection</strong></MudText>
+                            </MudStack>
+                            <MudText Typo="Typo.body2">
+                                <strong>Detected:</strong> @(_ocrResult.ContainerNumber ?? "Not found")<br />
+                                <strong>Expected:</strong> @ContainerNumber<br />
+                                <strong>Confidence:</strong> @(_ocrResult.Confidence.ToString("F1"))%
+                            </MudText>
+                        </MudStack>
+                    </MudAlert>
+                }
+
+                <!-- Object Detection Anomaly Alert -->
+                @if (_detectionResult != null && _detectionResult.Success && _detectionResult.HasAnomalies)
+                {
+                    <MudAlert Severity="Severity.Warning" Variant="Variant.Filled">
+                        <MudStack Spacing="2">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Medium" />
+                                <MudText Typo="Typo.h6"><strong>⚠️ Anomalies Detected</strong></MudText>
+                            </MudStack>
+                            <MudText Typo="Typo.body2">
+                                @_detectionResult.Anomalies.Count potential anomaly(ies) detected.
+                            </MudText>
+                        </MudStack>
+                    </MudAlert>
+                }
+
+                <!-- Quality Assessment Card -->
+                @if (_qualityAssessment != null && _qualityAssessment.Success)
+                {
+                    <MudCard>
+                        <MudCardContent>
+                            <MudStack Spacing="2">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Assessment" Color="Color.Primary" Size="Size.Medium" />
+                                    <MudText Typo="Typo.h6">📊 Image Quality Assessment</MudText>
+                                </MudStack>
+                                <MudProgressLinear Value="@(_qualityAssessment.OverallScore * 100)" 
+                                                   Color="@(_qualityAssessment.IsAcceptable ? Color.Success : Color.Warning)" 
+                                                   Size="Size.Medium" />
+                                <MudText Typo="Typo.body2">
+                                    Overall: <strong>@(_qualityAssessment.OverallScore.ToString("P0"))</strong>
+                                </MudText>
+                                <MudGrid Spacing="2">
+                                    <MudItem xs="6" sm="3">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Sharpness</MudText>
+                                        <MudText Typo="Typo.body2">@(_qualityAssessment.Sharpness.ToString("P0"))</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6" sm="3">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Brightness</MudText>
+                                        <MudText Typo="Typo.body2">@(_qualityAssessment.Brightness.ToString("P0"))</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6" sm="3">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Contrast</MudText>
+                                        <MudText Typo="Typo.body2">@(_qualityAssessment.Contrast.ToString("P0"))</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6" sm="3">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Noise</MudText>
+                                        <MudText Typo="Typo.body2">@(_qualityAssessment.NoiseLevel.ToString("P0"))</MudText>
+                                    </MudItem>
+                                </MudGrid>
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                }
+
+                <!-- Brightness & Contrast (Fixed at top of scrollable area) -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Primary"><strong>Image Enhancement</strong></MudText>
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6">
+                                <MudStack Spacing="1">
+                                    <MudText Typo="Typo.caption">Brightness: @_brightness%</MudText>
+                                    <MudSlider @bind-Value="_brightness" Min="0" Max="200" Step="10" Color="Color.Warning" Size="Size.Small" />
+                                </MudStack>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudStack Spacing="1">
+                                    <MudText Typo="Typo.caption">Contrast: @_contrast%</MudText>
+                                    <MudSlider @bind-Value="_contrast" Min="0" Max="200" Step="10" Color="Color.Info" Size="Size.Small" />
+                                </MudStack>
+                            </MudItem>
+                        </MudGrid>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- Filters & Effects -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Primary"><strong>Filters & Effects</strong></MudText>
+                        <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap">
+                            <MudChip T="string" Size="Size.Small" 
+                                     Color="@(_grayscale ? Color.Primary : Color.Default)" 
+                                     Variant="@(_grayscale ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleGrayscale">
+                                Grayscale
+                            </MudChip>
+                            <MudChip T="string" Size="Size.Small" 
+                                     Color="@(_invertColors ? Color.Primary : Color.Default)" 
+                                     Variant="@(_invertColors ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleInvert">
+                                Invert
+                            </MudChip>
+                            <MudChip T="string" Size="Size.Small" 
+                                     Color="@(_edgeDetect ? Color.Primary : Color.Default)" 
+                                     Variant="@(_edgeDetect ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleEdgeDetect">
+                                Edge Detect
+                            </MudChip>
+                            <MudButton Variant="@(_useEnhancedImage ? Variant.Filled : Variant.Outlined)" 
+                                       Color="@(_useEnhancedImage ? Color.Success : Color.Info)" 
+                                       Size="Size.Small" 
+                                       StartIcon="@(_useEnhancedImage ? Icons.Material.Outlined.AutoAwesome : Icons.Material.Outlined.Image)" 
+                                       OnClick="ToggleEnhancement"
+                                       Style="white-space: nowrap;">
+                                @(_useEnhancedImage ? "Enhanced" : "Original")
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- Decision & Tags -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Gavel" Color="Color.Primary" />
+                            <MudText Typo="Typo.caption" Color="Color.Primary"><strong>Decision:</strong></MudText>
+                            <MudSelect T="string" @bind-Value="_selectedDecision" Variant="Variant.Outlined" Dense="true" Style="min-width: 150px;">
+                                <MudSelectItem Value="@("Pending")">Pending</MudSelectItem>
+                                <MudSelectItem Value="@("Normal")">Normal</MudSelectItem>
+                                <MudSelectItem Value="@("Abnormal")">Abnormal</MudSelectItem>
+                            </MudSelect>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Text" Color="Color.Success" Size="Size.Small" StartIcon="@Icons.Material.Outlined.Save" OnClick="SaveTagsAndDecision" Style="white-space: nowrap;">
+                                Save
+                            </MudButton>
+                        </MudStack>
+
+                        @* ── AI training flywheel — controlled finding categories ── *@
+                        @if (_threatCategories.Any() || _revenueAnomalyCategories.Any())
+                        {
+                            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                @if (_threatCategories.Any())
+                                {
+                                    <MudSelect T="int?"
+                                               @bind-Value="_selectedThreatCategoryId"
+                                               Label="Security finding"
+                                               Variant="Variant.Outlined"
+                                               Margin="Margin.Dense"
+                                               Clearable="true"
+                                               Style="min-width: 220px;">
+                                        <MudSelectItem T="int?" Value="@((int?)null)"><em>None</em></MudSelectItem>
+                                        @foreach (var cat in _threatCategories)
+                                        {
+                                            <MudSelectItem T="int?" Value="@((int?)cat.Id)">@cat.DisplayName</MudSelectItem>
+                                        }
+                                    </MudSelect>
+                                }
+                                @if (_revenueAnomalyCategories.Any())
+                                {
+                                    <MudSelect T="int?"
+                                               @bind-Value="_selectedRevenueAnomalyCategoryId"
+                                               Label="Revenue finding"
+                                               Variant="Variant.Outlined"
+                                               Margin="Margin.Dense"
+                                               Clearable="true"
+                                               Style="min-width: 220px;">
+                                        <MudSelectItem T="int?" Value="@((int?)null)"><em>None</em></MudSelectItem>
+                                        @foreach (var cat in _revenueAnomalyCategories)
+                                        {
+                                            <MudSelectItem T="int?" Value="@((int?)cat.Id)">@cat.DisplayName</MudSelectItem>
+                                        }
+                                    </MudSelect>
+                                }
+                            </MudStack>
+                        }
+
+                        <MudDivider />
+                        
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Label" Color="Color.Primary" />
+                            <MudText Typo="Typo.caption" Color="Color.Primary"><strong>Image Tags/Labels</strong></MudText>
+                        </MudStack>
+                        
+                        <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap" Class="mb-2">
+                            @if (_tags.Any())
+                            {
+                                @foreach (var tag in _tags)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" OnClose="@(() => RemoveTag(tag))">
+                                        @tag
+                                    </MudChip>
+                                }
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption" Style="color: #999;">No tags added yet</MudText>
+                            }
+                        </MudStack>
+                        
+                        <MudStack Row="true" Spacing="2">
+                            <MudTextField @bind-Value="_newTag"
+                                          Placeholder="Add tag"
+                                          Variant="Variant.Outlined"
+                                          Dense="true"
+                                          Style="flex: 1;"
+                                          OnKeyDown="HandleTagKeyPress" />
+                            <MudButton Variant="Variant.Filled" 
+                                       Color="Color.Primary" 
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Outlined.Add"
+                                       OnClick="AddTag"
+                                       Style="white-space: nowrap;">
+                                Add
+                            </MudButton>
+                        </MudStack>
+                        
+                        <!-- Quick Tag Buttons -->
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                            <MudText Typo="Typo.caption" Style="color: #999;" Class="mr-2">Quick Tags:</MudText>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => QuickAddTag("Suspicious Item"))">Suspicious Item</MudChip>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => QuickAddTag("Weapons"))">Weapons</MudChip>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => QuickAddTag("Contraband"))">Contraband</MudChip>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => QuickAddTag("Clear"))">Clear</MudChip>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- Image Info -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Style="color: #999;">Container: <strong>@ContainerNumber</strong></MudText>
+                        @if (!string.IsNullOrEmpty(_scannerType))
+                        {
+                            <MudText Typo="Typo.caption" Style="color: #999;">Scanner: <strong>@_scannerType</strong></MudText>
+                        }
+                        @if (_scanDate != default)
+                        {
+                            <MudText Typo="Typo.caption" Style="color: #999;">Date: <strong>@_scanDate.ToString("yyyy-MM-dd HH:mm")</strong></MudText>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudStack>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    
+    // Image manipulation state
+    private ElementReference _imageElement;
+    private ElementReference _imageContainer;
+    private double zoomLevel = 1.0;
+    private int rotation = 0;
+    private int _brightness = 100;
+    private int _contrast = 100;
+    private bool _grayscale = false;
+    private bool _invertColors = false;
+    private bool _edgeDetect = false;
+    private bool _useEnhancedImage = false;
+    private bool isPanning = false;
+    private double panX = 0;
+    private double panY = 0;
+    private double lastX = 0;
+    private double lastY = 0;
+    
+    // Rectangle drawing state
+    private bool _drawMode = false;
+    private bool _isDrawing = false;
+    private bool _isResizing = false;
+    private bool _isMoving = false;
+    private List<SuspiciousAreaRect> _rectangles = new();
+    private SuspiciousAreaRect? _currentRect = null;
+    private int _selectedRectIndex = -1;
+    private ResizeHandle _currentResizeHandle = ResizeHandle.None;
+    private double _drawStartX = 0;
+    private double _drawStartY = 0;
+    
+    // Tags and decision state
+    private List<string> _tags = new();
+    private string _newTag = "";
+    private string _selectedDecision = "Pending";
+    private string _currentUsername = "System";
+
+    // AI training flywheel — controlled finding categories.
+    // Both nullable. Loaded once from /api/inspection-finding-categories on init.
+    private List<FindingCategoryDto> _threatCategories = new();
+    private List<FindingCategoryDto> _revenueAnomalyCategories = new();
+    private int? _selectedThreatCategoryId;
+    private int? _selectedRevenueAnomalyCategoryId;
+    
+    // Image metadata
+    private string _scannerType = "";
+    private DateTime _scanDate = default;
+    
+    // OCR, Detection, Quality Assessment state
+    private OcrResultDto? _ocrResult = null;
+    private ObjectDetectionResultDto? _detectionResult = null;
+    private QualityAssessmentDto? _qualityAssessment = null;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUsername = authState.User.Identity?.Name ?? "System";
+        
+        await LoadImageMetadata();
+        await LoadFindingCategoriesAsync();
+        await LoadExistingTags();
+        await LoadExistingRectangles();
+        await LoadOcrResult();
+        await LoadObjectDetection();
+        await LoadQualityAssessment();
+    }
+
+    private async Task LoadFindingCategoriesAsync()
+    {
+        try
+        {
+            var threat = await ApiService.GetAsync<List<FindingCategoryDto>>(
+                "/api/inspection-finding-categories/threat");
+            _threatCategories = threat ?? new List<FindingCategoryDto>();
+
+            var revenue = await ApiService.GetAsync<List<FindingCategoryDto>>(
+                "/api/inspection-finding-categories/revenue-anomaly");
+            _revenueAnomalyCategories = revenue ?? new List<FindingCategoryDto>();
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: dropdowns stay empty if the endpoint is unavailable.
+            // Save still works because both ids are optional on the request.
+            Console.WriteLine($"[ImageViewer.LoadFindingCategoriesAsync] {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadImageMetadata()
+    {
+        try
+        {
+            // Try to get image metadata from API
+            var images = await ApiService.GetAsync<List<ImageMetadataDto>>(
+                $"/api/image/container/{ContainerNumber}");
+            
+            var firstImage = images?.FirstOrDefault();
+            if (firstImage != null)
+            {
+                _scannerType = firstImage.ScannerType ?? "";
+                _scanDate = firstImage.ScanDate;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading image metadata: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadOcrResult()
+    {
+        try
+        {
+            _ocrResult = await ApiService.GetAsync<OcrResultDto>(
+                $"/api/image-analysis/{ContainerNumber}/ocr");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading OCR results: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadObjectDetection()
+    {
+        try
+        {
+            _detectionResult = await ApiService.GetAsync<ObjectDetectionResultDto>(
+                $"/api/image-analysis/{ContainerNumber}/detect");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading object detection: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadQualityAssessment()
+    {
+        try
+        {
+            _qualityAssessment = await ApiService.GetAsync<QualityAssessmentDto>(
+                $"/api/image-analysis/{ContainerNumber}/quality");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading quality assessment: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadExistingTags()
+    {
+        try
+        {
+            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            
+            var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
+            if (decision != null)
+            {
+                if (!string.IsNullOrEmpty(decision.Tags))
+                {
+                    _tags = decision.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(t => t.Trim())
+                        .ToList();
+                }
+                _selectedDecision = string.IsNullOrEmpty(decision.Decision) ? "Pending" : decision.Decision;
+
+                // AI training flywheel — restore previously saved finding ids.
+                _selectedThreatCategoryId = decision.ThreatCategoryId;
+                _selectedRevenueAnomalyCategoryId = decision.RevenueAnomalyCategoryId;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading tags: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadExistingRectangles()
+    {
+        try
+        {
+            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            
+            var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
+            if (!string.IsNullOrEmpty(decision?.SuspiciousAreas))
+            {
+                _rectangles = System.Text.Json.JsonSerializer.Deserialize<List<SuspiciousAreaRect>>(decision.SuspiciousAreas) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading rectangles: {ex.Message}");
+        }
+    }
+    
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo($"/containers/{ContainerNumber}");
+    }
+    
+    private void ZoomIn()
+    {
+        if (zoomLevel < 5.0) zoomLevel += 0.25;
+    }
+    
+    private void ZoomOut()
+    {
+        if (zoomLevel > 0.25) zoomLevel -= 0.25;
+    }
+    
+    private void ResetZoom()
+    {
+        zoomLevel = 1.0;
+        panX = 0;
+        panY = 0;
+    }
+    
+    private void RotateLeft()
+    {
+        rotation = (rotation - 90) % 360;
+        if (rotation < 0) rotation = 270;
+    }
+    
+    private void RotateRight()
+    {
+        rotation = (rotation + 90) % 360;
+    }
+    
+    private void ResetAll()
+    {
+        zoomLevel = 1.0;
+        rotation = 0;
+        _brightness = 100;
+        _contrast = 100;
+        _grayscale = false;
+        _invertColors = false;
+        _edgeDetect = false;
+        panX = 0;
+        panY = 0;
+    }
+    
+    private void ToggleGrayscale()
+    {
+        _grayscale = !_grayscale;
+    }
+    
+    private void ToggleInvert()
+    {
+        _invertColors = !_invertColors;
+    }
+    
+    private void ToggleEdgeDetect()
+    {
+        _edgeDetect = !_edgeDetect;
+        if (_edgeDetect)
+        {
+            _grayscale = true;
+        }
+    }
+    
+    private void ToggleEnhancement()
+    {
+        _useEnhancedImage = !_useEnhancedImage;
+    }
+    
+    private string GetImageStyle()
+    {
+        var transform = $"scale({zoomLevel}) rotate({rotation}deg) translateX({panX}px) translateY({panY}px)";
+        
+        var filters = new List<string>();
+        if (_brightness != 100) filters.Add($"brightness({_brightness}%)");
+        if (_contrast != 100) filters.Add($"contrast({_contrast}%)");
+        if (_grayscale) filters.Add("grayscale(100%)");
+        if (_invertColors) filters.Add("invert(100%)");
+        if (_edgeDetect)
+        {
+            filters.Add("contrast(300%)");
+            filters.Add("brightness(120%)");
+        }
+        
+        var filter = filters.Any() ? string.Join(" ", filters) : "none";
+        
+        return $"max-width: 100%; max-height: 100%; transform: {transform}; transition: transform 0.1s ease; filter: {filter}; user-select: none; pointer-events: none;";
+    }
+    
+    private string GetImageUrl()
+    {
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        
+        if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
+        {
+            return $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/enhanced";
+        }
+        
+        // Use unified endpoint instead of legacy /api/image/serve/
+        return $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full";
+    }
+    
+    private void HandleWheel(WheelEventArgs e)
+    {
+        if (e.DeltaY < 0)
+            ZoomIn();
+        else
+            ZoomOut();
+    }
+    
+    private void StartPan(MouseEventArgs e)
+    {
+        if (zoomLevel > 1.0 && !_drawMode)
+        {
+            isPanning = true;
+            lastX = e.ClientX;
+            lastY = e.ClientY;
+        }
+    }
+    
+    private void Pan(MouseEventArgs e)
+    {
+        if (isPanning && !_drawMode)
+        {
+            panX += e.ClientX - lastX;
+            panY += e.ClientY - lastY;
+            lastX = e.ClientX;
+            lastY = e.ClientY;
+        }
+    }
+    
+    private void EndPan(MouseEventArgs e)
+    {
+        isPanning = false;
+    }
+    
+    // Rectangle Drawing Methods
+    private void ToggleDrawMode()
+    {
+        _drawMode = !_drawMode;
+        if (!_drawMode)
+        {
+            _isDrawing = false;
+            _currentRect = null;
+            _selectedRectIndex = -1;
+        }
+    }
+    
+    private void HandleMouseDown(MouseEventArgs e)
+    {
+        if (_drawMode)
+        {
+            var clickedRectIndex = FindRectangleAt(e.OffsetX, e.OffsetY);
+            if (clickedRectIndex >= 0)
+            {
+                _selectedRectIndex = clickedRectIndex;
+                _isMoving = true;
+                _drawStartX = e.OffsetX;
+                _drawStartY = e.OffsetY;
+            }
+            else
+            {
+                _isDrawing = true;
+                _selectedRectIndex = -1;
+                _drawStartX = e.OffsetX;
+                _drawStartY = e.OffsetY;
+                _currentRect = new SuspiciousAreaRect
+                {
+                    X = e.OffsetX,
+                    Y = e.OffsetY,
+                    Width = 0,
+                    Height = 0,
+                    CreatedBy = _currentUsername
+                };
+            }
+        }
+        else
+        {
+            StartPan(e);
+        }
+    }
+    
+    private void HandleMouseMove(MouseEventArgs e)
+    {
+        if (_isDrawing && _currentRect != null)
+        {
+            _currentRect.Width = e.OffsetX - _drawStartX;
+            _currentRect.Height = e.OffsetY - _drawStartY;
+            
+            if (_currentRect.Width < 0)
+            {
+                _currentRect.X = e.OffsetX;
+                _currentRect.Width = Math.Abs(_currentRect.Width);
+            }
+            else
+            {
+                _currentRect.X = _drawStartX;
+            }
+            
+            if (_currentRect.Height < 0)
+            {
+                _currentRect.Y = e.OffsetY;
+                _currentRect.Height = Math.Abs(_currentRect.Height);
+            }
+            else
+            {
+                _currentRect.Y = _drawStartY;
+            }
+            
+            StateHasChanged();
+        }
+        else if (_isResizing && _selectedRectIndex >= 0)
+        {
+            HandleResize(e);
+        }
+        else if (_isMoving && _selectedRectIndex >= 0)
+        {
+            var deltaX = e.OffsetX - _drawStartX;
+            var deltaY = e.OffsetY - _drawStartY;
+            _rectangles[_selectedRectIndex].X += deltaX;
+            _rectangles[_selectedRectIndex].Y += deltaY;
+            _drawStartX = e.OffsetX;
+            _drawStartY = e.OffsetY;
+            StateHasChanged();
+        }
+        else if (!_drawMode)
+        {
+            Pan(e);
+        }
+    }
+    
+    private async Task HandleMouseUp(MouseEventArgs e)
+    {
+        if (_isDrawing && _currentRect != null)
+        {
+            if (_currentRect.Width > 10 && _currentRect.Height > 10)
+            {
+                _rectangles.Add(_currentRect);
+                await SaveRectangles();
+            }
+            _isDrawing = false;
+            _currentRect = null;
+        }
+        else if (_isResizing)
+        {
+            _isResizing = false;
+            await SaveRectangles();
+        }
+        else if (_isMoving)
+        {
+            _isMoving = false;
+            await SaveRectangles();
+        }
+        else if (!_drawMode)
+        {
+            EndPan(e);
+        }
+    }
+    
+    private void HandleMouseLeave(MouseEventArgs e)
+    {
+        _isDrawing = false;
+        _isResizing = false;
+        _isMoving = false;
+        _currentRect = null;
+        if (!_drawMode)
+        {
+            EndPan(e);
+        }
+    }
+    
+    private int FindRectangleAt(double x, double y)
+    {
+        for (int i = _rectangles.Count - 1; i >= 0; i--)
+        {
+            var rect = _rectangles[i];
+            if (x >= rect.X && x <= rect.X + rect.Width &&
+                y >= rect.Y && y <= rect.Y + rect.Height)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+    
+    private void StartResize(MouseEventArgs e, int index, ResizeHandle handle)
+    {
+        _selectedRectIndex = index;
+        _isResizing = true;
+        _currentResizeHandle = handle;
+        _drawStartX = e.OffsetX;
+        _drawStartY = e.OffsetY;
+    }
+    
+    private void HandleResize(MouseEventArgs e)
+    {
+        if (_selectedRectIndex < 0 || _selectedRectIndex >= _rectangles.Count) return;
+        
+        var rect = _rectangles[_selectedRectIndex];
+        var deltaX = e.OffsetX - _drawStartX;
+        var deltaY = e.OffsetY - _drawStartY;
+
+        switch (_currentResizeHandle)
+        {
+            case ResizeHandle.TopLeft:
+                rect.X += deltaX;
+                rect.Y += deltaY;
+                rect.Width -= deltaX;
+                rect.Height -= deltaY;
+                break;
+            case ResizeHandle.TopRight:
+                rect.Y += deltaY;
+                rect.Width += deltaX;
+                rect.Height -= deltaY;
+                break;
+            case ResizeHandle.BottomLeft:
+                rect.X += deltaX;
+                rect.Width -= deltaX;
+                rect.Height += deltaY;
+                break;
+            case ResizeHandle.BottomRight:
+                rect.Width += deltaX;
+                rect.Height += deltaY;
+                break;
+        }
+
+        if (rect.Width < 20) rect.Width = 20;
+        if (rect.Height < 20) rect.Height = 20;
+
+        _drawStartX = e.OffsetX;
+        _drawStartY = e.OffsetY;
+        StateHasChanged();
+    }
+    
+    private async Task DeleteRectangle(int index)
+    {
+        if (!PermissionGuard.Can(PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to remove annotations.", Severity.Warning);
+            return;
+        }
+
+        if (index >= 0 && index < _rectangles.Count)
+        {
+            _rectangles.RemoveAt(index);
+            _selectedRectIndex = -1;
+            await SaveRectangles();
+            Snackbar.Add("Annotation removed", Severity.Info);
+        }
+    }
+    
+    private async Task SaveRectangles()
+    {
+        if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to save annotations.", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var rectanglesJson = System.Text.Json.JsonSerializer.Serialize(_rectangles);
+            
+            var request = new
+            {
+                ContainerNumber,
+                ScannerType = _scannerType,
+                SuspiciousAreas = rectanglesJson,
+                ReviewedBy = _currentUsername
+            };
+
+            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision/rectangles", request);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving rectangles: {ex.Message}");
+            Snackbar.Add("Error saving annotations", Severity.Error);
+        }
+    }
+    
+    // Tags and Decision Methods
+    private void AddTag()
+    {
+        if (!string.IsNullOrWhiteSpace(_newTag) && !_tags.Contains(_newTag.Trim()))
+        {
+            _tags.Add(_newTag.Trim());
+            _newTag = "";
+            StateHasChanged();
+        }
+    }
+    
+    private void QuickAddTag(string tag)
+    {
+        if (!_tags.Contains(tag))
+        {
+            _tags.Add(tag);
+            StateHasChanged();
+        }
+    }
+    
+    private void RemoveTag(string tag)
+    {
+        _tags.Remove(tag);
+        StateHasChanged();
+    }
+    
+    private Task HandleTagKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            AddTag();
+        }
+        return Task.CompletedTask;
+    }
+    
+    private async Task SaveTagsAndDecision()
+    {
+        if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to save decisions or tags.", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            if (string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase))
+            {
+                Snackbar.Add("Please select a decision (Normal or Abnormal) before saving", Severity.Warning);
+                return;
+            }
+            
+            var tagsString = string.Join(", ", _tags);
+
+            var request = new
+            {
+                ContainerNumber,
+                ScannerType = _scannerType,
+                Decision = _selectedDecision,
+                Comments = "",
+                Tags = tagsString,
+                ReviewedBy = _currentUsername,
+                // AI training flywheel — controlled finding categories. Either or
+                // both may be null. Backend preserves prior values when null.
+                ThreatCategoryId = _selectedThreatCategoryId,
+                RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
+            };
+
+            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision", request);
+            Snackbar.Add("Decision and tags saved", Severity.Success);
+            
+            // Close the page after successful save
+            await Task.Delay(500); // Brief delay to show success message
+            GoBack();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving decision and tags: {ex.Message}");
+            Snackbar.Add($"Error saving: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task DownloadImage()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("eval", $@"
+                fetch('{GetImageUrl()}')
+                    .then(response => response.blob())
+                    .then(blob => {{
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = '{ContainerNumber}_{_scannerType}_{DateTime.Now:yyyyMMdd}.jpg';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    }});
+            ");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Download error: {ex.Message}");
+            Snackbar.Add("Error downloading image", Severity.Error);
+        }
+    }
+    
+    private async Task PrintImage()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("eval", $@"
+                const printWindow = window.open('', '_blank');
+                printWindow.document.write('<html><head><title>Print Image - {ContainerNumber}</title></head><body style=""margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;"">');
+                printWindow.document.write('<img src=""{GetImageUrl()}"" style=""max-width:100%;max-height:100vh;"" />');
+                printWindow.document.write('</body></html>');
+                printWindow.document.close();
+                printWindow.focus();
+                setTimeout(() => printWindow.print(), 500);
+            ");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Print error: {ex.Message}");
+            Snackbar.Add("Error printing image", Severity.Error);
+        }
+    }
+    
+    // DTOs and Supporting Classes
+    public class ImageMetadataDto
+    {
+        public string? ScannerType { get; set; }
+        public DateTime ScanDate { get; set; }
+    }
+    
+    public class ImageDecisionDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Decision { get; set; } = string.Empty;
+        public string? Comments { get; set; }
+        public string? Tags { get; set; }
+        public string? SuspiciousAreas { get; set; }
+        public string ReviewedBy { get; set; } = string.Empty;
+        public DateTime ReviewedAt { get; set; }
+
+        // AI training flywheel — controlled finding categories.
+        public int? ThreatCategoryId { get; set; }
+        public int? RevenueAnomalyCategoryId { get; set; }
+    }
+
+    /// <summary>
+    /// Wire-format projection of a finding category, mirroring CategoryDto on
+    /// /api/inspection-finding-categories/{threat,revenue-anomaly}.
+    /// </summary>
+    public class FindingCategoryDto
+    {
+        public int Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public bool IsActive { get; set; }
+        public int SortOrder { get; set; }
+    }
+    
+    public class SuspiciousAreaRect
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+    }
+    
+    public enum ResizeHandle
+    {
+        None,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight
+    }
+    
+    public class OcrResultDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public string DetectedText { get; set; } = string.Empty;
+        public string? ContainerNumber { get; set; }
+        public bool MatchesExpected { get; set; }
+        public string? ExpectedContainerNumber { get; set; }
+        public float Confidence { get; set; }
+    }
+    
+    public class ObjectDetectionResultDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public List<BoundingBoxDto> ContainerRegions { get; set; } = new();
+        public List<BoundingBoxDto> VehicleRegions { get; set; } = new();
+        public List<BoundingBoxDto> Anomalies { get; set; } = new();
+        public bool HasAnomalies { get; set; }
+    }
+    
+    public class BoundingBoxDto
+    {
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public float Confidence { get; set; }
+    }
+    
+    public class QualityAssessmentDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public float OverallScore { get; set; }
+        public float Sharpness { get; set; }
+        public float Brightness { get; set; }
+        public float Contrast { get; set; }
+        public float NoiseLevel { get; set; }
+        public bool IsAcceptable { get; set; }
+        public List<string> Recommendations { get; set; } = new();
+    }
+}

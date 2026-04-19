@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <!-- Comprehensive check: analyzer and code style enforcement -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>8.0</AnalysisLevel>
+    <!-- Tighten CI: Uncomment when baseline has 0 warnings. Then bump AnalysisLevel to latest-all if desired. -->
+    <!-- <TreatWarningsAsErrors>true</TreatWarningsAsErrors> -->
+  </PropertyGroup>
+</Project>

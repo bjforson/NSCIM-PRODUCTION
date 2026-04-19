@@ -1,0 +1,339 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using MudBlazor
+@inject BLReviewService BLReviewService
+@inject ILogger<BLReviewDialog> Logger
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog ContentClass="overflow-y-auto" Style="max-height: 90vh;">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Class="mr-2" />
+            BL Review: @MasterBlNumber
+        </MudText>
+    </TitleContent>
+    
+    <DialogContent>
+        @if (_isLoading)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            <MudText Align="Align.Center" Class="pa-8">Loading BL details...</MudText>
+        }
+        else if (_blDetails == null)
+        {
+            <MudAlert Severity="Severity.Error">Failed to load BL details. Please try again.</MudAlert>
+        }
+        else
+        {
+            <!-- BL Summary Header -->
+            <MudPaper Elevation="0" Class="pa-4 mb-4">
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            @_blDetails.Containers.Count container(s) ready for review
+                        </MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="6" Class="d-flex justify-end align-center">
+                        @if (_blDetails.CurrentReview != null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(_blDetails.CurrentReview.ReviewStatus)">
+                                @_blDetails.CurrentReview.ReviewStatus
+                            </MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="@GetDecisionColor(_blDetails.CurrentReview.FinalDecision)" Class="ml-2">
+                                @_blDetails.CurrentReview.FinalDecision
+                            </MudChip>
+                        }
+                    </MudItem>
+                </MudGrid>
+
+                <!-- Progress Indicator -->
+                <MudProgressLinear Color="@GetProgressColor()" 
+                                  Value="@GetProgressPercentage()" 
+                                  Size="Size.Medium"
+                                  Class="mt-4">
+                    <MudText Typo="Typo.body2" Color="Color.Default">
+                        @_reviewedCount/@_blDetails.Containers.Count containers reviewed
+                    </MudText>
+                </MudProgressLinear>
+            </MudPaper>
+
+            <!-- Container Review Cards -->
+            <MudStack Spacing="3">
+                @foreach (var container in _blDetails.Containers)
+                {
+                    <ContainerReviewCard Container="container" 
+                                       OnDecisionChanged="HandleDecisionChanged" />
+                }
+            </MudStack>
+
+            <!-- BL-Level Comments -->
+            <MudPaper Elevation="1" Class="pa-4 mt-4">
+                <MudTextField @bind-Value="_blComments"
+                            Label="BL-Level Comments"
+                            Variant="Variant.Outlined"
+                            Lines="3"
+                            HelperText="Add overall assessment or notes for this Bill of Lading"
+                            FullWidth="true" />
+            </MudPaper>
+
+            <!-- Final Decision Summary (Auto-calculated) -->
+            <MudPaper Elevation="2" Class="pa-4 mt-4">
+                <MudText Typo="Typo.h6" GutterBottom="true">Final BL Decision (Auto-Calculated)</MudText>
+                <MudGrid>
+                    <MudItem xs="12" md="4">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Normal Containers:</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Success">@_normalCount</MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Abnormal Containers:</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Error">@_abnormalCount</MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">BL Decision:</MudText>
+                        <MudChip T="string" Color="@GetDecisionColor(GetFinalDecision())" Size="Size.Large">
+                            @GetDecisionIcon(GetFinalDecision()) @GetFinalDecision()
+                        </MudChip>
+                    </MudItem>
+                </MudGrid>
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-3">
+                    <strong>Rule:</strong> If ANY container is marked as Abnormal, the entire BL is marked as Abnormal.
+                </MudAlert>
+            </MudPaper>
+
+            <!-- Review History (if exists) -->
+            @if (_blDetails.ReviewHistory.Any())
+            {
+                <MudExpansionPanels Class="mt-4">
+                    <MudExpansionPanel Text="Review History" Icon="@Icons.Material.Outlined.History">
+                        <MudTimeline TimelineOrientation="TimelineOrientation.Vertical">
+                            @foreach (var review in _blDetails.ReviewHistory)
+                            {
+                                <MudTimelineItem Color="@GetDecisionColor(review.FinalDecision)" Size="Size.Small">
+                                    <ItemContent>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>@review.ReviewedBy</strong> - @review.FinalDecision
+                                        </MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            @review.ReviewStartedAt.ToString("MMM dd, yyyy HH:mm")
+                                        </MudText>
+                                        @if (!string.IsNullOrEmpty(review.BLComments))
+                                        {
+                                            <MudText Typo="Typo.caption">@review.BLComments</MudText>
+                                        }
+                                    </ItemContent>
+                                </MudTimelineItem>
+                            }
+                        </MudTimeline>
+                    </MudExpansionPanel>
+                </MudExpansionPanels>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="SaveProgress" 
+                  Color="Color.Info" 
+                  Variant="Variant.Filled"
+                  Disabled="_isSaving || _blDetails == null"
+                  StartIcon="@Icons.Material.Outlined.Save">
+            @if (_isSaving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Saving...</span>
+            }
+            else
+            {
+                <span>Save Progress</span>
+            }
+        </MudButton>
+        <MudButton OnClick="CompleteReview" 
+                  Color="Color.Success" 
+                  Variant="Variant.Filled"
+                  Disabled="_isSaving || !CanCompleteReview() || _blDetails == null"
+                  StartIcon="@Icons.Material.Outlined.CheckCircle">
+            Complete Review
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public string MasterBlNumber { get; set; } = string.Empty;
+
+    private BLDetailsDto? _blDetails;
+    private bool _isLoading = true;
+    private bool _isSaving = false;
+    private string _blComments = string.Empty;
+    private Dictionary<string, ContainerDecisionSubmission> _containerDecisions = new();
+
+    private int _reviewedCount => _containerDecisions.Values.Count(d => d.Decision != "Pending");
+    private int _normalCount => _containerDecisions.Values.Count(d => d.Decision == "Normal");
+    private int _abnormalCount => _containerDecisions.Values.Count(d => d.Decision == "Abnormal");
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadBLDetails();
+    }
+
+    private async Task LoadBLDetails()
+    {
+        _isLoading = true;
+        try
+        {
+            Logger.LogInformation("Loading BL details for {BLNumber}", MasterBlNumber);
+            
+            _blDetails = await BLReviewService.GetBLDetailsAsync(MasterBlNumber);
+
+            if (_blDetails != null)
+            {
+                // Initialize decisions from existing review or create new
+                foreach (var container in _blDetails.Containers)
+                {
+                    _containerDecisions[container.ContainerNumber] = new ContainerDecisionSubmission
+                    {
+                        ContainerNumber = container.ContainerNumber,
+                        Decision = container.CurrentDecision ?? "Pending",
+                        Comments = container.CurrentComments ?? string.Empty
+                    };
+                }
+
+                // Load existing BL comments if available
+                if (_blDetails.CurrentReview != null)
+                {
+                    _blComments = _blDetails.CurrentReview.BLComments;
+                }
+
+                Logger.LogInformation("✅ Loaded {Count} containers for BL {BLNumber}", 
+                    _blDetails.Containers.Count, MasterBlNumber);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading BL details for {BLNumber}", MasterBlNumber);
+            Snackbar.Add("Failed to load BL details", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void HandleDecisionChanged(ContainerDecisionSubmission decision)
+    {
+        _containerDecisions[decision.ContainerNumber] = decision;
+        StateHasChanged();
+    }
+
+    private async Task SaveProgress()
+    {
+        await SaveReview(isComplete: false);
+    }
+
+    private async Task CompleteReview()
+    {
+        await SaveReview(isComplete: true);
+    }
+
+    private async Task SaveReview(bool isComplete)
+    {
+        if (_blDetails == null) return;
+
+        _isSaving = true;
+        try
+        {
+            var submission = new BLReviewSubmission
+            {
+                Id = _blDetails.CurrentReview?.Id,
+                MasterBlNumber = MasterBlNumber,
+                ContainerDecisions = _containerDecisions.Values.ToList(),
+                BLComments = _blComments,
+                ReviewedBy = string.Empty, // Will be set by API from JWT
+                IsComplete = isComplete
+            };
+
+            var result = await BLReviewService.SaveReviewAsync(submission);
+
+            if (result != null)
+            {
+                var message = isComplete 
+                    ? $"✅ Review completed! Final decision: {result.FinalDecision}"
+                    : "💾 Progress saved successfully";
+                
+                Snackbar.Add(message, Severity.Success);
+                
+                Logger.LogInformation("Review saved - BL: {BL}, Status: {Status}, Decision: {Decision}", 
+                    result.MasterBlNumber, result.ReviewStatus, result.FinalDecision);
+
+                if (isComplete)
+                {
+                }
+                else
+                {
+                    // Reload to get updated data
+                    await LoadBLDetails();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving review for BL {BLNumber}", MasterBlNumber);
+            Snackbar.Add("Failed to save review", Severity.Error);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+
+    private bool CanCompleteReview()
+    {
+        if (_blDetails == null) return false;
+        return _containerDecisions.Values.All(d => d.Decision != "Pending");
+    }
+
+    private string GetFinalDecision()
+    {
+        if (_abnormalCount > 0) return "Abnormal";
+        if (_normalCount == _blDetails?.Containers.Count) return "Normal";
+        return "Pending";
+    }
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Pending" => Color.Warning,
+        "InProgress" => Color.Info,
+        "Completed" => Color.Success,
+        _ => Color.Default
+    };
+
+    private Color GetDecisionColor(string decision) => decision switch
+    {
+        "Normal" => Color.Success,
+        "Abnormal" => Color.Error,
+        "Pending" => Color.Default,
+        _ => Color.Default
+    };
+
+    private string GetDecisionIcon(string decision) => decision switch
+    {
+        "Normal" => "✅",
+        "Abnormal" => "⚠️",
+        _ => "⏳"
+    };
+
+    private Color GetProgressColor()
+    {
+        var percentage = GetProgressPercentage();
+        if (percentage >= 100) return Color.Success;
+        if (percentage >= 50) return Color.Info;
+        if (percentage > 0) return Color.Warning;
+        return Color.Default;
+    }
+
+    private double GetProgressPercentage()
+    {
+        if (_blDetails == null || _blDetails.Containers.Count == 0) return 0;
+        return (double)_reviewedCount / _blDetails.Containers.Count * 100;
+    }
+}
+

@@ -1,0 +1,256 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<PerformancePanel> Logger
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Speed" Class="mr-2" />
+        API Performance Metrics
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading performance metrics...</MudText>
+    }
+    else if (_metrics != null)
+    {
+        <!-- Summary Cards -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Requests</MudText>
+                        <MudText Typo="Typo.h5">@(_metrics.TotalRequests?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Errors</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Error">@(_metrics.TotalErrors?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Response Time</MudText>
+                        <MudText Typo="Typo.h5">@(_metrics.AverageResponseTimeMs?.ToString("F2") ?? "0")ms</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Requests/Second</MudText>
+                        <MudText Typo="Typo.h5">@(_metrics.RequestsPerSecond?.ToString("F2") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Response Time Percentiles -->
+        <MudPaper Class="pa-4 mb-4" Elevation="2">
+            <MudText Typo="Typo.h6" Class="mb-4">Response Time Percentiles</MudText>
+            <MudGrid Spacing="3">
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">P50 (Median)</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.P50ResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">P75</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.P75ResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">P90</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.P90ResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">P95</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.P95ResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">P99</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.P99ResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="2">
+                    <MudText Typo="Typo.caption">Max</MudText>
+                    <MudText Typo="Typo.h6">@(_metrics.MaxResponseTimeMs?.ToString("F0") ?? "0")ms</MudText>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        <!-- Endpoint Statistics -->
+        @if (_endpointStats != null && _endpointStats.Any())
+        {
+            <MudPaper Class="pa-4 mb-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">Endpoint Performance</MudText>
+                <MudTable Items="@_endpointStats" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Endpoint</MudTh>
+                        <MudTh>Requests</MudTh>
+                        <MudTh>Errors</MudTh>
+                        <MudTh>Avg Response (ms)</MudTh>
+                        <MudTh>Max Response (ms)</MudTh>
+                        <MudTh>Error Rate</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        @{
+                            var endpoint = (dynamic)context;
+                        }
+                        <MudTd DataLabel="Endpoint">@(endpoint.Endpoint ?? "Unknown")</MudTd>
+                        <MudTd DataLabel="Requests">@(endpoint.RequestCount ?? 0)</MudTd>
+                        <MudTd DataLabel="Errors">
+                            <MudChip T="string" Color="@(endpoint.ErrorCount > 0 ? Color.Error : Color.Success)" Size="Size.Small">
+                                @(endpoint.ErrorCount ?? 0)
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Avg Response">@(endpoint.AverageResponseTimeMs?.ToString("F2") ?? "0")ms</MudTd>
+                        <MudTd DataLabel="Max Response">@(endpoint.MaxResponseTimeMs?.ToString("F0") ?? "0")ms</MudTd>
+                        <MudTd DataLabel="Error Rate">
+                            <MudChip T="string" Color="@GetErrorRateColor(endpoint.ErrorRate)" Size="Size.Small">
+                                @(endpoint.ErrorRate?.ToString("F2") ?? "0")%
+                            </MudChip>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+
+        <!-- Slowest Endpoints -->
+        @if (_slowestEndpoints != null && _slowestEndpoints.Any())
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">Slowest Endpoints</MudText>
+                <MudTable Items="@_slowestEndpoints" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Endpoint</MudTh>
+                        <MudTh>Avg Response (ms)</MudTh>
+                        <MudTh>Max Response (ms)</MudTh>
+                        <MudTh>Request Count</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        @{
+                            var endpoint = (dynamic)context;
+                        }
+                        <MudTd DataLabel="Endpoint">@(endpoint.Endpoint ?? "Unknown")</MudTd>
+                        <MudTd DataLabel="Avg Response">
+                            <MudChip T="string" Color="@GetResponseTimeColor(endpoint.AverageResponseTimeMs)" Size="Size.Small">
+                                @(endpoint.AverageResponseTimeMs?.ToString("F2") ?? "0")ms
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Max Response">@(endpoint.MaxResponseTimeMs?.ToString("F0") ?? "0")ms</MudTd>
+                        <MudTd DataLabel="Request Count">@(endpoint.RequestCount ?? 0)</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+    }
+
+    <MudStack Row="true" Justify="Justify.FlexEnd" Class="mt-4">
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadMetrics">
+            Refresh Metrics
+        </MudButton>
+    </MudStack>
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private PerformanceMetricsDto? _metrics;
+    private List<EndpointStatsDto>? _endpointStats;
+    private List<SlowEndpointDto>? _slowestEndpoints;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMetrics();
+    }
+
+    private async Task LoadMetrics()
+    {
+        try
+        {
+            _isLoading = true;
+            _metrics = await ApiService.GetAsync<PerformanceMetricsDto>("/api/PerformanceMetrics");
+            
+            // Endpoint statistics are included in the main metrics response
+            // No separate endpoint needed - data is already in _metrics.EndpointMetrics
+            _endpointStats = null;
+            
+            // Load slowest endpoints (if API implemented)
+            try
+            {
+                _slowestEndpoints = await ApiService.GetAsync<List<SlowEndpointDto>>("/api/PerformanceMetrics/slowest");
+            }
+            catch
+            {
+                _slowestEndpoints = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading performance metrics");
+            Snackbar.Add($"Error loading metrics: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private Color GetErrorRateColor(double? errorRate) => errorRate switch
+    {
+        >= 10 => Color.Error,
+        >= 5 => Color.Warning,
+        > 0 => Color.Info,
+        _ => Color.Success
+    };
+
+    private Color GetResponseTimeColor(double? responseTime) => responseTime switch
+    {
+        >= 1000 => Color.Error,
+        >= 500 => Color.Warning,
+        >= 200 => Color.Info,
+        _ => Color.Success
+    };
+
+    // DTOs
+    public class PerformanceMetricsDto
+    {
+        public long? TotalRequests { get; set; }
+        public long? TotalErrors { get; set; }
+        public double? AverageResponseTimeMs { get; set; }
+        public double? MinResponseTimeMs { get; set; }
+        public double? MaxResponseTimeMs { get; set; }
+        public double? RequestsPerSecond { get; set; }
+        public double? ErrorRatePercentage { get; set; }
+        public double? P50ResponseTimeMs { get; set; }
+        public double? P75ResponseTimeMs { get; set; }
+        public double? P90ResponseTimeMs { get; set; }
+        public double? P95ResponseTimeMs { get; set; }
+        public double? P99ResponseTimeMs { get; set; }
+    }
+
+    public class EndpointStatsDto
+    {
+        public string? Endpoint { get; set; }
+        public long? RequestCount { get; set; }
+        public long? ErrorCount { get; set; }
+        public double? AverageResponseTimeMs { get; set; }
+        public double? MaxResponseTimeMs { get; set; }
+        public double? ErrorRate { get; set; }
+    }
+
+    public class SlowEndpointDto
+    {
+        public string? Endpoint { get; set; }
+        public double? AverageResponseTimeMs { get; set; }
+        public double? MaxResponseTimeMs { get; set; }
+        public long? RequestCount { get; set; }
+    }
+}
+

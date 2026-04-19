@@ -1,0 +1,154 @@
+@using MudBlazor
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudPaper Elevation="0" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-4">Advanced Search</MudText>
+            
+            <MudStack Spacing="3">
+                <!-- Container Number -->
+                <MudTextField @bind-Value="_containerNumber" 
+                              Label="Container Number" 
+                              Variant="Variant.Outlined"
+                              Placeholder="MSDU7991072" />
+
+                <!-- Date Range -->
+                <MudStack Row="true" Spacing="2">
+                    <MudDatePicker Label="From Date" @bind-Date="_fromDate" Variant="Variant.Outlined" />
+                    <MudDatePicker Label="To Date" @bind-Date="_toDate" Variant="Variant.Outlined" />
+                </MudStack>
+
+                <!-- Scanner Type -->
+                <MudSelect @bind-Value="_scannerType" Label="Scanner Type" Variant="Variant.Outlined" MultiSelection="true">
+                    <MudSelectItem T="string" Value="@("FS6000")">FS6000</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("ASE")">ASE</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Heimann")">Heimann Smith</MudSelectItem>
+                </MudSelect>
+
+                <!-- ICUMS Status -->
+                <MudSelect @bind-Value="_icumsStatus" Label="ICUMS Data Status" Variant="Variant.Outlined">
+                    <MudSelectItem T="string" Value="@("All")">All</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Available")">Available</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Missing")">Missing</MudSelectItem>
+                </MudSelect>
+
+                <!-- Origin/Destination -->
+                <MudStack Row="true" Spacing="2">
+                    <MudTextField @bind-Value="_origin" Label="Origin" Variant="Variant.Outlined" />
+                    <MudTextField @bind-Value="_destination" Label="Destination" Variant="Variant.Outlined" />
+                </MudStack>
+
+                <!-- Declaration Number -->
+                <MudTextField @bind-Value="_declarationNumber" 
+                              Label="Declaration Number" 
+                              Variant="Variant.Outlined"
+                              Placeholder="IM123456" />
+
+                <!-- BL Number -->
+                <MudTextField @bind-Value="_blNumber" 
+                              Label="BL Number" 
+                              Variant="Variant.Outlined" />
+
+                <!-- Importer Name -->
+                <MudTextField @bind-Value="_importerName" 
+                              Label="Importer Name" 
+                              Variant="Variant.Outlined" />
+
+                <!-- Save Filter -->
+                <MudCheckBox @bind-Value="_saveFilter" T="bool" Label="Save this filter for future use" Color="Color.Primary" />
+                
+                @if (_saveFilter)
+                {
+                    <MudTextField @bind-Value="_filterName" 
+                                  Label="Filter Name" 
+                                  Variant="Variant.Outlined"
+                                  Placeholder="My Custom Filter" />
+                }
+            </MudStack>
+        </MudPaper>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton OnClick="ClearAll" Color="Color.Warning">Clear All</MudButton>
+        <MudButton OnClick="Search" Color="Color.Primary" Variant="Variant.Filled">
+            Search
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public EventCallback<SearchCriteria> OnSearch { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private string _containerNumber = "";
+    private DateTime? _fromDate;
+    private DateTime? _toDate;
+    private string _scannerType = "";
+    private string _icumsStatus = "All";
+    private string _origin = "";
+    private string _destination = "";
+    private string _declarationNumber = "";
+    private string _blNumber = "";
+    private string _importerName = "";
+    private bool _saveFilter = false;
+    private string _filterName = "";
+
+    private async Task Search()
+    {
+        var criteria = new SearchCriteria
+        {
+            ContainerNumber = _containerNumber,
+            FromDate = _fromDate,
+            ToDate = _toDate,
+            ScannerType = _scannerType,
+            ICUMSStatus = _icumsStatus,
+            Origin = _origin,
+            Destination = _destination,
+            DeclarationNumber = _declarationNumber,
+            BLNumber = _blNumber,
+            ImporterName = _importerName
+        };
+
+        if (_saveFilter && !string.IsNullOrWhiteSpace(_filterName))
+        {
+            // TODO: Save filter to local storage
+            Snackbar.Add($"Filter '{_filterName}' saved", Severity.Success);
+        }
+
+        await OnSearch.InvokeAsync(criteria);
+    }
+
+    private void ClearAll()
+    {
+        _containerNumber = "";
+        _fromDate = null;
+        _toDate = null;
+        _scannerType = "";
+        _icumsStatus = "All";
+        _origin = "";
+        _destination = "";
+        _declarationNumber = "";
+        _blNumber = "";
+        _importerName = "";
+        _saveFilter = false;
+        _filterName = "";
+    }
+
+    private async Task Cancel() => await OnClose.InvokeAsync();
+
+    public class SearchCriteria
+    {
+        public string ContainerNumber { get; set; } = "";
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+        public string ScannerType { get; set; } = "";
+        public string ICUMSStatus { get; set; } = "";
+        public string Origin { get; set; } = "";
+        public string Destination { get; set; } = "";
+        public string DeclarationNumber { get; set; } = "";
+        public string BLNumber { get; set; } = "";
+        public string ImporterName { get; set; } = "";
+    }
+}
+

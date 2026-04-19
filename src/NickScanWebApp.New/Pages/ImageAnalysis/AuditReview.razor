@@ -1,0 +1,838 @@
+@page "/operations/audit"
+@page "/image-analysis/audit"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisAudit)]
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.New.Components.Operations
+@using NickScanWebApp.New.Models
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager NavigationManager
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<AuditReview> Logger
+@inject IConfiguration Configuration
+@implements IDisposable
+
+<PageTitle>NICKSCAN ERP — NSCIS — Audit Review@(_myAssignments.Any() ? $" ({_myAssignments.Count})" : "")</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    
+    <!-- Header — gradient matching analyst Workbench pattern (purple for audit) -->
+    <MudPaper Elevation="3" Class="pa-4 mb-4" Style="background: linear-gradient(135deg, #7B3FA8 0%, #9c27b0 50%, #ba68c8 100%); border-radius: 12px; color: white;">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4" Style="color: white; font-weight: 700;">
+                    <MudIcon Icon="@Icons.Material.Outlined.Verified" Class="mr-2" Style="color: white;" />
+                    Audit Review
+                </MudText>
+                <MudText Typo="Typo.body2" Style="color: rgba(255,255,255,0.85);">
+                    Second-tier review of image analysis decisions
+                    @if (_assignmentMode == "UserClaim")
+                    {
+                        <MudChip T="string" Size="Size.Small" Style="background: rgba(255,255,255,0.2); color: white;" Class="ml-2">UserClaim Mode</MudChip>
+                    }
+                    else if (_assignmentMode == "Auto")
+                    {
+                        <MudChip T="string" Size="Size.Small" Style="background: rgba(102,255,102,0.3); color: white;" Class="ml-2">Auto Mode</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Style="background: rgba(255,255,255,0.2); color: white;" Class="ml-2">Manual Mode</MudChip>
+                    }
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudSwitch T="bool" @bind-Checked="_isReadyForAssignment"
+                           Color="Color.Success"
+                           Label="Ready for New Assignments"
+                           LabelPosition="LabelPosition.End"
+                           Disabled="@_loading"
+                           Changed="@OnReadyChanged"
+                           Style="color: white;" />
+                <MudButton Variant="Variant.Outlined"
+                           Style="color: white; border-color: rgba(255,255,255,0.5);"
+                           StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="LoadAuditData"
+                           Disabled="@_loading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Statistics Cards — styled with colored borders matching Workbench -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="4">
+            <MudCard Elevation="2" Style="border-left: 4px solid #7B3FA8;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform: uppercase; letter-spacing: 1px; color: #9e9e9e;">My Assignments</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight: 700; color: #7B3FA8;">@_myAssignments.Count</MudText>
+                        </div>
+                        <MudTooltip Text="Number of groups currently assigned to you for audit">
+                            <MudAvatar Style="background: #7B3FA8;" Size="Size.Large">
+                                <MudIcon Icon="@Icons.Material.Outlined.Assignment" Style="color: white;" />
+                            </MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" md="4">
+            <MudCard Elevation="2" Style="border-left: 4px solid #e65100;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform: uppercase; letter-spacing: 1px; color: #9e9e9e;">Available Queue</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight: 700; color: #e65100;">@_availableGroups.Count</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">(UserClaim mode only)</MudText>
+                        </div>
+                        <MudTooltip Text="Groups available to claim in UserClaim mode">
+                            <MudAvatar Style="background: #e65100;" Size="Size.Large">
+                                <MudIcon Icon="@Icons.Material.Outlined.Queue" Style="color: white;" />
+                            </MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" md="4">
+            <MudCard Elevation="2" Style="border-left: 4px solid #0277bd;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform: uppercase; letter-spacing: 1px; color: #9e9e9e;">Total Containers</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight: 700; color: #0277bd;">@_myAssignments.Sum(a => a.ContainerCount)</MudText>
+                        </div>
+                        <MudTooltip Text="Total containers across all your audit assignments">
+                            <MudAvatar Style="background: #0277bd;" Size="Size.Large">
+                                <MudIcon Icon="@Icons.Material.Outlined.Inventory" Style="color: white;" />
+                            </MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Available Queue (UserClaim mode only) -->
+    @if (_assignmentMode == "UserClaim" && _availableGroups.Any())
+    {
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-3">
+                <MudIcon Icon="@Icons.Material.Outlined.Queue" Class="mr-2" />
+                Available Queue (Click "Claim" to assign to yourself)
+            </MudText>
+            <MudTable Items="@_availableGroups" Hover="true" Striped="true" Dense="true" Breakpoint="Breakpoint.Sm">
+                <HeaderContent>
+                    <MudTh>Group ID</MudTh>
+                    <MudTh>Scanner</MudTh>
+                    <MudTh>Containers</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Group ID">
+                        <MudText Typo="Typo.body2" Style="font-family: monospace; font-weight: 600;">
+                            @context.GroupIdentifier
+                        </MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Scanner">
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.ScannerType</MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Containers">@context.ContainerCount</MudTd>
+                    <MudTd DataLabel="Type">
+                        @if (context.IsConsolidated)
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" Size="Size.Small">Consolidated</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Description" Color="Color.Success" Size="Size.Small">Non-Consolidated</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudButton Variant="Variant.Filled" 
+                                   Color="Color.Primary" 
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.AddTask"
+                                   OnClick="@(() => ClaimGroup(context))"
+                                   Disabled="@_loading">
+                            Claim
+                        </MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    }
+
+    <!-- My Assignments -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Outlined.Assignment" Class="mr-2" />
+                My Assignments
+            </MudText>
+            <!-- Filter dropdowns -->
+            <MudStack Row="true" Spacing="2">
+                <MudSelect T="string" @bind-Value="_statusFilter" Label="Status" Variant="Variant.Outlined" Dense="true" Style="min-width: 150px;" Margin="Margin.Dense">
+                    <MudSelectItem T="string" Value="@((string?)null)">All Statuses</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("AuditAssigned")">Audit Assigned</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("AuditCompleted")">Audit Completed</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("PartiallyCompleted")">Partially Completed</MudSelectItem>
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_scannerFilter" Label="Scanner" Variant="Variant.Outlined" Dense="true" Style="min-width: 120px;" Margin="Margin.Dense">
+                    <MudSelectItem T="string" Value="@((string?)null)">All Scanners</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("FS6000")">FS6000</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("ASE")">ASE</MudSelectItem>
+                </MudSelect>
+            </MudStack>
+        </MudStack>
+
+        @if (_loading)
+        {
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Size="Size.Medium" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.body2">Loading assignments...</MudText>
+            </MudStack>
+        }
+        else if (!_myAssignments.Any())
+        {
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.AssignmentLate" Size="Size.Large" Color="Color.Secondary" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">No assignments</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    @if (_assignmentMode == "UserClaim")
+                    {
+                        <text>Click "Claim" above to assign groups to yourself, or wait for Admin/Lead to assign groups to you.</text>
+                    }
+                    else
+                    {
+                        <text>Wait for Admin/Lead to assign groups to you, or groups will be auto-assigned if Auto mode is enabled.</text>
+                    }
+                </MudText>
+            </MudStack>
+        }
+        else
+        {
+            <MudTable Items="@FilteredAssignments" Hover="true" Striped="true" Dense="true" Breakpoint="Breakpoint.Sm" @bind-SelectedItem="_selectedAssignment">
+                <HeaderContent>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Group ID</MudTh>
+                    <MudTh>Scanner</MudTh>
+                    <MudTh>Containers</MudTh>
+                    <MudTh>Progress</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Created</MudTh>
+                    <MudTh>Lease Expires</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    @{
+                        var assignment = context ?? new MyAssignmentDto();
+                        var progressPercent = assignment.ContainerCount > 0 ? (assignment.DecidedCount * 100.0 / assignment.ContainerCount) : 0;
+                    }
+                    <MudTd DataLabel="Status">
+                        <MudChip T="string" Color="@GetStatusColor(assignment.Status)" Variant="Variant.Filled" Size="Size.Small">
+                            @assignment.Status
+                        </MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Group ID">
+                        <MudText Typo="Typo.body2" Style="font-family: monospace; font-weight: 600;">
+                            @assignment.GroupIdentifier
+                        </MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Scanner">
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@assignment.ScannerType</MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Containers">
+                        <MudText Typo="Typo.body2">@assignment.ContainerCount</MudText>
+                        @if (assignment.ContainersWithImages.GetValueOrDefault() > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">@assignment.ContainersWithImages with images</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Progress">
+                        <MudProgressLinear Value="@progressPercent" Color="@GetProgressColor(progressPercent)" Size="Size.Small" Rounded="true" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@assignment.DecidedCount / @assignment.ContainerCount audited</MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Type">
+                        @if (assignment.IsConsolidated)
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" Size="Size.Small">Consolidated</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Description" Color="Color.Success" Size="Size.Small">Non-Consolidated</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Created">
+                        <MudText Typo="Typo.body2">@assignment.CreatedAtUtc.ToLocalTime().ToString("MMM dd, HH:mm")</MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Lease Expires">
+                        @if (assignment.LeaseUntilUtc.HasValue)
+                        {
+                            var timeRemaining = assignment.LeaseUntilUtc.Value.ToLocalTime() - DateTime.Now;
+                            if (timeRemaining.TotalMinutes < 5)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error">
+                                    @timeRemaining.ToString(@"mm\:ss") remaining
+                                </MudChip>
+                            }
+                            else if (timeRemaining.TotalMinutes < 10)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                    @timeRemaining.ToString(@"mm\:ss") remaining
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.body2">@assignment.LeaseUntilUtc.Value.ToLocalTime().ToString("MMM dd, HH:mm")</MudText>
+                            }
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">No lease</MudText>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudStack Row="true" Spacing="1">
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Outlined.RateReview"
+                                       OnClick="@(() => OpenAuditDialog(assignment))">
+                                Review
+                            </MudButton>
+                            @if (assignment.LeaseUntilUtc.HasValue && (assignment.LeaseUntilUtc.Value.ToLocalTime() - DateTime.Now).TotalMinutes < 10)
+                            {
+                                <MudButton Variant="Variant.Outlined"
+                                           Color="Color.Warning"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Outlined.Refresh"
+                                           OnClick="@(() => RenewLease(assignment))"
+                                           Disabled="@_loading">
+                                    Renew
+                                </MudButton>
+                            }
+                        </MudStack>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudPaper>
+
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private string _assignmentMode = "Manual";
+    private List<MyAssignmentDto> _myAssignments = new();
+    private List<MyAssignmentDto> _availableGroups = new();
+    private MyAssignmentDto? _selectedAssignment = null;
+    
+    // ✅ FIX: UserReadinessHub for audit assignments
+    private HubConnection? _readinessHub;
+    // ✅ FIX: Default to true so audit users can receive assignments immediately
+    // Users can still toggle it off if they don't want new assignments
+    private bool _isReadyForAssignment = true;
+    private string _userRole = "Audit";
+    private System.Threading.Timer? _heartbeatTimer;
+    private System.Threading.Timer? _refreshTimer;
+    private bool _hasPreloaded = false; // Track if we've already preloaded the first assignment
+
+    protected override async Task OnInitializedAsync()
+    {
+        // ✅ FIX: Initialize UserReadinessHub for audit role
+        await InitializeReadinessHub();
+        
+        // ✅ FIX: Set readiness to true immediately after hub is initialized
+        // This ensures audit users are ready to receive assignments as soon as page loads
+        await SetReadyForAssignment(true);
+        
+        await LoadAuditData();
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadAuditData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+
+    // ✅ REMOVED: Auto-opening first assignment on page load.
+    // Users now see the assignments list and click "View" to open a specific record.
+    // Previous behavior: OnAfterRenderAsync called PreloadFirstAssignment() which opened the dialog.
+
+    /// <summary>
+    /// (Legacy) Preload first assignment - no longer auto-invoked on page load.
+    /// Kept for potential manual use if needed.
+    /// </summary>
+    private async Task PreloadFirstAssignment()
+    {
+        // Only preload once, on initial page load, and only if we have assignments
+        if (_hasPreloaded)
+        {
+            Logger.LogInformation("⏭️ [AUDIT] Preload already executed, skipping");
+            Console.WriteLine("⏭️ [AUDIT] Preload already executed, skipping");
+            return;
+        }
+        
+        if (_loading)
+        {
+            Logger.LogInformation("⏸️ [AUDIT] Preload skipped - still loading");
+            Console.WriteLine("⏸️ [AUDIT] Preload skipped - still loading");
+            return;
+        }
+        
+        if (!_myAssignments.Any())
+        {
+            Logger.LogInformation("⏸️ [AUDIT] Preload skipped - no assignments available");
+            Console.WriteLine($"⏸️ [AUDIT] Preload skipped - no assignments available (count: {_myAssignments.Count})");
+            return;
+        }
+        
+        // Mark as preloaded immediately to prevent duplicate calls
+        _hasPreloaded = true;
+        StateHasChanged();
+        
+        Logger.LogInformation("🚀 [AUDIT] Starting preload - Assignments count: {Count}", _myAssignments.Count);
+        Console.WriteLine($"🚀 [AUDIT] Starting preload - Assignments count: {_myAssignments.Count}");
+        
+        var firstAssignment = _myAssignments.FirstOrDefault();
+        if (firstAssignment != null)
+        {
+            Logger.LogInformation("🚀 [AUDIT] Auto-preloading first assignment: {GroupIdentifier}", firstAssignment.GroupIdentifier);
+            Console.WriteLine($"🚀 [AUDIT] Auto-preloading first assignment: {firstAssignment.GroupIdentifier}");
+            try
+            {
+                // Don't set _loading here - let OpenAuditDialog handle its own loading state
+                await OpenAuditDialog(firstAssignment);
+                Logger.LogInformation("✅ [AUDIT] Preload completed successfully");
+                Console.WriteLine("✅ [AUDIT] Preload completed successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "❌ [AUDIT] Error opening preloaded assignment dialog: {Message}", ex.Message);
+                Console.WriteLine($"❌ [AUDIT] Error opening preloaded assignment dialog: {ex.Message}");
+                Console.WriteLine($"❌ [AUDIT] Stack trace: {ex.StackTrace}");
+                Snackbar.Add($"Error opening assignment: {ex.Message}", Severity.Warning);
+                // Reset flag so user can try again manually
+                _hasPreloaded = false;
+            }
+        }
+        else
+        {
+            Logger.LogWarning("⚠️ [AUDIT] First assignment was null");
+            Console.WriteLine("⚠️ [AUDIT] First assignment was null");
+            _hasPreloaded = false; // Reset so we can try again
+        }
+    }
+
+    private async Task LoadAuditData()
+    {
+        _loading = true;
+        try
+        {
+            // Load settings to check AssignmentMode
+            var settings = await ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+            if (settings != null)
+            {
+                _assignmentMode = settings.AssignmentMode ?? "Manual";
+            }
+
+            // Load my assignments (Audit role)
+            var assignments = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Audit");
+            if (assignments != null)
+            {
+                _myAssignments = assignments;
+                Logger.LogInformation("📥 [AUDIT] Loaded {Count} assignments", _myAssignments.Count);
+            }
+
+            // Load available groups if UserClaim mode
+            if (_assignmentMode == "UserClaim")
+            {
+                var available = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Audit");
+                if (available != null)
+                {
+                    _availableGroups = available;
+                }
+            }
+            else
+            {
+                _availableGroups = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [AUDIT] Error loading data: {ex.Message}");
+            Logger.LogError(ex, "❌ [AUDIT] Error loading audit data");
+            Snackbar.Add($"Error loading audit data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ClaimGroup(MyAssignmentDto group)
+    {
+        try
+        {
+            _loading = true;
+            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{group.GroupId}/claim", new { });
+            
+            if (response != null)
+            {
+                Snackbar.Add($"Successfully claimed group {group.GroupIdentifier}", Severity.Success);
+                await LoadAuditData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [AUDIT] Error claiming group: {ex.Message}");
+            Snackbar.Add($"Error claiming group: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RenewLease(MyAssignmentDto assignment)
+    {
+        try
+        {
+            _loading = true;
+            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{assignment.GroupIdentifier}/lease/renew", new { });
+            
+            if (response != null)
+            {
+                Snackbar.Add("Lease renewed successfully", Severity.Success);
+                await LoadAuditData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [AUDIT] Error renewing lease: {ex.Message}");
+            Snackbar.Add($"Error renewing lease: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OpenAuditDialog(MyAssignmentDto assignment)
+    {
+        try
+        {
+            _loading = true;
+            StateHasChanged();
+
+            // ✅ FIX: Fetch specific group by GroupIdentifier instead of searching in ready queue
+            // This allows opening assigned groups even if WorkflowStage is not 'Audit'
+            var response = await ApiService.GetAsync<ApiResponse<AuditGroupDto>>($"/api/AuditReview/group/{Uri.EscapeDataString(assignment.GroupIdentifier)}?scannerType={Uri.EscapeDataString(assignment.ScannerType ?? "")}");
+            
+            if (response?.Success == true && response.Data != null)
+            {
+                var auditGroup = response.Data;
+                Logger.LogInformation("📂 [AUDIT] Opening AuditReviewDialog for group {Group}, Containers={Count}", assignment.GroupIdentifier, auditGroup.ImageAnalysisDecisions?.Count ?? 0);
+                IDialogReference? dialogRef = null;
+                var parameters = new DialogParameters
+                {
+                    ["Record"] = auditGroup,
+                    ["OnAuditComplete"] = EventCallback.Factory.Create<bool>(this, async (success) =>
+                    {
+                        if (success)
+                        {
+                            // ✅ Immediately refresh the audit assignments list
+                            await LoadAuditData();
+                            StateHasChanged(); // Ensure UI updates immediately
+                            
+                            // ✅ Close dialog after refresh
+                            if (dialogRef != null)
+                            {
+                                dialogRef.Close(DialogResult.Ok(true));
+                            }
+                        }
+                    })
+                };
+
+                var options = new DialogOptions 
+                { 
+                    MaxWidth = MaxWidth.ExtraLarge, 
+                    FullWidth = true,
+                    CloseButton = true
+                };
+
+                dialogRef = await DialogService.ShowAsync<AuditReviewDialog>($"Audit Review: {assignment.GroupIdentifier}", parameters, options);
+            }
+            else
+            {
+                Snackbar.Add($"Group {assignment.GroupIdentifier} not found: {response?.Message ?? "Unknown error"}", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error opening audit dialog: {ex.Message}");
+            Snackbar.Add($"Error opening audit dialog: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    // ✅ FIX: UserReadinessHub initialization for audit assignments
+    private async Task InitializeReadinessHub()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/userReadiness";
+
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null) token = await task;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
+            }
+
+            _readinessHub = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _readinessHub.Reconnected += async _ =>
+            {
+                Logger.LogInformation("UserReadinessHub reconnected");
+                await SetReadyForAssignment(_isReadyForAssignment);
+            };
+
+            await _readinessHub.StartAsync();
+            Logger.LogInformation("UserReadinessHub connected successfully for Audit role");
+            
+            // ✅ FIX: Send immediate heartbeat on page load
+            await SendHeartbeatAsync();
+            
+            // Start heartbeat timer (every 30 seconds)
+            // ✅ IMPORTANT: Send heartbeat even if not ready, to keep connection alive
+            _heartbeatTimer = new System.Threading.Timer(_ =>
+            {
+                // Use InvokeAsync to ensure we're on the Blazor sync context
+                _ = InvokeAsync(async () =>
+                {
+                    await SendHeartbeatAsync();
+                });
+            }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+            
+            Logger.LogInformation("✅ [AUDIT] Heartbeat timer started (30 second interval)");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing UserReadinessHub for Audit");
+            Snackbar.Add("Warning: Could not connect to readiness service", Severity.Warning);
+        }
+    }
+
+    private async Task OnReadyChanged(bool isReady)
+    {
+        _isReadyForAssignment = isReady;
+        await SetReadyForAssignment(isReady);
+    }
+
+    private async Task SetReadyForAssignment(bool ready)
+    {
+        try
+        {
+            Logger.LogInformation("🔔 [AUDIT] Setting readiness to {Ready} for role {Role}", ready, _userRole);
+            
+            // Send via SignalR if connected
+            if (_readinessHub?.State == HubConnectionState.Connected)
+            {
+                try
+                {
+                    await _readinessHub.SendAsync("SetReadyForAssignment", _userRole, ready, null);
+                    Logger.LogInformation("🔔 [AUDIT] SignalR readiness sent successfully");
+                }
+                catch (Exception hubEx)
+                {
+                    Logger.LogWarning(hubEx, "⚠️ [AUDIT] SignalR readiness send failed, but continuing with API call");
+                }
+            }
+            else
+            {
+                Logger.LogWarning("⚠️ [AUDIT] SignalR hub not connected (State: {State}), skipping SignalR call", _readinessHub?.State);
+            }
+            
+            // Always send via API for persistence
+            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
+            {
+                Role = _userRole,
+                IsReady = ready,
+                SessionId = (string?)null
+            });
+            
+            Logger.LogInformation("✅ [AUDIT] API readiness call succeeded");
+            
+            // ✅ FIX: Send immediate heartbeat after setting readiness
+            await SendHeartbeatAsync();
+            
+            if (ready)
+                Snackbar.Add($"✅ You are now ready to receive new {_userRole} assignments", Severity.Success);
+            else
+                Snackbar.Add($"⏸️ You are no longer ready for new {_userRole} assignments", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "❌ [AUDIT] Error setting readiness status via API");
+            var msg = ex.Message;
+            if (msg.Contains("401") || msg.Contains("Unauthorized"))
+            {
+                Snackbar.Add("Your session may have expired. Please refresh the page or log in again.", Severity.Warning);
+            }
+            else
+            {
+                Snackbar.Add($"❌ Error updating readiness: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Send heartbeat to keep user readiness record alive
+    /// </summary>
+    private async Task SendHeartbeatAsync()
+    {
+        try
+        {
+            // Always send heartbeat via API to keep record alive
+            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
+            
+            if (response != null)
+            {
+                Logger.LogDebug("💓 [AUDIT] Heartbeat sent successfully for role {Role}", _userRole);
+            }
+            else
+            {
+                Logger.LogWarning("⚠️ [AUDIT] Heartbeat API call returned null response");
+            }
+            
+            // Also send via SignalR if connected and ready
+            if (_readinessHub?.State == HubConnectionState.Connected && _isReadyForAssignment)
+            {
+                try
+                {
+                    await _readinessHub.SendAsync("SendHeartbeat", _userRole);
+                    Logger.LogDebug("💓 [AUDIT] SignalR heartbeat sent successfully");
+                }
+                catch (Exception hubEx)
+                {
+                    Logger.LogDebug(hubEx, "⚠️ [AUDIT] SignalR heartbeat failed (non-critical)");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "⚠️ [AUDIT] Error sending heartbeat: {Message}", ex.Message);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_isReadyForAssignment)
+        {
+            try { _ = SetReadyForAssignment(false); } catch { }
+        }
+        _heartbeatTimer?.Dispose();
+        _refreshTimer?.Dispose();
+        if (_readinessHub != null)
+        {
+            _ = _readinessHub.DisposeAsync();
+        }
+    }
+
+    // DTOs
+    private class ApiResponse<T>
+    {
+        public bool Success { get; set; }
+        public T? Data { get; set; }
+        public string? Message { get; set; }
+    }
+
+    private class MyAssignmentDto
+    {
+        public Guid GroupId { get; set; }
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public int ContainerCount { get; set; }
+        public int DecidedCount { get; set; }
+        public int? ContainersWithImages { get; set; }
+        public int? ContainersWithoutImages { get; set; }
+        public int? SubmittedContainerCount { get; set; }
+        public int? PendingContainerCount { get; set; }
+        public List<string> Containers { get; set; } = new();
+        public DateTime? LeaseUntilUtc { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+        public bool IsConsolidated { get; set; }
+    }
+
+    // ── Helper methods for table styling ──
+
+    private string? _statusFilter;
+    private string? _scannerFilter;
+
+    private List<MyAssignmentDto> FilteredAssignments => _myAssignments
+        .Where(a => _statusFilter == null || a.Status == _statusFilter)
+        .Where(a => _scannerFilter == null || a.ScannerType == _scannerFilter)
+        .ToList();
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "AuditAssigned" => Color.Info,
+        "AuditCompleted" => Color.Success,
+        "PartiallyCompleted" => Color.Warning,
+        "AnalystCompleted" => Color.Default,
+        _ => Color.Default
+    };
+
+    private Color GetProgressColor(double percent) => percent switch
+    {
+        >= 100 => Color.Success,
+        >= 50 => Color.Info,
+        > 0 => Color.Warning,
+        _ => Color.Default
+    };
+
+    private class AnalysisSettingsDto
+    {
+        public bool Enabled { get; set; }
+        public string? AssignmentMode { get; set; }
+        public string? AutoAssignStrategy { get; set; }
+        public bool AutoAssign { get; set; }
+        public int LeaseMinutes { get; set; }
+        public int MaxConcurrentPerUser { get; set; }
+    }
+}
+

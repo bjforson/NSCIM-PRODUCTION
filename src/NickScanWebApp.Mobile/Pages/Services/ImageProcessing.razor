@@ -1,0 +1,22 @@
+@page "/services/image-processing"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesImageProcessing)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Image Processing Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Image" Class="mr-2" />
+            Image Processing Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Image processing service monitoring. Use desktop version for detailed processing status.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

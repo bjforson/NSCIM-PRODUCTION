@@ -1,0 +1,270 @@
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IConfiguration Configuration
+
+<!-- Example component showing how to use the complete container data endpoint -->
+<MudPaper Elevation="2" Class="pa-4">
+    @if (isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+        <MudText Typo="Typo.body2" Class="mt-2">Loading scanner data...</MudText>
+    }
+    else if (containerData != null)
+    {
+        <MudText Typo="Typo.h6" GutterBottom="true">
+            <MudIcon Icon="@Icons.Material.Outlined.Scanner" Class="mr-2" />
+            @containerData.DetectedScanner Scanner Data
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <!-- Common Information -->
+        <MudSimpleTable Dense="true" Striped="true" Class="mb-4">
+            <tbody>
+                <tr>
+                    <td><strong>Container Number</strong></td>
+                    <td>@containerData.ContainerNumber</td>
+                </tr>
+                <tr>
+                    <td><strong>Scanner Type</strong></td>
+                    <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">@containerData.DetectedScanner</MudChip></td>
+                </tr>
+                <tr>
+                    <td><strong>Scan Time</strong></td>
+                    <td>@containerData.ScanTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                </tr>
+                <tr>
+                    <td><strong>Image Size</strong></td>
+                    <td>@FormatBytes(containerData.ImageSizeBytes)</td>
+                </tr>
+                <tr>
+                    <td><strong>Dimensions</strong></td>
+                    <td>@containerData.Width x @containerData.Height px</td>
+                </tr>
+                <tr>
+                    <td><strong>Quality</strong></td>
+                    <td>@containerData.Quality</td>
+                </tr>
+                <tr>
+                    <td><strong>From Cache</strong></td>
+                    <td>
+                        @if (containerData.FromCache)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.Speed">Cached</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Icon="@Icons.Material.Outlined.CloudDownload">Fresh</MudChip>
+                        }
+                    </td>
+                </tr>
+            </tbody>
+        </MudSimpleTable>
+
+        <!-- Scanner-Specific Data -->
+        @if (containerData.DetectedScanner == ScannerType.FS6000 && containerData.FS6000Data != null)
+        {
+            <MudText Typo="Typo.h6" Class="mt-4 mb-2">FS6000 Scanner Details</MudText>
+            <MudSimpleTable Dense="true" Striped="true">
+                <tbody>
+                    <tr>
+                        <td><strong>XML File Path</strong></td>
+                        <td><code>@containerData.FS6000Data.XmlFilePath</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Image File Path</strong></td>
+                        <td><code>@containerData.FS6000Data.ImageFilePath</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Folder Path</strong></td>
+                        <td><code>@containerData.FS6000Data.FolderPath</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Processed At</strong></td>
+                        <td>@containerData.FS6000Data.ProcessedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Processing Status</strong></td>
+                        <td>@containerData.FS6000Data.ProcessingStatus</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Image Count</strong></td>
+                        <td>@containerData.FS6000Data.ImageCount</td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+        }
+        else if (containerData.DetectedScanner == ScannerType.ASE && containerData.ASEData != null)
+        {
+            <MudText Typo="Typo.h6" Class="mt-4 mb-2">ASE Scanner Details</MudText>
+            <MudSimpleTable Dense="true" Striped="true">
+                <tbody>
+                    <tr>
+                        <td><strong>Scan ID</strong></td>
+                        <td>@containerData.ASEData.ScanId</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Operator</strong></td>
+                        <td>@containerData.ASEData.OperatorId</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Location</strong></td>
+                        <td>@containerData.ASEData.Location</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Scan Mode</strong></td>
+                        <td>@containerData.ASEData.ScanMode</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Energy Level</strong></td>
+                        <td>@containerData.ASEData.EnergyLevel kV</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Dose Rate</strong></td>
+                        <td>@containerData.ASEData.DoseRate µSv/h</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Threat Detected</strong></td>
+                        <td>
+                            @if (containerData.ASEData.ThreatDetected == true)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">YES</MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">NO</MudChip>
+                            }
+                        </td>
+                    </tr>
+                    @if (containerData.ASEData.ThreatConfidence != null)
+                    {
+                        <tr>
+                            <td><strong>Threat Confidence</strong></td>
+                            <td>@containerData.ASEData.ThreatConfidence%</td>
+                        </tr>
+                    }
+                    @if (!string.IsNullOrEmpty(containerData.ASEData.DetectionNotes))
+                    {
+                        <tr>
+                            <td><strong>Detection Notes</strong></td>
+                            <td>@containerData.ASEData.DetectionNotes</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+    }
+    else if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <MudAlert Severity="Severity.Error">@errorMessage</MudAlert>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+
+    private ContainerImageDataResponse? containerData;
+    private bool isLoading = false;
+    private string? errorMessage;
+
+    // Import the enum
+    public enum ScannerType
+    {
+        Unknown = 0,
+        FS6000 = 1,
+        ASE = 2
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadCompleteData();
+        }
+    }
+
+    private async Task LoadCompleteData()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var url = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete";
+
+            containerData = await Http.GetFromJsonAsync<ContainerImageDataResponse>(url);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to load scanner data: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string FormatBytes(int bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F2} KB";
+        return $"{bytes / 1024.0 / 1024.0:F2} MB";
+    }
+
+    // DTOs matching the backend response
+    public class ContainerImageDataResponse
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public ScannerType DetectedScanner { get; set; }
+        public string ImageBase64 { get; set; } = string.Empty;
+        public byte[]? ImageBytes { get; set; }
+        public string MimeType { get; set; } = "image/jpeg";
+        public FS6000ScanData? FS6000Data { get; set; }
+        public ASEScanData? ASEData { get; set; }
+        public DateTime ScanTime { get; set; }
+        public string ProcessingPipeline { get; set; } = string.Empty;
+        public bool FromCache { get; set; }
+        public int ImageSizeBytes { get; set; }
+        public int? Width { get; set; }
+        public int? Height { get; set; }
+        public string Quality { get; set; } = "Unknown";
+    }
+
+    public class FS6000ScanData
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public DateTime ScanTime { get; set; }
+        public string XmlFilePath { get; set; } = string.Empty;
+        public string ImageFilePath { get; set; } = string.Empty;
+        public string FolderPath { get; set; } = string.Empty;
+        public DateTime ProcessedAt { get; set; }
+        public string? ProcessingStatus { get; set; }
+        public string? ErrorMessage { get; set; }
+        public int ImageCount { get; set; }
+    }
+
+    public class ASEScanData
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public DateTime ScanTime { get; set; }
+        public string ScanId { get; set; } = string.Empty;
+        public string? OperatorId { get; set; }
+        public string? Location { get; set; }
+        public string? ScanMode { get; set; }
+        public int? EnergyLevel { get; set; }
+        public decimal? DoseRate { get; set; }
+        public string? ProcessingStatus { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public long ImageSizeBytes { get; set; }
+        public int? ImageWidth { get; set; }
+        public int? ImageHeight { get; set; }
+        public string? ImageFormat { get; set; }
+        public bool? ThreatDetected { get; set; }
+        public decimal? ThreatConfidence { get; set; }
+        public string? DetectionNotes { get; set; }
+    }
+}
+

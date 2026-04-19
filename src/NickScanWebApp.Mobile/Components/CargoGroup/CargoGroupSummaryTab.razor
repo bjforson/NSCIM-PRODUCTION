@@ -1,0 +1,193 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanWebApp.Mobile.Services
+@using MudBlazor
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (_isLoadingSummary)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body2">Generating cargo summary...</MudText>
+        </MudStack>
+    }
+    else if (_cargoSummary != null && !string.IsNullOrWhiteSpace(_cargoSummary.SummaryText))
+    {
+        <!-- Cargo Content Summary - Mobile Optimized -->
+        <MudPaper Elevation="1" Class="pa-3 mb-3" Style="background: linear-gradient(135deg, var(--mud-palette-primary-lighten) 0%, var(--mud-palette-primary) 100%); border-left: 3px solid var(--mud-palette-primary-darken);">
+            <MudStack Spacing="2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Filled.Summarize" Color="Color.Primary" Size="Size.Small" />
+                    <MudText Typo="Typo.h6" Color="Color.Primary" Style="font-weight: 600;">Cargo Content Summary</MudText>
+                </MudStack>
+                <MudDivider />
+                <MudText Typo="Typo.body2" Style="white-space: pre-line; line-height: 1.5;">@_cargoSummary.SummaryText</MudText>
+            </MudStack>
+        </MudPaper>
+
+        <!-- Detailed Summary Information - Mobile Stacked -->
+        <MudStack Spacing="2">
+            @if (_cargoSummary.Consignees.Any())
+            {
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudText Typo="Typo.body2" Color="Color.Primary" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Business" Size="Size.Small" /> Consignee(s)
+                    </MudText>
+                    <MudStack Spacing="1">
+                        @foreach (var consignee in _cargoSummary.Consignees)
+                        {
+                            <MudText Typo="Typo.body2">• @consignee</MudText>
+                        }
+                    </MudStack>
+                </MudPaper>
+            }
+
+            @if (_cargoSummary.CountriesOfOrigin.Any())
+            {
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudText Typo="Typo.body2" Color="Color.Info" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Public" Size="Size.Small" /> Country of Origin
+                    </MudText>
+                    <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                        @foreach (var country in _cargoSummary.CountriesOfOrigin)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@country</MudChip>
+                        }
+                    </MudStack>
+                </MudPaper>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_cargoSummary.GoodsDescription))
+            {
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudText Typo="Typo.body2" Color="Color.Success" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Filled.Inventory" Size="Size.Small" /> Goods Description
+                    </MudText>
+                    <MudText Typo="Typo.body2">@_cargoSummary.GoodsDescription</MudText>
+                </MudPaper>
+            }
+
+            <!-- Metrics Grid - Mobile 2x2 -->
+            <MudGrid Spacing="2">
+                @if (_cargoSummary.HSCodes.Any())
+                {
+                    <MudItem xs="12">
+                        <MudPaper Elevation="1" Class="pa-3">
+                            <MudText Typo="Typo.body2" Color="Color.Warning" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Filled.Code" Size="Size.Small" /> HS Codes
+                            </MudText>
+                            <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                                @foreach (var hsCode in _cargoSummary.HSCodes)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">@hsCode</MudChip>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_cargoSummary.TotalQuantity))
+                {
+                    <MudItem xs="6">
+                        <MudPaper Elevation="1" Class="pa-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Quantity</MudText>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@_cargoSummary.TotalQuantity</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_cargoSummary.TotalWeight))
+                {
+                    <MudItem xs="6">
+                        <MudPaper Elevation="1" Class="pa-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Weight</MudText>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@_cargoSummary.TotalWeight</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_cargoSummary.TotalFOBValue))
+                {
+                    <MudItem xs="6">
+                        <MudPaper Elevation="1" Class="pa-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">FOB Value</MudText>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@_cargoSummary.TotalFOBValue</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_cargoSummary.TotalDutyPaid))
+                {
+                    <MudItem xs="6">
+                        <MudPaper Elevation="1" Class="pa-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Duty Paid</MudText>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@_cargoSummary.TotalDutyPaid</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (_cargoSummary.LineItemCount > 0)
+                {
+                    <MudItem xs="6">
+                        <MudPaper Elevation="1" Class="pa-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Line Items</MudText>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@_cargoSummary.LineItemCount</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            <MudText Typo="Typo.body2">
+                @if (CargoGroup?.Data?.ICUMSData?.Any() != true)
+                {
+                    <text>No ICUMS data available to generate summary.</text>
+                }
+                else
+                {
+                    <text>Unable to generate cargo summary. The data may not contain sufficient information.</text>
+                }
+            </MudText>
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public CargoGroupDto? CargoGroup { get; set; }
+    
+    [Inject] private CargoSummaryService CargoSummaryService { get; set; } = null!;
+    
+    private CargoSummaryDto? _cargoSummary;
+    private bool _isLoadingSummary = false;
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadCargoSummary();
+    }
+    
+    private async Task LoadCargoSummary()
+    {
+        if (CargoGroup == null || CargoGroup.Data?.ICUMSData?.Any() != true)
+        {
+            _cargoSummary = null;
+            return;
+        }
+        
+        try
+        {
+            _isLoadingSummary = true;
+            _cargoSummary = await CargoSummaryService.GenerateSummaryAsync(CargoGroup);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading cargo summary: {ex.Message}");
+            _cargoSummary = null;
+        }
+        finally
+        {
+            _isLoadingSummary = false;
+        }
+    }
+}

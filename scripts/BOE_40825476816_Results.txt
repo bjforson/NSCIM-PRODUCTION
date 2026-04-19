@@ -1,0 +1,51 @@
+Changed database context to 'ICUMS_Downloads'.
+========================================
+BOE Container Image Checker
+========================================
+BOE/Declaration Number: 40825476816
+ 
+
+(1 rows affected)
+Found 1 container record(s) for BOE 40825476816
+Checking 1 unique container(s) for images...
+ 
+Changed database context to 'NS_CIS'.
+
+(1 rows affected)
+
+(0 rows affected)
+
+(1 rows affected)
+
+(1 rows affected)
+ContainerNumber DeclarationNumber IsConsolidated ClearanceType ConsigneeName HasImages TotalImageCount ContainerScannerType
+--------------- ----------------- -------------- ------------- ------------- --------- --------------- --------------------
+HASU4940015 40825476816 0 IM NULL 1 2 N/A
+
+(1 rows affected)
+ 
+========================================
+SUMMARY
+========================================
+Warning: Null value is eliminated by an aggregate or other SET operation.
+Total Containers: 1
+Containers WITH Images: 1
+Containers WITHOUT Images: 0
+Total Images: 2
+ 
+Containers WITH Images:
+ContainerNumber ScannerType ImageCount
+--------------- ----------- ----------
+HASU4940015 N/A 2
+
+(1 rows affected)
+ 
+Containers WITHOUT Images:
+ContainerNumber ClearanceType ConsigneeName ContainerScannerType
+--------------- ------------- ------------- --------------------
+
+(0 rows affected)
+ 
+========================================
+Query completed successfully!
+========================================

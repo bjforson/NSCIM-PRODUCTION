@@ -1,0 +1,142 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@inject IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body2">Loading scanner data...</MudText>
+        </MudStack>
+    }
+    else if (scannerData?.Data?.Any() == true)
+    {
+        <MudStack Spacing="2" Class="pa-2">
+            @foreach (var categoryGroup in GetGroupedData())
+            {
+                <MudPaper Elevation="1" Class="pa-3">
+                    <!-- Category Header -->
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                        <MudIcon Icon="@GetCategoryIcon(categoryGroup.Key)" Color="@GetCategoryColor(categoryGroup.Key)" Size="Size.Small" />
+                        <MudText Typo="Typo.body2" Color="@GetCategoryColor(categoryGroup.Key)" Class="font-weight-bold">
+                            @categoryGroup.Key
+                        </MudText>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default">@categoryGroup.Value.Count</MudChip>
+                    </MudStack>
+                    
+                    <!-- Category Data - Mobile Full Width -->
+                    <MudGrid Spacing="2">
+                        @foreach (var record in categoryGroup.Value)
+                        {
+                            <MudItem xs="12">
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="font-weight-bold">
+                                            @record.Field
+                                        </MudText>
+                                        @if (record.Timestamp.HasValue)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">
+                                                @record.Timestamp.Value.ToString("HH:mm")
+                                            </MudChip>
+                                        }
+                                    </MudStack>
+                                    <MudText Typo="Typo.body2">@record.Value</MudText>
+                                </MudStack>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            }
+            
+            <!-- Summary -->
+            <MudAlert Severity="Severity.Success" Variant="Variant.Text" Dense="true">
+                <MudText Typo="Typo.caption">
+                    Total: @scannerData.TotalCount fields | Categories: @GetGroupedData().Count
+                </MudText>
+            </MudAlert>
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No scanner data available for this container
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public int TotalRecords { get; set; }
+
+    private PagedResult<ScannerDataRecord>? scannerData;
+    private bool isLoading = false;
+    private string _lastContainerNumber = string.Empty;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(ContainerNumber) && ContainerNumber != _lastContainerNumber)
+        {
+            _lastContainerNumber = ContainerNumber;
+            await LoadData();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber))
+            return;
+
+        isLoading = true;
+        try
+        {
+            scannerData = await ContainerDetailsService.GetScannerDataAsync(ContainerNumber, 1, 1000);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading scanner data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private Dictionary<string, List<ScannerDataRecord>> GetGroupedData()
+    {
+        if (scannerData?.Data == null)
+            return new Dictionary<string, List<ScannerDataRecord>>();
+
+        return scannerData.Data
+            .GroupBy(r => r.Category ?? "Other")
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Icons.Material.Filled.Inventory2,
+            "Scanner Info" => Icons.Material.Filled.Scanner,
+            "Scan Info" => Icons.Material.Filled.CameraAlt,
+            "Location Info" => Icons.Material.Filled.LocationOn,
+            "Status" => Icons.Material.Filled.Info,
+            _ => Icons.Material.Filled.Description
+        };
+    }
+
+    private Color GetCategoryColor(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Color.Primary,
+            "Scanner Info" => Color.Secondary,
+            "Scan Info" => Color.Info,
+            "Location Info" => Color.Success,
+            "Status" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+}

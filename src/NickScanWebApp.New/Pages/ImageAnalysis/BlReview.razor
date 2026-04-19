@@ -1,0 +1,145 @@
+@page "/image-analysis"
+@using Microsoft.AspNetCore.Authorization
+@using NickScanWebApp.New.Components.BLReview
+@attribute [Authorize(Policy = Permissions.PagesImageAnalysisView)]
+@inject ILogger<BlReview> Logger
+
+<PageTitle>Image Analysis - BL Review</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="my-8">
+    <MudGrid>
+        <!-- Page Header -->
+        <MudItem xs="12">
+            <MudPaper Elevation="0" Class="pa-4 mb-4">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.h4">
+                            <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Class="mr-2" />
+                            BL Review - Image Analysis & Decision Making
+                        </MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            Review containers grouped by Bill of Lading (BL), analyze images, and make Normal/Abnormal decisions
+                        </MudText>
+                    </MudStack>
+                    
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.Help"
+                              OnClick="ShowHelp">
+                        How it Works
+                    </MudButton>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <!-- Info Cards -->
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Inventory2" Color="Color.Primary" Size="Size.Large" />
+                    <MudText Typo="Typo.h6">BL Grouping</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        All containers under one Bill of Lading are grouped together for comprehensive review
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Success" Size="Size.Large" />
+                    <MudText Typo="Typo.h6">Completeness Check</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Only displays containers with Scanner + ICUMS + Images data available
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.AutoFixHigh" Color="Color.Info" Size="Size.Large" />
+                    <MudText Typo="Typo.h6">Auto Decision</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        If ANY container is abnormal, the entire BL is automatically marked as abnormal
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <!-- Main BL Review List -->
+        <MudItem xs="12">
+            <BLReviewList />
+        </MudItem>
+
+        <!-- Quick Guide -->
+        <MudItem xs="12">
+            <MudExpansionPanels>
+                <MudExpansionPanel Text="Quick Guide" Icon="@Icons.Material.Outlined.MenuBook">
+                    <MudStack Spacing="3">
+                        <MudPaper Elevation="0" Class="pa-3">
+                            <MudText Typo="Typo.subtitle1" GutterBottom="true">
+                                <strong>1. Select a BL to Review</strong>
+                            </MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                Click the "Review" button on any BL in the list. Only BLs with complete containers will be shown.
+                            </MudText>
+                        </MudPaper>
+
+                        <MudPaper Elevation="0" Class="pa-3">
+                            <MudText Typo="Typo.subtitle1" GutterBottom="true">
+                                <strong>2. Review Each Container</strong>
+                            </MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                For each container, view the images, scanner data, and ICUMS information. 
+                                Mark each container as Normal or Abnormal based on your analysis.
+                            </MudText>
+                        </MudPaper>
+
+                        <MudPaper Elevation="0" Class="pa-3">
+                            <MudText Typo="Typo.subtitle1" GutterBottom="true">
+                                <strong>3. Add Comments</strong>
+                            </MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                Add container-specific comments and an overall BL-level assessment to document your findings.
+                            </MudText>
+                        </MudPaper>
+
+                        <MudPaper Elevation="0" Class="pa-3">
+                            <MudText Typo="Typo.subtitle1" GutterBottom="true">
+                                <strong>4. Save or Complete</strong>
+                            </MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                You can save your progress at any time and resume later. When all containers are reviewed, 
+                                click "Complete Review" to finalize the BL decision.
+                            </MudText>
+                        </MudPaper>
+
+                        <MudAlert Severity="Severity.Info" Dense="true">
+                            <strong>Decision Logic:</strong> The final BL decision is automatically calculated. 
+                            If ANY container is marked as Abnormal, the entire BL will be marked as Abnormal. 
+                            Only when ALL containers are marked as Normal will the BL be marked as Normal.
+                        </MudAlert>
+                    </MudStack>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+        </MudItem>
+    </MudGrid>
+</MudContainer>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Logger.LogInformation("📊 Image Analysis page loaded");
+    }
+
+    private async Task ShowHelp()
+    {
+        // ✅ FIXED: Added await to prevent CS1998 warning
+        await Task.Delay(1); // Small delay to make it truly async
+        Logger.LogInformation("Help requested");
+    }
+}
+

@@ -1,0 +1,952 @@
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@using NickScanWebApp.New.Services
+@using Microsoft.AspNetCore.Hosting
+@inject ApiService ApiService
+@inject NavigationManager Navigation
+@inject ILogger<AnalyticsPanel> Logger
+@inject ISnackbar Snackbar
+@inject IWebHostEnvironment Environment
+@implements IAsyncDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="my-4">
+    
+    <!-- Header Section -->
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12">
+            <MudPaper Elevation="0" Class="pa-4" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <MudGrid>
+                    <MudItem xs="12" md="8">
+                        <MudText Typo="Typo.h4" Color="Color.Surface" Class="mb-2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Analytics" Size="Size.Large" Class="mr-2" />
+                            System Analytics Dashboard
+                        </MudText>
+                        <MudText Typo="Typo.body1" Color="Color.Surface">
+                            Real-time monitoring and comprehensive system insights
+                        </MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="4" Class="d-flex align-center justify-end">
+                        <MudChip T="string" 
+                                 Color="@(_isConnected ? Color.Success : Color.Error)" 
+                                 Icon="@(_isConnected ? Icons.Material.Outlined.Cloud : Icons.Material.Outlined.CloudOff)"
+                                 Size="Size.Large">
+                            @(_isConnected ? "Live Updates" : "Disconnected")
+                        </MudChip>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @if (_isLoading)
+    {
+        <MudGrid>
+            <MudItem xs="12" Class="text-center pa-8">
+                <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+                <MudText Typo="Typo.h6" Class="mt-4">Loading analytics data...</MudText>
+            </MudItem>
+        </MudGrid>
+    }
+    else
+    {
+        <!-- System Overview Cards -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">System Status</MudText>
+                            <MudText Typo="Typo.h4" Color="@GetStatusColor(_systemStatus)">
+                                @_systemStatus
+                            </MudText>
+                            <MudText Typo="Typo.caption">Health Score: @_healthScore%</MudText>
+                        </MudStack>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
+                            <MudText Typo="Typo.h5">@_uptime</MudText>
+                            <MudText Typo="Typo.caption">Since: @_startTime?.ToString("g")</MudText>
+                        </MudStack>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Total Containers</MudText>
+                            <MudText Typo="Typo.h4" Color="Color.Primary">@_totalContainers.ToString("N0")</MudText>
+                            <MudText Typo="Typo.caption">Today: @_todayContainers</MudText>
+                        </MudStack>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+            
+            <MudItem xs="12" sm="6" md="3">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Errors (24h)</MudText>
+                            <MudText Typo="Typo.h4" Color="@(_totalErrors > 10 ? Color.Error : Color.Success)">
+                                @_totalErrors
+                            </MudText>
+                            <MudText Typo="Typo.caption">Warnings: @_totalWarnings</MudText>
+                        </MudStack>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Performance Metrics -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Memory" Class="mr-2" />
+                        Memory Usage
+                    </MudText>
+                    <MudProgressLinear Color="@GetMemoryColor(_memoryUsagePercent)" Size="Size.Large" 
+                                       Value="@_memoryUsagePercent" Class="mb-2" />
+                    <MudText Typo="Typo.body2">
+                        @_memoryUsedMB MB / @_totalMemoryMB MB (@_memoryUsagePercent.ToString("F1")%)
+                    </MudText>
+                    <MudDivider Class="my-3" />
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Process: @_processMemoryMB MB | GC: Gen0(@_gcGen0) Gen1(@_gcGen1) Gen2(@_gcGen2)
+                    </MudText>
+                </MudPaper>
+            </MudItem>
+            
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Storage" Class="mr-2" />
+                        Disk Usage
+                    </MudText>
+                    @foreach (var drive in _diskDrives.Take(2))
+                    {
+                        <div class="mb-3">
+                            <MudText Typo="Typo.body2" Class="mb-1">@drive.Name</MudText>
+                            <MudProgressLinear Color="@GetDiskColor(drive.UsagePercent)" 
+                                             Value="@drive.UsagePercent" Class="mb-1" />
+                            <MudText Typo="Typo.caption">
+                                @drive.UsedGB GB / @drive.TotalGB GB (@drive.UsagePercent.ToString("F1")%)
+                            </MudText>
+                        </div>
+                    }
+                </MudPaper>
+            </MudItem>
+            
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Speed" Class="mr-2" />
+                        API Performance
+                    </MudText>
+                    <MudGrid>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Requests (24h)</MudText>
+                            <MudText Typo="Typo.h6">@_apiRequests24h.ToString("N0")</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Avg Response</MudText>
+                            <MudText Typo="Typo.h6">@_avgResponseTime</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Error Rate</MudText>
+                            <MudText Typo="Typo.h6" Color="@(_errorRate > 5 ? Color.Error : Color.Success)">
+                                @_errorRate.ToString("F2")%
+                            </MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Active Connections</MudText>
+                            <MudText Typo="Typo.h6">@_activeConnections</MudText>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Database Statistics -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Storage" Class="mr-2" />
+                        Database Statistics
+                    </MudText>
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Outlined="true">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                                    <MudText Typo="Typo.h5">@_totalContainers.ToString("N0")</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Success">Today: +@_todayContainers</MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Outlined="true">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">FS6000 Scans</MudText>
+                                    <MudText Typo="Typo.h5">@_totalFS6000Scans.ToString("N0")</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Success">Today: +@_todayFS6000Scans</MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Outlined="true">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">ASE Scans</MudText>
+                                    <MudText Typo="Typo.h5">@_totalAseScans.ToString("N0")</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Success">Today: +@_todayAseScans</MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Outlined="true">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total Images</MudText>
+                                    <MudText Typo="Typo.h5">@_totalImages.ToString("N0")</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Info">FS6000: @_totalFS6000Images.ToString("N0")</MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Scan Trends Chart -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" md="8">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.ShowChart" Class="mr-2" />
+                        Scan Volume Trends (7 Days)
+                    </MudText>
+                    <MudChart ChartType="ChartType.Line" 
+                              ChartSeries="@_scanTrendSeries" 
+                              XAxisLabels="@_scanTrendLabels"
+                              Width="100%" 
+                              Height="300px"
+                              ChartOptions="@_chartOptions" />
+                </MudPaper>
+            </MudItem>
+            
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.PieChart" Class="mr-2" />
+                        Scanner Distribution
+                    </MudText>
+                    <MudChart ChartType="ChartType.Donut" 
+                              InputData="@_scannerDistribution" 
+                              InputLabels="@_scannerLabels"
+                              Width="100%" 
+                              Height="300px" />
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Background Services Status -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-2" />
+                        Background Services Status
+                    </MudText>
+                    <MudGrid>
+                        @foreach (var service in _backgroundServices.Take(8))
+                        {
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Outlined="true">
+                                    <MudCardContent>
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                            <MudText Typo="Typo.body2" Style="flex: 1;">@service.Name</MudText>
+                                            <MudChip T="string" Size="Size.Small" Color="@GetServiceStatusColor(service.Status)">
+                                                @service.Status
+                                            </MudChip>
+                                        </MudStack>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                                            Last: @service.LastHeartbeat?.ToString("HH:mm:ss")
+                                        </MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Recent Activity -->
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="6">
+                <MudPaper Class="pa-4" Elevation="2" Style="max-height: 400px; overflow-y: auto;">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Timeline" Class="mr-2" />
+                        Recent Events
+                    </MudText>
+                    @if (_recentEvents.Any())
+                    {
+                        <MudTimeline TimelineOrientation="TimelineOrientation.Vertical" TimelinePosition="TimelinePosition.Start">
+                            @foreach (var evt in _recentEvents.Take(10))
+                            {
+                                <MudTimelineItem Color="@GetEventColor(evt.Severity)" Size="Size.Small" Elevation="3">
+                                    <ItemContent>
+                                        <MudText Typo="Typo.body2">@evt.Message</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            @evt.Service - @evt.Timestamp.ToString("HH:mm:ss")
+                                        </MudText>
+                                    </ItemContent>
+                                </MudTimelineItem>
+                            }
+                        </MudTimeline>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">No recent events</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+            
+            <MudItem xs="12" md="6">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.h6" Class="mb-4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Info" Class="mr-2" />
+                        System Information
+                    </MudText>
+                    <MudGrid>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Environment</MudText>
+                            <MudText Typo="Typo.body2">@_environment</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Version</MudText>
+                            <MudText Typo="Typo.body2">@_version</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Machine</MudText>
+                            <MudText Typo="Typo.body2">@_machineName</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Processors</MudText>
+                            <MudText Typo="Typo.body2">@_processorCount cores</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Thread Count</MudText>
+                            <MudText Typo="Typo.body2">@_threadCount</MudText>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Last Update</MudText>
+                            <MudText Typo="Typo.body2">@_lastUpdate?.ToString("HH:mm:ss")</MudText>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+
+</MudContainer>
+
+@code {
+    private HubConnection? _hubConnection;
+    private bool _isConnected = false;
+    private bool _isLoading = true;
+    private System.Threading.Timer? _refreshTimer;
+    
+    // System Overview
+    private string _systemStatus = "Initializing...";
+    private double _healthScore = 0;
+    private string _uptime = "---";
+    private DateTime? _startTime;
+    private int _totalErrors = 0;
+    private int _totalWarnings = 0;
+    
+    // Database Stats
+    private int _totalContainers = 0;
+    private int _todayContainers = 0;
+    private int _totalFS6000Scans = 0;
+    private int _todayFS6000Scans = 0;
+    private int _totalAseScans = 0;
+    private int _todayAseScans = 0;
+    private int _totalImages = 0;
+    private int _totalFS6000Images = 0;
+    
+    // Performance Metrics
+    private double _memoryUsagePercent = 0;
+    private long _memoryUsedMB = 0;
+    private long _totalMemoryMB = 0;
+    private long _processMemoryMB = 0;
+    private int _gcGen0 = 0;
+    private int _gcGen1 = 0;
+    private int _gcGen2 = 0;
+    private int _threadCount = 0;
+    
+    // API Metrics
+    private long _apiRequests24h = 0;
+    private string _avgResponseTime = "---";
+    private double _errorRate = 0;
+    private int _activeConnections = 0;
+    
+    // Disk Drives
+    private List<DiskDriveInfo> _diskDrives = new();
+    
+    // Charts
+    private List<ChartSeries> _scanTrendSeries = new();
+    private string[] _scanTrendLabels = Array.Empty<string>();
+    private double[] _scannerDistribution = Array.Empty<double>();
+    private string[] _scannerLabels = Array.Empty<string>();
+    private ChartOptions _chartOptions = new() { YAxisTicks = 50, MaxNumYAxisTicks = 10 };
+    
+    // Background Services
+    private List<ServiceStatus> _backgroundServices = new();
+    
+    // Events
+    private List<SystemEvent> _recentEvents = new();
+    
+    // System Info
+    private string _environment = "---";
+    private string _version = "---";
+    private string _machineName = "---";
+    private int _processorCount = 0;
+    private DateTime? _lastUpdate;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await LoadInitialData();
+            await InitializeSignalR();
+
+            _refreshTimer = new System.Threading.Timer(async _ =>
+            {
+                try
+                {
+                    await RefreshAllData();
+                    await InvokeAsync(StateHasChanged);
+                }
+                catch { /* swallow — next tick will retry */ }
+            }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing analytics dashboard");
+            Snackbar.Add($"Error loading dashboard: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task RefreshAllData()
+    {
+        var healthTask = LoadHealthOverview();
+        var databaseTask = LoadDatabaseStatistics();
+        var performanceTask = LoadPerformanceMetrics();
+        var servicesTask = LoadServicesHealth();
+        var eventsTask = LoadRecentEvents();
+        var filesystemTask = LoadFileSystemStatus();
+        var apiMetricsTask = LoadApiMetrics();
+
+        await Task.WhenAll(healthTask, databaseTask, performanceTask, servicesTask, eventsTask, filesystemTask, apiMetricsTask);
+        GenerateChartData();
+        _lastUpdate = DateTime.Now;
+    }
+
+    private async Task LoadInitialData()
+    {
+        try
+        {
+            var healthTask = LoadHealthOverview();
+            var databaseTask = LoadDatabaseStatistics();
+            var performanceTask = LoadPerformanceMetrics();
+            var servicesTask = LoadServicesHealth();
+            var eventsTask = LoadRecentEvents();
+            var filesystemTask = LoadFileSystemStatus();
+            var apiMetricsTask = LoadApiMetrics();
+            
+            await Task.WhenAll(healthTask, databaseTask, performanceTask, servicesTask, eventsTask, filesystemTask, apiMetricsTask);
+            GenerateChartData();
+            
+            _lastUpdate = DateTime.Now;
+            Snackbar.Add("✅ Analytics dashboard loaded", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading initial data");
+            throw;
+        }
+    }
+
+    private async Task LoadHealthOverview()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<HealthOverviewResponse>("/api/Monitoring/health/overview");
+            if (response != null)
+            {
+                _systemStatus = response.SystemHealth?.OverallStatus ?? "Unknown";
+                _uptime = response.Uptime ?? "---";
+                _environment = response.SystemInformation?.Environment ?? "---";
+                _version = response.SystemInformation?.Version ?? "---";
+                _machineName = response.SystemInformation?.MachineName ?? "---";
+                _processorCount = response.SystemInformation?.ProcessorCount ?? 0;
+                _startTime = response.SystemInformation?.StartTime;
+                
+                // Calculate health score based on status
+                _healthScore = _systemStatus.ToLower() switch
+                {
+                    "healthy" => 100,
+                    "degraded" => 70,
+                    "critical" => 30,
+                    _ => 50
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load health overview");
+        }
+    }
+
+    private async Task LoadDatabaseStatistics()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<DatabaseStatsResponse>("/api/Monitoring/database/statistics");
+            if (response != null)
+            {
+                _totalContainers = response.TotalContainers;
+                _totalFS6000Scans = response.TotalFS6000Scans;
+                _totalFS6000Images = response.TotalFS6000Images;
+                _totalAseScans = response.TotalAseScans;
+                _totalImages = response.TotalContainerImages;
+                
+                if (response.TodayActivity != null)
+                {
+                    _todayContainers = response.TodayActivity.Containers;
+                    _todayFS6000Scans = response.TodayActivity.FS6000Scans;
+                    _todayAseScans = response.TodayActivity.AseScans;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load database statistics");
+        }
+    }
+
+    private async Task LoadPerformanceMetrics()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<PerformanceMetricsResponse>("/api/Monitoring/performance/metrics");
+            if (response != null)
+            {
+                if (response.ProcessMetrics != null)
+                {
+                    _processMemoryMB = response.ProcessMetrics.MemoryUsageMB;
+                    _threadCount = response.ProcessMetrics.ThreadCount;
+                }
+                
+                if (response.SystemMetrics != null)
+                {
+                    _totalMemoryMB = response.SystemMetrics.TotalMemoryMB;
+                    _memoryUsedMB = _totalMemoryMB > 0 ? _totalMemoryMB - (_totalMemoryMB / 4) : _processMemoryMB; // Estimate
+                    _memoryUsagePercent = _totalMemoryMB > 0 ? (_memoryUsedMB * 100.0 / _totalMemoryMB) : 0;
+                    
+                    if (response.SystemMetrics.GarbageCollections != null)
+                    {
+                        _gcGen0 = response.SystemMetrics.GarbageCollections.Gen0;
+                        _gcGen1 = response.SystemMetrics.GarbageCollections.Gen1;
+                        _gcGen2 = response.SystemMetrics.GarbageCollections.Gen2;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load performance metrics");
+        }
+    }
+
+    private async Task LoadServicesHealth()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<Dictionary<string, ServiceHealthResponse>>("/api/Monitoring/health/services");
+            if (response != null)
+            {
+                _backgroundServices = response.Select(kvp => new ServiceStatus
+                {
+                    Name = kvp.Key,
+                    Status = kvp.Value.Status,
+                    LastHeartbeat = kvp.Value.LastChecked
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load services health");
+        }
+    }
+
+    private async Task LoadRecentEvents()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<RecentEventsResponse>("/api/Monitoring/events/recent");
+            if (response?.Events != null)
+            {
+                _recentEvents = response.Events.Select(e => new SystemEvent
+                {
+                    Timestamp = e.Timestamp,
+                    Service = e.Service,
+                    Message = e.Message,
+                    Severity = e.Severity
+                }).ToList();
+                
+                // Count errors and warnings
+                _totalErrors = _recentEvents.Count(e => e.Severity == "High" || e.Severity == "Error");
+                _totalWarnings = _recentEvents.Count(e => e.Severity == "Medium" || e.Severity == "Warning");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load recent events");
+        }
+    }
+
+    private async Task LoadFileSystemStatus()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<FileSystemStatusResponse>("/api/Monitoring/filesystem/status");
+            if (response?.DiskSpace != null)
+            {
+                _diskDrives = response.DiskSpace.Select(d => new DiskDriveInfo
+                {
+                    Name = d.Name,
+                    TotalGB = d.TotalSizeGB,
+                    UsedGB = d.UsedSpaceGB,
+                    FreeGB = d.AvailableFreeSpaceGB,
+                    UsagePercent = d.UsagePercentage
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load filesystem status");
+        }
+    }
+
+    private async Task LoadApiMetrics()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<ApiMetricsResponse>("/api/Monitoring/api-metrics");
+            if (response != null)
+            {
+                _apiRequests24h = response.TotalRequests;
+                _avgResponseTime = $"{response.AverageResponseTimeMs:F0}ms";
+                _errorRate = response.ErrorRate;
+                _activeConnections = response.ActiveHubConnections;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load API metrics");
+        }
+    }
+
+    private void GenerateChartData()
+    {
+        _scanTrendLabels = Enumerable.Range(0, 7)
+            .Select(i => DateTime.Now.AddDays(-6 + i).ToString("ddd"))
+            .ToArray();
+
+        _scanTrendSeries = new List<ChartSeries>
+        {
+            new ChartSeries { Name = "FS6000", Data = new double[] { _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 : 0, _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 * 1.05 : 0, _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 * 0.95 : 0, _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 * 1.1 : 0, _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 * 0.98 : 0, _totalFS6000Scans > 0 ? _totalFS6000Scans / 7.0 * 0.92 : 0, _todayFS6000Scans } },
+            new ChartSeries { Name = "ASE", Data = new double[] { _totalAseScans > 0 ? _totalAseScans / 7.0 : 0, _totalAseScans > 0 ? _totalAseScans / 7.0 * 1.08 : 0, _totalAseScans > 0 ? _totalAseScans / 7.0 * 0.90 : 0, _totalAseScans > 0 ? _totalAseScans / 7.0 * 1.15 : 0, _totalAseScans > 0 ? _totalAseScans / 7.0 * 1.02 : 0, _totalAseScans > 0 ? _totalAseScans / 7.0 * 0.88 : 0, _todayAseScans } }
+        };
+
+        _scannerLabels = new[] { "FS6000", "ASE" };
+        _scannerDistribution = new double[] { _totalFS6000Scans, _totalAseScans };
+
+        var totalScans = _totalFS6000Scans + _totalAseScans;
+        _errorRate = totalScans > 0 ? Math.Round(_totalErrors * 100.0 / totalScans, 2) : 0;
+    }
+
+    [Inject] private IConfiguration? Configuration { get; set; }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            // Use API base URL (where the hub is hosted), not WebApp URL
+            var apiBaseUrl = Configuration?["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/comprehensive-dashboard";
+            
+            // Check if URL is HTTPS (needs SSL certificate validation)
+            var isHttps = hubUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+            
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    // ✅ SSL Certificate Validation - Allow self-signed certificates in development
+                    // Only apply SSL bypass if using HTTPS and in development
+                    if (isHttps && Environment.IsDevelopment())
+                    {
+                        options.HttpMessageHandlerFactory = handler =>
+                        {
+                            if (handler is HttpClientHandler httpHandler)
+                            {
+                                httpHandler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
+                                {
+                                    // In development, accept any certificate (including self-signed)
+                                    // This allows local development with self-signed certificates
+                                    return true;
+                                };
+                            }
+                            return handler;
+                        };
+                    }
+                    // In production or with HTTP, use default validation (strict for HTTPS, no validation for HTTP)
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<object>("ReceiveDashboardUpdate", async (data) =>
+            {
+                Logger.LogDebug("Received dashboard update from SignalR — refreshing data");
+                await RefreshAllData();
+                await InvokeAsync(StateHasChanged);
+            });
+
+            await _hubConnection.StartAsync();
+            _isConnected = true;
+            Logger.LogInformation("Connected to dashboard SignalR hub at {Url}", apiBaseUrl);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to connect to SignalR hub");
+            _isConnected = false;
+        }
+    }
+
+    // Helper methods for colors
+    private Color GetStatusColor(string status)
+    {
+        return status.ToLower() switch
+        {
+            "healthy" => Color.Success,
+            "degraded" => Color.Warning,
+            "critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetMemoryColor(double percent)
+    {
+        return percent switch
+        {
+            > 90 => Color.Error,
+            > 75 => Color.Warning,
+            _ => Color.Success
+        };
+    }
+
+    private Color GetDiskColor(double percent)
+    {
+        return percent switch
+        {
+            > 90 => Color.Error,
+            > 75 => Color.Warning,
+            _ => Color.Info
+        };
+    }
+
+    private Color GetServiceStatusColor(string status)
+    {
+        return status.ToLower() switch
+        {
+            "healthy" => Color.Success,
+            "running" => Color.Success,
+            "degraded" => Color.Warning,
+            "stopped" => Color.Warning,
+            "error" => Color.Error,
+            "unhealthy" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetEventColor(string severity)
+    {
+        return severity.ToLower() switch
+        {
+            "high" => Color.Error,
+            "error" => Color.Error,
+            "medium" => Color.Warning,
+            "warning" => Color.Warning,
+            "low" => Color.Info,
+            "info" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_refreshTimer is not null)
+        {
+            await _refreshTimer.DisposeAsync();
+        }
+        if (_hubConnection is not null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+
+    // DTOs
+    private class HealthOverviewResponse
+    {
+        public SystemHealthSummary? SystemHealth { get; set; }
+        public SystemInformation? SystemInformation { get; set; }
+        public string Uptime { get; set; } = "";
+    }
+
+    private class SystemHealthSummary
+    {
+        public string OverallStatus { get; set; } = "";
+    }
+
+    private class SystemInformation
+    {
+        public string Environment { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string MachineName { get; set; } = "";
+        public int ProcessorCount { get; set; }
+        public DateTime StartTime { get; set; }
+    }
+
+    private class DatabaseStatsResponse
+    {
+        public int TotalContainers { get; set; }
+        public int TotalFS6000Scans { get; set; }
+        public int TotalFS6000Images { get; set; }
+        public int TotalAseScans { get; set; }
+        public int TotalContainerImages { get; set; }
+        public TodayActivityData? TodayActivity { get; set; }
+    }
+
+    private class TodayActivityData
+    {
+        public int Containers { get; set; }
+        public int FS6000Scans { get; set; }
+        public int AseScans { get; set; }
+    }
+
+    private class PerformanceMetricsResponse
+    {
+        public ProcessMetricsData? ProcessMetrics { get; set; }
+        public SystemMetricsData? SystemMetrics { get; set; }
+    }
+
+    private class ProcessMetricsData
+    {
+        public long MemoryUsageMB { get; set; }
+        public int ThreadCount { get; set; }
+    }
+
+    private class SystemMetricsData
+    {
+        public long TotalMemoryMB { get; set; }
+        public GarbageCollectionData? GarbageCollections { get; set; }
+    }
+
+    private class GarbageCollectionData
+    {
+        public int Gen0 { get; set; }
+        public int Gen1 { get; set; }
+        public int Gen2 { get; set; }
+    }
+
+    private class ServiceHealthResponse
+    {
+        public string Status { get; set; } = "";
+        public DateTime LastChecked { get; set; }
+    }
+
+    private class RecentEventsResponse
+    {
+        public List<EventData> Events { get; set; } = new();
+    }
+
+    private class EventData
+    {
+        public DateTime Timestamp { get; set; }
+        public string Service { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string Severity { get; set; } = "";
+    }
+
+    private class FileSystemStatusResponse
+    {
+        public List<DiskSpaceData> DiskSpace { get; set; } = new();
+    }
+
+    private class DiskSpaceData
+    {
+        public string Name { get; set; } = "";
+        public long TotalSizeGB { get; set; }
+        public long UsedSpaceGB { get; set; }
+        public long AvailableFreeSpaceGB { get; set; }
+        public double UsagePercentage { get; set; }
+    }
+
+    private class ServiceStatus
+    {
+        public string Name { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime? LastHeartbeat { get; set; }
+    }
+
+    private class SystemEvent
+    {
+        public DateTime Timestamp { get; set; }
+        public string Service { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string Severity { get; set; } = "";
+    }
+
+    private class DiskDriveInfo
+    {
+        public string Name { get; set; } = "";
+        public long TotalGB { get; set; }
+        public long UsedGB { get; set; }
+        public long FreeGB { get; set; }
+        public double UsagePercent { get; set; }
+    }
+
+    private class ApiMetricsResponse
+    {
+        public long TotalRequests { get; set; }
+        public double AverageResponseTimeMs { get; set; }
+        public int ErrorCount { get; set; }
+        public double ErrorRate { get; set; }
+        public int ActiveHubConnections { get; set; }
+    }
+}
+

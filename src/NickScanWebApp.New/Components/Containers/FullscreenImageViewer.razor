@@ -1,0 +1,267 @@
+@using MudBlazor
+@using NickScanWebApp.New.Components.Images
+@inject IJSRuntime JS
+
+@if (IsOpen)
+{
+    <MudOverlay Visible="true" DarkBackground="true" ZIndex="9999" @onclick="Close">
+        <MudPaper Class="fullscreen-viewer" @onclick:stopPropagation="true" Elevation="24" Style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 10000; background: #1e1e1e; display: flex; flex-direction: column;">
+            
+            <!-- Toolbar -->
+            <MudToolBar Dense="true" Style="background: linear-gradient(135deg, #424242 0%, #2d2d2d 100%); color: white; border-bottom: 2px solid #555;">
+                <MudText Typo="Typo.h6" Style="color: white;">@ImageFileName</MudText>
+                <MudSpacer />
+                
+                <!-- Image Manipulation Tools -->
+                <MudTooltip Text="Zoom In">
+                    <MudIconButton Icon="@Icons.Material.Outlined.ZoomIn" 
+                                   Style="color: #90caf9;"
+                                   OnClick="ZoomIn" />
+                </MudTooltip>
+                
+                <MudTooltip Text="Zoom Out">
+                    <MudIconButton Icon="@Icons.Material.Outlined.ZoomOut" 
+                                   Style="color: #90caf9;"
+                                   OnClick="ZoomOut" />
+                </MudTooltip>
+                
+                <MudTooltip Text="Reset Zoom">
+                    <MudIconButton Icon="@Icons.Material.Outlined.ZoomOutMap" 
+                                   Style="color: #90caf9;"
+                                   OnClick="ResetZoom" />
+                </MudTooltip>
+                
+                <MudDivider Vertical="true" FlexItem="true" Class="mx-2" Style="background: #555;" />
+                
+                <MudTooltip Text="Rotate Left">
+                    <MudIconButton Icon="@Icons.Material.Outlined.RotateLeft" 
+                                   Style="color: #ce93d8;"
+                                   OnClick="RotateLeft" />
+                </MudTooltip>
+                
+                <MudTooltip Text="Rotate Right">
+                    <MudIconButton Icon="@Icons.Material.Outlined.RotateRight" 
+                                   Style="color: #ce93d8;"
+                                   OnClick="RotateRight" />
+                </MudTooltip>
+                
+                <MudDivider Vertical="true" FlexItem="true" Class="mx-2" Style="background: #555;" />
+                
+                <MudTooltip Text="Brightness">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Brightness6" 
+                                   Style="color: #ffa726;"
+                                   OnClick="ToggleBrightnessSlider" />
+                </MudTooltip>
+                
+                <MudTooltip Text="Contrast">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Contrast" 
+                                   Style="color: #29b6f6;"
+                                   OnClick="ToggleContrastSlider" />
+                </MudTooltip>
+                
+                <MudDivider Vertical="true" FlexItem="true" Class="mx-2" Style="background: #555;" />
+                
+                <MudTooltip Text="Download">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Download" 
+                                   Style="color: #66bb6a;"
+                                   OnClick="DownloadImage" />
+                </MudTooltip>
+                
+                <MudTooltip Text="Close (ESC)">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Close" 
+                                   Style="color: #ef5350;"
+                                   OnClick="Close" />
+                </MudTooltip>
+            </MudToolBar>
+
+            <!-- Control Sliders (Fixed, Collapsible) -->
+            @if (showBrightnessSlider || showContrastSlider)
+            {
+                <MudPaper Class="pa-4" Style="background: linear-gradient(135deg, #3a3a3a 0%, #2d2d2d 100%); border-bottom: 2px solid #4a4a4a; flex-shrink: 0;">
+                    <MudGrid>
+                        @if (showBrightnessSlider)
+                        {
+                            <MudItem xs="12" sm="6">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Brightness6" Color="Color.Warning" Size="Size.Medium" />
+                                    <MudText Typo="Typo.subtitle2" Style="color: #ffa726; font-weight: 600; min-width: 140px;">
+                                        Brightness: @brightness%
+                                    </MudText>
+                                    <MudSlider T="int" Value="@brightness" ValueChanged="@OnBrightnessChanged" Min="0" Max="200" Step="5" 
+                                              Color="Color.Warning" Style="flex: 1;" Class="brightness-slider" />
+                                </MudStack>
+                            </MudItem>
+                        }
+                        
+                        @if (showContrastSlider)
+                        {
+                            <MudItem xs="12" sm="6">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Contrast" Color="Color.Info" Size="Size.Medium" />
+                                    <MudText Typo="Typo.subtitle2" Style="color: #29b6f6; font-weight: 600; min-width: 140px;">
+                                        Contrast: @contrast%
+                                    </MudText>
+                                    <MudSlider T="int" Value="@contrast" ValueChanged="@OnContrastChanged" Min="0" Max="200" Step="5" 
+                                              Color="Color.Info" Style="flex: 1;" Class="contrast-slider" />
+                                </MudStack>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            }
+
+            <!-- Image Display Area (Fixed, 3/4 of remaining space) -->
+            <MudContainer MaxWidth="MaxWidth.False" Class="pa-0" Style="flex: 3; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #1e1e1e; flex-shrink: 0;">
+                <div style="position: relative; display: inline-block;">
+                    <img src="@ImageUrl"
+                         alt="@ImageFileName"
+                         id="fullscreen-image"
+                         style="@GetImageStyle()"
+                         @ondragstart="PreventDefault"
+                         draggable="false" />
+                    @if (!string.IsNullOrEmpty(ContainerNumber))
+                    {
+                        <AnnotationOverlay ContainerNumber="@ContainerNumber" ScannerType="@ScannerType" />
+                    }
+                </div>
+            </MudContainer>
+
+            <!-- Scrollable Controls Section (1/4 of remaining space) -->
+            <MudContainer MaxWidth="MaxWidth.False" Class="pa-0" Style="flex: 1; overflow-y: auto; overflow-x: hidden; background: #2d2d2d; flex-shrink: 0;">
+                <MudPaper Class="pa-4" Elevation="0" Style="background: transparent;">
+                    <!-- Placeholder for future controls -->
+                    <!-- Any additional controls, thumbnails, image lists, annotations, etc. will go here -->
+                </MudPaper>
+            </MudContainer>
+
+            <!-- Status Bar -->
+            <MudToolBar Dense="true" Style="background: #2d2d2d; color: white; min-height: 32px;">
+                <MudText Typo="Typo.caption">
+                    Zoom: @((int)(zoomLevel * 100))% | Rotation: @rotation° | @ScannerType Scanner | @FormatFileSize(FileSizeBytes)
+                </MudText>
+            </MudToolBar>
+
+        </MudPaper>
+    </MudOverlay>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public EventCallback<bool> IsOpenChanged { get; set; }
+    [Parameter] public string ImageUrl { get; set; } = string.Empty;
+    [Parameter] public string ImageFileName { get; set; } = "Image";
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string ScannerType { get; set; } = "Unknown";
+    [Parameter] public long FileSizeBytes { get; set; }
+
+    private double zoomLevel = 1.0;
+    private int rotation = 0;
+    private int brightness = 100;
+    private int contrast = 100;
+    private bool showBrightnessSlider = false;
+    private bool showContrastSlider = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && IsOpen)
+        {
+            await JS.InvokeVoidAsync("addEventListener", "keydown", DotNetObjectReference.Create(this), "HandleKeyPress");
+        }
+    }
+
+    private void ZoomIn()
+    {
+        zoomLevel = Math.Min(zoomLevel + 0.25, 5.0);
+    }
+
+    private void ZoomOut()
+    {
+        zoomLevel = Math.Max(zoomLevel - 0.25, 0.25);
+    }
+
+    private void ResetZoom()
+    {
+        zoomLevel = 1.0;
+        rotation = 0;
+        brightness = 100;
+        contrast = 100;
+    }
+
+    private void RotateLeft()
+    {
+        rotation = (rotation - 90) % 360;
+        if (rotation < 0) rotation += 360;
+    }
+
+    private void RotateRight()
+    {
+        rotation = (rotation + 90) % 360;
+    }
+
+    private void ToggleBrightnessSlider()
+    {
+        showBrightnessSlider = !showBrightnessSlider;
+    }
+
+    private void ToggleContrastSlider()
+    {
+        showContrastSlider = !showContrastSlider;
+    }
+
+    private void OnBrightnessChanged(int value)
+    {
+        brightness = value;
+        StateHasChanged();
+    }
+
+    private void OnContrastChanged(int value)
+    {
+        contrast = value;
+        StateHasChanged();
+    }
+
+    private async Task DownloadImage()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("downloadImage", ImageUrl, ImageFileName);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error downloading image: {ex.Message}");
+        }
+    }
+
+    private async Task Close()
+    {
+        IsOpen = false;
+        await IsOpenChanged.InvokeAsync(false);
+    }
+
+    private void PreventDefault()
+    {
+        // Prevents dragging the image
+    }
+
+    private string GetImageStyle()
+    {
+        return $@"
+            max-width: 90vw;
+            max-height: 80vh;
+            transform: scale({zoomLevel}) rotate({rotation}deg);
+            filter: brightness({brightness}%) contrast({contrast}%);
+            transition: transform 0.3s ease, filter 0.3s ease;
+            cursor: grab;
+            user-select: none;
+        ";
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024 * 1024):F1} MB";
+        return $"{bytes / (1024 * 1024 * 1024):F1} GB";
+    }
+}
+

@@ -1,0 +1,24 @@
+@page "/validation/business-rules"
+@page "/validation/rules"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationRules)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+
+<PageTitle>Business Rules - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Rule" Class="mr-2" />
+            Business Rules
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Business rules management. Use desktop version for configuration and editing.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

@@ -1,0 +1,180 @@
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@using NickScanCentralImagingPortal.Core.Constants
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <MudText Typo="Typo.h4" Class="mb-4">Audit Logs</MudText>
+
+    <!-- Filters -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudSelect @bind-Value="_filterEventType" Label="Event Type" Variant="Variant.Outlined" Clearable="true">
+                    <MudSelectItem Value="@("All")">All Events</MudSelectItem>
+                    <MudSelectItem Value="@("Login")">Login</MudSelectItem>
+                    <MudSelectItem Value="@("Logout")">Logout</MudSelectItem>
+                    <MudSelectItem Value="@("DataModification")">Data Modification</MudSelectItem>
+                    <MudSelectItem Value="@("PermissionChange")">Permission Change</MudSelectItem>
+                    <MudSelectItem Value="@("ConfigChange")">Configuration Change</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect @bind-Value="_filterSeverity" Label="Severity" Variant="Variant.Outlined" Clearable="true">
+                    <MudSelectItem Value="@("All")">All Severity</MudSelectItem>
+                    <MudSelectItem Value="@("Info")">Info</MudSelectItem>
+                    <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                    <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                    <MudSelectItem Value="@("Critical")">Critical</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_filterUser" Label="User" Variant="Variant.Outlined" Clearable="true" />
+            </MudItem>
+            <MudItem xs="12" md="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" OnClick="ApplyFilters">
+                    Filter
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Audit Log Table -->
+    <MudPaper Elevation="2">
+        <MudDataGrid T="AuditLogEntry" Items="@_filteredLogs" Loading="@_isLoading" Dense="true" Hover="true" Striped="true" Height="600px">
+            <Columns>
+                <PropertyColumn Property="x => x.Timestamp" Title="Timestamp" Format="yyyy-MM-dd HH:mm:ss" />
+                <PropertyColumn Property="x => x.User" Title="User" />
+                <PropertyColumn Property="x => x.EventType" Title="Event Type" />
+                <PropertyColumn Property="x => x.Description" Title="Description" />
+                <TemplateColumn Title="Severity">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@GetSeverityColor(context.Item.Severity)">
+                            @context.Item.Severity
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.IpAddress" Title="IP Address" />
+            </Columns>
+            <PagerContent>
+                <MudDataGridPager T="AuditLogEntry" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private List<AuditLogEntry> _auditLogs = new();
+    private List<AuditLogEntry> _filteredLogs = new();
+    private bool _isLoading = false;
+    
+    private string _filterEventType = "All";
+    private string _filterSeverity = "All";
+    private string _filterUser = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Administration", href: "#", icon: Icons.Material.Outlined.AdminPanelSettings),
+            new BreadcrumbItem("Audit Logs", href: null, disabled: true)
+        };
+        
+        await LoadAuditLogs();
+    }
+
+    private async Task LoadAuditLogs()
+    {
+        _isLoading = true;
+        try
+        {
+            Console.WriteLine("🔍 Loading audit logs from API...");
+            
+            // Try to load audit logs from backend API
+            var auditData = await ApiService.GetAsync<List<AuditLogDto>>("/api/Audit?limit=100");
+            if (auditData != null && auditData.Any())
+            {
+                _auditLogs = auditData.Select(a => new AuditLogEntry
+                {
+                    Timestamp = a.Timestamp,
+                    User = a.User ?? "System",
+                    EventType = a.EventType ?? "Unknown",
+                    Description = a.Description ?? "",
+                    Severity = a.Severity ?? "Info",
+                    IpAddress = a.IpAddress ?? "N/A"
+                }).ToList();
+                
+                _filteredLogs = _auditLogs;
+                Console.WriteLine($"✅ Loaded {_auditLogs.Count} audit log entries from API");
+                Snackbar.Add($"Loaded {_auditLogs.Count} audit entries", Severity.Success);
+            }
+            else
+            {
+                // No audit logs available - empty list
+                _auditLogs = new List<AuditLogEntry>();
+                _filteredLogs = new List<AuditLogEntry>();
+                Snackbar.Add("No audit logs available", Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading audit logs: {ex.Message}");
+            Snackbar.Add($"Error loading audit logs: {ex.Message}", Severity.Error);
+            // Keep empty list
+            _auditLogs = new List<AuditLogEntry>();
+            _filteredLogs = new List<AuditLogEntry>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        _filteredLogs = _auditLogs.Where(log =>
+        {
+            if (_filterEventType != "All" && log.EventType != _filterEventType) return false;
+            if (_filterSeverity != "All" && log.Severity != _filterSeverity) return false;
+            if (!string.IsNullOrWhiteSpace(_filterUser) && !log.User.Contains(_filterUser, StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }).ToList();
+        
+        Snackbar.Add($"Filtered to {_filteredLogs.Count} entries", Severity.Info);
+    }
+
+    private Color GetSeverityColor(string severity) => severity switch
+    {
+        "Info" => Color.Info,
+        "Warning" => Color.Warning,
+        "Error" => Color.Error,
+        "Critical" => Color.Error,
+        _ => Color.Default
+    };
+
+    public class AuditLogEntry
+    {
+        public DateTime Timestamp { get; set; }
+        public string User { get; set; } = "";
+        public string EventType { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Severity { get; set; } = "";
+        public string IpAddress { get; set; } = "";
+    }
+    
+    public class AuditLogDto
+    {
+        public DateTime Timestamp { get; set; }
+        public string? User { get; set; }
+        public string? EventType { get; set; }
+        public string? Description { get; set; }
+        public string? Severity { get; set; }
+        public string? IpAddress { get; set; }
+    }
+}
+

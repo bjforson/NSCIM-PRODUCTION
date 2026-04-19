@@ -1,0 +1,63 @@
+@inherits Microsoft.AspNetCore.Components.Web.ErrorBoundary
+@namespace NickScanWebApp.Mobile.Components.Shared
+@typeparam T
+
+<!-- Custom Error Boundary with MudBlazor styling - Mobile optimized -->
+
+@if (CurrentException != null)
+{
+    <MudContainer MaxWidth="MaxWidth.False" Class="pt-4 px-2">
+        <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudIcon Icon="@Icons.Material.Filled.ErrorOutline" 
+                         Size="Size.Large" 
+                         Color="Color.Error" 
+                         Style="font-size: 4rem;" />
+                
+                <MudText Typo="Typo.h6" Color="Color.Error" Align="Align.Center">
+                    Something went wrong
+                </MudText>
+                
+                <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Secondary">
+                    We're sorry, but something unexpected happened.
+                </MudText>
+                
+                @if (ShowDetails)
+                {
+                    <MudExpansionPanels>
+                        <MudExpansionPanel Text="Error Details">
+                            <MudText Typo="Typo.caption" Style="white-space: pre-wrap; font-family: monospace; background: #f5f5f5; padding: 12px; border-radius: 4px; font-size: 0.75rem;">
+                                @CurrentException.ToString()
+                            </MudText>
+                        </MudExpansionPanel>
+                    </MudExpansionPanels>
+                }
+                
+                <MudStack Spacing="2" Class="mt-3" Style="width: 100%;">
+                    <MudButton Variant="Variant.Filled" 
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Refresh"
+                               OnClick="Recover"
+                               FullWidth="true">
+                        Try Again
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                               Color="Color.Default"
+                               StartIcon="@Icons.Material.Filled.Home"
+                               Href="/dashboard"
+                               FullWidth="true">
+                        Go Home
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    </MudContainer>
+}
+else
+{
+    @ChildContent
+}
+
+@code {
+    [Parameter] public bool ShowDetails { get; set; } = false;
+}

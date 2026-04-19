@@ -1,0 +1,386 @@
+@page "/icums/download-queue"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsDownloadQueue)]
+@using NickScanWebApp.Mobile.Services
+@implements IDisposable
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Download Queue - ICUMS Integration</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.CloudDownload" Class="mr-2" />
+                ICUMS Download Queue
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Manage BOE data download requests from ICUMS
+            </MudText>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          Size="Size.Small"
+                          StartIcon="@Icons.Material.Filled.Add"
+                          Href="/icums/boe-request">
+                    New Request
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Default"
+                          Size="Size.Small"
+                          StartIcon="@Icons.Material.Filled.Refresh"
+                          OnClick="@RefreshQueue">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Stats -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">High Priority</MudText>
+                <MudText Typo="Typo.h4">@highPriorityCount</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Normal Priority</MudText>
+                <MudText Typo="Typo.h4">@normalPriorityCount</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Completed Today</MudText>
+                <MudText Typo="Typo.h4">@completedToday</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed Today</MudText>
+                <MudText Typo="Typo.h4">@failedToday</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Tabs -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" PanelClass="pa-3" Color="Color.Primary">
+            
+            <MudTabPanel Text="All" Icon="@Icons.Material.Filled.List" BadgeData="@queueItems.Count">
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                }
+                else if (queueItems.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in queueItems.Take(100))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(item.Status)">
+                                            @item.Status
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudStack Row="true" Spacing="2">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            Priority: @item.Priority
+                                        </MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            Queued: @item.QueuedAt.ToString("dd MMM HH:mm")
+                                        </MudText>
+                                    </MudStack>
+                                    @if (item.Status == "Failed" && !string.IsNullOrEmpty(item.LastErrorMessage))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            @item.LastErrorMessage
+                                        </MudAlert>
+                                    }
+                                    @if (item.Status == "Failed" || item.Status == "Pending")
+                                    {
+                                        <MudStack Row="true" Spacing="1">
+                                            @if (item.Status == "Failed")
+                                            {
+                                                <MudButton Size="Size.Small" 
+                                                          Variant="Variant.Outlined" 
+                                                          Color="Color.Primary"
+                                                          StartIcon="@Icons.Material.Filled.Replay"
+                                                          OnClick="@(() => RetryDownload(item.Id))">
+                                                    Retry
+                                                </MudButton>
+                                            }
+                                            <MudButton Size="Size.Small" 
+                                                      Variant="Variant.Text" 
+                                                      Color="Color.Error"
+                                                      StartIcon="@Icons.Material.Filled.Delete"
+                                                      OnClick="@(() => DeleteDownload(item.Id))">
+                                                Delete
+                                            </MudButton>
+                                        </MudStack>
+                                    }
+                                </MudStack>
+                            </MudCard>
+                        }
+                        @if (queueItems.Count > 100)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                                Showing first 100 of @queueItems.Count items
+                            </MudText>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No items in queue</MudAlert>
+                }
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Pending" Icon="@Icons.Material.Filled.PendingActions" BadgeData="@pendingItems.Count" BadgeColor="Color.Warning">
+                @if (pendingItems.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in pendingItems.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                            Priority @item.Priority
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Queued: @item.QueuedAt.ToString("dd MMM yyyy HH:mm")
+                                    </MudText>
+                                </MudStack>
+                            </MudCard>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">No pending items</MudAlert>
+                }
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Failed" Icon="@Icons.Material.Filled.Error" BadgeData="@failedItems.Count" BadgeColor="Color.Error">
+                @if (failedItems.Any())
+                {
+                    <MudStack Spacing="2">
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Primary"
+                                  Size="Size.Small"
+                                  StartIcon="@Icons.Material.Filled.Replay"
+                                  OnClick="@RetryAllFailed"
+                                  Class="mb-2">
+                            Retry All (@failedItems.Count)
+                        </MudButton>
+                        @foreach (var item in failedItems.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error">
+                                            Retries: @item.RetryCount
+                                        </MudChip>
+                                    </MudStack>
+                                    @if (!string.IsNullOrEmpty(item.LastErrorMessage))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            @item.LastErrorMessage
+                                        </MudAlert>
+                                    }
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudButton Size="Size.Small" 
+                                                  Variant="Variant.Outlined" 
+                                                  Color="Color.Primary"
+                                                  StartIcon="@Icons.Material.Filled.Replay"
+                                                  OnClick="@(() => RetryDownload(item.Id))">
+                                            Retry
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" 
+                                                  Variant="Variant.Text" 
+                                                  Color="Color.Error"
+                                                  StartIcon="@Icons.Material.Filled.Delete"
+                                                  OnClick="@(() => DeleteDownload(item.Id))">
+                                            Delete
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            </MudCard>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">No failed items</MudAlert>
+                }
+            </MudTabPanel>
+            
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private int highPriorityCount = 0;
+    private int normalPriorityCount = 0;
+    private int completedToday = 0;
+    private int failedToday = 0;
+    
+    private List<DownloadQueueItem> queueItems = new();
+    private List<DownloadQueueItem> pendingItems => queueItems.Where(x => x.Status == "Pending").ToList();
+    private List<DownloadQueueItem> failedItems => queueItems.Where(x => x.Status == "Failed").ToList();
+    
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadQueueData();
+        await LoadStatistics();
+        
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadQueueData();
+                await LoadStatistics();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadQueueData()
+    {
+        _isLoading = true;
+        try
+        {
+            var items = await ApiService.GetAsync<List<DownloadQueueItem>>("/api/ICUMSDownloadQueue?limit=100");
+            queueItems = items ?? new List<DownloadQueueItem>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading queue: {ex.Message}", Severity.Error);
+            queueItems = new List<DownloadQueueItem>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            var stats = await ApiService.GetAsync<QueueStats>("/api/ICUMSDownloadQueue/stats");
+            if (stats != null)
+            {
+                highPriorityCount = stats.HighPriority;
+                normalPriorityCount = stats.NormalPriority;
+                completedToday = stats.CompletedToday;
+                failedToday = stats.FailedToday;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RefreshQueue()
+    {
+        await LoadQueueData();
+        await LoadStatistics();
+        Snackbar.Add("Queue refreshed", Severity.Success);
+    }
+    
+    private async Task RetryDownload(int id)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{id}", new { });
+            await LoadQueueData();
+            Snackbar.Add("Retry initiated", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error retrying: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task DeleteDownload(int id)
+    {
+        try
+        {
+            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+            await LoadQueueData();
+            Snackbar.Add("Item removed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error deleting: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private void RetryAllFailed()
+    {
+        foreach (var item in failedItems)
+        {
+            RetryDownload(item.Id);
+        }
+        Snackbar.Add($"Retrying {failedItems.Count} failed downloads", Severity.Success);
+    }
+    
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Completed" => Color.Success,
+            "Pending" => Color.Warning,
+            "Processing" => Color.Info,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    public class DownloadQueueItem
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string BOENumber { get; set; } = "";
+        public int Priority { get; set; }
+        public string Status { get; set; } = "";
+        public DateTime QueuedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public int RetryCount { get; set; }
+        public string? LastErrorMessage { get; set; }
+    }
+    
+    public class QueueStats
+    {
+        public int Pending { get; set; }
+        public int Processing { get; set; }
+        public int Completed { get; set; }
+        public int Failed { get; set; }
+        public int HighPriority { get; set; }
+        public int NormalPriority { get; set; }
+        public int LowPriority { get; set; }
+        public int CompletedToday => Completed;
+        public int FailedToday => Failed;
+    }
+}
+

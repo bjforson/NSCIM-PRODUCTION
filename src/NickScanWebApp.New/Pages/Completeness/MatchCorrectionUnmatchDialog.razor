@@ -1,0 +1,65 @@
+@using MudBlazor
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudAlert Severity="Severity.Warning" Class="mb-3">
+            This will deactivate every active ContainerBOERelation for
+            <strong>@ContainerNumber</strong>, clear the matched BOE, and reset the
+            container to "Missing" so the matching pipeline can rematch it on its
+            next pass.
+        </MudAlert>
+        <MudTextField T="string"
+                      @bind-Value="_reason"
+                      Label="Reason (required)"
+                      Variant="Variant.Outlined"
+                      Lines="3"
+                      Required="true"
+                      HelperText="Will be recorded in the audit trail. Be specific — future you will thank you." />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Warning"
+                   Variant="Variant.Filled"
+                   Disabled="@(string.IsNullOrWhiteSpace(_reason) || _submitting)"
+                   OnClick="SubmitAsync">
+            @(_submitting ? "Unmatching…" : "Unmatch")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+
+    private string _reason = string.Empty;
+    private bool _submitting;
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        try
+        {
+            var body = new
+            {
+                ContainerNumber,
+                Reason = _reason.Trim(),
+            };
+            await ApiService.PostAsync<object, object>("/api/admin/match-corrections/unmatch", body);
+            Snackbar.Add($"Container {ContainerNumber} unmatched", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Unmatch failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

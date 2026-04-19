@@ -1,0 +1,290 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+
+@* Inline split choice step — shown inside the Images tab for containers
+   that are part of a 2-container scan and have split candidates ready.
+   Once the analyst picks a crop, this component hides and the normal
+   ImageDecisionView takes over showing the chosen cropped image. *@
+
+@if (_loading)
+{
+    <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+        <MudText Typo="Typo.body1">Checking split status...</MudText>
+    </MudStack>
+}
+else if (_splitStatus == "Pending")
+{
+    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-4">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudProgressCircular Color="Color.Info" Size="Size.Small" Indeterminate="true" />
+            <MudText>Image split is processing. Showing combined image for now.</MudText>
+        </MudStack>
+    </MudAlert>
+}
+else if (_splitStatus == "Ready" && _options?.Count > 0)
+{
+    <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mb-4" Dense="true">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Outlined.ContentCut" />
+            <div>
+                <MudText Typo="Typo.subtitle1"><strong>Multi-Container Scan — Choose Your Container's Image</strong></MudText>
+                <MudText Typo="Typo.caption">
+                    This scan contains 2 containers. Below are the top split candidates for <strong>@ContainerNumber</strong> (@(_position == "left" ? "Container 1 — Left" : "Container 2 — Right")).
+                    Pick the best crop, then proceed to analysis.
+                </MudText>
+            </div>
+        </MudStack>
+    </MudAlert>
+
+    <MudGrid Spacing="3">
+        @for (int i = 0; i < _options.Count; i++)
+        {
+            var option = _options[i];
+            var label = i == 0 ? "Option A" : "Option B";
+            var color = i == 0 ? Color.Primary : Color.Secondary;
+
+            <MudItem xs="12" md="6">
+                <MudCard Elevation="2" Class="@(_choosingResultId == option.ResultId ? "mud-border-primary" : "")" Style="height: 100%;">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudChip T="string" Color="@color" Size="Size.Small" Variant="Variant.Filled">@label</MudChip>
+                                <MudText Typo="Typo.subtitle2">@option.Strategy</MudText>
+                                <MudSpacer />
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                    Split x=@option.SplitX
+                                </MudChip>
+                                @if (option.Confidence > 0)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                        @($"{option.Confidence:P0}")
+                                    </MudChip>
+                                }
+                            </MudStack>
+                        </CardHeaderContent>
+                    </MudCardHeader>
+                    <MudCardMedia>
+                        @if (!string.IsNullOrEmpty(option.CropImageBase64))
+                        {
+                            <img src="@($"data:image/jpeg;base64,{option.CropImageBase64}")"
+                                 alt="@($"{label}: {option.Strategy}")"
+                                 style="width: 100%; height: auto; max-height: 400px; object-fit: contain; background: #1a1a1a;" />
+                        }
+                        else
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Style="height: 200px; background: #2a2a2a;">
+                                <MudProgressCircular Color="Color.Primary" Size="Size.Small" Indeterminate="true" />
+                                <MudText Typo="Typo.caption">Loading preview...</MudText>
+                            </MudStack>
+                        }
+                    </MudCardMedia>
+                    @if (!string.IsNullOrEmpty(option.Reasoning))
+                    {
+                        <MudCardContent>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@option.Reasoning</MudText>
+                        </MudCardContent>
+                    }
+                    <MudCardActions>
+                        <MudButton Variant="Variant.Filled" Color="@color"
+                                   StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                   OnClick="@(() => ChooseOption(option.ResultId))"
+                                   Disabled="@_submitting"
+                                   FullWidth="true">
+                            @if (_submitting && _choosingResultId == option.ResultId)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                                @:Selecting...
+                            }
+                            else
+                            {
+                                @:Choose This Image
+                            }
+                        </MudButton>
+                    </MudCardActions>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+
+    <MudStack Row="true" Justify="Justify.Center" Class="mt-4">
+        <MudButton Variant="Variant.Text" Color="Color.Default"
+                   StartIcon="@Icons.Material.Outlined.SkipNext"
+                   OnClick="@SkipSplit"
+                   Disabled="@_submitting">
+            Skip — Use Original Combined Image
+        </MudButton>
+    </MudStack>
+}
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public EventCallback OnSplitChosen { get; set; }
+    [Parameter] public EventCallback OnSplitSkipped { get; set; }
+
+    private bool _loading = true;
+    private bool _submitting;
+    private string? _splitStatus;
+    private string? _position;
+    private string? _jobId;
+    private string? _choosingResultId;
+    private List<SplitOption> _options = new();
+
+    private class SplitOption
+    {
+        public string ResultId { get; set; } = "";
+        public string Strategy { get; set; } = "";
+        public int SplitX { get; set; }
+        public double Confidence { get; set; }
+        public string? CropImageUrl { get; set; }
+        public string? CropImageBase64 { get; set; }
+        public string? Reasoning { get; set; }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber)) return;
+        await LoadSplitOptions();
+    }
+
+    private async Task LoadSplitOptions()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var response = await ApiService.GetAsync<System.Text.Json.JsonElement>(
+                $"api/image-splitter/container/{ContainerNumber}/split-options");
+
+            var isMulti = response.TryGetProperty("isMultiContainer", out var mc) && mc.GetBoolean();
+            _splitStatus = response.TryGetProperty("splitStatus", out var ss) ? ss.GetString() : null;
+            _position = response.TryGetProperty("position", out var pos) ? pos.GetString() : null;
+            _jobId = response.TryGetProperty("jobId", out var jid) ? jid.GetString() : null;
+
+            _options.Clear();
+            if (isMulti && _splitStatus == "Ready" &&
+                response.TryGetProperty("options", out var opts) &&
+                opts.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var opt in opts.EnumerateArray())
+                {
+                    _options.Add(new SplitOption
+                    {
+                        ResultId = opt.TryGetProperty("resultId", out var rid) ? rid.GetString() ?? "" : "",
+                        Strategy = opt.TryGetProperty("strategy", out var st) ? st.GetString() ?? "" : "",
+                        SplitX = opt.TryGetProperty("splitX", out var sx) ? sx.GetInt32() : 0,
+                        Confidence = opt.TryGetProperty("confidence", out var cf) ? cf.GetDouble() : 0,
+                        CropImageUrl = opt.TryGetProperty("cropImageUrl", out var url) ? url.GetString() : null,
+                        Reasoning = opt.TryGetProperty("reasoning", out var rs) ? rs.GetString() : null
+                    });
+                }
+
+                // Load crop images as base64 (auth-protected endpoints need token)
+                foreach (var option in _options)
+                {
+                    if (!string.IsNullOrEmpty(option.CropImageUrl))
+                    {
+                        _ = LoadCropImageAsync(option);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SplitChoiceDialog] Error loading split options: {ex.Message}");
+            _splitStatus = null; // Fall through to normal viewer
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadCropImageAsync(SplitOption option)
+    {
+        try
+        {
+            var bytes = await ApiService.GetBytesAsync(option.CropImageUrl!);
+            if (bytes != null && bytes.Length > 0)
+            {
+                option.CropImageBase64 = Convert.ToBase64String(bytes);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SplitChoiceDialog] Error loading crop image: {ex.Message}");
+        }
+    }
+
+    private async Task ChooseOption(string resultId)
+    {
+        _submitting = true;
+        _choosingResultId = resultId;
+        StateHasChanged();
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var userName = authState.User?.Identity?.Name ?? "unknown";
+
+            await ApiService.PostAsync<object, object>(
+                $"api/image-splitter/container/{ContainerNumber}/choose-split",
+                new { resultId, approvedBy = userName });
+
+            Snackbar.Add($"Split image selected for {ContainerNumber}", Severity.Success);
+            await OnSplitChosen.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to save split choice: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+            _choosingResultId = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SkipSplit()
+    {
+        _submitting = true;
+        StateHasChanged();
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var userName = authState.User?.Identity?.Name ?? "unknown";
+
+            await ApiService.PostAsync<object, object>(
+                $"api/image-splitter/container/{ContainerNumber}/skip-split",
+                new { skippedBy = userName });
+
+            Snackbar.Add($"Split skipped for {ContainerNumber} — using combined image", Severity.Info);
+            await OnSplitSkipped.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to skip split: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Returns true if this component needs to show a split choice UI
+    /// (status is "Ready" with options), or a pending banner.
+    /// Returns false if the normal viewer should take over.
+    /// </summary>
+    public bool NeedsSplitInteraction => _splitStatus == "Ready" && _options.Count > 0;
+    public bool IsPending => _splitStatus == "Pending";
+    public bool IsResolved => _splitStatus == null || _splitStatus == "Chosen" || _splitStatus == "Skipped";
+}

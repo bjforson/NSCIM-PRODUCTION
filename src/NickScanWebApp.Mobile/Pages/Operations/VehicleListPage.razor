@@ -1,0 +1,17 @@
+@page "/operations/vehicle-list"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesVehiclesView)]
+@using NickScanWebApp.Mobile.Services
+@inject NavigationManager NavigationManager
+
+<PageTitle>Vehicle List - Operations</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <!-- Redirect to vehicles page -->
+    @code {
+        protected override void OnInitialized()
+        {
+            NavigationManager.NavigateTo("/operations/vehicles");
+        }
+    }
+</MudContainer>
+

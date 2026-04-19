@@ -1,0 +1,513 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanWebApp.New.Services
+@using MudBlazor
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (CargoGroup?.Data?.ICUMSData?.Any() == true)
+    {
+        <MudText Typo="Typo.h6" Class="mb-4">Complete ICUMS Details (BOE/CMR)</MudText>
+        
+        @* Cargo Content Summary *@
+        @if (_cargoSummary != null && !string.IsNullOrWhiteSpace(_cargoSummary.SummaryText))
+        {
+            <MudPaper Elevation="2" Class="pa-4 mb-4" Style="background: linear-gradient(135deg, var(--mud-palette-primary-lighten) 0%, var(--mud-palette-primary) 100%); border-left: 4px solid var(--mud-palette-primary-darken);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Summarize" Color="Color.Primary" Size="Size.Medium" />
+                        <MudText Typo="Typo.h6" Color="Color.Primary" Style="font-weight: 600;">Cargo Content Summary</MudText>
+                    </MudStack>
+                    <MudDivider />
+                    <MudText Typo="Typo.body1" Style="white-space: pre-line; line-height: 1.6;">@_cargoSummary.SummaryText</MudText>
+                </MudStack>
+            </MudPaper>
+        }
+        
+        @if (CargoGroup.Type == CargoType.Consolidated)
+        {
+            @* ✅ DYNAMIC: Consolidated cargo - Show House BLs in collapsible panels *@
+            var houseBLCount = CargoGroup.Data.ICUMSData.Count;
+            
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                <MudIcon Icon="@Icons.Material.Outlined.Inventory" Class="mr-2" />
+                <strong>Consolidated Cargo:</strong> @houseBLCount House BL(s) for container @CargoGroup.GroupIdentifier
+            </MudAlert>
+            
+            <MudExpansionPanels MultiExpansion="true" Class="mt-3">
+                @foreach (var houseBLGroup in CargoGroup.Data.ICUMSData)
+                {
+                    var categoryGroups = houseBLGroup.Records.GroupBy(r => r.Category).OrderBy(g => GetCategoryOrder(g.Key)).ToList();
+                    var totalFields = houseBLGroup.Records.Count;
+                    
+                    <MudExpansionPanel Text="@($"House BL: {houseBLGroup.HouseBL}")" 
+                                       Icon="@Icons.Material.Outlined.Article"
+                                       IsInitiallyExpanded="false">
+                        <MudStack Spacing="2" Class="pa-2">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                @totalFields field(s) across @categoryGroups.Count category/categories
+                            </MudChip>
+                            
+                            @* Display BOE Details if available *@
+                            @if (houseBLGroup.BOEDetails.Any())
+                            {
+                                <MudPaper Elevation="1" Class="pa-3 mb-2" Style="border-left: 3px solid var(--mud-palette-info);">
+                                    <MudText Typo="Typo.subtitle2" Color="Color.Info" Class="mb-2">
+                                        <MudIcon Icon="@Icons.Material.Outlined.Description" Size="Size.Small" /> BOE Details
+                                    </MudText>
+                                    @foreach (var boe in houseBLGroup.BOEDetails)
+                                    {
+                                        <MudStack Spacing="1" Class="mb-2">
+                                            <MudText Typo="Typo.body2">
+                                                <strong>Declaration:</strong> @boe.DeclarationNumber
+                                            </MudText>
+                                            <MudText Typo="Typo.body2">
+                                                <strong>Consignee:</strong> @boe.ConsigneeName
+                                            </MudText>
+                                            <MudText Typo="Typo.body2">
+                                                <strong>Container:</strong> @boe.ContainerNumber
+                                            </MudText>
+                                        </MudStack>
+                                    }
+                                </MudPaper>
+                            }
+                            
+                            @* Display categories for this House BL - Now collapsible *@
+                            <MudExpansionPanels MultiExpansion="true" Class="mt-2">
+                                @foreach (var categoryGroup in categoryGroups)
+                                {
+                                    <MudExpansionPanel Text="@categoryGroup.Key" 
+                                                       Icon="@GetCategoryIcon(categoryGroup.Key)"
+                                                       IsInitiallyExpanded="false">
+                                        <MudStack Spacing="2" Class="pa-2">
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                                                @categoryGroup.Count() field(s)
+                                            </MudChip>
+                                            
+                                            @if (string.Equals(categoryGroup.Key, "Cargo Info", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                @* ✅ TABLE VIEW: Display Cargo Info items as a clean table *@
+                                                var itemGroups = GroupRecordsByItem(categoryGroup.ToList());
+                                                var orderedGroups = itemGroups.OrderBy(g => g.Key == null ? int.MaxValue : (int.TryParse(g.Key, out var num) ? num : int.MaxValue)).ToList();
+
+                                                <MudText Typo="Typo.subtitle2" Color="Color.Primary" Class="mb-2" Style="font-weight:600;">
+                                                    @orderedGroups.Count Line Item(s)
+                                                </MudText>
+
+                                                @if (orderedGroups.Any())
+                                                {
+                                                    <MudSimpleTable Dense="true" Hover="true" Bordered="true" Style="background: white;">
+                                                        <thead>
+                                                            <tr>
+                                                                <th style="width:40px;">#</th>
+                                                                <th>Description</th>
+                                                                <th style="width:110px;">HS Code</th>
+                                                                <th style="width:90px;">Quantity</th>
+                                                                <th style="width:90px;">Weight</th>
+                                                                <th style="width:100px;">FOB Value</th>
+                                                                <th style="width:90px;">Duty Paid</th>
+                                                                <th style="width:60px;">Origin</th>
+                                                                <th style="width:60px;">CPC</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            @foreach (var itemGroup in orderedGroups)
+                                                            {
+                                                                var desc = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var hs = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var qty = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var wt = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Weight", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var fob = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("FOB", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var duty = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Duty", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var origin = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Country", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                var cpc = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("CPC", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+
+                                                                <tr>
+                                                                    <td style="color:#94a3b8;">@(itemGroup.Key ?? "-")</td>
+                                                                    <td style="font-weight:500;">@desc</td>
+                                                                    <td><code style="font-size:11px;">@hs</code></td>
+                                                                    <td>@qty</td>
+                                                                    <td>@wt</td>
+                                                                    <td>@fob</td>
+                                                                    <td>@duty</td>
+                                                                    <td>@origin</td>
+                                                                    <td>@cpc</td>
+                                                                </tr>
+                                                            }
+                                                        </tbody>
+                                                    </MudSimpleTable>
+                                                }
+                                                else
+                                                {
+                                                    @* Fallback: If grouping fails, show standard grid *@
+                                                    <MudGrid Spacing="2">
+                                                        @foreach (var record in categoryGroup)
+                                                        {
+                                                            <MudItem xs="12" sm="6" md="4">
+                                                                <MudStack Spacing="0">
+                                                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                            <strong>@record.Field</strong>
+                                                                        </MudText>
+                                                                        @if (record.IsRequired)
+                                                                        {
+                                                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 18px; font-size: 0.7rem;">Required</MudChip>
+                                                                        }
+                                                                    </MudStack>
+                                                                    <MudText Typo="Typo.body2">@(record.Value ?? "N/A")</MudText>
+                                                                </MudStack>
+                                                            </MudItem>
+                                                        }
+                                                    </MudGrid>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                @* Standard grid display for non-Cargo Info categories *@
+                                                <MudGrid Spacing="2">
+                                                    @foreach (var record in categoryGroup)
+                                                    {
+                                                        <MudItem xs="12" sm="6" md="4">
+                                                            <MudStack Spacing="0">
+                                                                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                        <strong>@record.Field</strong>
+                                                                    </MudText>
+                                                                    @if (record.IsRequired)
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 18px; font-size: 0.7rem;">Required</MudChip>
+                                                                    }
+                                                                </MudStack>
+                                                                <MudText Typo="Typo.body2">@(record.Value ?? "N/A")</MudText>
+                                                            </MudStack>
+                                                        </MudItem>
+                                                    }
+                                                </MudGrid>
+                                            }
+                                        </MudStack>
+                                    </MudExpansionPanel>
+                                }
+                            </MudExpansionPanels>
+                        </MudStack>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
+        else
+        {
+            @* ✅ DYNAMIC: Non-consolidated cargo - Show containers in collapsible panels with shared BOE data *@
+            var containerCount = CargoGroup.Data.ICUMSData.Count;
+            
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                <MudIcon Icon="@Icons.Material.Outlined.Description" Class="mr-2" />
+                <strong>Declaration Number:</strong> @CargoGroup.GroupIdentifier | <strong>Containers:</strong> @containerCount container(s) (shared BOE data)
+            </MudAlert>
+            
+            <MudExpansionPanels MultiExpansion="true" Class="mt-3">
+                @foreach (var containerGroup in CargoGroup.Data.ICUMSData)
+                {
+                    var categoryGroups = containerGroup.Records.GroupBy(r => r.Category).OrderBy(g => GetCategoryOrder(g.Key)).ToList();
+                    var totalFields = containerGroup.Records.Count;
+                    
+                    <MudExpansionPanel Text="@($"Container: {containerGroup.ContainerNumber}")" 
+                                       Icon="@Icons.Material.Outlined.Inventory2"
+                                       IsInitiallyExpanded="false">
+                        <MudStack Spacing="2" Class="pa-2">
+                            @if (totalFields > 0 && categoryGroups.Any())
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                    @totalFields field(s) across @categoryGroups.Count category/categories
+                                </MudChip>
+                                
+                                @* Display categories (shared BOE data for all containers) - Now collapsible *@
+                                <MudExpansionPanels MultiExpansion="true" Class="mt-2">
+                                    @foreach (var categoryGroup in categoryGroups)
+                                    {
+                                        <MudExpansionPanel Text="@categoryGroup.Key" 
+                                                           Icon="@GetCategoryIcon(categoryGroup.Key)"
+                                                           IsInitiallyExpanded="false">
+                                            <MudStack Spacing="2" Class="pa-2">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                                                    @categoryGroup.Count() field(s)
+                                                </MudChip>
+                                                
+                                                @if (string.Equals(categoryGroup.Key, "Cargo Info", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    @* ✅ TABLE VIEW: Display Cargo Info items as a clean table *@
+                                                    var itemGroups = GroupRecordsByItem(categoryGroup.ToList());
+                                                    var orderedGroups = itemGroups.OrderBy(g => g.Key == null ? int.MaxValue : (int.TryParse(g.Key, out var num) ? num : int.MaxValue)).ToList();
+
+                                                    <MudText Typo="Typo.subtitle2" Color="Color.Primary" Class="mb-2" Style="font-weight:600;">
+                                                        @orderedGroups.Count Line Item(s)
+                                                    </MudText>
+
+                                                    @if (orderedGroups.Any())
+                                                    {
+                                                        <MudSimpleTable Dense="true" Hover="true" Bordered="true" Style="background: white;">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th style="width:40px;">#</th>
+                                                                    <th>Description</th>
+                                                                    <th style="width:110px;">HS Code</th>
+                                                                    <th style="width:90px;">Quantity</th>
+                                                                    <th style="width:90px;">Weight</th>
+                                                                    <th style="width:100px;">FOB Value</th>
+                                                                    <th style="width:90px;">Duty Paid</th>
+                                                                    <th style="width:60px;">Origin</th>
+                                                                    <th style="width:60px;">CPC</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                @foreach (var itemGroup in orderedGroups)
+                                                                {
+                                                                    var desc = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var hs = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var qty = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var wt = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Weight", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var fob = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("FOB", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var duty = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Duty", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var origin = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("Country", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+                                                                    var cpc = itemGroup.Value.FirstOrDefault(r => r.Field.Contains("CPC", StringComparison.OrdinalIgnoreCase))?.Value ?? "-";
+
+                                                                    <tr>
+                                                                        <td style="color:#94a3b8;">@(itemGroup.Key ?? "-")</td>
+                                                                        <td style="font-weight:500;">@desc</td>
+                                                                        <td><code style="font-size:11px;">@hs</code></td>
+                                                                        <td>@qty</td>
+                                                                        <td>@wt</td>
+                                                                        <td>@fob</td>
+                                                                        <td>@duty</td>
+                                                                        <td>@origin</td>
+                                                                        <td>@cpc</td>
+                                                                    </tr>
+                                                                }
+                                                            </tbody>
+                                                        </MudSimpleTable>
+                                                    }
+                                                    else
+                                                    {
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">No structured cargo items found.</MudText>
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    @* Standard grid display for non-Cargo Info categories *@
+                                                    <MudGrid Spacing="2">
+                                                        @foreach (var record in categoryGroup)
+                                                        {
+                                                            <MudItem xs="12" sm="6" md="4">
+                                                                <MudStack Spacing="0">
+                                                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                            <strong>@record.Field</strong>
+                                                                        </MudText>
+                                                                        @if (record.IsRequired)
+                                                                        {
+                                                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 18px; font-size: 0.7rem;">Required</MudChip>
+                                                                        }
+                                                                    </MudStack>
+                                                                    <MudText Typo="Typo.body2">@(record.Value ?? "N/A")</MudText>
+                                                                </MudStack>
+                                                            </MudItem>
+                                                        }
+                                                    </MudGrid>
+                                                }
+                                            </MudStack>
+                                        </MudExpansionPanel>
+                                    }
+                                </MudExpansionPanels>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Warning" Dense="true">
+                                    <MudText Typo="Typo.body2">
+                                        No ICUMS records available for this container. The shared BOE data may not have been loaded yet.
+                                    </MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Declaration: @CargoGroup.GroupIdentifier | Container: @containerGroup.ContainerNumber
+                                    </MudText>
+                                </MudAlert>
+                            }
+                        </MudStack>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Warning">
+            No ICUMS data available for this cargo group.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public CargoGroupDto? CargoGroup { get; set; }
+    
+    [Inject] private CargoSummaryService CargoSummaryService { get; set; } = null!;
+    
+    private CargoSummaryDto? _cargoSummary;
+    private bool _isLoadingSummary = false;
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadCargoSummary();
+    }
+    
+    private async Task LoadCargoSummary()
+    {
+        if (CargoGroup == null || CargoGroup.Data?.ICUMSData?.Any() != true)
+        {
+            _cargoSummary = null;
+            return;
+        }
+        
+        try
+        {
+            _isLoadingSummary = true;
+            _cargoSummary = await CargoSummaryService.GenerateSummaryAsync(CargoGroup);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading cargo summary: {ex.Message}");
+            _cargoSummary = null;
+        }
+        finally
+        {
+            _isLoadingSummary = false;
+        }
+    }
+    
+    private int GetCategoryOrder(string category)
+    {
+        return category switch
+        {
+            "Container Info" => 1,
+            "Declaration Info" => 2,
+            "CMR Info" => 3,
+            "Manifest Info" => 4,
+            "Party Info" => 5,
+            "Location Info" => 6,
+            "Cargo Info" => 7,
+            "Financial Info" => 8,
+            "Risk Assessment" => 9,
+            "Status" => 10,
+            "Data Info" => 11,
+            "Additional Fields" => 12,
+            _ => 99
+        };
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Icons.Material.Outlined.Inventory2,
+            "Declaration Info" => Icons.Material.Outlined.Description,
+            "CMR Info" => Icons.Material.Outlined.Sailing,
+            "Manifest Info" => Icons.Material.Outlined.ListAlt,
+            "Party Info" => Icons.Material.Outlined.Business,
+            "Location Info" => Icons.Material.Outlined.LocationOn,
+            "Financial Info" => Icons.Material.Outlined.AttachMoney,
+            "Cargo Info" => Icons.Material.Outlined.Inventory,
+            "Risk Assessment" => Icons.Material.Outlined.Security,
+            "Status" => Icons.Material.Outlined.Info,
+            "Data Info" => Icons.Material.Outlined.Schedule,
+            "Additional Fields" => Icons.Material.Outlined.Info,
+            _ => Icons.Material.Outlined.Description
+        };
+    }
+    
+    /// <summary>
+    /// Extracts the item number from a field name (e.g., "Item 1: HS Code" -> "1", or null if no prefix)
+    /// </summary>
+    private string? ExtractItemNumber(string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(fieldName))
+            return null;
+            
+        // Match pattern: "Item X: " where X is a number
+        var match = System.Text.RegularExpressions.Regex.Match(fieldName, @"^Item\s+(\d+):\s*", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (match.Success)
+        {
+            return match.Groups[1].Value;
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// Removes the item prefix from a field name (e.g., "Item 1: HS Code" -> "HS Code")
+    /// </summary>
+    private string GetFieldNameWithoutItemPrefix(string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(fieldName))
+            return fieldName;
+            
+        // Remove "Item X: " prefix if present
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(fieldName, @"^Item\s+\d+:\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return cleaned;
+    }
+    
+    /// <summary>
+    /// Returns display order for cargo fields to ensure consistent ordering within each item card
+    /// </summary>
+    private int GetFieldDisplayOrder(string fieldName)
+    {
+        var cleaned = GetFieldNameWithoutItemPrefix(fieldName);
+        return cleaned switch
+        {
+            "HS Code" => 1,
+            "Item Description" => 2,
+            "Description" => 2,
+            "Quantity" => 3,
+            "Weight" => 4,
+            "FOB Value" => 5,
+            "Duty Paid" => 6,
+            "Item Country of Origin" => 7,
+            "Country of Origin" => 7,
+            "CPC" => 8,
+            "Marks & Numbers" => 9,
+            "Goods Description" => 10,
+            _ => 99
+        };
+    }
+    
+    /// <summary>
+    /// Groups records by item number for Cargo Info category
+    /// Returns a dictionary where key is item number (or null for items without prefix) and value is list of records
+    /// </summary>
+    private Dictionary<string?, List<ICUMSDataRecordDto>> GroupRecordsByItem(List<ICUMSDataRecordDto> records)
+    {
+        var grouped = new Dictionary<string?, List<ICUMSDataRecordDto>>();
+        
+        if (records == null || !records.Any())
+        {
+            return grouped;
+        }
+        
+        // Check if any records have item prefixes
+        var hasItemPrefixes = records.Any(r => !string.IsNullOrWhiteSpace(r.Field) && 
+            System.Text.RegularExpressions.Regex.IsMatch(r.Field, @"^Item\s+\d+:\s*", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+        
+        foreach (var record in records)
+        {
+            var itemNumber = ExtractItemNumber(record.Field);
+            
+            // If no item prefixes exist, group all under a single "Cargo Item" group
+            if (!hasItemPrefixes)
+            {
+                itemNumber = null;
+            }
+            
+            if (!grouped.ContainsKey(itemNumber))
+            {
+                grouped[itemNumber] = new List<ICUMSDataRecordDto>();
+            }
+            
+            grouped[itemNumber].Add(record);
+        }
+        
+        return grouped;
+    }
+}
+

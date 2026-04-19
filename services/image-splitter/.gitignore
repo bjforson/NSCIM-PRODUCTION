@@ -1,0 +1,28 @@
+# Python venv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Debug artifacts (regenerated during processing)
+debug_*.jpg
+debug_*.png
+diagnose_*.jpg
+analyze_*.csv
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

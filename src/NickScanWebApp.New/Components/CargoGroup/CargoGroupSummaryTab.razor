@@ -1,0 +1,606 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.Shared.Services
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (CargoGroup == null && !_isLoadingSummary)
+    {
+        <MudAlert Severity="Severity.Info">
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.subtitle1"><strong>Cargo summary not available</strong></MudText>
+                <MudText Typo="Typo.body2">
+                    ICUMS data could not be loaded for this group. The declaration or container may not exist in ICUMS yet, or the identifier could not be resolved.
+                </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    You can still complete the audit using the Scanner Data, Images, and ICUMS Data tabs.
+                </MudText>
+            </MudStack>
+        </MudAlert>
+    }
+    else if (_isLoadingSummary)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body2">Generating cargo summary...</MudText>
+        </MudStack>
+    }
+    else if (CargoGroup?.Type == CargoType.Consolidated && _houseBLSummaries?.Any() == true)
+    {
+        @* ✅ CONSOLIDATED CARGO: Show summary for each House BL/BOE *@
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+            <MudIcon Icon="@Icons.Material.Outlined.Inventory" Class="mr-2" />
+            <strong>Consolidated Cargo:</strong> @_houseBLSummaries.Count House BL(s) with individual summaries below
+        </MudAlert>
+        
+        <MudExpansionPanels MultiExpansion="true" Class="mt-3">
+            @foreach (var houseBLSummary in _houseBLSummaries)
+            {
+                <MudExpansionPanel Text="@($"House BL: {houseBLSummary.HouseBL}")" 
+                                   Icon="@Icons.Material.Outlined.Article"
+                                   IsExpanded="false">
+                    <MudStack Spacing="3" Class="pa-2">
+                        @* BOE Details Header *@
+                        @if (houseBLSummary.BOEDetails.Any())
+                        {
+                            <MudPaper Elevation="1" Class="pa-3 mb-2" Style="border-left: 3px solid var(--mud-palette-info);">
+                                <MudStack Spacing="1">
+                                    @if (!string.IsNullOrWhiteSpace(houseBLSummary.DeclarationNumber))
+                                    {
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Declaration:</strong> <span style="font-family: monospace;">@houseBLSummary.DeclarationNumber</span>
+                                        </MudText>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(houseBLSummary.ConsigneeName))
+                                    {
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Consignee:</strong> @houseBLSummary.ConsigneeName
+                                        </MudText>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(houseBLSummary.ClearanceType))
+                                    {
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Clearance Type:</strong> <MudChip T="string" Size="Size.Small">@houseBLSummary.ClearanceType</MudChip>
+                                        </MudText>
+                                    }
+                                </MudStack>
+                            </MudPaper>
+                        }
+                        
+                        @* Summary Text *@
+                        @* ✅ FIX: Check if summary has ANY data, not just SummaryText - allows detailed grid to display even if SummaryText is empty *@
+                        @{
+                            var hasSummaryData = houseBLSummary.Summary != null && (
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.SummaryText) ||
+                                (houseBLSummary.Summary.Consignees?.Any() == true) ||
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.GoodsDescription) ||
+                                (houseBLSummary.Summary.HSCodes?.Any() == true) ||
+                                (houseBLSummary.Summary.CountriesOfOrigin?.Any() == true) ||
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.TotalQuantity) ||
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.TotalWeight) ||
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.TotalFOBValue) ||
+                                !string.IsNullOrWhiteSpace(houseBLSummary.Summary.TotalDutyPaid) ||
+                                houseBLSummary.Summary.LineItemCount > 0
+                            );
+                        }
+                        @if (hasSummaryData)
+                        {
+                            @* Compact summary snapshot — replaces the old verbose card grid.
+                               Renders the snapshot bar, context chips, goods description
+                               table (always), and an optional collapsed full-text expander. *@
+                            <CargoSummarySnapshot Summary="@houseBLSummary.Summary" />
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Warning">
+                                <MudText Typo="Typo.body2">Unable to generate summary for this House BL. The data may not contain sufficient information.</MudText>
+                            </MudAlert>
+                        }
+                    </MudStack>
+                </MudExpansionPanel>
+            }
+        </MudExpansionPanels>
+    }
+    else if (_cargoSummary != null && !string.IsNullOrWhiteSpace(_cargoSummary.SummaryText))
+    {
+        @* NON-CONSOLIDATED CARGO: Compact summary snapshot *@
+        <CargoSummarySnapshot Summary="@_cargoSummary" />
+
+        <!-- AI-Generated Cargo Summary -->
+        <MudPaper Elevation="2" Class="pa-4 mb-4" Style="border-left: 4px solid #27ae60;">
+            <MudStack Spacing="2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Style="color:#27ae60;" Size="Size.Medium" />
+                    <MudText Typo="Typo.h6" Style="color:#27ae60; font-weight: 600;">AI Cargo Summary</MudText>
+                    <MudSpacer />
+                    @if (!_aiSummaryLoading && string.IsNullOrEmpty(_aiSummaryText))
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.AutoAwesome"
+                                   OnClick="GenerateAiSummary">
+                            Generate Summary
+                        </MudButton>
+                    }
+                    else if (!string.IsNullOrEmpty(_aiSummaryText))
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Success" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.Refresh"
+                                   OnClick="GenerateAiSummary" Disabled="_aiSummaryLoading">
+                            Regenerate
+                        </MudButton>
+                    }
+                </MudStack>
+                @if (_aiSummaryLoading)
+                {
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="pa-2">
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Color="Color.Success" />
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Analyzing line items with AI...</MudText>
+                    </MudStack>
+                }
+                else if (!string.IsNullOrEmpty(_aiSummaryText))
+                {
+                    <MudDivider />
+                    <MudText Typo="Typo.body1" Style="line-height: 1.6;">@_aiSummaryText</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Click "Generate Summary" to create an AI-powered summary of all line item descriptions.
+                    </MudText>
+                }
+            </MudStack>
+        </MudPaper>
+
+    }
+    else
+    {
+        @* No summary data available - show appropriate message *@
+        <MudStack Spacing="3">
+            @if (CargoGroup?.Data?.ICUMSData?.Any() != true)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Filled">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Medium" />
+                            <MudText Typo="Typo.h6" Style="font-weight: 600;">No ICUMS/BOE Data Available</MudText>
+                        </MudStack>
+                        <MudDivider />
+                        <MudText Typo="Typo.body1">
+                            This container does not have any Bill of Entry (BOE) data from ICUMS. The cargo summary requires ICUMS data to generate information about:
+                        </MudText>
+                        <MudList Dense="true" T="string">
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Business">Consignee information</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Inventory">Goods description</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Code">HS codes</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Scale">Weight and quantity</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.AttachMoney">FOB value and duty</MudListItem>
+                        </MudList>
+                        <MudText Typo="Typo.body2" Style="font-style: italic; color: #666;">
+                            This may occur if the container has not been processed through ICUMS yet, or if there's a mismatch between the container number and BOE records.
+                        </MudText>
+                    </MudStack>
+                </MudAlert>
+                
+                @* Show scanner data summary if available *@
+                @if (CargoGroup?.Data?.ScannerData?.Any() == true)
+                {
+                    <MudPaper Elevation="1" Class="pa-4">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.h6" Color="Color.Info">
+                                <MudIcon Icon="@Icons.Material.Outlined.Scanner" Size="Size.Small" /> Scanner Data Available
+                            </MudText>
+                            <MudDivider />
+                            <MudText Typo="Typo.body2">
+                                Scanner data is available for this container. You can view it in the <strong>Scanner Data</strong> tab.
+                            </MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                @CargoGroup.Data.ScannerData.Count scanner record(s) available
+                            </MudChip>
+                        </MudStack>
+                    </MudPaper>
+                }
+            }
+            else if (CargoGroup?.Type == CargoType.Consolidated && (_houseBLSummaries == null || !_houseBLSummaries.Any()))
+            {
+                @* Consolidated cargo but no House BL summaries generated *@
+                <MudAlert Severity="Severity.Warning">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Medium" />
+                            <MudText Typo="Typo.h6" Style="font-weight: 600;">No House BL Summaries Available</MudText>
+                        </MudStack>
+                        <MudDivider />
+                        <MudText Typo="Typo.body1">
+                            This consolidated cargo has ICUMS data, but summaries could not be generated for the House BLs. This may occur if:
+                        </MudText>
+                        <MudList Dense="true" T="string">
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Info">House BL data is missing or incomplete</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Info">BOE documents lack required fields for summary generation</MudListItem>
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.Info">Data structure does not match expected format</MudListItem>
+                        </MudList>
+                    </MudStack>
+                </MudAlert>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Info">
+                    <MudText Typo="Typo.body2">
+                        Unable to generate cargo summary. The data may not contain sufficient information.
+                    </MudText>
+                </MudAlert>
+            }
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public CargoGroupDto? CargoGroup { get; set; }
+    
+    [Inject] private CargoSummaryService CargoSummaryService { get; set; } = null!;
+    
+    private CargoSummaryDto? _cargoSummary;
+    private List<HouseBLSummaryItem>? _houseBLSummaries;
+    private bool _isLoadingSummary = false;
+    private string? _aiSummaryText;
+    private bool _aiSummaryLoading = false;
+    
+    // ✅ MEMORY FIX: Track last processed CargoGroup to prevent render loops
+    private string? _lastProcessedGroupIdentifier;
+    private CargoType? _lastProcessedCargoType;
+    private int _lastProcessedICUMSDataCount;
+    
+    // ✅ PERFORMANCE FIX #2: Cache generated summaries to avoid regenerating
+    private static readonly Dictionary<string, CachedSummary> _summaryCache = new();
+    private static readonly object _cacheLock = new();
+    private const int MaxCacheSize = 50; // Limit cache size to prevent memory issues
+    
+    private class CachedSummary
+    {
+        public CargoSummaryDto? Summary { get; set; }
+        public List<HouseBLSummaryItem>? HouseBLSummaries { get; set; }
+        public DateTime CachedAt { get; set; }
+    }
+    
+    // Helper class to hold House BL summary data
+    private class HouseBLSummaryItem
+    {
+        public string HouseBL { get; set; } = string.Empty;
+        public string? DeclarationNumber { get; set; }
+        public string? ConsigneeName { get; set; }
+        public string? ClearanceType { get; set; }
+        public CargoSummaryDto? Summary { get; set; }
+        public List<BOEDetailDto> BOEDetails { get; set; } = new();
+    }
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        // ✅ MEMORY FIX: Only reload if CargoGroup actually changed
+        var currentGroupIdentifier = CargoGroup?.GroupIdentifier;
+        var currentCargoType = CargoGroup?.Type;
+        var currentICUMSDataCount = CargoGroup?.Data?.ICUMSData?.Count ?? 0;
+        
+        if (currentGroupIdentifier == _lastProcessedGroupIdentifier &&
+            currentCargoType == _lastProcessedCargoType &&
+            currentICUMSDataCount == _lastProcessedICUMSDataCount &&
+            _cargoSummary != null || _houseBLSummaries != null)
+        {
+            // Same CargoGroup, skip reload
+            return;
+        }
+        
+        _lastProcessedGroupIdentifier = currentGroupIdentifier;
+        _lastProcessedCargoType = currentCargoType;
+        _lastProcessedICUMSDataCount = currentICUMSDataCount;
+        
+        await LoadCargoSummary();
+    }
+    
+    private async Task LoadCargoSummary()
+    {
+        var summaryGenerationStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        Console.WriteLine($"⏱️ [CargoGroupSummaryTab] LoadCargoSummary START - GroupIdentifier: {CargoGroup?.GroupIdentifier}");
+        
+        if (CargoGroup == null)
+        {
+            Console.WriteLine($"⚠️ [CargoGroupSummaryTab] CargoGroup is null - cannot generate summary");
+            _cargoSummary = null;
+            _houseBLSummaries = null;
+            return;
+        }
+        
+        if (CargoGroup.Data?.ICUMSData?.Any() != true)
+        {
+            Console.WriteLine($"⚠️ [CargoGroupSummaryTab] CargoGroup has no ICUMS data - ICUMSData count: {CargoGroup.Data?.ICUMSData?.Count ?? 0}");
+            _cargoSummary = null;
+            _houseBLSummaries = null;
+            return;
+        }
+        
+        // ✅ PERFORMANCE FIX #2: Check cache first
+        var cacheKey = GenerateCacheKey(CargoGroup);
+        lock (_cacheLock)
+        {
+            if (_summaryCache.TryGetValue(cacheKey, out var cached))
+            {
+                // Cache hit - use cached summary (no regeneration needed)
+                _cargoSummary = cached.Summary;
+                _houseBLSummaries = cached.HouseBLSummaries;
+                summaryGenerationStopwatch.Stop();
+                Console.WriteLine($"✅ [CargoGroupSummaryTab] Using cached summary for {CargoGroup.GroupIdentifier} (cached at {cached.CachedAt:HH:mm:ss}) - Cache lookup: {summaryGenerationStopwatch.ElapsedMilliseconds}ms");
+                return;
+            }
+        }
+        
+        try
+        {
+            _isLoadingSummary = true;
+            
+            // ✅ CONSOLIDATED CARGO: Generate summary for each House BL/BOE separately
+            if (CargoGroup.Type == CargoType.Consolidated)
+            {
+                var consolidatedStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                Console.WriteLine($"🔍 [CargoGroupSummaryTab] Generating summaries for consolidated cargo with {CargoGroup.Data.ICUMSData.Count} House BL(s)");
+                _houseBLSummaries = new List<HouseBLSummaryItem>();
+                
+                // ✅ PERFORMANCE FIX #1: Parallelize House BL summary generation
+                // Process all House BLs in parallel instead of sequentially
+                var validICUMSGroups = CargoGroup.Data.ICUMSData
+                    .Where(g => !string.IsNullOrWhiteSpace(g.HouseBL))
+                    .ToList();
+                
+                if (validICUMSGroups.Any())
+                {
+                    // Create tasks for all House BL summaries in parallel
+                    var summaryTasks = validICUMSGroups.Select(async icumsGroup =>
+                    {
+                        var houseBLStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                        // Create a mini CargoGroupDto for this House BL only
+                        var houseBLCargoGroup = new CargoGroupDto
+                        {
+                            GroupIdentifier = icumsGroup.HouseBL,
+                            Type = CargoType.Consolidated,
+                            GroupingKey = "HouseBL",
+                            MasterBL = CargoGroup.MasterBL,
+                            HouseBLGroups = new List<HouseBLGroupDto>
+                            {
+                                new HouseBLGroupDto
+                                {
+                                    HouseBL = icumsGroup.HouseBL,
+                                    MasterBL = CargoGroup.MasterBL,
+                                    DeclarationNumber = icumsGroup.BOEDetails.FirstOrDefault()?.DeclarationNumber,
+                                    ConsigneeName = icumsGroup.BOEDetails.FirstOrDefault()?.ConsigneeName,
+                                    ClearanceType = icumsGroup.BOEDetails.FirstOrDefault()?.ClearanceType,
+                                    BOEDetails = icumsGroup.BOEDetails
+                                }
+                            },
+                            Data = new CargoGroupDataDto
+                            {
+                                // Only include this House BL's data
+                                ICUMSData = new List<ICUMSDataGroupDto> { icumsGroup },
+                                ScannerData = CargoGroup.Data.ScannerData, // Scanner data is shared
+                                ImageData = CargoGroup.Data.ImageData // Image data is shared
+                            }
+                        };
+                        
+                        // Generate summary for this House BL (runs in parallel)
+                        var houseBLSummary = await CargoSummaryService.GenerateSummaryAsync(houseBLCargoGroup);
+                        houseBLStopwatch.Stop();
+                        Console.WriteLine($"⏱️ [CargoGroupSummaryTab] Generated summary for House BL {icumsGroup.HouseBL}: {houseBLStopwatch.ElapsedMilliseconds}ms");
+                        
+                        // Get BOE details for this House BL
+                        var boeDetails = icumsGroup.BOEDetails.ToList();
+                        var firstBOE = boeDetails.FirstOrDefault();
+                        
+                        return new HouseBLSummaryItem
+                        {
+                            HouseBL = icumsGroup.HouseBL,
+                            DeclarationNumber = firstBOE?.DeclarationNumber ?? icumsGroup.BOEDetails.FirstOrDefault()?.DeclarationNumber,
+                            ConsigneeName = firstBOE?.ConsigneeName ?? icumsGroup.BOEDetails.FirstOrDefault()?.ConsigneeName,
+                            ClearanceType = firstBOE?.ClearanceType ?? icumsGroup.BOEDetails.FirstOrDefault()?.ClearanceType,
+                            Summary = houseBLSummary,
+                            BOEDetails = boeDetails
+                        };
+                    }).ToList();
+                    
+                    // Wait for all summaries to complete in parallel
+                    var summaryResults = await Task.WhenAll(summaryTasks);
+                    _houseBLSummaries = summaryResults.ToList();
+                    consolidatedStopwatch.Stop();
+                    
+                    Console.WriteLine($"✅ [CargoGroupSummaryTab] Generated {_houseBLSummaries.Count} House BL summary/ies in parallel for consolidated cargo");
+                    Console.WriteLine($"⏱️ [CargoGroupSummaryTab] Consolidated cargo summary generation total: {consolidatedStopwatch.ElapsedMilliseconds}ms ({consolidatedStopwatch.Elapsed.TotalSeconds:F2}s)");
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [CargoGroupSummaryTab] No valid House BLs found in ICUMS data");
+                }
+                
+                _cargoSummary = null; // Don't use aggregated summary for consolidated
+            }
+            else
+            {
+                // NON-CONSOLIDATED CARGO: Generate single summary for entire group
+                var nonConsolidatedStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                Console.WriteLine($"🔍 [CargoGroupSummaryTab] Generating summary for non-consolidated cargo group with {CargoGroup.Data.ICUMSData.Count} ICUMS records");
+                _cargoSummary = await CargoSummaryService.GenerateSummaryAsync(CargoGroup);
+                nonConsolidatedStopwatch.Stop();
+                _houseBLSummaries = null;
+                
+                if (_cargoSummary != null)
+                {
+                    Console.WriteLine($"✅ [CargoGroupSummaryTab] Summary generated successfully");
+                    Console.WriteLine($"⏱️ [CargoGroupSummaryTab] Non-consolidated summary generation: {nonConsolidatedStopwatch.ElapsedMilliseconds}ms ({nonConsolidatedStopwatch.Elapsed.TotalSeconds:F2}s)");
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [CargoGroupSummaryTab] Summary service returned null");
+                }
+            }
+            
+            // ✅ PERFORMANCE FIX #2: Store generated summary in cache
+            lock (_cacheLock)
+            {
+                // Cleanup old cache entries if cache is too large
+                if (_summaryCache.Count >= MaxCacheSize)
+                {
+                    // Remove oldest entries (simple FIFO - remove first 10 entries)
+                    var keysToRemove = _summaryCache.Keys.Take(10).ToList();
+                    foreach (var key in keysToRemove)
+                    {
+                        _summaryCache.Remove(key);
+                    }
+                    Console.WriteLine($"🧹 [CargoGroupSummaryTab] Cleaned up {keysToRemove.Count} old cache entries (cache size: {_summaryCache.Count})");
+                }
+                
+                // Store in cache
+                _summaryCache[cacheKey] = new CachedSummary
+                {
+                    Summary = _cargoSummary,
+                    HouseBLSummaries = _houseBLSummaries,
+                    CachedAt = DateTime.UtcNow
+                };
+                Console.WriteLine($"💾 [CargoGroupSummaryTab] Cached summary for {CargoGroup.GroupIdentifier} (cache size: {_summaryCache.Count})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [CargoGroupSummaryTab] Error loading cargo summary: {ex.Message}");
+            Console.WriteLine($"   Stack trace: {ex.StackTrace}");
+            _cargoSummary = null;
+            _houseBLSummaries = null;
+        }
+        finally
+        {
+            summaryGenerationStopwatch.Stop();
+            _isLoadingSummary = false;
+            Console.WriteLine($"⏱️ [CargoGroupSummaryTab] LoadCargoSummary COMPLETE - Total time: {summaryGenerationStopwatch.ElapsedMilliseconds}ms ({summaryGenerationStopwatch.Elapsed.TotalSeconds:F2}s)");
+
+            // Load saved AI summary if one exists
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var groupId = Uri.EscapeDataString(CargoGroup?.GroupIdentifier ?? "");
+                    if (!string.IsNullOrEmpty(groupId))
+                    {
+                        var saved = await ApiService.GetAsync<AiSummaryResponse>($"/api/cargogroup/{groupId}/ai-summary");
+                        if (saved != null && !string.IsNullOrWhiteSpace(saved.Summary))
+                        {
+                            _aiSummaryText = saved.Summary;
+                            await InvokeAsync(StateHasChanged);
+                        }
+                    }
+                }
+                catch { /* Non-critical */ }
+            });
+        }
+    }
+    
+    // ✅ PERFORMANCE FIX #2: Generate cache key from CargoGroup properties
+    private string GenerateCacheKey(CargoGroupDto cargoGroup)
+    {
+        // Use GroupIdentifier, Type, and ICUMSDataCount to create unique key
+        // This ensures cache invalidation when data changes
+        var icumsDataCount = cargoGroup.Data?.ICUMSData?.Count ?? 0;
+        var icumsDataHash = 0;
+        
+        // Add hash of House BLs for consolidated cargo to ensure cache accuracy
+        if (cargoGroup.Type == CargoType.Consolidated && cargoGroup.Data?.ICUMSData != null)
+        {
+            var houseBLs = string.Join(",", cargoGroup.Data.ICUMSData
+                .Where(g => !string.IsNullOrWhiteSpace(g.HouseBL))
+                .Select(g => g.HouseBL)
+                .OrderBy(h => h));
+            icumsDataHash = houseBLs.GetHashCode();
+        }
+        
+        return $"{cargoGroup.GroupIdentifier}_{cargoGroup.Type}_{icumsDataCount}_{icumsDataHash}";
+    }
+
+    private async Task GenerateAiSummary()
+    {
+        if (CargoGroup == null) return;
+        _aiSummaryLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            // Collect line items from ICUMS data
+            var lineItems = new List<object>();
+            var allRecords = CargoGroup.Data?.ICUMSData?.SelectMany(g => g.Records).ToList() ?? new();
+
+            // Group by item number to collect per-item data
+            var itemGroups = allRecords
+                .Where(r => r.Category == "Cargo Info" && r.Field.Contains("Item ", StringComparison.OrdinalIgnoreCase))
+                .GroupBy(r =>
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(r.Field, @"Item\s+(\d+):");
+                    return match.Success ? match.Groups[1].Value : "0";
+                })
+                .Where(g => g.Key != "0")
+                .ToList();
+
+            if (itemGroups.Any())
+            {
+                foreach (var group in itemGroups)
+                {
+                    var desc = group.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value;
+                    var hs = group.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value;
+                    var qty = group.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value;
+                    var wt = group.FirstOrDefault(r => r.Field.Contains("Weight", StringComparison.OrdinalIgnoreCase))?.Value;
+                    var origin = group.FirstOrDefault(r => r.Field.Contains("Country", StringComparison.OrdinalIgnoreCase))?.Value;
+
+                    lineItems.Add(new { description = desc, hsCode = hs, quantity = qty, weight = wt, countryOfOrigin = origin });
+                }
+            }
+            else
+            {
+                // Fallback: use GoodsDescription from BOE details
+                var descriptions = CargoGroup.Data?.ICUMSData?
+                    .SelectMany(g => g.BOEDetails)
+                    .Where(b => !string.IsNullOrWhiteSpace(b.GoodsDescription))
+                    .Select(b => b.GoodsDescription)
+                    .Distinct()
+                    .ToList() ?? new();
+
+                foreach (var desc in descriptions)
+                {
+                    lineItems.Add(new { description = desc, hsCode = (string?)null, quantity = (string?)null, weight = (string?)null, countryOfOrigin = (string?)null });
+                }
+            }
+
+            if (!lineItems.Any())
+            {
+                _aiSummaryText = "No line item data available to generate summary.";
+                return;
+            }
+
+            var groupId = Uri.EscapeDataString(CargoGroup.GroupIdentifier ?? "unknown");
+            var response = await ApiService.PostAsync<object, AiSummaryResponse>(
+                $"/api/cargogroup/{groupId}/ai-summary",
+                new { lineItems });
+
+            _aiSummaryText = response?.Summary ?? "Unable to generate summary.";
+
+            // Update the CargoSummaryDto so it's available elsewhere
+            if (_cargoSummary != null)
+                _cargoSummary.AiSummaryText = _aiSummaryText;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generating AI summary: {ex.Message}");
+            _aiSummaryText = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _aiSummaryLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private class AiSummaryResponse
+    {
+        public string Summary { get; set; } = string.Empty;
+    }
+}

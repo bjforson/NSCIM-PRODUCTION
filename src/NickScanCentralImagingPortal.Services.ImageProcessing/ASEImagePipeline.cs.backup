@@ -1,0 +1,168 @@
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+using System;
+using System.Threading.Tasks;
+using NickScanCentralImagingPortal.Services.ImageProcessing.ASE;
+
+namespace NickScanCentralImagingPortal.Services.ImageProcessing
+{
+    public class ASEImagePipeline : IImagePipeline
+    {
+        private readonly ILogger<ASEImagePipeline> _logger;
+        private readonly ApplicationDbContext _context;
+        private readonly IImageCacheService _cacheService;
+        private readonly ASEImageConverterService _converterService;
+
+        public ScannerType ScannerType => ScannerType.ASE;
+
+        public ASEImagePipeline(ILogger<ASEImagePipeline> logger, ApplicationDbContext context, IImageCacheService cacheService, ASEImageConverterService converterService)
+        {
+            _logger = logger;
+            _context = context;
+            _cacheService = cacheService;
+            _converterService = converterService;
+        }
+
+        public async Task<ImageProcessingResult> ProcessImageAsync(string containerNumber)
+        {
+            _logger.LogInformation("Processing ASE image for container: {ContainerNumber}", containerNumber);
+
+            try
+            {
+                // Check cache first
+                var cachedImage = await _cacheService.GetCachedImageAsync(containerNumber, ScannerType.ASE);
+                if (cachedImage != null)
+                {
+                    _logger.LogDebug("Returning cached ASE image for container: {ContainerNumber}", containerNumber);
+                    return new ImageProcessingResult
+                    {
+                        ContainerNumber = containerNumber,
+                        ScannerType = ScannerType.ASE,
+                        ImageData = cachedImage.ImageData,
+                        MimeType = cachedImage.MimeType,
+                        Success = true,
+                        Metadata = new ImageMetadata
+                        {
+                            Width = cachedImage.Width,
+                            Height = cachedImage.Height,
+                            FileSizeBytes = cachedImage.FileSizeBytes,
+                            ScanTime = cachedImage.ScanTime,
+                            ScannerId = containerNumber, // Using container number as scanner ID
+                            ImageFormat = "JPEG",
+                            ProcessingPipeline = cachedImage.ProcessingPipeline,
+                            Quality = cachedImage.Quality
+                        }
+                    };
+                }
+
+                // Get ASE scan data
+                var scan = await _context.AseScans
+                    .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+
+                if (scan == null)
+                {
+                    return new ImageProcessingResult
+                    {
+                        ContainerNumber = containerNumber,
+                        Success = false,
+                        ErrorMessage = "ASE scan not found for container"
+                    };
+                }
+
+                if (scan.ScanImage == null || scan.ScanImage.Length == 0)
+                {
+                    return new ImageProcessingResult
+                    {
+                        ContainerNumber = containerNumber,
+                        Success = false,
+                        ErrorMessage = "No image data found in ASE scan"
+                    };
+                }
+
+                // Convert proprietary format to JPEG using ASE converter
+                var jpegBytes = await _converterService.ConvertProprietaryToJpegAsync(scan.ScanImage);
+                var metadata = await _converterService.GetImageMetadataAsync(scan.ScanImage);
+
+                // Cache the converted image
+                var imageCache = new ImageCache
+                {
+                    ContainerNumber = containerNumber,
+                    ScannerType = ScannerType.ASE.ToString(),
+                    ImageData = jpegBytes,
+                    MimeType = "image/jpeg",
+                    Width = metadata.Width,
+                    Height = metadata.Height,
+                    FileSizeBytes = jpegBytes.Length,
+                    ScanTime = scan.ScanTime,
+                    ProcessingPipeline = "ASE-Proprietary-to-JPEG",
+                    Quality = "High"
+                };
+
+                await _cacheService.CacheImageAsync(imageCache);
+
+                return new ImageProcessingResult
+                {
+                    ContainerNumber = containerNumber,
+                    ScannerType = ScannerType.ASE,
+                    ImageData = jpegBytes,
+                    MimeType = "image/jpeg",
+                    Success = true,
+                    Metadata = new ImageMetadata
+                    {
+                        Width = metadata.Width,
+                        Height = metadata.Height,
+                        FileSizeBytes = jpegBytes.Length,
+                        ScanTime = scan.ScanTime,
+                        ScannerId = scan.InspectionId.ToString(),
+                        ImageFormat = "JPEG",
+                        ProcessingPipeline = "ASE-Proprietary-to-JPEG",
+                        Quality = "High"
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing ASE image for container: {ContainerNumber}", containerNumber);
+                return new ImageProcessingResult
+                {
+                    ContainerNumber = containerNumber,
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
+        }
+
+        public async Task<ImageMetadata> GetImageMetadataAsync(string containerNumber)
+        {
+            try
+            {
+                var scan = await _context.AseScans
+                    .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+
+                if (scan != null && scan.ScanImage != null)
+                {
+                    return await _converterService.GetImageMetadataAsync(scan.ScanImage);
+                }
+
+                return new ImageMetadata();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting ASE image metadata for container: {ContainerNumber}", containerNumber);
+                return new ImageMetadata();
+            }
+        }
+
+        public async Task<string> GetImageAsBase64Async(string containerNumber)
+        {
+            var result = await ProcessImageAsync(containerNumber);
+            if (result.Success)
+            {
+                return Convert.ToBase64String(result.ImageData);
+            }
+            return string.Empty;
+        }
+    }
+}

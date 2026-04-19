@@ -1,0 +1,24 @@
+@page "/admin/permissions/management"
+@page "/admin/permissions"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminPermissions)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+
+<PageTitle>Permissions Management - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.AdminPanelSettings" Class="mr-2" />
+            Permissions Management
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Permissions management interface. Use desktop version for full permission configuration.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

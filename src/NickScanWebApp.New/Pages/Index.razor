@@ -1,0 +1,929 @@
+@page "/dashboard"
+@page "/analytics"
+@page "/dashboard/analytics"
+@using Microsoft.AspNetCore.Authorization
+@using NickScanWebApp.New.Services
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.New.Components.Dashboard
+@attribute [Authorize(Policy = Permissions.PagesDashboardView)]
+@inject ILogger<Index> Logger
+@inject NavigationManager Navigation
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ApiService ApiService
+@implements IDisposable
+
+<PageTitle>NickScan Central Imaging System</PageTitle>
+
+@if (_authenticated)
+{
+    <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="pa-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Overview" Icon="@Icons.Material.Filled.Dashboard">
+
+        <!-- Welcome Banner (Domiex style) -->
+        <MudPaper Elevation="0" Class="mb-4 pa-5 rounded-lg" Style="background: linear-gradient(135deg, #1b2537 0%, #2d3b50 100%); color: white; position: relative; overflow: hidden;">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <div>
+                    <MudText Typo="Typo.h5" Style="color: white; font-weight: 700;">
+                        Welcome Back, @_username
+                    </MudText>
+                    <MudText Typo="Typo.body2" Style="color: rgba(255,255,255,0.55);">
+                        Here's what's happening with your scanning operations today.
+                    </MudText>
+                </div>
+                <MudStack Row="true" Spacing="6" AlignItems="AlignItems.Center">
+                    <div class="text-center">
+                        <MudText Typo="Typo.h5" Style="color: white; font-weight: 700;">@_totalRecords</MudText>
+                        <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px;">Total Records</MudText>
+                    </div>
+                    <div class="text-center">
+                        <MudText Typo="Typo.h5" Style="color: white; font-weight: 700;">@_todayScans</MudText>
+                        <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px;">Today's Scans</MudText>
+                    </div>
+                    <div class="text-center">
+                        <MudText Typo="Typo.h5" Style="color: white; font-weight: 700;">@_recordsReady</MudText>
+                        <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px;">Records Ready</MudText>
+                    </div>
+                    <div class="text-center">
+                        <MudText Typo="Typo.h5" Style="color: white; font-weight: 700;">@_apiErrorRate</MudText>
+                        <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px;">API Error Rate</MudText>
+                    </div>
+                    @if (_healthData != null)
+                    {
+                        <MudChip T="string" Size="Size.Small" Style="background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7);"
+                                 Icon="@Icons.Material.Outlined.Timer">
+                            @_healthData.Uptime
+                        </MudChip>
+                    }
+                    <MudChip T="string" Size="Size.Small"
+                             Style="@($"background: rgba(255,255,255,0.1); color: {(_apiConnected ? "#4ade80" : "#f87171")};")"
+                             Icon="@(_apiConnected ? Icons.Material.Outlined.Cloud : Icons.Material.Outlined.CloudOff)">
+                        @(_apiConnected ? "Connected" : "Offline")
+                    </MudChip>
+                    <MudIconButton Icon="@(_autoRefreshEnabled ? Icons.Material.Outlined.Autorenew : Icons.Material.Outlined.PauseCircle)"
+                                   Style="color: rgba(255,255,255,0.6);"
+                                   Size="Size.Small"
+                                   OnClick="ToggleAutoRefresh" />
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+
+        <!-- System Health - Colorful Stat Cards (Logistix style) -->
+        @if (_healthData != null)
+        {
+            <MudGrid Spacing="3" Class="mb-4">
+                <MudItem xs="6" sm="3">
+                    <StatCard Title="Overall Health"
+                              Value="@HealthLabel(_healthData.SystemHealth?.OverallStatus)"
+                              Icon="@Icons.Material.Outlined.Verified"
+                              GradientColor="green"
+                              Href="/monitoring/health"
+                              SubText="Click for details" />
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <StatCard Title="Healthy Services"
+                              Value="@((_healthData.SystemHealth?.HealthyServices ?? 0).ToString())"
+                              Icon="@Icons.Material.Outlined.Dns"
+                              GradientColor="blue"
+                              Href="/monitoring/health?filter=healthy"
+                              SubText="Click to view" />
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <StatCard Title="Degraded"
+                              Value="@((_healthData.SystemHealth?.DegradedServices ?? 0).ToString())"
+                              Icon="@Icons.Material.Outlined.WarningAmber"
+                              GradientColor="orange"
+                              Href="/monitoring/health?filter=degraded"
+                              SubText="Click to view" />
+                </MudItem>
+                <MudItem xs="6" sm="3">
+                    <StatCard Title="Unhealthy"
+                              Value="@((_healthData.SystemHealth?.UnhealthyServices ?? 0).ToString())"
+                              Icon="@Icons.Material.Outlined.ErrorOutline"
+                              GradientColor="red"
+                              Href="/monitoring/health?filter=unhealthy"
+                              SubText="Click to view" />
+                </MudItem>
+            </MudGrid>
+        }
+
+        <!-- Row 1.5: Operator readiness + audit SLA (alert when no-one is ready to work) -->
+        @if (_readinessSnapshot != null)
+        {
+            var analystReady = _readinessSnapshot.Analyst?.Count ?? 0;
+            var auditReady = _readinessSnapshot.Audit?.Count ?? 0;
+            var inAuditCount = _recordPipeline?.InAudit ?? 0;
+            var oldestAuditAgeHours = _auditOldestAgeHours;
+            var showOperatorAlert = analystReady == 0 || auditReady == 0 || oldestAuditAgeHours >= 24;
+            if (showOperatorAlert)
+            {
+                <MudAlert Severity="@(auditReady == 0 && inAuditCount > 0 ? Severity.Error : Severity.Warning)"
+                          Class="mb-4" Variant="Variant.Filled" Dense="true">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="4">
+                        <MudIcon Icon="@Icons.Material.Outlined.PersonOff" />
+                        <MudText>
+                            <strong>Operator readiness alert:</strong>
+                            @analystReady analyst@(analystReady == 1 ? "" : "s"),
+                            @auditReady auditor@(auditReady == 1 ? "" : "s") currently Ready.
+                            @if (inAuditCount > 0)
+                            {
+                                <span>
+                                    @inAuditCount record@(inAuditCount == 1 ? "" : "s") in audit
+                                    @if (oldestAuditAgeHours > 0) { <text>(oldest @oldestAuditAgeHours h)</text> }
+                                    @if (auditReady == 0) { <strong> — nothing will progress until an auditor marks themselves Ready.</strong> }
+                                </span>
+                            }
+                        </MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Filled" Color="Color.Default" Size="Size.Small"
+                                   Href="/operations/audit" StartIcon="@Icons.Material.Outlined.HowToReg">
+                            Go to Audit
+                        </MudButton>
+                    </MudStack>
+                </MudAlert>
+            }
+        }
+
+        <!-- Row 2: Record Pipeline -->
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Class="mr-1" />
+                    Record Pipeline
+                </MudText>
+                <MudButton Size="Size.Small" Variant="Variant.Text" Href="/completeness/record-completeness"
+                           EndIcon="@Icons.Material.Outlined.ArrowForward">
+                    View Details
+                </MudButton>
+            </MudStack>
+            @if (_recordPipeline != null)
+            {
+                <MudGrid Spacing="2">
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(158,158,158,0.1)">
+                            <MudText Typo="Typo.caption">Pending</MudText>
+                            <MudText Typo="Typo.h5">@_recordPipeline.Pending</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(249,115,22,0.1)">
+                            <MudText Typo="Typo.caption" Color="Color.Warning">Partial</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Warning">@_recordPipeline.PartiallyReady</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(37,99,235,0.1)">
+                            <MudText Typo="Typo.caption" Color="Color.Info">Ready</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Info">@_recordPipeline.Ready</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(124,58,237,0.1)">
+                            <MudText Typo="Typo.caption" Style="color:#7b1fa2">Analysis</MudText>
+                            <MudText Typo="Typo.h5" Style="color:#7b1fa2">@_recordPipeline.InAnalysis</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(233,30,99,0.1)">
+                            <MudText Typo="Typo.caption" Style="color:#c62828">Audit</MudText>
+                            <MudText Typo="Typo.h5" Style="color:#c62828">@_recordPipeline.InAudit</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(8,145,178,0.1)">
+                            <MudText Typo="Typo.caption" Style="color:#00695c">Submitted</MudText>
+                            <MudText Typo="Typo.h5" Style="color:#00695c">@_recordPipeline.Submitted</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" sm="4" md="2">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg text-center" Style="background:rgba(34,197,94,0.1)">
+                            <MudText Typo="Typo.caption" Color="Color.Success">Completed</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Success">@_recordPipeline.Completed</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+                <MudStack Row="true" Justify="Justify.SpaceBetween" Class="mt-2">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Total Records: @_recordPipeline.TotalRecords.ToString("N0")
+                    </MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Multi-Container: @_recordPipeline.TotalMultiContainer
+                    </MudText>
+                    @if (_recordPipeline.IntegrityGapContainers > 0)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Error">
+                            Integrity Gap: @_recordPipeline.IntegrityGapContainers containers awaiting scan
+                        </MudText>
+                    }
+                </MudStack>
+            }
+            else
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+        </MudPaper>
+
+        <!-- Row 3: Completeness & Safeguard -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <!-- Wave Processing -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="2" Class="pa-4" Style="height:100%">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h6">
+                            <MudIcon Icon="@Icons.Material.Outlined.Waves" Class="mr-1" />
+                            Wave Processing
+                        </MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Href="/image-analysis/workbench"
+                                   EndIcon="@Icons.Material.Outlined.ArrowForward">
+                            Workbench
+                        </MudButton>
+                    </MudStack>
+                    @if (_waveStats != null)
+                    {
+                        <MudGrid Spacing="2">
+                            <MudItem xs="4">
+                                <div class="text-center">
+                                    <MudText Typo="Typo.caption" Style="color:#7b1fa2">Active Waves</MudText>
+                                    <MudText Typo="Typo.h5" Style="color:#7b1fa2">@_waveStats.ActiveWaves</MudText>
+                                </div>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <div class="text-center">
+                                    <MudText Typo="Typo.caption" Color="Color.Info">Ready</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Info">@_waveStats.ContainersReady</MudText>
+                                </div>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <div class="text-center">
+                                    <MudText Typo="Typo.caption" Color="Color.Warning">Pending Images</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Warning">@_waveStats.ContainersPendingImages</MudText>
+                                </div>
+                            </MudItem>
+                        </MudGrid>
+                        @if (_waveStats.StuckCount > 0)
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                                @_waveStats.StuckCount container(s) stuck &gt;24h without images
+                            </MudAlert>
+                        }
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" Class="mt-2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Completed Waves: @_waveStats.CompletedWaves
+                            </MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Recent Parents: @_waveStats.RecentParentCount
+                            </MudText>
+                        </MudStack>
+                    }
+                    else
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                    }
+                </MudPaper>
+            </MudItem>
+
+            <!-- Safeguard Summary -->
+            <MudItem xs="12" md="6">
+                <MudPaper Elevation="2" Class="pa-4" Style="height:100%">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h6">
+                            <MudIcon Icon="@Icons.Material.Outlined.Shield" Class="mr-1" />
+                            Safeguard Summary
+                        </MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Href="/operations/image-analysis"
+                                   EndIcon="@Icons.Material.Outlined.ArrowForward">
+                            View Details
+                        </MudButton>
+                    </MudStack>
+                    @if (_safeguardData != null)
+                    {
+                        <MudGrid Spacing="2">
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center cursor-pointer" Style="background:rgba(249,115,22,0.1)"
+                                          @onclick="@(() => Navigation.NavigateTo("/operations/export-pending"))">
+                                    <MudText Typo="Typo.caption" Color="Color.Warning">Export Pending</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Warning">@_safeguardData.ExportPendingCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center" Style="background:rgba(220,38,38,0.1)">
+                                    <MudText Typo="Typo.caption" Color="Color.Error">Location Mismatch</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Error">@_safeguardData.LocationMismatchCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center" Style="background:rgba(34,197,94,0.1)">
+                                    <MudText Typo="Typo.caption" Color="Color.Success">Complete</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Success">@_safeguardData.CompleteCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center" Style="background:rgba(37,99,235,0.1)">
+                                    <MudText Typo="Typo.caption" Color="Color.Info">Missing</MudText>
+                                    <MudText Typo="Typo.h5" Color="Color.Info">@_safeguardData.MissingCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center" Style="background:rgba(220,38,38,0.08)">
+                                    <MudText Typo="Typo.caption" Style="color:#c62828">Flagged</MudText>
+                                    <MudText Typo="Typo.h5" Style="color:#c62828">@_safeguardData.FlaggedForReviewCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="4">
+                                <MudPaper Elevation="0" Class="pa-2 rounded-lg text-center" Style="background:rgba(0,0,0,0.05)">
+                                    <MudText Typo="Typo.caption">Total</MudText>
+                                    <MudText Typo="Typo.h5">@_safeguardData.TotalCount</MudText>
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+                    }
+                    else
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Row 4: Error Crawler -->
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Outlined.BugReport" Class="mr-1" />
+                    Recent System Errors (24h)
+                </MudText>
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                    @if (_logStats != null)
+                    {
+                        var errorCount = _logStats.ServiceStats?.Where(s => s.Level == "Error").Sum(s => s.LogCount) ?? 0;
+                        var warnCount = _logStats.ServiceStats?.Where(s => s.Level == "Warning").Sum(s => s.LogCount) ?? 0;
+                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Error">
+                            @errorCount Errors
+                        </MudChip>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Icon="@Icons.Material.Outlined.Warning">
+                            @warnCount Warnings
+                        </MudChip>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Href="/admin/logs"
+                               EndIcon="@Icons.Material.Outlined.ArrowForward">
+                        View All Logs
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+
+            @if (_recentErrors != null && _recentErrors.Any())
+            {
+                <MudSimpleTable Dense="true" Hover="true" Bordered="false" Striped="true" Style="max-height:360px; overflow-y:auto;">
+                    <thead>
+                        <tr>
+                            <th style="width:130px">Time</th>
+                            <th style="width:70px">Level</th>
+                            <th style="width:200px">Source</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var entry in _recentErrors)
+                        {
+                            <tr>
+                                <td>
+                                    <MudText Typo="Typo.caption">@FormatRelativeTime(entry.Timestamp)</MudText>
+                                </td>
+                                <td>
+                                    <MudChip T="string" Size="Size.Small"
+                                             Color="@(entry.Level == "Error" ? Color.Error : entry.Level == "Warning" ? Color.Warning : Color.Info)">
+                                        @entry.Level
+                                    </MudChip>
+                                </td>
+                                <td>
+                                    <MudText Typo="Typo.caption" Style="font-family:monospace; word-break:break-all;">
+                                        @TruncateSource(entry.ServiceId)
+                                    </MudText>
+                                </td>
+                                <td>
+                                    <MudText Typo="Typo.caption" Style="word-break:break-word;">
+                                        @TruncateMessage(entry.Message, 200)
+                                    </MudText>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+            else if (_recentErrors != null)
+            {
+                <MudAlert Severity="Severity.Success" Dense="true">No errors in the last 24 hours.</MudAlert>
+            }
+            else
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+        </MudPaper>
+
+        <!-- Row 5: Scanner Distribution + CMR Widget + Quick Actions -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="2" Class="pa-4" Style="height:100%">
+                    <MudText Typo="Typo.h6" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.PieChart" Class="mr-1" />
+                        Scanner Distribution
+                    </MudText>
+                    @if (_scannerDistribution.Any(d => d > 0))
+                    {
+                        <MudChart ChartType="ChartType.Donut"
+                                  InputData="@_scannerDistribution"
+                                  InputLabels="@_scannerLabels"
+                                  Width="100%" Height="220px" />
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center" Class="mt-8">
+                            No scan data available
+                        </MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <CMRValidationWidget />
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="2" Class="pa-4" Style="height:100%">
+                    <MudText Typo="Typo.h6" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.PlayArrow" Class="mr-1" />
+                        Quick Actions
+                    </MudText>
+                    <MudStack Spacing="2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
+                                   StartIcon="@Icons.Material.Outlined.PlayArrow" Href="/operations/image-analysis">
+                            Start Analyzing
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary" FullWidth="true"
+                                   StartIcon="@Icons.Material.Outlined.Gavel" Href="/operations/audit">
+                            Audit Queue
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true"
+                                   StartIcon="@Icons.Material.Outlined.Analytics" Href="/operations/image-analysis">
+                            Image Analysis
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Info" FullWidth="true"
+                                   StartIcon="@Icons.Material.Outlined.Settings" Href="/administration/service-control">
+                            System Settings
+                        </MudButton>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+    </MudTabPanel>
+    <MudTabPanel Text="Live Analytics" Icon="@Icons.Material.Filled.Analytics">
+        <AnalyticsPanel />
+    </MudTabPanel>
+    </MudTabs>
+    </MudContainer>
+}
+
+@code {
+    private string _username = "";
+    private bool _authenticated = false;
+    private bool _apiConnected = false;
+    private bool _autoRefreshEnabled = true;
+    private System.Threading.Timer? _refreshTimer;
+
+    // Top-level hub tab: 0 = Overview KPIs, 1 = Live Analytics
+    private int _activeHubTab = 0;
+
+    // KPIs
+    private string _totalRecords = "...";
+    private string _todayScans = "...";
+    private string _recordsReady = "...";
+    private string _apiErrorRate = "...";
+
+    // Scanner chart
+    private double[] _scannerDistribution = Array.Empty<double>();
+    private string[] _scannerLabels = new[] { "FS6000", "ASE" };
+
+    // Section data
+    private HealthOverviewResponse? _healthData;
+    private RecordPipelineSummary? _recordPipeline;
+    private WaveMonitorStats? _waveStats;
+    private SafeguardSummaryResponse? _safeguardData;
+    private List<LogEntryDto>? _recentErrors;
+    private LogStatsResponse? _logStats;
+    private ReadinessSnapshotResponse? _readinessSnapshot;
+    private int _auditOldestAgeHours = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated != true)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        _authenticated = true;
+        _username = authState.User.Identity?.Name ?? "Unknown";
+        Logger.LogInformation("Dashboard loaded for user: {User}", _username);
+
+        // Route-based initial tab: /analytics and /dashboard/analytics open Live Analytics tab
+        var path = new Uri(Navigation.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        if (path == "/analytics" || path == "/dashboard/analytics")
+        {
+            _activeHubTab = 1;
+        }
+
+        await LoadAllSections();
+        StartAutoRefresh();
+    }
+
+    private async Task LoadAllSections()
+    {
+        var tasks = new List<Task>
+        {
+            LoadHealthOverview(),
+            LoadKPIs(),
+            LoadRecordPipeline(),
+            LoadWaveMonitor(),
+            LoadSafeguardSummary(),
+            LoadRecentErrors(),
+            LoadLogStatistics(),
+            LoadScannerDistribution(),
+            LoadReadinessSnapshot()
+        };
+        await Task.WhenAll(tasks);
+        StateHasChanged();
+    }
+
+    private async Task LoadHealthOverview()
+    {
+        try
+        {
+            _healthData = await ApiService.GetAsync<HealthOverviewResponse>("/api/Monitoring/health/overview");
+            _apiConnected = _healthData != null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load health overview");
+            _apiConnected = false;
+        }
+    }
+
+    private async Task LoadKPIs()
+    {
+        try
+        {
+            var pipeline = await ApiService.GetAsync<RecordPipelineSummary>("/api/record-completeness/summary");
+            if (pipeline != null)
+            {
+                _totalRecords = pipeline.TotalRecords.ToString("N0");
+                _recordsReady = (pipeline.Ready + pipeline.InAnalysis + pipeline.InAudit).ToString("N0");
+                _apiConnected = true;
+            }
+        }
+        catch { _totalRecords = "N/A"; _recordsReady = "N/A"; }
+
+        try
+        {
+            var dbStats = await ApiService.GetAsync<DbStatsResponse>("/api/Monitoring/database/statistics");
+            _todayScans = dbStats?.TodayActivity?.TotalScans.ToString("N0") ?? "N/A";
+        }
+        catch { _todayScans = "N/A"; }
+
+        try
+        {
+            var apiMetrics = await ApiService.GetAsync<ApiMetricsResponse>("/api/Monitoring/api-metrics");
+            _apiErrorRate = apiMetrics != null ? $"{apiMetrics.ErrorRate:F1}%" : "N/A";
+        }
+        catch { _apiErrorRate = "N/A"; }
+    }
+
+    private async Task LoadRecordPipeline()
+    {
+        try
+        {
+            _recordPipeline = await ApiService.GetAsync<RecordPipelineSummary>("/api/recordcompleteness/summary");
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Failed to load record pipeline"); }
+    }
+
+    /// <summary>
+    /// Loads the operator readiness snapshot (how many analysts/auditors are currently Ready).
+    /// Drives the alert banner that warns ops when no-one is logged in and ready to work.
+    /// </summary>
+    private async Task LoadReadinessSnapshot()
+    {
+        try
+        {
+            _readinessSnapshot = await ApiService.GetAsync<ReadinessSnapshotResponse>("/api/image-analysis/user/readiness-snapshot");
+            // Compute age of oldest InAudit record so the banner can highlight SLA breaches
+            try
+            {
+                var oldest = await ApiService.GetAsync<OldestInAuditResponse>("/api/recordcompleteness/oldest-in-audit");
+                if (oldest?.OldestCreatedAtUtc != null)
+                {
+                    _auditOldestAgeHours = (int)Math.Max(0, (DateTime.UtcNow - oldest.OldestCreatedAtUtc.Value).TotalHours);
+                }
+            }
+            catch { /* endpoint optional */ }
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Failed to load readiness snapshot"); }
+    }
+
+    private async Task LoadWaveMonitor()
+    {
+        try
+        {
+            var resp = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+            if (resp != null)
+            {
+                var parentDict = resp.ParentGroupStatusCounts ?? new List<StatusCount>();
+                var pendingDict = resp.PendingContainerStatusCounts ?? new List<StatusCount>();
+
+                _waveStats = new WaveMonitorStats
+                {
+                    ActiveWaves = parentDict.Where(s => s.Status == "Active").Sum(s => s.Count),
+                    CompletedWaves = parentDict.Where(s => s.Status == "Completed").Sum(s => s.Count),
+                    ContainersReady = pendingDict.Where(s => s.Status == "Ready").Sum(s => s.Count),
+                    ContainersPendingImages = pendingDict.Where(s => s.Status == "Pending").Sum(s => s.Count),
+                    StuckCount = resp.StuckPendingCount,
+                    RecentParentCount = resp.RecentParents?.Count ?? 0
+                };
+            }
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Failed to load wave monitor"); }
+    }
+
+    private async Task LoadSafeguardSummary()
+    {
+        try
+        {
+            _safeguardData = await ApiService.GetAsync<SafeguardSummaryResponse>("/api/image-analysis/dashboard/safeguard-summary");
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Failed to load safeguard summary"); }
+    }
+
+    private async Task LoadRecentErrors()
+    {
+        try
+        {
+            var resp = await ApiService.GetAsync<PagedLogResponse>("/api/LogManagement/logs?level=Error&pageSize=15");
+            _recentErrors = resp?.Data ?? new List<LogEntryDto>();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load recent errors");
+            _recentErrors = new List<LogEntryDto>();
+        }
+    }
+
+    private async Task LoadLogStatistics()
+    {
+        try
+        {
+            _logStats = await ApiService.GetAsync<LogStatsResponse>("/api/LogManagement/statistics?hoursBack=24");
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Failed to load log statistics"); }
+    }
+
+    private async Task LoadScannerDistribution()
+    {
+        int fs6000 = 0, ase = 0;
+        try
+        {
+            var fs = await ApiService.GetAsync<FS6000StatsResponse>("/api/FS6000/statistics");
+            fs6000 = fs?.Scans?.Total ?? 0;
+        }
+        catch { }
+        try
+        {
+            var a = await ApiService.GetAsync<AseSyncResponse>("/api/Ase/sync-status");
+            ase = a?.TotalScans ?? 0;
+        }
+        catch { }
+        _scannerDistribution = new double[] { fs6000, ase };
+    }
+
+    // Auto-refresh
+    private void StartAutoRefresh()
+    {
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            if (!_autoRefreshEnabled) return;
+            await InvokeAsync(async () =>
+            {
+                await LoadAllSections();
+            });
+        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        _autoRefreshEnabled = !_autoRefreshEnabled;
+        StateHasChanged();
+    }
+
+    // Helpers
+    private string FormatRelativeTime(DateTime timestamp)
+    {
+        var diff = DateTime.UtcNow - timestamp;
+        if (diff.TotalMinutes < 1) return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return timestamp.ToString("dd MMM HH:mm");
+    }
+
+    private string TruncateSource(string? source)
+    {
+        if (string.IsNullOrEmpty(source)) return "Unknown";
+        var parts = source.Split('.');
+        return parts.Length > 1 ? parts[^1] : source;
+    }
+
+    private string TruncateMessage(string? msg, int maxLen)
+    {
+        if (string.IsNullOrEmpty(msg)) return "";
+        return msg.Length > maxLen ? msg[..maxLen] + "..." : msg;
+    }
+
+    private string HealthLabel(string? status) => (status ?? "").ToLower() switch
+    {
+        "healthy" => "Healthy",
+        "degraded" => "Degraded",
+        "unhealthy" => "Unhealthy",
+        _ => status ?? "Unknown"
+    };
+
+    private string HealthCardStyle(string? status) => (status ?? "").ToLower() switch
+    {
+        "healthy" => "background:rgba(34,197,94,0.1)",
+        "degraded" => "background:rgba(249,115,22,0.1)",
+        "unhealthy" => "background:rgba(220,38,38,0.1)",
+        _ => "background:rgba(0,0,0,0.05)"
+    };
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    private class HealthOverviewResponse
+    {
+        public SystemHealthSummary? SystemHealth { get; set; }
+        public SystemInfoDto? SystemInformation { get; set; }
+        public string Uptime { get; set; } = "";
+    }
+
+    private class SystemHealthSummary
+    {
+        public string OverallStatus { get; set; } = "Unknown";
+        public int TotalServices { get; set; }
+        public int HealthyServices { get; set; }
+        public int DegradedServices { get; set; }
+        public int UnhealthyServices { get; set; }
+    }
+
+    private class SystemInfoDto
+    {
+        public string MachineName { get; set; } = "";
+        public double WorkingSetMB { get; set; }
+    }
+
+    private class DbStatsResponse
+    {
+        public int TotalContainers { get; set; }
+        public int TotalFS6000Scans { get; set; }
+        public int TotalAseScans { get; set; }
+        public TodayActivityDto? TodayActivity { get; set; }
+    }
+
+    private class TodayActivityDto
+    {
+        public int Containers { get; set; }
+        public int FS6000Scans { get; set; }
+        public int AseScans { get; set; }
+        public int TotalScans { get; set; }
+    }
+
+    private class ApiMetricsResponse
+    {
+        public int TotalRequests { get; set; }
+        public double AverageResponseTimeMs { get; set; }
+        public int ErrorCount { get; set; }
+        public double ErrorRate { get; set; }
+    }
+
+    private class RecordPipelineSummary
+    {
+        public int TotalRecords { get; set; }
+        public int TotalMultiContainer { get; set; }
+        public int IntegrityGapContainers { get; set; }
+        public int Pending { get; set; }
+        public int PartiallyReady { get; set; }
+        public int Ready { get; set; }
+        public int InAnalysis { get; set; }
+        public int InAudit { get; set; }
+        public int Submitted { get; set; }
+        public int Completed { get; set; }
+        public int Archived { get; set; }
+    }
+
+    private class ReadinessSnapshotResponse
+    {
+        public DateTime Timestamp { get; set; }
+        public int MaxIdleMinutes { get; set; }
+        public RoleReadiness? Analyst { get; set; }
+        public RoleReadiness? Audit { get; set; }
+    }
+
+    private class RoleReadiness
+    {
+        public int Count { get; set; }
+        public List<object>? Users { get; set; }
+    }
+
+    private class OldestInAuditResponse
+    {
+        public DateTime? OldestCreatedAtUtc { get; set; }
+        public int TotalInAudit { get; set; }
+    }
+
+    private class WaveMonitorResponse
+    {
+        public List<StatusCount>? ParentGroupStatusCounts { get; set; }
+        public List<StatusCount>? PendingContainerStatusCounts { get; set; }
+        public int StuckPendingCount { get; set; }
+        public List<object>? RecentParents { get; set; }
+    }
+
+    private class StatusCount
+    {
+        public string Status { get; set; } = "";
+        public int Count { get; set; }
+    }
+
+    private class WaveMonitorStats
+    {
+        public int ActiveWaves { get; set; }
+        public int CompletedWaves { get; set; }
+        public int ContainersReady { get; set; }
+        public int ContainersPendingImages { get; set; }
+        public int StuckCount { get; set; }
+        public int RecentParentCount { get; set; }
+    }
+
+    private class SafeguardSummaryResponse
+    {
+        public int ExportPendingCount { get; set; }
+        public int LocationMismatchCount { get; set; }
+        public int MissingCount { get; set; }
+        public int CompleteCount { get; set; }
+        public int FlaggedForReviewCount { get; set; }
+        public int TotalCount { get; set; }
+    }
+
+    private class PagedLogResponse
+    {
+        public List<LogEntryDto> Data { get; set; } = new();
+        public int TotalCount { get; set; }
+    }
+
+    private class LogEntryDto
+    {
+        public long Id { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string Level { get; set; } = "";
+        public string? ServiceId { get; set; }
+        public string Message { get; set; } = "";
+        public string? Exception { get; set; }
+    }
+
+    private class LogStatsResponse
+    {
+        public List<ServiceLogStatsDto> ServiceStats { get; set; } = new();
+    }
+
+    private class ServiceLogStatsDto
+    {
+        public string ServiceId { get; set; } = "";
+        public string Level { get; set; } = "";
+        public int LogCount { get; set; }
+    }
+
+    private class FS6000StatsResponse
+    {
+        public FS6000ScanStatsDto? Scans { get; set; }
+    }
+
+    private class FS6000ScanStatsDto
+    {
+        public int Total { get; set; }
+    }
+
+    private class AseSyncResponse
+    {
+        public int TotalScans { get; set; }
+    }
+}

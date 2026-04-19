@@ -1,0 +1,239 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@inject ILogger<GatewayPanel> Logger
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Cloud" Class="mr-2" />
+        Gateway & Global Search
+    </MudText>
+
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+        <!-- Container Search Tab -->
+        <MudTabPanel Text="Container Search" Icon="@Icons.Material.Outlined.Search">
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="@_searchContainerNumber" 
+                             Label="Container Number" 
+                             Variant="Variant.Outlined"
+                             Placeholder="Enter container number..."
+                             Adornment="Adornment.End"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             OnAdornmentClick="SearchContainer" />
+                <MudCheckBox @bind-Value="@_includeImage" Label="Include Image Data" />
+                <MudCheckBox @bind-Value="@_includeScanner" Label="Include Scanner Data" />
+                <MudCheckBox @bind-Value="@_includeICUMS" Label="Include ICUMS Data" />
+                <MudCheckBox @bind-Value="@_includeValidation" Label="Include Validation Status" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SearchContainer" StartIcon="@Icons.Material.Outlined.Search">
+                    Search Container
+                </MudButton>
+                @if (_containerData != null)
+                {
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-4">Container: @_searchContainerNumber</MudText>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="ViewContainerDetails">
+                            View Full Details
+                        </MudButton>
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- Global Search Tab -->
+        <MudTabPanel Text="Global Search" Icon="@Icons.Material.Outlined.FindInPage">
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="@_globalSearchQuery" 
+                             Label="Search Query" 
+                             Variant="Variant.Outlined"
+                             Placeholder="Search across all data sources..."
+                             Adornment="Adornment.End"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             OnAdornmentClick="GlobalSearch" />
+                <MudSelect @bind-Value="@_searchType" Label="Search Type" Variant="Variant.Outlined">
+                    <MudSelectItem Value="@("all")">All</MudSelectItem>
+                    <MudSelectItem Value="@("containers")">Containers</MudSelectItem>
+                    <MudSelectItem Value="@("images")">Images</MudSelectItem>
+                    <MudSelectItem Value="@("icums")">ICUMS</MudSelectItem>
+                </MudSelect>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="GlobalSearch" StartIcon="@Icons.Material.Outlined.Search">
+                    Search
+                </MudButton>
+                @if (_searchResults != null && _searchResults.Any())
+                {
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-4">Search Results (@_searchResults.Count)</MudText>
+                        <MudTable Items="@_searchResults" Hover="true" Dense="true">
+                            <HeaderContent>
+                                <MudTh>Type</MudTh>
+                                <MudTh>Identifier</MudTh>
+                                <MudTh>Details</MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                @{
+                                    var result = (dynamic)context;
+                                }
+                                <MudTd DataLabel="Type">@(result.Type ?? "")</MudTd>
+                                <MudTd DataLabel="Identifier">@(result.Identifier ?? "")</MudTd>
+                                <MudTd DataLabel="Details">@(result.Details ?? "")</MudTd>
+                                <MudTd DataLabel="Actions">
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => ViewResult(result))">
+                                        View
+                                    </MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- Dashboard Stats Tab -->
+        <MudTabPanel Text="Dashboard Stats" Icon="@Icons.Material.Outlined.Dashboard">
+            @if (_dashboardStats != null)
+            {
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-4" Elevation="2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                            <MudText Typo="Typo.h5">@(_dashboardStats.TotalContainers?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-4" Elevation="2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Pending Validation</MudText>
+                            <MudText Typo="Typo.h5">@(_dashboardStats.PendingValidation?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-4" Elevation="2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Today's Scans</MudText>
+                            <MudText Typo="Typo.h5">@(_dashboardStats.TodayScans?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-4" Elevation="2">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">ICUMS Downloads</MudText>
+                            <MudText Typo="Typo.h5">@(_dashboardStats.IcumsDownloads?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            }
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadDashboardStats" Class="mt-4">
+                Refresh Stats
+            </MudButton>
+        </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    private int activeTab = 0;
+    private string _searchContainerNumber = "";
+    private bool _includeImage = true;
+    private bool _includeScanner = true;
+    private bool _includeICUMS = true;
+    private bool _includeValidation = true;
+    private object? _containerData;
+    private string _globalSearchQuery = "";
+    private string _searchType = "all";
+    private List<object>? _searchResults;
+    private DashboardStatsDto? _dashboardStats;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardStats();
+    }
+
+    private async Task SearchContainer()
+    {
+        if (string.IsNullOrWhiteSpace(_searchContainerNumber))
+        {
+            Snackbar.Add("Please enter a container number", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var queryParams = $"?includeImage={_includeImage}&includeScanner={_includeScanner}&includeICUMS={_includeICUMS}&includeValidation={_includeValidation}";
+            _containerData = await ApiService.GetAsync<object>($"/api/gateway/container/{_searchContainerNumber}{queryParams}");
+            Snackbar.Add("Container data retrieved", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error searching container");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task GlobalSearch()
+    {
+        if (string.IsNullOrWhiteSpace(_globalSearchQuery))
+        {
+            Snackbar.Add("Please enter a search query", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var queryParams = $"?query={Uri.EscapeDataString(_globalSearchQuery)}&type={_searchType}";
+            var response = await ApiService.GetAsync<GlobalSearchResponseDto>($"/api/gateway/search{queryParams}");
+            _searchResults = response?.Results;
+            Snackbar.Add($"Found {_searchResults?.Count ?? 0} results", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error performing global search");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadDashboardStats()
+    {
+        try
+        {
+            _dashboardStats = await ApiService.GetAsync<DashboardStatsDto>("/api/gateway/dashboard/stats");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading dashboard stats");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void ViewContainerDetails()
+    {
+        if (!string.IsNullOrWhiteSpace(_searchContainerNumber))
+        {
+            Navigation.NavigateTo($"/containers/{_searchContainerNumber}");
+        }
+    }
+
+    private void ViewResult(dynamic result)
+    {
+        var identifier = result?.Identifier?.ToString() ?? "";
+        var type = result?.Type?.ToString() ?? "";
+        
+        if (type == "Container" && !string.IsNullOrEmpty(identifier))
+        {
+            Navigation.NavigateTo($"/containers/{identifier}");
+        }
+    }
+
+    // DTOs
+    public class GlobalSearchResponseDto
+    {
+        public List<object>? Results { get; set; }
+        public int? TotalCount { get; set; }
+    }
+
+    public class DashboardStatsDto
+    {
+        public int? TotalContainers { get; set; }
+        public int? PendingValidation { get; set; }
+        public int? TodayScans { get; set; }
+        public int? IcumsDownloads { get; set; }
+    }
+}
+

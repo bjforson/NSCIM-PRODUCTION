@@ -1,0 +1,187 @@
+@* Queue table component for displaying ICUMS download queue items *@
+@using NickScanWebApp.New.Models.ICUMS
+@if (EnableBulkActions && SelectedItems != null && SelectedItems.Any())
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudText><strong>@SelectedItems.Count</strong> item(s) selected</MudText>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Size="Size.Small" 
+                          Variant="Variant.Filled" 
+                          Color="Color.Error"
+                          StartIcon="@Icons.Material.Outlined.Delete"
+                          OnClick="@OnBulkDeleteClick"
+                          Disabled="@(OnBulkDelete == null)">
+                    Delete Selected
+                </MudButton>
+                <MudButton Size="Size.Small" 
+                          Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.PriorityHigh"
+                          OnClick="@OnBulkPriorityClick"
+                          Disabled="@(OnBulkPriorityChange == null)">
+                    Change Priority
+                </MudButton>
+                <MudIconButton Icon="@Icons.Material.Outlined.Close" 
+                              Size="Size.Small" 
+                              OnClick="@ClearSelection" />
+            </MudStack>
+        </MudStack>
+    </MudAlert>
+}
+
+<MudTable T="DownloadQueueItem"
+          Items="@Items" 
+          Hover="true" 
+          Breakpoint="Breakpoint.Sm" 
+          Dense="@Dense" 
+          Loading="@Loading"
+          MultiSelection="@EnableBulkActions"
+          @bind-SelectedItems="@SelectedItems">
+    <HeaderContent>
+        <MudTh>Container Number</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh>Priority</MudTh>
+        <MudTh>Source</MudTh>
+        <MudTh>Queued At</MudTh>
+        <MudTh>Attempts</MudTh>
+        @if (ShowError)
+        {
+            <MudTh>Error</MudTh>
+        }
+        <MudTh>Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate Context="item">
+        <MudTd DataLabel="Container">
+            <MudText Typo="Typo.body2" Style="font-weight: 500;">@item.ContainerNumber</MudText>
+        </MudTd>
+        <MudTd DataLabel="Status">
+            <MudChip T="string" 
+                     Size="Size.Small" 
+                     Color="@GetStatusColor(item.Status)"
+                     Variant="Variant.Filled">
+                @item.Status
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Priority">
+            <MudChip T="string" 
+                     Size="Size.Small" 
+                     Color="@GetPriorityColor(item.Priority)"
+                     Variant="Variant.Outlined">
+                @GetPriorityLabel(item.Priority)
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Source">
+            <MudText Typo="Typo.body2">@(item.RequestSource ?? item.Source ?? "Unknown")</MudText>
+        </MudTd>
+        <MudTd DataLabel="Queued At">
+            <MudText Typo="Typo.body2">@item.QueuedAt.ToString("MM/dd HH:mm")</MudText>
+        </MudTd>
+        <MudTd DataLabel="Attempts">
+            <MudText Typo="Typo.body2">
+                @item.RetryCount / @item.MaxRetries
+            </MudText>
+        </MudTd>
+        @if (ShowError && !string.IsNullOrEmpty(item.LastErrorMessage))
+        {
+            <MudTd DataLabel="Error">
+                <MudTooltip Text="@item.LastErrorMessage">
+                    <MudIcon Icon="@Icons.Material.Outlined.Error" Color="Color.Error" Size="Size.Small" />
+                </MudTooltip>
+            </MudTd>
+        }
+        <MudTd DataLabel="Actions">
+            <MudStack Row="true" Spacing="1">
+                @if (OnRetry != null && item.Status == "Failed")
+                {
+                    <MudIconButton Icon="@Icons.Material.Outlined.Replay" 
+                                   Size="Size.Small" 
+                                   Color="Color.Primary"
+                                   OnClick="@(() => OnRetry(item.Id))" />
+                }
+                @if (OnDelete != null && (item.Status == "Failed" || item.Status == "Completed"))
+                {
+                    <MudIconButton Icon="@Icons.Material.Outlined.Delete" 
+                                   Size="Size.Small" 
+                                   Color="Color.Error"
+                                   OnClick="@(() => OnDelete(item.Id))" />
+                }
+            </MudStack>
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText Typo="Typo.body2" Align="Align.Center" Class="pa-4">
+            No queue items found
+        </MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    [Parameter] public IEnumerable<DownloadQueueItem> Items { get; set; } = Array.Empty<DownloadQueueItem>();
+    [Parameter] public Func<int, Task>? OnRetry { get; set; }
+    [Parameter] public Func<int, Task>? OnDelete { get; set; }
+    [Parameter] public bool ShowError { get; set; } = false;
+    [Parameter] public bool Dense { get; set; } = false;
+    [Parameter] public bool Loading { get; set; } = false;
+    
+    // Bulk action parameters
+    [Parameter] public bool EnableBulkActions { get; set; } = false;
+    [Parameter] public HashSet<DownloadQueueItem> SelectedItems { get; set; } = new();
+    [Parameter] public EventCallback<HashSet<DownloadQueueItem>> SelectedItemsChanged { get; set; }
+    [Parameter] public Func<List<int>, Task>? OnBulkDelete { get; set; }
+    [Parameter] public Func<List<int>, int, Task>? OnBulkPriorityChange { get; set; }
+
+    private static Color GetStatusColor(string? status) => status?.ToLower() switch
+    {
+        "pending" => Color.Warning,
+        "processing" => Color.Info,
+        "completed" => Color.Success,
+        "failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    private static Color GetPriorityColor(int priority) => priority switch
+    {
+        0 => Color.Default,
+        1 => Color.Primary,
+        2 => Color.Warning,
+        3 => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string GetPriorityLabel(int priority) => priority switch
+    {
+        0 => "Normal",
+        1 => "High",
+        2 => "Urgent",
+        3 => "Critical",
+        _ => "Unknown"
+    };
+
+    private async Task OnBulkDeleteClick()
+    {
+        if (OnBulkDelete != null && SelectedItems.Any())
+        {
+            var ids = SelectedItems.Select(item => item.Id).ToList();
+            await OnBulkDelete(ids);
+            SelectedItems = new HashSet<DownloadQueueItem>();
+            await SelectedItemsChanged.InvokeAsync(SelectedItems);
+        }
+    }
+
+    private async Task OnBulkPriorityClick()
+    {
+        if (OnBulkPriorityChange != null && SelectedItems.Any())
+        {
+            var ids = SelectedItems.Select(item => item.Id).ToList();
+            await OnBulkPriorityChange(ids, 0);
+        }
+    }
+
+    private async Task ClearSelection()
+    {
+        SelectedItems = new HashSet<DownloadQueueItem>();
+        await SelectedItemsChanged.InvokeAsync(SelectedItems);
+    }
+}
+

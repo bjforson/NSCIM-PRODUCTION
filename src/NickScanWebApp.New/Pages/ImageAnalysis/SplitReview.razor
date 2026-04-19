@@ -1,0 +1,792 @@
+@page "/operations/image-split-review"
+@page "/image-analysis/split"
+@attribute [Authorize(Policy = Permissions.PagesCrossRecordScans)]
+@using NickScanWebApp.Shared.Services
+@using Microsoft.AspNetCore.Authorization
+@using System.Text.Json.Serialization
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<SplitReview> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>Image Split Review</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-2">
+    <MudIcon Icon="@Icons.Material.Outlined.CallSplit" Color="Color.Primary" Class="mr-2" />
+    Image Split Review
+</MudText>
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    Review cross-record scan images where two containers from different records appear in one image.
+    Approve the auto-detected split or manually correct the split point.
+</MudText>
+
+@* Splitter Service Health *@
+<MudPaper Elevation="2" Class="pa-4 mb-4">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+        <MudChip T="string" Color="@(_serviceHealthy ? Color.Success : Color.Error)" Size="Size.Small">
+            @(_serviceHealthy ? "Splitter Online" : "Splitter Offline")
+        </MudChip>
+        <MudButton OnClick="LoadJobs" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Outlined.Refresh" Disabled="_loading" Size="Size.Small">
+            @(_loading ? "Loading..." : "Refresh")
+        </MudButton>
+        <MudSpacer />
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            @_jobs.Count job(s) awaiting review
+        </MudText>
+    </MudStack>
+</MudPaper>
+
+@if (_loading)
+{
+    <MudPaper Class="pa-8" Elevation="2">
+        <MudStack AlignItems="AlignItems.Center" Spacing="3">
+            <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Loading split jobs...</MudText>
+        </MudStack>
+    </MudPaper>
+}
+else if (!_serviceHealthy)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        The image splitter service is not responding. Ensure it is running on port 5320.
+    </MudAlert>
+}
+else if (!_jobs.Any())
+{
+    <MudAlert Severity="Severity.Info">No split jobs awaiting review.</MudAlert>
+}
+else
+{
+    @* Statistics Cards *@
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="3">
+            <MudCard><MudCardContent>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Jobs</MudText>
+                <MudText Typo="Typo.h3">@_jobs.Count</MudText>
+            </MudCardContent></MudCard>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudCard><MudCardContent>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Completed</MudText>
+                <MudText Typo="Typo.h3" Color="Color.Success">@_jobs.Count(j => j.Status == "completed")</MudText>
+            </MudCardContent></MudCard>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudCard><MudCardContent>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Pending/Processing</MudText>
+                <MudText Typo="Typo.h3" Color="Color.Warning">@_jobs.Count(j => j.Status == "pending" || j.Status == "processing")</MudText>
+            </MudCardContent></MudCard>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudCard><MudCardContent>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Failed</MudText>
+                <MudText Typo="Typo.h3" Color="Color.Error">@_jobs.Count(j => j.Status == "failed")</MudText>
+            </MudCardContent></MudCard>
+        </MudItem>
+    </MudGrid>
+
+    @* Job List with inline expandable Review details — one row per job,
+       click Review to expand the details right under the row instead of
+       jumping to a separate panel at the bottom of the page. *@
+    <MudTable Items="_jobs" Dense="true" Hover="true" Bordered="true" Striped="true">
+        <HeaderContent>
+            <MudTh Style="width:30px;"></MudTh>
+            <MudTh>Containers</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Strategy</MudTh>
+            <MudTh>Confidence</MudTh>
+            <MudTh>Split X</MudTh>
+            <MudTh>Created</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>
+                @if (_expandedJobs.Contains(context.Id))
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" />
+                }
+                else
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" />
+                }
+            </MudTd>
+            <MudTd DataLabel="Containers">
+                <MudText Typo="Typo.body2" Style="font-family: monospace;">@context.ContainerNumbers</MudText>
+            </MudTd>
+            <MudTd DataLabel="Status">
+                <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.Status)">@context.Status</MudChip>
+            </MudTd>
+            <MudTd DataLabel="Strategy">@(context.BestStrategy ?? "-")</MudTd>
+            <MudTd DataLabel="Confidence">
+                @if (context.BestScore.HasValue)
+                {
+                    <MudText Typo="Typo.body2">@($"{context.BestScore.Value:P0}")</MudText>
+                }
+                else
+                {
+                    <text>-</text>
+                }
+            </MudTd>
+            <MudTd DataLabel="Split X">@(context.SplitX?.ToString() ?? "-")</MudTd>
+            <MudTd DataLabel="Created">@context.CreatedAt.ToLocalTime().ToString("MM/dd HH:mm")</MudTd>
+            <MudTd DataLabel="Actions">
+                <MudButton Size="Size.Small" Variant="Variant.Outlined"
+                           Color="@(_expandedJobs.Contains(context.Id) ? Color.Default : Color.Primary)"
+                           OnClick="@(() => ToggleJobExpansion(context))"
+                           Disabled="@(context.Status != "completed")">
+                    @(_expandedJobs.Contains(context.Id) ? "Hide" : "Review")
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+        <ChildRowContent>
+            @if (_expandedJobs.Contains(context.Id))
+            {
+                <MudTr>
+                    <td colspan="8" style="background: var(--mud-palette-background-grey); padding: 0;">
+                        <MudPaper Elevation="0" Class="pa-4" Style="background: var(--mud-palette-background-grey); border-left: 4px solid var(--mud-palette-primary);">
+                            @{
+                                var jobState = GetJobState(context.Id);
+                            }
+
+                            <MudText Typo="Typo.h6" Class="mb-3">
+                                <MudIcon Icon="@Icons.Material.Outlined.Preview" Class="mr-2" />
+                                Review: @context.ContainerNumbers
+                            </MudText>
+
+                            @* Original Image with Split Line Overlay *@
+                            <MudPaper Elevation="1" Class="pa-2 mb-4" Style="position: relative; overflow-x: auto; background: #111;">
+                                @if (jobState.LoadingImage)
+                                {
+                                    <MudStack AlignItems="AlignItems.Center" Class="pa-8">
+                                        <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+                                        <MudText Color="Color.Primary">Loading image...</MudText>
+                                    </MudStack>
+                                }
+                                else if (!string.IsNullOrEmpty(jobState.OriginalImageUrl))
+                                {
+                                    <div id="@($"split-img-{context.Id.ToString("N").Substring(0,8)}")" style="position: relative; display: inline-block; cursor: crosshair;"
+                                         @onclick="@(args => OnImageClicked(context.Id, args))">
+                                        <img src="@jobState.OriginalImageUrl" style="max-width: 100%; height: auto; display: block;"
+                                             @onload="@(async () => await InitHoverTracker($"split-img-{context.Id.ToString("N").Substring(0,8)}", jobState.ImageWidth, context.ImageHeight))" />
+                                        @if (context.SplitX.HasValue && jobState.ImageWidth > 0)
+                                        {
+                                            var autoPct = context.SplitX.Value * 100.0 / jobState.ImageWidth;
+                                            <div style="position: absolute; top: 0; bottom: 0; left: @(autoPct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))%;
+                                                        width: 2px; background: cyan; pointer-events: none; z-index: 2;">
+                                            </div>
+                                            <div style="position: absolute; top: 4px; left: calc(@(autoPct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))% + 6px);
+                                                        background: rgba(0,0,0,0.7); color: cyan; padding: 2px 6px; font-size: 11px;
+                                                        border-radius: 3px; pointer-events: none; z-index: 3;">
+                                                @context.BestStrategy: @context.SplitX px
+                                            </div>
+                                        }
+                                        @if (jobState.ManualSplitX.HasValue && jobState.ImageWidth > 0)
+                                        {
+                                            var manualPct = jobState.ManualSplitX.Value * 100.0 / jobState.ImageWidth;
+                                            <div style="position: absolute; top: 0; bottom: 0; left: @(manualPct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))%;
+                                                        width: 2px; background: #ff6600; pointer-events: none; z-index: 2;">
+                                            </div>
+                                            <div style="position: absolute; bottom: 4px; left: calc(@(manualPct.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))% + 6px);
+                                                        background: rgba(0,0,0,0.7); color: #ff6600; padding: 2px 6px; font-size: 11px;
+                                                        border-radius: 3px; pointer-events: none; z-index: 3;">
+                                                Manual: @jobState.ManualSplitX px
+                                            </div>
+                                        }
+                                    </div>
+                                    <MudText Typo="Typo.caption" Color="Color.Primary" Class="mt-1">
+                                        Click on the image to set a manual split point (orange line). Cyan line = auto-detected split.
+                                    </MudText>
+                                }
+                                else
+                                {
+                                    <MudAlert Severity="Severity.Warning">Could not load original image.</MudAlert>
+                                }
+                            </MudPaper>
+
+                            @* Strategy Results *@
+                            @if (jobState.Results.Any())
+                            {
+                                <MudText Typo="Typo.subtitle1" Class="mb-2"><b>Strategy Results</b></MudText>
+
+                                @* Consensus badge — shows when ICP and steel_wall agree *@
+                                @if (HasConsensus(jobState))
+                                {
+                                    <MudAlert Severity="Severity.Success" Dense="true" Class="mb-2" Icon="@Icons.Material.Outlined.Verified">
+                                        <strong>Consensus:</strong> @GetConsensusText(jobState)
+                                    </MudAlert>
+                                }
+
+                                <MudSimpleTable Dense="true" Bordered="true" Class="mb-4">
+                                    <thead>
+                                        <tr>
+                                            <th>Strategy</th>
+                                            <th style="width:90px;">Split X</th>
+                                            <th style="width:110px;">Confidence</th>
+                                            <th style="width:90px;">Time (ms)</th>
+                                            <th style="width:140px;">Split Preview</th>
+                                            <th style="width:250px;">Details</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var r in jobState.Results)
+                                        {
+                                            <tr>
+                                                <td>
+                                                    @if (r.StrategyName == context.BestStrategy)
+                                                    {
+                                                        <MudChip T="string" Size="Size.Small" Color="Color.Success">@r.StrategyName (best)</MudChip>
+                                                    }
+                                                    else
+                                                    {
+                                                        @r.StrategyName
+                                                    }
+                                                </td>
+                                                <td>@r.SplitX</td>
+                                                <td>@(r.Confidence.HasValue ? $"{r.Confidence.Value:P0}" : "-")</td>
+                                                <td>@(r.ProcessingMs?.ToString() ?? "-")</td>
+                                                <td>
+                                                    @if (!string.IsNullOrEmpty(r.LeftPreviewDataUrl) && !string.IsNullOrEmpty(r.RightPreviewDataUrl))
+                                                    {
+                                                        <MudStack Row="true" Spacing="1">
+                                                            <MudImage Src="@r.LeftPreviewDataUrl" Height="40" Style="border: 1px solid #ccc;" />
+                                                            <MudImage Src="@r.RightPreviewDataUrl" Height="40" Style="border: 1px solid #ccc;" />
+                                                        </MudStack>
+                                                    }
+                                                    else if (r.HasLeftImage && r.HasRightImage)
+                                                    {
+                                                        <MudText Typo="Typo.caption" Color="Color.Warning">loading...</MudText>
+                                                    }
+                                                    else
+                                                    {
+                                                        <text>-</text>
+                                                    }
+                                                </td>
+                                                <td style="font-size: 11px; max-width: 250px; word-wrap: break-word;">
+                                                    @if (r.StrategyName == "claude_vision" && !string.IsNullOrEmpty(r.Reasoning))
+                                                    {
+                                                        <MudTooltip Text="@r.Reasoning">
+                                                            <MudIcon Icon="@Icons.Material.Outlined.Psychology" Size="Size.Small" Color="Color.Info" Class="mr-1" />
+                                                            <span style="color: #90caf9;">@TruncateReasoning(r.Reasoning, 80)</span>
+                                                        </MudTooltip>
+                                                    }
+                                                    else if (r.StrategyName == "inner_casting_pair")
+                                                    {
+                                                        <span style="color: #a5d6a7;">
+                                                            peaks: @(r.C1RightPeakX?.ToString() ?? "-"), @(r.C2LeftPeakX?.ToString() ?? "-")
+                                                            | gap: @(r.GapWidthPx?.ToString() ?? "-")px
+                                                        </span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <text>-</text>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                        @* 1.20.0 — surface strategies that did NOT produce a row so operators
+                                           know a key strategy was skipped (e.g. pre-backfill jobs where
+                                           claude_vision never ran) rather than silently omitting it. *@
+                                        @{
+                                            var presentStrategies = jobState.Results.Select(r => r.StrategyName).ToHashSet();
+                                            var expectedStrategies = new[] { "inner_casting_pair", "claude_vision", "steel_wall_midpoint", "corner_fitting", "density_profile" };
+                                        }
+                                        @foreach (var missing in expectedStrategies.Where(s => !presentStrategies.Contains(s)))
+                                        {
+                                            <tr style="opacity: 0.6;">
+                                                <td>
+                                                    <MudText Typo="Typo.body2" Style="font-style: italic;">@missing</MudText>
+                                                </td>
+                                                <td colspan="4">
+                                                    <MudText Typo="Typo.caption" Color="Color.Warning">
+                                                        not run against this job (pre-1.20.0 backfill pending)
+                                                    </MudText>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            }
+
+                            @* Container Assignment *@
+                            <MudText Typo="Typo.subtitle1" Class="mb-1"><b>Container Assignment</b></MudText>
+                            <MudText Typo="Typo.body2" Class="mb-2" Color="Color.Secondary">
+                                Assign which container is on the left and right side of the split.
+                            </MudText>
+                            @{
+                                var containers = context.ContainerNumbers?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? Array.Empty<string>();
+                            }
+                            <MudGrid Class="mb-4">
+                                <MudItem xs="5">
+                                    <MudSelect T="string" Value="@jobState.ContainerLeft"
+                                               ValueChanged="@(v => jobState.ContainerLeft = v)"
+                                               Label="Left Container" Variant="Variant.Outlined" Dense="true">
+                                        @foreach (var c in containers)
+                                        {
+                                            <MudSelectItem Value="@c">@c</MudSelectItem>
+                                        }
+                                    </MudSelect>
+                                </MudItem>
+                                <MudItem xs="2" Class="d-flex align-center justify-center">
+                                    <MudIconButton Icon="@Icons.Material.Outlined.SwapHoriz"
+                                                   OnClick="@(() => SwapContainers(context.Id))"
+                                                   Color="Color.Primary" Size="Size.Large" />
+                                </MudItem>
+                                <MudItem xs="5">
+                                    <MudSelect T="string" Value="@jobState.ContainerRight"
+                                               ValueChanged="@(v => jobState.ContainerRight = v)"
+                                               Label="Right Container" Variant="Variant.Outlined" Dense="true">
+                                        @foreach (var c in containers)
+                                        {
+                                            <MudSelectItem Value="@c">@c</MudSelectItem>
+                                        }
+                                    </MudSelect>
+                                </MudItem>
+                            </MudGrid>
+
+                            @* Action Buttons *@
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Filled" Color="Color.Success"
+                                           StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                           OnClick="@(() => ApproveJob(context))"
+                                           Disabled="@(jobState.ActionBusy || string.IsNullOrEmpty(jobState.ContainerLeft) || string.IsNullOrEmpty(jobState.ContainerRight))">
+                                    Approve Split
+                                </MudButton>
+                                @if (jobState.ManualSplitX.HasValue)
+                                {
+                                    <MudButton Variant="Variant.Filled" Color="Color.Warning"
+                                               StartIcon="@Icons.Material.Outlined.Edit"
+                                               OnClick="@(() => SubmitManualSplit(context))" Disabled="@jobState.ActionBusy">
+                                        Submit Manual Split (@jobState.ManualSplitX px)
+                                    </MudButton>
+                                }
+                                <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                           StartIcon="@Icons.Material.Outlined.Cancel"
+                                           OnClick="@(() => RejectJob(context))" Disabled="@jobState.ActionBusy">
+                                    Reject
+                                </MudButton>
+                                <MudSpacer />
+                                <MudButton Variant="Variant.Text" Color="Color.Default"
+                                           OnClick="@(() => CollapseJob(context.Id))">
+                                    Collapse
+                                </MudButton>
+                            </MudStack>
+                        </MudPaper>
+                    </td>
+                </MudTr>
+            }
+        </ChildRowContent>
+    </MudTable>
+}
+
+@code {
+    private bool _loading = true;
+    private bool _serviceHealthy;
+    private List<SplitJobDto> _jobs = new();
+    private string _currentUser = "unknown";
+    private string _apiBaseUrl = "";
+    private Timer? _refreshTimer;
+
+    // Per-job expansion + review state. Each job carries its own loaded image,
+    // results, manual split point, container assignment, and busy flag so the
+    // user can have multiple rows expanded at once and the auto-refresh timer
+    // never wipes their in-progress review.
+    private readonly HashSet<Guid> _expandedJobs = new();
+    private readonly Dictionary<Guid, JobReviewState> _jobStates = new();
+
+    private sealed class JobReviewState
+    {
+        public bool LoadingImage { get; set; }
+        public bool ActionBusy { get; set; }
+        public string? OriginalImageUrl { get; set; }
+        public List<SplitResultDto> Results { get; set; } = new();
+        public int? ManualSplitX { get; set; }
+        public int ImageWidth { get; set; }
+        public string? ContainerLeft { get; set; }
+        public string? ContainerRight { get; set; }
+    }
+
+    private JobReviewState GetJobState(Guid jobId)
+    {
+        if (!_jobStates.TryGetValue(jobId, out var state))
+        {
+            state = new JobReviewState();
+            _jobStates[jobId] = state;
+        }
+        return state;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "https://10.0.0.79:5206";
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUser = authState.User?.Identity?.Name ?? "unknown";
+        await LoadJobs();
+        _refreshTimer = new Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                // Don't disrupt in-progress reviews — only auto-refresh when nothing is expanded
+                if (_expandedJobs.Count == 0)
+                {
+                    await LoadJobs();
+                    StateHasChanged();
+                }
+            });
+        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    private async Task LoadJobs()
+    {
+        _loading = true;
+        try
+        {
+            try
+            {
+                var health = await ApiService.GetAsync<SplitterHealthDto>("/api/image-splitter/health");
+                _serviceHealthy = health?.Status == "healthy";
+            }
+            catch
+            {
+                _serviceHealthy = false;
+            }
+
+            if (_serviceHealthy)
+            {
+                _jobs = await ApiService.GetAsync<List<SplitJobDto>>("/api/image-splitter/jobs/pending") ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading split jobs");
+            Snackbar.Add("Error loading split jobs", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ToggleJobExpansion(SplitJobDto job)
+    {
+        if (_expandedJobs.Contains(job.Id))
+        {
+            CollapseJob(job.Id);
+            return;
+        }
+
+        _expandedJobs.Add(job.Id);
+        var state = GetJobState(job.Id);
+
+        // Initialize default container assignment if not set
+        if (state.ContainerLeft is null && state.ContainerRight is null)
+        {
+            var containers = job.ContainerNumbers?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? Array.Empty<string>();
+            state.ContainerLeft = containers.Length > 0 ? containers[0] : null;
+            state.ContainerRight = containers.Length > 1 ? containers[1] : null;
+        }
+
+        // If already loaded, just re-show
+        if (!string.IsNullOrEmpty(state.OriginalImageUrl) && state.Results.Any())
+        {
+            return;
+        }
+
+        state.LoadingImage = true;
+        StateHasChanged();
+
+        try
+        {
+            // Load results + image bytes in parallel. ApiService.GetBytesAsync()
+            // uses the authenticated client (token attached in Blazor context),
+            // and the bytes are embedded as a base64 data URL so the <img> tag
+            // doesn't need to make a cross-origin authenticated request.
+            var resultsTask = ApiService.GetAsync<List<SplitResultDto>>($"/api/image-splitter/jobs/{job.Id}/results");
+            var imageBytesTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/original");
+
+            state.Results = await resultsTask ?? new();
+
+            var imageBytes = await imageBytesTask;
+            if (imageBytes != null && imageBytes.Length > 0)
+            {
+                state.OriginalImageUrl = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}";
+            }
+            else
+            {
+                state.OriginalImageUrl = null;
+                Logger.LogWarning("Could not fetch original image bytes for job {JobId}", job.Id);
+            }
+
+            state.ImageWidth = job.ImageWidth > 0 ? job.ImageWidth : 1621;  // fallback to common ASE scan width
+
+            // Load split preview thumbnails as base64 data URLs.
+            // Raw <img src="..."> tags can't carry auth tokens for the
+            // cross-origin API, so we fetch the bytes server-side via
+            // ApiService (which has the auth context) and embed them.
+            foreach (var r in state.Results.Where(r => r.HasLeftImage && r.HasRightImage))
+            {
+                try
+                {
+                    var leftTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/results/{r.Id}/image/left");
+                    var rightTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/results/{r.Id}/image/right");
+                    var leftBytes = await leftTask;
+                    var rightBytes = await rightTask;
+                    r.LeftPreviewDataUrl = leftBytes?.Length > 0
+                        ? $"data:image/jpeg;base64,{Convert.ToBase64String(leftBytes)}" : null;
+                    r.RightPreviewDataUrl = rightBytes?.Length > 0
+                        ? $"data:image/jpeg;base64,{Convert.ToBase64String(rightBytes)}" : null;
+                }
+                catch (Exception imgEx)
+                {
+                    Logger.LogWarning(imgEx, "Could not load preview images for result {ResultId}", r.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading job details for {JobId}", job.Id);
+            Snackbar.Add("Error loading job details", Severity.Error);
+        }
+        finally
+        {
+            state.LoadingImage = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CollapseJob(Guid jobId)
+    {
+        _expandedJobs.Remove(jobId);
+        // Keep the loaded data in _jobStates so re-expanding is instant.
+        StateHasChanged();
+    }
+
+    private void OnImageClicked(Guid jobId, Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
+    {
+        var state = GetJobState(jobId);
+        if (state.ImageWidth <= 0) return;
+        state.ManualSplitX = (int)e.OffsetX;
+        StateHasChanged();
+    }
+
+    private void SwapContainers(Guid jobId)
+    {
+        var state = GetJobState(jobId);
+        (state.ContainerLeft, state.ContainerRight) = (state.ContainerRight, state.ContainerLeft);
+        StateHasChanged();
+    }
+
+    private async Task ApproveJob(SplitJobDto job)
+    {
+        var state = GetJobState(job.Id);
+        if (string.IsNullOrEmpty(state.ContainerLeft) || string.IsNullOrEmpty(state.ContainerRight)) return;
+
+        var bestResult = state.Results.FirstOrDefault(r => r.StrategyName == job.BestStrategy)
+                         ?? state.Results.FirstOrDefault();
+
+        if (bestResult == null)
+        {
+            Snackbar.Add("No split result to approve", Severity.Warning);
+            return;
+        }
+
+        state.ActionBusy = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/approve", new
+            {
+                result_id = bestResult.Id,
+                container_left = state.ContainerLeft,
+                container_right = state.ContainerRight,
+                approved_by = _currentUser
+            });
+            Snackbar.Add($"Split approved for {job.ContainerNumbers}", Severity.Success);
+            CollapseJob(job.Id);
+            _jobStates.Remove(job.Id);
+            await LoadJobs();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving split for {JobId}", job.Id);
+            Snackbar.Add("Error approving split", Severity.Error);
+        }
+        finally
+        {
+            state.ActionBusy = false;
+        }
+    }
+
+    private async Task SubmitManualSplit(SplitJobDto job)
+    {
+        var state = GetJobState(job.Id);
+        if (!state.ManualSplitX.HasValue) return;
+
+        state.ActionBusy = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/manual", new
+            {
+                split_x = state.ManualSplitX.Value,
+                submitted_by = _currentUser
+            });
+            Snackbar.Add($"Manual split submitted at x={state.ManualSplitX}", Severity.Success);
+            // Force a reload of this job's data
+            _jobStates.Remove(job.Id);
+            _expandedJobs.Remove(job.Id);
+            await ToggleJobExpansion(job);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error submitting manual split for {JobId}", job.Id);
+            Snackbar.Add("Error submitting manual split", Severity.Error);
+        }
+        finally
+        {
+            state.ActionBusy = false;
+        }
+    }
+
+    private async Task RejectJob(SplitJobDto job)
+    {
+        var state = GetJobState(job.Id);
+        state.ActionBusy = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/reject", new
+            {
+                correct_split_x = state.ManualSplitX,
+                rejected_by = _currentUser,
+                reason = "Rejected from review page"
+            });
+            Snackbar.Add($"Split rejected for {job.ContainerNumbers}", Severity.Info);
+            CollapseJob(job.Id);
+            _jobStates.Remove(job.Id);
+            await LoadJobs();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error rejecting split for {JobId}", job.Id);
+            Snackbar.Add("Error rejecting split", Severity.Error);
+        }
+        finally
+        {
+            state.ActionBusy = false;
+        }
+    }
+
+    private string GetResultImageUrl(Guid jobId, Guid resultId, string side)
+    {
+        return $"{_apiBaseUrl}/api/image-splitter/jobs/{jobId}/results/{resultId}/image/{side}";
+    }
+
+    private async Task InitHoverTracker(string containerId, int imageWidth, int imageHeight)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("splitReviewHover.init", containerId,
+                imageWidth > 0 ? imageWidth : 1600,
+                imageHeight > 0 ? imageHeight : 544);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to init hover tracker for {ContainerId}", containerId);
+        }
+    }
+
+    private string TruncateReasoning(string? text, int maxLen)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        return text.Length <= maxLen ? text : text.Substring(0, maxLen) + "...";
+    }
+
+    private bool HasConsensus(JobReviewState state)
+    {
+        var icp = state.Results.FirstOrDefault(r => r.StrategyName == "inner_casting_pair");
+        var sw = state.Results.FirstOrDefault(r => r.StrategyName == "steel_wall_midpoint");
+        return icp != null && sw != null && Math.Abs(icp.SplitX - sw.SplitX) <= 10;
+    }
+
+    private string GetConsensusText(JobReviewState state)
+    {
+        var icp = state.Results.FirstOrDefault(r => r.StrategyName == "inner_casting_pair");
+        var sw = state.Results.FirstOrDefault(r => r.StrategyName == "steel_wall_midpoint");
+        if (icp == null || sw == null) return "";
+        return $"inner_casting_pair ({icp.SplitX}) and steel_wall_midpoint ({sw.SplitX}) agree within 10 px";
+    }
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "completed" => Color.Success,
+        "pending" => Color.Warning,
+        "processing" => Color.Info,
+        "failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    // The Python splitter API returns snake_case JSON. We use PascalCase property
+    // names with [JsonPropertyName] attributes so the Razor markup can use idiomatic
+    // C# casing while System.Text.Json correctly maps the wire format.
+    //
+    // The previous implementation had BOTH `id` (snake_case) AND `Id` (PascalCase)
+    // properties on the same DTO, which trips System.Text.Json's
+    // PropertyNameCaseInsensitive=true matching with an "ambiguous match" exception.
+    // ApiService swallowed the exception and returned null, so the page rendered
+    // "0 jobs awaiting review" even though the upstream API was returning data.
+    public class SplitJobDto
+    {
+        [JsonPropertyName("id")]                public Guid Id { get; set; }
+        [JsonPropertyName("container_numbers")] public string ContainerNumbers { get; set; } = "";
+        [JsonPropertyName("status")]            public string Status { get; set; } = "";
+        [JsonPropertyName("best_strategy")]     public string? BestStrategy { get; set; }
+        [JsonPropertyName("best_score")]        public double? BestScore { get; set; }
+        [JsonPropertyName("split_x")]           public int? SplitX { get; set; }
+        [JsonPropertyName("analyst_verdict")]   public string? AnalystVerdict { get; set; }
+        [JsonPropertyName("correct_split_x")]   public int? CorrectSplitX { get; set; }
+        [JsonPropertyName("created_at")]        public DateTime CreatedAt { get; set; }
+        [JsonPropertyName("completed_at")]      public DateTime? CompletedAt { get; set; }
+        [JsonPropertyName("error_message")]     public string? ErrorMessage { get; set; }
+        [JsonPropertyName("result_count")]      public int ResultCount { get; set; }
+        [JsonPropertyName("image_width")]       public int ImageWidth { get; set; }
+        [JsonPropertyName("image_height")]      public int ImageHeight { get; set; }
+    }
+
+    public class SplitResultDto
+    {
+        [JsonPropertyName("id")]              public Guid Id { get; set; }
+        [JsonPropertyName("strategy_name")]   public string StrategyName { get; set; } = "";
+        [JsonPropertyName("split_x")]         public int SplitX { get; set; }
+        [JsonPropertyName("confidence")]      public double? Confidence { get; set; }
+        [JsonPropertyName("processing_ms")]   public int? ProcessingMs { get; set; }
+        [JsonPropertyName("has_left_image")]  public bool HasLeftImage { get; set; }
+        [JsonPropertyName("has_right_image")] public bool HasRightImage { get; set; }
+        // Claude Vision reasoning (from metadata.reasoning)
+        [JsonPropertyName("reasoning")]       public string? Reasoning { get; set; }
+        // inner_casting_pair metadata fields
+        [JsonPropertyName("c1_right_peak_x")]      public int? C1RightPeakX { get; set; }
+        [JsonPropertyName("c2_left_peak_x")]       public int? C2LeftPeakX { get; set; }
+        [JsonPropertyName("gap_width_px")]          public int? GapWidthPx { get; set; }
+        // Verifier metadata
+        [JsonPropertyName("verifier_picked")]       public bool? VerifierPicked { get; set; }
+        [JsonPropertyName("verifier_reasoning")]    public string? VerifierReasoning { get; set; }
+        [JsonPropertyName("consensus_with_steel_wall")] public bool? ConsensusWithSteelWall { get; set; }
+        // Preview thumbnails as base64 data URLs (loaded server-side to bypass auth)
+        public string? LeftPreviewDataUrl { get; set; }
+        public string? RightPreviewDataUrl { get; set; }
+    }
+
+    public class SplitterHealthDto
+    {
+        [JsonPropertyName("status")]       public string Status { get; set; } = "";
+        [JsonPropertyName("version")]      public string Version { get; set; } = "";
+        [JsonPropertyName("db_connected")] public bool DbConnected { get; set; }
+    }
+}

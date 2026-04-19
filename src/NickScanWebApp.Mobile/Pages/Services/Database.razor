@@ -1,0 +1,22 @@
+@page "/services/database"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDatabase)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Database Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Storage" Class="mr-2" />
+            Database Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Database service monitoring. Use desktop version for detailed diagnostics.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

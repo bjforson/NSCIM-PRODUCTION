@@ -1,0 +1,568 @@
+@using NickScanCentralImagingPortal.Core.Constants
+@using MudBlazor
+@using System.Text.Json
+@using NickScanWebApp.New.Components.Monitoring
+@using NickScanCentralImagingPortal.Core.Models
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<EndpointUsagePanel> Logger
+@inject IDialogService DialogService
+@inject IJSRuntime JSRuntime
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Analytics" Class="mr-2" />
+        Endpoint Usage Monitoring
+    </MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+        Track API endpoint usage for Phase 3 (route renaming) and Phase 4 (legacy cleanup) planning
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading endpoint usage data...</MudText>
+    }
+    else
+    {
+        <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+            <MudTabPanel Text="Deprecated Endpoints">
+                <MudGrid Spacing="3" Class="mb-4">
+                    <MudItem xs="12">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">Deprecated Endpoint Usage</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadDeprecatedEndpoints">
+                                    Refresh
+                                </MudButton>
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" OnClick="ExportDeprecatedEndpoints">
+                                    Export
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_deprecatedEndpoints != null && _deprecatedEndpoints.Any())
+                {
+                    <MudTable Items="@_deprecatedEndpoints" Hover="true" Dense="true" Striped="true">
+                        <HeaderContent>
+                            <MudTh>Endpoint</MudTh>
+                            <MudTh>Total Calls</MudTh>
+                            <MudTh>Unique Callers</MudTh>
+                            <MudTh>Last Call</MudTh>
+                            <MudTh>Days Since Last Call</MudTh>
+                            <MudTh>Status</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Endpoint</MudTd>
+                            <MudTd>@context.TotalCalls.ToString("N0")</MudTd>
+                            <MudTd>@context.UniqueCallers</MudTd>
+                            <MudTd>@(context.LastCall?.ToString("yyyy-MM-dd HH:mm") ?? "Never")</MudTd>
+                            <MudTd>@context.DaysSinceLastCall</MudTd>
+                            <MudTd>
+                                @if (context.IsSafeToRemove)
+                                {
+                                    <MudChip T="string" Color="Color.Success" Size="Size.Small">Safe to Remove</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Color="Color.Warning" Size="Size.Small">Still in Use</MudChip>
+                                }
+                            </MudTd>
+                            <MudTd>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Info" OnClick="@(() => ShowCallers(context.Endpoint))">
+                                    View Callers
+                                </MudButton>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No deprecated endpoint usage data available</MudAlert>
+                }
+            </MudTabPanel>
+
+            <MudTabPanel Text="Phase 3 Routes">
+                <MudGrid Spacing="3" Class="mb-4">
+                    <MudItem xs="12">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">Phase 3 Route Usage (/api/image-analysis-management/*)</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadPhase3Routes">
+                                    Refresh
+                                </MudButton>
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" OnClick="ExportPhase3Routes">
+                                    Export
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_phase3Routes != null && _phase3Routes.Any())
+                {
+                    <MudTable Items="@_phase3Routes" Hover="true" Dense="true" Striped="true">
+                        <HeaderContent>
+                            <MudTh>Endpoint</MudTh>
+                            <MudTh>Total Calls</MudTh>
+                            <MudTh>Unique Callers</MudTh>
+                            <MudTh>Last Call</MudTh>
+                            <MudTh>External Callers</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Endpoint</MudTd>
+                            <MudTd>@context.TotalCalls.ToString("N0")</MudTd>
+                            <MudTd>@context.UniqueCallers</MudTd>
+                            <MudTd>@(context.LastCall?.ToString("yyyy-MM-dd HH:mm") ?? "Never")</MudTd>
+                            <MudTd>
+                                @if (context.HasExternalCallers)
+                                {
+                                    <MudChip T="string" Color="Color.Error" Size="Size.Small">Yes</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Color="Color.Success" Size="Size.Small">No</MudChip>
+                                }
+                            </MudTd>
+                            <MudTd>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Info" OnClick="@(() => ShowPhase3Callers(context.Endpoint))">
+                                    View Callers
+                                </MudButton>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No Phase 3 route usage data available</MudAlert>
+                }
+            </MudTabPanel>
+
+            <MudTabPanel Text="Safe to Remove">
+                <MudGrid Spacing="3" Class="mb-4">
+                    <MudItem xs="12">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">Endpoints Safe to Remove (Zero Usage for 30+ Days)</MudText>
+                            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadSafeToRemove">
+                                Refresh
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_safeToRemove != null && _safeToRemove.Any())
+                {
+                    <MudAlert Severity="Severity.Success" Class="mb-4">
+                        Found @_safeToRemove.Count endpoint(s) that are safe to remove
+                    </MudAlert>
+                    <MudList T="string">
+                        @foreach (var endpoint in _safeToRemove)
+                        {
+                            <MudListItem T="string" Value="@endpoint">
+                                <MudText>@endpoint</MudText>
+                            </MudListItem>
+                        }
+                    </MudList>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No endpoints are currently safe to remove</MudAlert>
+                }
+            </MudTabPanel>
+
+            <MudTabPanel Text="All Endpoints">
+                <MudGrid Spacing="3" Class="mb-4">
+                    <MudItem xs="12">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">All Endpoints - Complete Usage Statistics</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadAllEndpoints">
+                                    Refresh
+                                </MudButton>
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Outlined.Download" OnClick="ExportAllEndpoints">
+                                    Export
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_allEndpoints != null && _allEndpoints.Any())
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                        Showing @_allEndpoints.Count endpoint(s) with usage statistics
+                    </MudText>
+                    <MudTable Items="@_allEndpoints" Hover="true" Dense="true" Striped="true" SortMode="SortMode.Multiple">
+                        <HeaderContent>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.Endpoint)">Endpoint</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.Method)">Method</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.TotalCalls)">Total Calls</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.UniqueCallers)">Unique Callers</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.LastCall)">Last Call</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.DaysSinceLastCall)">Days Since Last Call</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.AverageResponseTimeMs)">Avg Response (ms)</MudTh>
+                            <MudTh SortBy="@((AllEndpointsSummary x) => x.ErrorRate)">Error Rate %</MudTh>
+                            <MudTh>Status</MudTh>
+                            <MudTh>Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Endpoint</MudTd>
+                            <MudTd>@context.Method</MudTd>
+                            <MudTd>@context.TotalCalls.ToString("N0")</MudTd>
+                            <MudTd>@context.UniqueCallers</MudTd>
+                            <MudTd>@(context.LastCall?.ToString("yyyy-MM-dd HH:mm") ?? "Never")</MudTd>
+                            <MudTd>@context.DaysSinceLastCall</MudTd>
+                            <MudTd>@context.AverageResponseTimeMs.ToString("F2")</MudTd>
+                            <MudTd>
+                                @if (context.ErrorRate > 10)
+                                {
+                                    <MudText Color="Color.Error">@context.ErrorRate.ToString("F1")%</MudText>
+                                }
+                                else if (context.ErrorRate > 5)
+                                {
+                                    <MudText Color="Color.Warning">@context.ErrorRate.ToString("F1")%</MudText>
+                                }
+                                else
+                                {
+                                    <MudText>@context.ErrorRate.ToString("F1")%</MudText>
+                                }
+                            </MudTd>
+                            <MudTd>
+                                @if (context.Status == "Deprecated")
+                                {
+                                    <MudChip T="string" Color="Color.Warning" Size="Size.Small">Deprecated</MudChip>
+                                }
+                                else if (context.Status == "Phase3")
+                                {
+                                    <MudChip T="string" Color="Color.Info" Size="Size.Small">Phase 3</MudChip>
+                                }
+                                else if (context.Status == "Unused")
+                                {
+                                    <MudChip T="string" Color="Color.Default" Size="Size.Small">Unused</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Color="Color.Success" Size="Size.Small">Active</MudChip>
+                                }
+                            </MudTd>
+                            <MudTd>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Info" OnClick="@(() => ShowAllEndpointsCallers(context.Endpoint))">
+                                    View Callers
+                                </MudButton>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No endpoint usage data available</MudAlert>
+                }
+            </MudTabPanel>
+        </MudTabs>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private List<DeprecatedEndpointSummary>? _deprecatedEndpoints;
+    private List<Phase3RouteSummary>? _phase3Routes;
+    private List<string>? _safeToRemove;
+    private List<AllEndpointsSummary>? _allEndpoints;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+        try
+        {
+            await Task.WhenAll(
+                LoadDeprecatedEndpoints(),
+                LoadPhase3Routes(),
+                LoadSafeToRemove(),
+                LoadAllEndpoints()
+            );
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading endpoint usage data");
+            Snackbar.Add("Error loading endpoint usage data", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadDeprecatedEndpoints()
+    {
+        try
+        {
+            _deprecatedEndpoints = await ApiService.GetAsync<List<DeprecatedEndpointSummary>>("/api/monitoring/deprecated-endpoints/summary");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading deprecated endpoints");
+            Snackbar.Add("Error loading deprecated endpoints", Severity.Error);
+        }
+    }
+
+    private async Task LoadPhase3Routes()
+    {
+        try
+        {
+            _phase3Routes = await ApiService.GetAsync<List<Phase3RouteSummary>>("/api/monitoring/phase3-routes/summary");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading Phase 3 routes");
+            Snackbar.Add("Error loading Phase 3 routes", Severity.Error);
+        }
+    }
+
+    private async Task LoadSafeToRemove()
+    {
+        try
+        {
+            _safeToRemove = await ApiService.GetAsync<List<string>>("/api/monitoring/safe-to-remove?daysWithZeroUsage=30");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading safe to remove endpoints");
+            Snackbar.Add("Error loading safe to remove endpoints", Severity.Error);
+        }
+    }
+
+    private async Task LoadAllEndpoints()
+    {
+        try
+        {
+            _allEndpoints = await ApiService.GetAsync<List<AllEndpointsSummary>>("/api/monitoring/all-endpoints/summary");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading all endpoints");
+            Snackbar.Add("Error loading all endpoints", Severity.Error);
+        }
+    }
+
+    private async Task ShowCallers(string endpoint)
+    {
+        try
+        {
+            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            
+            var parameters = new DialogParameters
+            {
+                ["Endpoint"] = endpoint,
+                ["Callers"] = callers ?? new List<EndpointCaller>()
+            };
+            
+            var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Large };
+            await DialogService.ShowAsync<CallerDetailsDialog>("Endpoint Callers", parameters, options);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading callers for endpoint {Endpoint}", endpoint);
+            Snackbar.Add($"Error loading callers: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowPhase3Callers(string endpoint)
+    {
+        try
+        {
+            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            
+            var parameters = new DialogParameters
+            {
+                ["Endpoint"] = endpoint,
+                ["Callers"] = callers ?? new List<EndpointCaller>()
+            };
+            
+            var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Large };
+            await DialogService.ShowAsync<CallerDetailsDialog>("Phase 3 Route Callers", parameters, options);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading Phase 3 callers for endpoint {Endpoint}", endpoint);
+            Snackbar.Add($"Error loading callers: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowAllEndpointsCallers(string endpoint)
+    {
+        try
+        {
+            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            
+            var parameters = new DialogParameters
+            {
+                ["Endpoint"] = endpoint,
+                ["Callers"] = callers ?? new List<EndpointCaller>()
+            };
+            
+            var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Large };
+            await DialogService.ShowAsync<CallerDetailsDialog>("Endpoint Callers", parameters, options);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading callers for endpoint {Endpoint}", endpoint);
+            Snackbar.Add($"Error loading callers: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ExportDeprecatedEndpoints()
+    {
+        if (_deprecatedEndpoints == null || !_deprecatedEndpoints.Any())
+        {
+            Snackbar.Add("No data to export", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var json = JsonSerializer.Serialize(_deprecatedEndpoints, new JsonSerializerOptions { WriteIndented = true });
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"deprecated-endpoints-{DateTime.Now:yyyyMMddHHmmss}.json";
+            
+            await JSRuntime.InvokeVoidAsync("eval", 
+                $"var blob = new Blob([atob('{base64}')], {{type: 'application/json'}}); " +
+                $"var url = window.URL.createObjectURL(blob); " +
+                $"var a = document.createElement('a'); " +
+                $"a.href = url; " +
+                $"a.download = '{fileName}'; " +
+                $"a.click(); " +
+                $"window.URL.revokeObjectURL(url);");
+            
+            Snackbar.Add("✅ Deprecated endpoints exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error exporting deprecated endpoints");
+            Snackbar.Add($"Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ExportPhase3Routes()
+    {
+        if (_phase3Routes == null || !_phase3Routes.Any())
+        {
+            Snackbar.Add("No data to export", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var json = JsonSerializer.Serialize(_phase3Routes, new JsonSerializerOptions { WriteIndented = true });
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"phase3-routes-{DateTime.Now:yyyyMMddHHmmss}.json";
+            
+            await JSRuntime.InvokeVoidAsync("eval", 
+                $"var blob = new Blob([atob('{base64}')], {{type: 'application/json'}}); " +
+                $"var url = window.URL.createObjectURL(blob); " +
+                $"var a = document.createElement('a'); " +
+                $"a.href = url; " +
+                $"a.download = '{fileName}'; " +
+                $"a.click(); " +
+                $"window.URL.revokeObjectURL(url);");
+            
+            Snackbar.Add("✅ Phase 3 routes exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error exporting Phase 3 routes");
+            Snackbar.Add($"Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ExportAllEndpoints()
+    {
+        if (_allEndpoints == null || !_allEndpoints.Any())
+        {
+            Snackbar.Add("No data to export", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var json = JsonSerializer.Serialize(_allEndpoints, new JsonSerializerOptions { WriteIndented = true });
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"all-endpoints-{DateTime.Now:yyyyMMddHHmmss}.json";
+            
+            await JSRuntime.InvokeVoidAsync("eval", 
+                $"var blob = new Blob([atob('{base64}')], {{type: 'application/json'}}); " +
+                $"var url = window.URL.createObjectURL(blob); " +
+                $"var a = document.createElement('a'); " +
+                $"a.href = url; " +
+                $"a.download = '{fileName}'; " +
+                $"a.click(); " +
+                $"window.URL.revokeObjectURL(url);");
+            
+            Snackbar.Add("✅ All endpoints exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error exporting all endpoints");
+            Snackbar.Add($"Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // DTOs
+    public class DeprecatedEndpointSummary
+    {
+        public string Endpoint { get; set; } = string.Empty;
+        public int TotalCalls { get; set; }
+        public int UniqueCallers { get; set; }
+        public DateTime? LastCall { get; set; }
+        public int DaysSinceLastCall { get; set; }
+        public bool IsSafeToRemove { get; set; }
+        public List<string> CallerIps { get; set; } = new();
+    }
+
+    public class Phase3RouteSummary
+    {
+        public string Endpoint { get; set; } = string.Empty;
+        public int TotalCalls { get; set; }
+        public int UniqueCallers { get; set; }
+        public DateTime? LastCall { get; set; }
+        public List<EndpointCaller> Callers { get; set; } = new();
+        public bool HasExternalCallers { get; set; }
+    }
+
+    public class AllEndpointsSummary
+    {
+        public string Endpoint { get; set; } = string.Empty;
+        public string Method { get; set; } = string.Empty;
+        public int TotalCalls { get; set; }
+        public int UniqueCallers { get; set; }
+        public DateTime? FirstCall { get; set; }
+        public DateTime? LastCall { get; set; }
+        public int DaysSinceLastCall { get; set; }
+        public double AverageResponseTimeMs { get; set; }
+        public double MinResponseTimeMs { get; set; }
+        public double MaxResponseTimeMs { get; set; }
+        public int SuccessCount { get; set; }
+        public int ErrorCount { get; set; }
+        public double ErrorRate { get; set; }
+        public bool IsDeprecated { get; set; }
+        public bool IsPhase3Route { get; set; }
+        public string Status { get; set; } = "Active";
+    }
+}
+

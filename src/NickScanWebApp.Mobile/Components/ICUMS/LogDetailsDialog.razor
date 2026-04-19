@@ -1,0 +1,64 @@
+@using MudBlazor
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Info" Class="mr-2" />
+            Log Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (Log != null)
+        {
+            var log = Log;
+            <MudGrid Spacing="2">
+                <MudItem xs="12">
+                    <MudTextField Label="Timestamp" 
+                                 Value="@(((DateTime?)log.GetType().GetProperty("Timestamp")?.GetValue(log))?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="Level" 
+                                 Value="@((string?)log.GetType().GetProperty("Level")?.GetValue(log) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="Message" 
+                                 Value="@((string?)log.GetType().GetProperty("Message")?.GetValue(log) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Lines="3"
+                                 Size="Size.Small" />
+                </MudItem>
+                @{
+                    var details = (string?)log.GetType().GetProperty("Details")?.GetValue(log);
+                }
+                @if (!string.IsNullOrEmpty(details))
+                {
+                    <MudItem xs="12">
+                        <MudTextField Label="Details" 
+                                     Value="@details" 
+                                     Variant="Variant.Outlined"
+                                     ReadOnly="true"
+                                     Lines="10"
+                                     Size="Size.Small" />
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close" Size="Size.Small">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public object? Log { get; set; }
+    
+    private Task Close() => Task.CompletedTask;
+}
+

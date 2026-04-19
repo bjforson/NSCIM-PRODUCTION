@@ -1,0 +1,206 @@
+@page "/reports"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesReportsView)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Reports & Analytics - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-3 mb-3 rounded-lg">
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Analytics" Size="Size.Small" Class="mr-1" />
+            Reports & Analytics
+        </MudText>
+    </MudPaper>
+
+    <!-- Filters -->
+    <MudPaper Elevation="2" Class="pa-3 mb-3 rounded-lg">
+        <MudText Typo="Typo.subtitle2" Class="mb-2">Report Filters</MudText>
+        <MudStack Spacing="2">
+            <MudStack Row="true" Spacing="2">
+                <MudDatePicker Label="Start Date" @bind-Date="_startDate" Variant="Variant.Outlined" Dense="true" Margin="Margin.Dense" />
+                <MudDatePicker Label="End Date" @bind-Date="_endDate" Variant="Variant.Outlined" Dense="true" Margin="Margin.Dense" />
+            </MudStack>
+            <MudStack Row="true" Spacing="2">
+                <MudSelect T="string" Label="Export Format" @bind-Value="_exportFormat" Variant="Variant.Outlined" Dense="true" Margin="Margin.Dense">
+                    <MudSelectItem T="string" Value="@("excel")">Excel</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("pdf")">PDF</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("csv")">CSV</MudSelectItem>
+                </MudSelect>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                           OnClick="RefreshAllReports" Disabled="_isLoading" Size="Size.Small">
+                    Refresh All
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-2" />
+    }
+    
+    <!-- Reports Grid -->
+    <MudGrid Class="mb-3" Spacing="2">
+        @foreach (var report in reports)
+        {
+            <MudItem xs="12">
+                <MudCard Elevation="2" Class="hoverable-card">
+                    <MudCardHeader Style="@GetReportGradient(report.Category)">
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6" Style="color: white;">@report.Name</MudText>
+                        </CardHeaderContent>
+                        <CardHeaderActions>
+                            <MudIcon Icon="@report.Icon" Style="color: white;" />
+                        </CardHeaderActions>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2">@report.Description</MudText>
+                    </MudCardContent>
+                    <MudCardActions>
+                        <MudButton Size="Size.Small" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Visibility" OnClick="@(() => ViewReport(report))">
+                            View
+                        </MudButton>
+                        <MudButton Size="Size.Small" Color="Color.Success" StartIcon="@Icons.Material.Filled.Download" OnClick="@(() => ExportReport(report))">
+                            Export
+                        </MudButton>
+                    </MudCardActions>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private DateTime? _startDate = DateTime.Now.AddDays(-30);
+    private DateTime? _endDate = DateTime.Now;
+    private string _exportFormat = "excel";
+    
+    private List<ReportDefinition> reports = new()
+    {
+        new() { Name = "Container Summary", Description = "Overview of all container scans", Icon = Icons.Material.Filled.Inventory, Category = "Container", ApiEndpoint = "/api/Reports/container-summary" },
+        new() { Name = "Scanner Performance", Description = "Scanner statistics and uptime", Icon = Icons.Material.Filled.Scanner, Category = "Scanner", ApiEndpoint = "/api/Reports/scanner-performance" },
+        new() { Name = "ICUMS Activity", Description = "Download and submission metrics", Icon = Icons.Material.Filled.Cloud, Category = "ICUMS", ApiEndpoint = "/api/Reports/icums-activity" },
+        new() { Name = "User Activity", Description = "User login and action logs", Icon = Icons.Material.Filled.People, Category = "Admin", ApiEndpoint = "/api/Reports/user-activity" },
+        new() { Name = "Vehicle Imports", Description = "VIN extraction and tracking", Icon = Icons.Material.Filled.DirectionsCar, Category = "Vehicle", ApiEndpoint = "/api/Reports/vehicle-imports" },
+        new() { Name = "Validation Report", Description = "Data completeness analysis", Icon = Icons.Material.Filled.FactCheck, Category = "Container", ApiEndpoint = "/api/Reports/validation-summary" }
+    };
+    
+    private async Task ViewReport(ReportDefinition report)
+    {
+        try
+        {
+            _isLoading = true;
+            Snackbar.Add($"Loading {report.Name}...", Severity.Info);
+            
+            var queryParams = new List<string>();
+            if (_startDate.HasValue)
+                queryParams.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
+            if (_endDate.HasValue)
+                queryParams.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
+            
+            var endpoint = report.ApiEndpoint;
+            if (queryParams.Any())
+                endpoint += "?" + string.Join("&", queryParams);
+            
+            var reportData = await ApiService.GetAsync<object>(endpoint);
+            if (reportData != null)
+            {
+                Snackbar.Add($"✅ {report.Name} loaded successfully", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"⚠️ {report.Name} - No data available", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading {report.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task ExportReport(ReportDefinition report)
+    {
+        try
+        {
+            _isLoading = true;
+            Snackbar.Add($"Exporting {report.Name} as {_exportFormat.ToUpper()}...", Severity.Info);
+            
+            var queryParams = new List<string>();
+            if (_startDate.HasValue)
+                queryParams.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
+            if (_endDate.HasValue)
+                queryParams.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
+            queryParams.Add($"format={_exportFormat}");
+            
+            var endpoint = $"{report.ApiEndpoint}/export";
+            if (queryParams.Any())
+                endpoint += "?" + string.Join("&", queryParams);
+            
+            var response = await ApiService.GetAsync<byte[]>(endpoint);
+            if (response != null)
+            {
+                Snackbar.Add($"✅ {report.Name} exported successfully", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"⚠️ Export failed for {report.Name}", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Export failed for {report.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task RefreshAllReports()
+    {
+        _isLoading = true;
+        StateHasChanged();
+        try
+        {
+            foreach (var report in reports)
+            {
+                await ViewReport(report);
+            }
+            Snackbar.Add("All reports refreshed", Severity.Success);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private string GetReportGradient(string category) => category switch
+    {
+        "Container" => "linear-gradient(135deg, #1976d2 0%, #1565c0 100%)",
+        "Scanner" => "linear-gradient(135deg, #7b1fa2 0%, #6a1b9a 100%)",
+        "ICUMS" => "linear-gradient(135deg, #388e3c 0%, #2e7d32 100%)",
+        "Admin" => "linear-gradient(135deg, #f57c00 0%, #ef6c00 100%)",
+        "Vehicle" => "linear-gradient(135deg, #d32f2f 0%, #c62828 100%)",
+        _ => "linear-gradient(135deg, #0288d1 0%, #0277bd 100%)"
+    };
+    
+    public class ReportDefinition
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Icon { get; set; } = "";
+        public string Category { get; set; } = "";
+        public string ApiEndpoint { get; set; } = "";
+    }
+}
+

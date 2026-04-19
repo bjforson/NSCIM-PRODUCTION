@@ -1,0 +1,120 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Mobile.Services.Permissions
+@inject NavigationManager Navigation
+@inject PermissionGuard Guard
+@inject AuthenticationStateProvider AuthStateProvider
+
+<MudPaper Elevation="3" Class="mobile-bottom-nav">
+    <MudStack Row="true" Justify="Justify.SpaceAround" Spacing="0" AlignItems="AlignItems.Center">
+        
+        @if (Guard.Can(PermissionIds.Pages.DashboardView))
+        {
+            <MudNavLink Href="/dashboard" 
+                       Match="NavLinkMatch.All"
+                       Class="@GetNavLinkClass("/dashboard")">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Dashboard" Size="Size.Medium" />
+                    <MudText Typo="Typo.caption">Home</MudText>
+                </MudStack>
+            </MudNavLink>
+        }
+        
+        @if (Guard.Can(PermissionIds.Pages.ContainersView))
+        {
+            <MudNavLink Href="/containers" 
+                       Match="NavLinkMatch.Prefix"
+                       Class="@GetNavLinkClass("/containers")">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Inventory" Size="Size.Medium" />
+                    <MudText Typo="Typo.caption">Containers</MudText>
+                </MudStack>
+            </MudNavLink>
+        }
+        
+        @if (Guard.Can(PermissionIds.PagesIcumsView))
+        {
+            <MudNavLink Href="/icums" 
+                       Match="NavLinkMatch.Prefix"
+                       Class="@GetNavLinkClass("/icums")">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Description" Size="Size.Medium" />
+                    <MudText Typo="Typo.caption">ICUMS</MudText>
+                </MudStack>
+            </MudNavLink>
+        }
+        
+        @if (Guard.Can(PermissionIds.Pages.ImageAnalysisView))
+        {
+            <MudNavLink Href="/image-analysis" 
+                       Match="NavLinkMatch.Prefix"
+                       Class="@GetNavLinkClass("/image-analysis")">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Image" Size="Size.Medium" />
+                    <MudText Typo="Typo.caption">Analysis</MudText>
+                </MudStack>
+            </MudNavLink>
+        }
+        
+        @if (Guard.Can(PermissionIds.Pages.ReportsView))
+        {
+            <MudNavLink Href="/reports" 
+                       Match="NavLinkMatch.Prefix"
+                       Class="@GetNavLinkClass("/reports")">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Assessment" Size="Size.Medium" />
+                    <MudText Typo="Typo.caption">Reports</MudText>
+                </MudStack>
+            </MudNavLink>
+        }
+    </MudStack>
+</MudPaper>
+
+<style>
+    .mobile-bottom-nav {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 1100;
+        border-top: 1px solid rgba(0,0,0,0.12);
+        padding: 8px 0;
+    }
+    
+    .mobile-bottom-nav .mud-nav-link {
+        flex: 1;
+        padding: 4px 8px;
+        text-align: center;
+        color: rgba(0,0,0,0.54);
+        text-decoration: none;
+    }
+    
+    .mobile-bottom-nav .mud-nav-link.active-nav-link {
+        color: var(--mud-palette-primary);
+    }
+    
+    .mobile-bottom-nav .mud-nav-link .mud-icon {
+        margin-bottom: 4px;
+    }
+</style>
+
+@code {
+    private string GetNavLinkClass(string path)
+    {
+        var currentPath = Navigation.Uri.ToLowerInvariant();
+        var baseUri = Navigation.BaseUri.ToLowerInvariant();
+        
+        if (path == "/dashboard")
+        {
+            if (currentPath.Contains("/dashboard") || currentPath == baseUri || currentPath == $"{baseUri}/")
+                return "active-nav-link";
+        }
+        else if (currentPath.Contains(path.ToLowerInvariant()))
+        {
+            return "active-nav-link";
+        }
+        
+        return "";
+    }
+}
+
+

@@ -1,0 +1,160 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanCentralImagingPortal.Core.Utilities
+@using NickScanWebApp.New.Services
+@using MudBlazor
+@inject CargoGroupViewPreloader CargoGroupViewPreloader
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+    @if (_loading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading cargo group data...</MudText>
+        </MudStack>
+    }
+    else if (_cargoGroup == null)
+    {
+        <MudAlert Severity="Severity.Warning">
+            Cargo group not found for identifier: @GroupIdentifier
+        </MudAlert>
+    }
+    else
+    {
+        <!-- Header -->
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudStack Spacing="2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+                    <MudChip T="string" Color="@(_cargoGroup.Type == CargoType.Consolidated ? Color.Info : Color.Success)" 
+                             Variant="Variant.Filled" Size="Size.Large">
+                        @(_cargoGroup.Type == CargoType.Consolidated ? "CONSOLIDATED" : "NON-CONSOLIDATED")
+                    </MudChip>
+                    <MudText Typo="Typo.h5">
+                        @(_cargoGroup.Type == CargoType.Consolidated ? "Master BL: " : "Declaration: ") 
+                        <strong>@_cargoGroup.GroupIdentifier</strong>
+                    </MudText>
+                </MudStack>
+                
+                <MudGrid>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Containers</MudText>
+                        <MudText Typo="Typo.h6">@_cargoGroup.TotalContainers</MudText>
+                    </MudItem>
+                    @if (_cargoGroup.Type == CargoType.Consolidated)
+                    {
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">House BLs</MudText>
+                            <MudText Typo="Typo.h6">@_cargoGroup.TotalHouseBLs</MudText>
+                        </MudItem>
+                    }
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">BOEs</MudText>
+                        <MudText Typo="Typo.h6">@_cargoGroup.TotalBOEs</MudText>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Clearance Type</MudText>
+                        <MudText Typo="Typo.h6">@_cargoGroup.ClearanceType</MudText>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_cargoGroup.ContainerNumbers.Any())
+                {
+                    <MudExpansionPanels>
+                        <MudExpansionPanel Text="@($"Containers ({_cargoGroup.ContainerNumbers.Count})")">
+                            <MudSimpleTable Dense="true">
+                                <tbody>
+                                    @foreach (var container in _cargoGroup.ContainerNumbers)
+                                    {
+                                        var containerType = ContainerNumberValidator.ClassifyContainerNumber(container);
+                                        <tr>
+                                            <td>
+                                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                                    @if (containerType == ContainerNumberType.ValidISO)
+                                                    {
+                                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">ISO</MudChip>
+                                                    }
+                                                    else if (containerType == ContainerNumberType.LooseCargo)
+                                                    {
+                                                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">Loose</MudChip>
+                                                    }
+                                                    <MudText>@container</MudText>
+                                                </MudStack>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudExpansionPanel>
+                    </MudExpansionPanels>
+                }
+            </MudStack>
+        </MudPaper>
+
+        <!-- Tabs -->
+        <MudTabs Elevation="2" Rounded="true">
+            <MudTabPanel Text="Summary" Icon="@Icons.Material.Outlined.Summarize">
+                <CargoGroupSummaryTab CargoGroup="@_cargoGroup" />
+            </MudTabPanel>
+            
+            <MudTabPanel Text="ICUMS Data" Icon="@Icons.Material.Outlined.Description">
+                <CargoGroupICUMSDataTab CargoGroup="@_cargoGroup" />
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner">
+                <CargoGroupScannerDataTab CargoGroup="@_cargoGroup" />
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Images" Icon="@Icons.Material.Outlined.Image">
+                <CargoGroupImagesTab CargoGroup="@_cargoGroup" />
+            </MudTabPanel>
+        </MudTabs>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
+    [Parameter] public CargoType? Type { get; set; }
+
+    private NickScanWebApp.New.Models.CargoGroupViewContext? _context;
+    private CargoGroupDto? _cargoGroup;
+    private bool _loading = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(GroupIdentifier))
+        {
+            await LoadCargoGroupAsync();
+        }
+    }
+
+    private async Task LoadCargoGroupAsync()
+    {
+        if (string.IsNullOrEmpty(GroupIdentifier))
+        {
+            _loading = false;
+            return;
+        }
+
+        _loading = true;
+        try
+        {
+            _context = await CargoGroupViewPreloader.LoadAsync(GroupIdentifier, Type);
+            _cargoGroup = _context?.Group;
+
+            if (_cargoGroup == null)
+            {
+                Snackbar.Add($"Cargo group not found: {GroupIdentifier}", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading cargo group: {ex.Message}", Severity.Error);
+            _cargoGroup = null;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+}
+

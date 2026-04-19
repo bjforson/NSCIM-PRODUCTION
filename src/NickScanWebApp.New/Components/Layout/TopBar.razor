@@ -1,0 +1,330 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.New.Services.ThemeService ThemeService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IDisposable
+
+@* Search Field (Domiex style - outlined, theme-aware) *@
+<MudHidden Breakpoint="Breakpoint.SmAndDown">
+    <MudTextField Value="@_searchText"
+                  ValueChanged="@((string val) => _searchText = val)"
+                  Placeholder="Search..."
+                  Adornment="Adornment.Start"
+                  AdornmentIcon="@Icons.Material.Outlined.Search"
+                  AdornmentColor="Color.Default"
+                  IconSize="Size.Small"
+                  Variant="Variant.Outlined"
+                  Margin="Margin.Dense"
+                  Immediate="true"
+                  OnKeyUp="@OnSearchKeyUp"
+                  InputMode="InputMode.search"
+                  Style="width: 260px;" />
+</MudHidden>
+
+<MudSpacer />
+
+@* Theme Toggle (Domiex style - bordered icon button) *@
+<MudTooltip Text="@(ThemeService.IsDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode")">
+    <MudIconButton Icon="@(ThemeService.IsDarkMode ? Icons.Material.Outlined.LightMode : Icons.Material.Outlined.DarkMode)"
+                   Color="Color.Default"
+                   Size="Size.Small"
+                   OnClick="@ToggleTheme"
+                   Style="border: 1px solid var(--mud-palette-divider); border-radius: 8px; width: 36px; height: 36px;" />
+</MudTooltip>
+
+@* Notification Bell (Domiex style - bordered with badge) *@
+<MudBadge Content="@_notificationCount"
+          Color="Color.Error"
+          Overlap="true"
+          Visible="@(_notificationCount > 0)">
+    <MudIconButton Icon="@Icons.Material.Outlined.Notifications"
+                   Color="Color.Default"
+                   Size="Size.Small"
+                   OnClick="@ToggleNotifications"
+                   Style="border: 1px solid var(--mud-palette-divider); border-radius: 8px; width: 36px; height: 36px;" />
+</MudBadge>
+
+@* Help Button (Domiex style - bordered) *@
+<MudHidden Breakpoint="Breakpoint.SmAndDown">
+    <MudTooltip Text="Help & Documentation">
+        <MudIconButton Icon="@Icons.Material.Outlined.HelpOutline"
+                       Color="Color.Default"
+                       Size="Size.Small"
+                       Href="/help"
+                       Style="border: 1px solid var(--mud-palette-divider); border-radius: 8px; width: 36px; height: 36px;" />
+    </MudTooltip>
+</MudHidden>
+
+@* User Pill (Domiex style - avatar + name in bordered pill) *@
+<MudMenu AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+    <ActivatorContent>
+        <MudButton Variant="Variant.Outlined"
+                   Size="Size.Small"
+                   Style="border-radius: 50px; padding: 3px 12px 3px 4px; text-transform: none; border-color: var(--mud-palette-divider); min-width: auto;">
+            <MudAvatar Size="Size.Small" Style="background: linear-gradient(135deg, #667eea, #764ba2); width: 28px; height: 28px; font-size: 11px; font-weight: 600; margin-right: 6px;">
+                @GetInitials()
+            </MudAvatar>
+            <MudText Typo="Typo.body2" Style="font-weight: 500; font-size: 12px;">@_username</MudText>
+        </MudButton>
+    </ActivatorContent>
+    <ChildContent>
+        @* User Info Header *@
+        <MudPaper Elevation="0" Class="pa-4" Style="background: linear-gradient(135deg, #1b2537 0%, #2d3b50 100%); color: white; min-width: 220px;">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.subtitle1" Style="color: white; font-weight: 600;">@_username</MudText>
+                <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.6);">@_userRole</MudText>
+            </MudStack>
+        </MudPaper>
+
+        <MudDivider />
+
+        <MudMenuItem Icon="@Icons.Material.Outlined.Person" Href="/profile">
+            My Profile
+        </MudMenuItem>
+        <MudMenuItem Icon="@Icons.Material.Outlined.Settings" Href="/settings">
+            Settings
+        </MudMenuItem>
+        <MudMenuItem Icon="@Icons.Material.Outlined.Notifications" OnClick="@OpenNotifications">
+            Notifications
+            @if (_notificationCount > 0)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-2">@_notificationCount</MudChip>
+            }
+        </MudMenuItem>
+
+        <MudDivider />
+
+        <MudMenuItem Icon="@Icons.Material.Outlined.Logout"
+                     OnClick="@HandleLogout"
+                     IconColor="Color.Error">
+            Logout
+        </MudMenuItem>
+    </ChildContent>
+</MudMenu>
+
+@* Notifications Popover *@
+<MudPopover Open="@_notificationsOpen"
+            AnchorOrigin="Origin.BottomRight"
+            TransformOrigin="Origin.TopRight">
+    <MudPaper Elevation="4" Class="pa-4" Style="width: 400px; max-height: 500px; overflow-y: auto;">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+            <MudText Typo="Typo.h6">Notifications</MudText>
+            <MudButton Size="Size.Small"
+                       Color="Color.Primary"
+                       Variant="Variant.Text"
+                       OnClick="@ClearAllNotifications">
+                Clear All
+            </MudButton>
+        </MudStack>
+
+        @if (_notifications.Any())
+        {
+            @foreach (var notification in _notifications)
+            {
+                <MudAlert Severity="@notification.Severity"
+                          Class="mb-2"
+                          Dense="true"
+                          CloseIconClicked="@(() => RemoveNotification(notification))">
+                    <MudText Typo="Typo.body2">@notification.Message</MudText>
+                    <MudText Typo="Typo.caption">@notification.Timestamp.ToString("HH:mm:ss")</MudText>
+                </MudAlert>
+            }
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Secondary" Class="py-8">
+                No new notifications
+            </MudText>
+        }
+    </MudPaper>
+</MudPopover>
+
+@code {
+    private string _searchText = string.Empty;
+    private int _notificationCount = 0;
+    private bool _notificationsOpen = false;
+    private List<NotificationItem> _notifications = new();
+    private string _username = "Guest User";
+    private string _userRole = "Visitor";
+    private System.Threading.Timer? _notificationTimer;
+
+    private string GetInitials()
+    {
+        if (string.IsNullOrEmpty(_username) || _username == "Guest User") return "G";
+        var parts = _username.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2) return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+        return _username.Length >= 2 ? _username.Substring(0, 2).ToUpper() : _username.ToUpper();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadUserInfoAsync();
+        await LoadNotifications();
+
+        AuthStateProvider.AuthenticationStateChanged += OnAuthenticationStateChanged;
+
+        if (_username != "Guest User" && !string.IsNullOrEmpty(_username))
+        {
+            StartNotificationTimer();
+        }
+    }
+
+    private void StartNotificationTimer()
+    {
+        _notificationTimer?.Dispose();
+        _notificationTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                if (_username != "Guest User" && !string.IsNullOrEmpty(_username))
+                {
+                    await LoadNotifications();
+                    StateHasChanged();
+                }
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    private async void OnAuthenticationStateChanged(Task<AuthenticationState> task)
+    {
+        await LoadUserInfoAsync();
+        await LoadNotifications();
+
+        if (_username != "Guest User" && !string.IsNullOrEmpty(_username))
+            StartNotificationTimer();
+        else
+        {
+            _notificationTimer?.Dispose();
+            _notificationTimer = null;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        _notificationTimer?.Dispose();
+        AuthStateProvider.AuthenticationStateChanged -= OnAuthenticationStateChanged;
+    }
+
+    private async Task LoadUserInfoAsync()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+
+            if (user.Identity?.IsAuthenticated == true)
+            {
+                _username = user.Identity.Name ?? user.FindFirst("name")?.Value ?? user.FindFirst("sub")?.Value ?? "User";
+                var roleClaim = user.FindFirst(ClaimTypes.Role) ?? user.FindFirst("role");
+                _userRole = FormatRole(roleClaim?.Value ?? "User");
+            }
+            else
+            {
+                _username = "Guest User";
+                _userRole = "Visitor";
+            }
+        }
+        catch
+        {
+            _username = "Guest User";
+            _userRole = "Visitor";
+        }
+    }
+
+    private string FormatRole(string role)
+    {
+        if (string.IsNullOrEmpty(role)) return "User";
+        return System.Text.RegularExpressions.Regex.Replace(role, "([a-z])([A-Z])", "$1 $2");
+    }
+
+    private async Task LoadNotifications()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(_username) || _username == "Guest User") return;
+
+            try { _notificationCount = await ApiService.GetAsync<int>($"/api/Notifications/user/{_username}/count"); }
+            catch (HttpRequestException ex) when (ex.Message.Contains("404")) { _notificationCount = 0; return; }
+
+            try
+            {
+                var notifications = await ApiService.GetAsync<List<NotificationDto>>($"/api/Notifications/user/{_username}?includeRead=false&limit=10");
+                _notifications = notifications?.Select(n => new NotificationItem
+                {
+                    Id = n.Id, Message = n.Message,
+                    Severity = GetSeverityFromType(n.NotificationType),
+                    Timestamp = n.CreatedAt
+                }).ToList() ?? new List<NotificationItem>();
+            }
+            catch (HttpRequestException ex) when (ex.Message.Contains("404")) { _notifications = new List<NotificationItem>(); }
+        }
+        catch
+        {
+            _notificationCount = 0;
+            _notifications = new List<NotificationItem>();
+        }
+    }
+
+    private Severity GetSeverityFromType(string type) => type switch
+    {
+        "Alert" => Severity.Warning, "System" => Severity.Info,
+        "Maintenance" => Severity.Info, _ => Severity.Normal
+    };
+
+    private void OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_searchText))
+        {
+            var q = _searchText.Trim();
+            if (q.Length > 100) { q = q.Substring(0, 100); Snackbar.Add("Search query truncated", Severity.Warning); }
+            NavigationManager.NavigateTo($"/search?q={Uri.EscapeDataString(q)}");
+        }
+    }
+
+    private void ToggleNotifications() => _notificationsOpen = !_notificationsOpen;
+    private void OpenNotifications() => NavigationManager.NavigateTo("/notifications");
+
+    private async Task ClearAllNotifications()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(_username) || _username == "Guest User") return;
+            await ApiService.DeleteAsync<object>($"/api/Notifications/user/{_username}/clear-all");
+            _notifications.Clear(); _notificationCount = 0; _notificationsOpen = false;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
+    }
+
+    private async Task RemoveNotification(NotificationItem notification)
+    {
+        try
+        {
+            await ApiService.DeleteAsync<object>($"/api/Notifications/{notification.Id}");
+            _notifications.Remove(notification); _notificationCount = _notifications.Count;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { }
+    }
+
+    private async Task ToggleTheme() => await ThemeService.ToggleThemeAsync();
+
+    private async void HandleLogout()
+    {
+        try
+        {
+            if (AuthStateProvider is NickScanWebApp.New.Services.SimpleAuthStateProvider simpleAuth)
+                await simpleAuth.LogoutAsync();
+        }
+        catch { }
+        finally { NavigationManager.NavigateTo("/login", true); }
+    }
+
+    public class NotificationItem { public int Id { get; set; } public string Message { get; set; } = ""; public Severity Severity { get; set; } public DateTime Timestamp { get; set; } }
+    public class NotificationDto { public int Id { get; set; } public string NotificationType { get; set; } = ""; public string Title { get; set; } = ""; public string Message { get; set; } = ""; public string? TargetUser { get; set; } public string? TargetRole { get; set; } public DateTime CreatedAt { get; set; } public DateTime? ExpiresAt { get; set; } public bool IsRead { get; set; } public DateTime? ReadAt { get; set; } }
+}

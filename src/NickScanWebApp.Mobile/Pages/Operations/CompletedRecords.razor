@@ -1,0 +1,38 @@
+@page "/operations/completed-records"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesCompletedRecords)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Completed Records - NickScan</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5" Color="Color.Primary">
+                <MudIcon Icon="@Icons.Material.Filled.DoneAll" Class="mr-2" />
+                Completed Records
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                View all completed and validated container records
+            </MudText>
+        </MudStack>
+    </MudPaper>
+    
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            Completed records view. Use desktop version for detailed filtering and analysis.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+}
+

@@ -1,0 +1,775 @@
+using System.IO;
+using Npgsql;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+
+namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
+{
+    /// <summary>
+    /// Service for mapping scanner data to ICUMS BOE data
+    /// </summary>
+    public class ContainerDataMapperService : BackgroundService, IContainerDataMapperService
+    {
+        private readonly IServiceProvider _serviceProvider;
+        private readonly ILogger<ContainerDataMapperService> _logger;
+        private const string SERVICE_ID = "[CONTAINER-DATA-MAPPER]";
+        private int _consecutiveDatabaseUnavailableCount = 0;
+        private const int MAX_WARNING_LOGS = 3; // Only log warnings for first 3 attempts
+
+        // ✅ MEMORY FIX: Removed direct injection of scoped IContainerDataRepository
+        // Background services (singletons) cannot inject scoped services directly
+        // We'll use IServiceProvider to create scopes when needed
+        public ContainerDataMapperService(
+            IServiceProvider serviceProvider,
+            ILogger<ContainerDataMapperService> logger)
+        {
+            _serviceProvider = serviceProvider;
+            _logger = logger;
+        }
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            // Add random startup delay to prevent all services from starting simultaneously
+            var startupDelay = new Random().Next(1000, 5000);
+            await Task.Delay(startupDelay, stoppingToken);
+
+            _logger.LogInformation("ContainerDataMapperService started - mapping containers at configured interval from settings");
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    // Check if we can access databases before processing
+                    if (await CanAccessDatabasesAsync())
+                    {
+                        // Reset counter when database is accessible
+                        if (_consecutiveDatabaseUnavailableCount > 0)
+                        {
+                            _logger.LogInformation("{ServiceId} Database connectivity restored after {Count} attempts",
+                                SERVICE_ID, _consecutiveDatabaseUnavailableCount);
+                            _consecutiveDatabaseUnavailableCount = 0;
+                        }
+
+                        await ProcessPendingMappingsAsync(stoppingToken);
+                        _logger.LogDebug("Container data mapping processing completed successfully");
+                    }
+                    else
+                    {
+                        _consecutiveDatabaseUnavailableCount++;
+                        // Only log warnings for first few attempts, then use Debug to reduce noise
+                        if (_consecutiveDatabaseUnavailableCount <= MAX_WARNING_LOGS)
+                        {
+                            _logger.LogWarning("{ServiceId} Databases not accessible, skipping mapping processing cycle (attempt {Count}/{Max})",
+                                SERVICE_ID, _consecutiveDatabaseUnavailableCount, MAX_WARNING_LOGS);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("{ServiceId} Databases not accessible, skipping mapping processing cycle (attempt {Count})",
+                                SERVICE_ID, _consecutiveDatabaseUnavailableCount);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Check if it's a database connectivity error
+                    if (IsDatabaseConnectivityException(ex))
+                    {
+                        _consecutiveDatabaseUnavailableCount++;
+                        if (_consecutiveDatabaseUnavailableCount <= MAX_WARNING_LOGS)
+                        {
+                            _logger.LogWarning(ex, "{ServiceId} Database connectivity error during mapping processing (attempt {Count}/{Max})",
+                                SERVICE_ID, _consecutiveDatabaseUnavailableCount, MAX_WARNING_LOGS);
+                        }
+                        else
+                        {
+                            _logger.LogDebug(ex, "{ServiceId} Database connectivity error during mapping processing (attempt {Count})",
+                                SERVICE_ID, _consecutiveDatabaseUnavailableCount);
+                        }
+                    }
+                    else
+                    {
+                        // Actual error (not connectivity) - always log
+                        _logger.LogError(ex, "{ServiceId} Error during container data mapping processing", SERVICE_ID);
+                    }
+                }
+
+                // Wait for configured interval (read from database settings)
+                using (var scope = _serviceProvider.CreateScope())
+                {
+                    var settingsProvider = scope.ServiceProvider.GetRequiredService<ISettingsProvider>();
+                    var mappingIntervalMinutes = await settingsProvider.GetIntAsync("BackgroundServices", "ContainerDataMapperService.MappingIntervalMinutes", 5);
+                    _logger.LogDebug("⏰ Next data mapping in {Interval} minutes (from settings)", mappingIntervalMinutes);
+                    await Task.Delay(TimeSpan.FromMinutes(mappingIntervalMinutes), stoppingToken);
+                }
+            }
+
+            _logger.LogInformation("ContainerDataMapperService stopped");
+        }
+
+        // ✅ MEMORY FIX: Create scope to access scoped repository
+        private async Task<bool> CanAccessDatabasesAsync()
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var containerDataRepository = scope.ServiceProvider.GetRequiredService<IContainerDataRepository>();
+            return await containerDataRepository.CanConnectToDatabasesAsync();
+        }
+
+        private static bool IsDatabaseConnectivityException(Exception ex)
+        {
+            if (ex is NpgsqlException or PostgresException)
+            {
+                var msg = ex.Message;
+                return msg.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                       msg.Contains("refused", StringComparison.OrdinalIgnoreCase) ||
+                       msg.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                       msg.Contains("broken pipe", StringComparison.OrdinalIgnoreCase);
+            }
+
+            var message = ex.Message.ToLowerInvariant();
+            return message.Contains("could not open a connection") ||
+                   message.Contains("connection refused") ||
+                   message.Contains("timeout") ||
+                   (ex.InnerException != null && IsDatabaseConnectivityException(ex.InnerException));
+        }
+
+        public async Task ProcessPendingMappingsAsync(CancellationToken stoppingToken)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            _logger.LogInformation("Starting container data mapping processing");
+
+            try
+            {
+                // Get containers that have both scanner data and ICUMS data but no mapping
+                var pendingMappings = await GetPendingMappingsAsync(dbContext);
+                _logger.LogInformation("Found {Count} containers pending mapping", pendingMappings.Count);
+
+                var processedCount = 0;
+                foreach (var mapping in pendingMappings)
+                {
+                    try
+                    {
+                        await MapContainerDataAsync(
+                            mapping.ContainerNumber,
+                            mapping.ScannerType,
+                            mapping.ScannerDataId,
+                            mapping.ICUMSDataId);
+
+                        processedCount++;
+                        _logger.LogDebug("Mapped container {ContainerNumber} ({ScannerType})",
+                            mapping.ContainerNumber, mapping.ScannerType);
+
+                        if (processedCount % 50 == 0)
+                        {
+                            _logger.LogDebug("Processed {Count} mappings", processedCount);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error mapping container {ContainerNumber}", mapping.ContainerNumber);
+                    }
+                }
+
+                _logger.LogInformation("Container data mapping processing completed - processed {Count} mappings", processedCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during container data mapping processing");
+                throw;
+            }
+        }
+
+        public async Task<ContainerBOERelation> MapContainerDataAsync(string containerNumber, string scannerType, int scannerDataId, int icumsDataId)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            // Check if mapping already exists
+            var existingMapping = await dbContext.ContainerBOERelations
+                .FirstOrDefaultAsync(r => r.ContainerNumber == containerNumber &&
+                                         r.ScannerType == scannerType &&
+                                         r.ScannerDataId == scannerDataId &&
+                                         r.ICUMSBOEId == icumsDataId);
+
+            if (existingMapping != null)
+            {
+                _logger.LogDebug("Mapping already exists for container {ContainerNumber}", containerNumber);
+                return existingMapping;
+            }
+
+            // ✅ CONSOLIDATED CARGO: Check if this BOE is consolidated
+            var icumDbContext = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+            var boeDocument = await icumDbContext.BOEDocuments
+                .AsNoTracking()
+                .FirstOrDefaultAsync(b => b.Id == icumsDataId);
+
+            // Create new mapping
+            var mapping = new ContainerBOERelation
+            {
+                ContainerNumber = containerNumber,
+                ScannerType = scannerType,
+                ScannerDataId = scannerDataId,
+                ICUMSBOEId = icumsDataId,
+                RelationType = boeDocument?.IsConsolidated == true ? "Consolidated-HouseBL" : "Primary",
+                CreatedAt = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            dbContext.ContainerBOERelations.Add(mapping);
+            await dbContext.SaveChangesAsync();
+            // ✅ MEMORY FIX: Clear change tracker to release tracked entities
+            dbContext.ChangeTracker.Clear();
+
+            var relationType = boeDocument?.IsConsolidated == true ? "CONSOLIDATED" : "PRIMARY";
+            _logger.LogInformation("Created {RelationType} mapping for container {ContainerNumber} ({ScannerType}) -> ICUMS ID {ICUMSId}",
+                relationType, containerNumber, scannerType, icumsDataId);
+
+            return mapping;
+        }
+
+        public async Task<List<ContainerBOERelation>> GetContainerMappingsAsync(string containerNumber)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            return await dbContext.ContainerBOERelations
+                .Where(r => r.ContainerNumber == containerNumber && r.IsActive)
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync();
+        }
+
+        public async Task<MappingValidationResult> ValidateMappingAsync(int relationId)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var icumDbContext = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+
+            var result = new MappingValidationResult { IsValid = true };
+
+            try
+            {
+                var relation = await dbContext.ContainerBOERelations
+                    .FirstOrDefaultAsync(r => r.Id == relationId);
+
+                if (relation == null)
+                {
+                    result.IsValid = false;
+                    result.Issues.Add("Mapping relation not found");
+                    return result;
+                }
+
+                // Validate scanner data exists
+                bool scannerDataExists = false;
+                switch (relation.ScannerType.ToUpper())
+                {
+                    case "FS6000":
+                        scannerDataExists = await dbContext.FS6000Scans.AnyAsync(s => s.Id.GetHashCode() == relation.ScannerDataId);
+                        break;
+                    case "ASE":
+                        scannerDataExists = await dbContext.AseScans.AnyAsync(s => s.Id.GetHashCode() == relation.ScannerDataId);
+                        break;
+                }
+
+                if (!scannerDataExists)
+                {
+                    result.IsValid = false;
+                    result.Issues.Add($"Scanner data not found for {relation.ScannerType} ID {relation.ScannerDataId}");
+                }
+
+                // Validate ICUMS data exists
+                var icumsDataExists = await icumDbContext.BOEDocuments
+                    .AnyAsync(i => i.Id == relation.ICUMSBOEId);
+
+                if (!icumsDataExists)
+                {
+                    result.IsValid = false;
+                    result.Issues.Add($"ICUMS data not found for ID {relation.ICUMSBOEId}");
+                }
+
+                // Validate container numbers match
+                string? scannerContainerNumber = null;
+                switch (relation.ScannerType.ToUpper())
+                {
+                    case "FS6000":
+                        var fs6000Scan = await dbContext.FS6000Scans.FirstOrDefaultAsync(s => s.Id.GetHashCode() == relation.ScannerDataId);
+                        scannerContainerNumber = fs6000Scan?.ContainerNumber;
+                        break;
+                    case "ASE":
+                        var aseScan = await dbContext.AseScans.FirstOrDefaultAsync(s => s.Id.GetHashCode() == relation.ScannerDataId);
+                        scannerContainerNumber = aseScan?.ContainerNumber;
+                        break;
+                }
+
+                var icumsData = await icumDbContext.BOEDocuments
+                    .FirstOrDefaultAsync(i => i.Id == relation.ICUMSBOEId);
+
+                if (scannerContainerNumber != null && icumsData != null)
+                {
+                    if (!string.Equals(scannerContainerNumber, icumsData.ContainerNumber, StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.IsValid = false;
+                        result.Issues.Add($"Container number mismatch: Scanner='{scannerContainerNumber}', ICUMS='{icumsData.ContainerNumber}'");
+                    }
+                }
+
+                result.ValidationMessage = result.IsValid ? "Mapping is valid" : "Mapping has validation issues";
+            }
+            catch (Exception ex)
+            {
+                result.IsValid = false;
+                result.Issues.Add($"Validation error: {ex.Message}");
+                _logger.LogError(ex, "Error validating mapping {RelationId}", relationId);
+            }
+
+            return result;
+        }
+
+        public async Task<List<ContainerSubmissionData>> GetContainersReadyForSubmissionAsync(int limit = 100)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            try
+            {
+                _logger.LogInformation("{ServiceId} Getting containers ready for submission with limit {Limit}", SERVICE_ID, limit);
+
+                // Get active mappings with limit for performance - simplified query
+                // Exclude VIN records (17 characters) - only include valid container numbers (11 characters)
+                var mappings = await dbContext.ContainerBOERelations
+                    .Where(r => r.IsActive && r.ContainerNumber.Length == 11)
+                    .OrderByDescending(r => r.CreatedAt)
+                    .Take(Math.Min(limit, 20)) // Further reduce limit for faster response
+                    .Select(r => new
+                    {
+                        r.ContainerNumber,
+                        r.ScannerType,
+                        r.CreatedAt,
+                        r.ScannerDataId,
+                        ICUMSDataId = r.ICUMSBOEId
+                    })
+                    .ToListAsync();
+
+                _logger.LogInformation("{ServiceId} Found {Count} active mappings", SERVICE_ID, mappings.Count);
+
+                // Convert to ContainerSubmissionData with image paths
+                var readyContainers = new List<ContainerSubmissionData>();
+
+                foreach (var mapping in mappings)
+                {
+                    var imagePaths = await GetImagePathsForContainer(dbContext, mapping.ContainerNumber);
+
+                    readyContainers.Add(new ContainerSubmissionData
+                    {
+                        ContainerNumber = mapping.ContainerNumber,
+                        ScannerType = mapping.ScannerType,
+                        ScannerDataId = mapping.ScannerDataId,
+                        ICUMSDataId = mapping.ICUMSDataId,
+                        RelationId = readyContainers.Count + 1,
+                        ImagePaths = imagePaths,
+                        ReportData = new Dictionary<string, object>(),
+                        ScanDate = mapping.CreatedAt,
+                        ICUMSDataDate = mapping.CreatedAt
+                    });
+                }
+
+                _logger.LogInformation("{ServiceId} Returning {Count} containers ready for submission", SERVICE_ID, readyContainers.Count);
+                return readyContainers;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting containers ready for submission");
+                return new List<ContainerSubmissionData>(); // Return empty list on error
+            }
+        }
+
+        private async Task<List<PendingMapping>> GetPendingMappingsAsync(ApplicationDbContext dbContext)
+        {
+            var pendingMappings = new List<PendingMapping>();
+            const int maxRetries = 3;
+            const int baseDelayMs = 100;
+
+            // ✅ FIX: Resolve ICUMSDataId (which is actually a BOEDocuments.Id) from the
+            // IcumDownloadsDbContext. The placeholder `= 0` below was never being
+            // resolved, so ContainerBOERelation.ICUMSBOEId rows were all written as 0.
+            using var icumScope = _serviceProvider.CreateScope();
+            var icumDownloadsContext = icumScope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    // ✅ MEMORY OPTIMIZATION: Get FS6000 containers with ICUMS data but no mapping
+                    // Use efficient query with projections instead of loading full entities
+                    var fs6000Scans = await (from scan in dbContext.FS6000Scans.AsNoTracking()
+                                             join completeness in dbContext.ContainerCompletenessStatuses.AsNoTracking()
+                                                 on scan.ContainerNumber equals completeness.ContainerNumber
+                                             where !string.IsNullOrEmpty(scan.ContainerNumber) &&
+                                                   scan.ContainerNumber.Length == 11 &&
+                                                   completeness.HasICUMSData &&
+                                                   completeness.ScannerType == "FS6000"
+                                             select new { scan.ContainerNumber, scan.Id }).ToListAsync();
+
+                    // Get existing mappings to filter out already mapped containers
+                    var existingMappings = await dbContext.ContainerBOERelations
+                        .Where(r => r.ScannerType == "FS6000")
+                        .Select(r => new { r.ContainerNumber, r.ScannerDataId })
+                        .ToListAsync();
+
+                    var fs6000Pending = fs6000Scans
+                        .Where(scan => !existingMappings.Any(m =>
+                            m.ContainerNumber == scan.ContainerNumber &&
+                            m.ScannerDataId == scan.Id.GetHashCode()))
+                        .Select(scan => new PendingMapping
+                        {
+                            ContainerNumber = scan.ContainerNumber,
+                            ScannerType = "FS6000",
+                            ScannerDataId = scan.Id.GetHashCode(),
+                            ICUMSDataId = 0 // Resolved below from IcumDownloadsDbContext.BOEDocuments
+                        }).ToList();
+
+                    // ✅ MEMORY OPTIMIZATION: Get ASE containers with ICUMS data but no mapping
+                    // Instead of loading entire AseScans table (24GB), use efficient query with projections
+                    // ✅ CRITICAL FIX: Add date filter to prevent loading ALL AseScans into buffer pool
+                    var thirtyDaysAgo = DateTime.UtcNow.AddDays(-30);
+                    var aseScans = await (from scan in dbContext.AseScans.AsNoTracking()
+                                          join completeness in dbContext.ContainerCompletenessStatuses.AsNoTracking()
+                                              on scan.ContainerNumber equals completeness.ContainerNumber
+                                          where scan.ScanTime >= thirtyDaysAgo &&
+                                                !string.IsNullOrEmpty(scan.ContainerNumber) &&
+                                                completeness.HasICUMSData &&
+                                                completeness.ScannerType == "ASE"
+                                          select new { scan.ContainerNumber, scan.Id }).ToListAsync();
+
+                    // Get existing ASE mappings to filter out already mapped containers
+                    var existingAseMappings = await dbContext.ContainerBOERelations
+                        .Where(r => r.ScannerType == "ASE")
+                        .Select(r => new { r.ContainerNumber, r.ScannerDataId })
+                        .ToListAsync();
+
+                    // ✅ FIX: ASE source DB stores comma-joined container numbers when
+                    // a single inspection/truck carried more than one container (e.g.
+                    // "MSMU2238000, MSMU1593191"). Previously the mapper wrote those
+                    // merged strings verbatim into ContainerBOERelation.ContainerNumber,
+                    // where they could never resolve to a BOE document (boedocuments
+                    // rows are keyed on a single container number). Now we split on ','
+                    // and emit one PendingMapping per container. We also filter out
+                    // ASE "Unknown" scans (non-cargo / calibration / transmission scans
+                    // with no container number) — they would never resolve and just
+                    // create junk rows.
+                    var asePending = new List<PendingMapping>();
+                    var aseDedup = existingAseMappings
+                        .Select(m => (m.ContainerNumber, m.ScannerDataId))
+                        .ToHashSet();
+                    foreach (var scan in aseScans)
+                    {
+                        if (string.IsNullOrWhiteSpace(scan.ContainerNumber)) continue;
+
+                        // Split on ',' and trim whitespace; drop empties and "Unknown".
+                        var tokens = scan.ContainerNumber
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Where(t => !string.IsNullOrWhiteSpace(t)
+                                        && !string.Equals(t, "Unknown", StringComparison.OrdinalIgnoreCase))
+                            .Distinct()
+                            .ToList();
+
+                        var scannerDataId = scan.Id.GetHashCode();
+                        foreach (var token in tokens)
+                        {
+                            // Dedup against existing rows AND against anything we already
+                            // queued this cycle (same scan producing multiple tokens).
+                            if (aseDedup.Contains((token, scannerDataId))) continue;
+                            aseDedup.Add((token, scannerDataId));
+
+                            asePending.Add(new PendingMapping
+                            {
+                                ContainerNumber = token,
+                                ScannerType = "ASE",
+                                ScannerDataId = scannerDataId,
+                                ICUMSDataId = 0 // Resolved below from IcumDownloadsDbContext.BOEDocuments
+                            });
+                        }
+                    }
+
+                    pendingMappings.AddRange(fs6000Pending);
+                    pendingMappings.AddRange(asePending);
+
+                    // ✅ FIX: Resolve the actual BOE document id for each pending mapping.
+                    // ContainerBOERelation.ICUMSBOEId is a foreign key to
+                    // nickscan_downloads.boedocuments.id (despite the historical name).
+                    // Previously this was left as 0 and never repaired, which is why
+                    // all existing ContainerBOERelation.ICUMSBOEId rows are 0.
+                    if (pendingMappings.Count > 0)
+                    {
+                        var containerNumbers = pendingMappings
+                            .Select(m => m.ContainerNumber)
+                            .Where(c => !string.IsNullOrWhiteSpace(c))
+                            .Distinct()
+                            .ToList();
+
+                        if (containerNumbers.Count > 0)
+                        {
+                            // Tie-break: prefer the most recently created transferred BOE doc
+                            // per container (status "Transferred" is the canonical
+                            // ready-for-mapping state per IcumDataTransferService).
+                            var boeLookup = await icumDownloadsContext.BOEDocuments
+                                .AsNoTracking()
+                                .Where(b => containerNumbers.Contains(b.ContainerNumber)
+                                            && b.ProcessingStatus == "Transferred")
+                                .GroupBy(b => b.ContainerNumber)
+                                .Select(g => new
+                                {
+                                    ContainerNumber = g.Key,
+                                    LatestId = g.OrderByDescending(b => b.CreatedAt).Select(b => b.Id).FirstOrDefault()
+                                })
+                                .ToDictionaryAsync(x => x.ContainerNumber, x => x.LatestId);
+
+                            foreach (var mapping in pendingMappings)
+                            {
+                                if (boeLookup.TryGetValue(mapping.ContainerNumber, out var boeId) && boeId > 0)
+                                {
+                                    mapping.ICUMSDataId = boeId;
+                                }
+                                // Else leave at 0; downstream filtering / logging below handles it.
+                            }
+
+                            var unresolved = pendingMappings.Where(m => m.ICUMSDataId == 0).ToList();
+                            if (unresolved.Count > 0)
+                            {
+                                _logger.LogWarning("[MAPPER] {Count} pending mappings could not resolve an ICUMS BOE document id. First few: {Samples}",
+                                    unresolved.Count, string.Join(", ", unresolved.Select(u => u.ContainerNumber).Take(5)));
+                            }
+                        }
+                    }
+
+                    // Success - break out of retry loop
+                    break;
+                }
+                catch (PostgresException pgEx) when (pgEx.SqlState == "40P01" && attempt < maxRetries)
+                {
+                    // Deadlock detected (PostgreSQL 40P01) - retry with exponential backoff
+                    var delay = baseDelayMs * Math.Pow(2, attempt - 1);
+                    _logger.LogWarning("Deadlock detected in GetPendingMappingsAsync (attempt {Attempt}/{MaxRetries}). Retrying in {Delay}ms...",
+                        attempt, maxRetries, delay);
+
+                    await Task.Delay((int)delay);
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt == maxRetries)
+                    {
+                        _logger.LogError(ex, "Error getting pending mappings after {MaxRetries} attempts", maxRetries);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(ex, "Error getting pending mappings (attempt {Attempt}/{MaxRetries}). Retrying...",
+                            attempt, maxRetries);
+                        await Task.Delay(baseDelayMs * attempt);
+                    }
+                }
+            }
+
+            return pendingMappings;
+        }
+
+        private async Task<List<string>> GetContainerImagePathsAsync(ApplicationDbContext dbContext, string containerNumber, string scannerType)
+        {
+            try
+            {
+                var imagePaths = new List<string>();
+
+                // Get image paths based on scanner type
+                switch (scannerType.ToUpper())
+                {
+                    case "FS6000":
+                        var fs6000Scan = await dbContext.FS6000Scans
+                            .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+                        if (fs6000Scan != null && !string.IsNullOrEmpty(fs6000Scan.FilePath))
+                        {
+                            imagePaths.Add(fs6000Scan.FilePath);
+                        }
+                        break;
+                    case "ASE":
+                        var aseScan = await dbContext.AseScans
+                            .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+                        if (aseScan != null && !string.IsNullOrEmpty(aseScan.ImageDisplayName))
+                        {
+                            // ASE stores image as byte array, so we'll use the display name as path
+                            imagePaths.Add(aseScan.ImageDisplayName);
+                        }
+                        break;
+                }
+
+                // Fallback: look for images in container images table
+                if (!imagePaths.Any())
+                {
+                    var containerImages = await dbContext.ContainerImages
+                        .Where(ci => ci.Container.ContainerId == containerNumber) // Container has ContainerId field
+                        .Select(ci => ci.ImagePath)
+                        .ToListAsync();
+
+                    imagePaths.AddRange(containerImages.Where(path => !string.IsNullOrEmpty(path)));
+                }
+
+                return imagePaths;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting image paths for container {ContainerNumber}", containerNumber);
+                return new List<string>();
+            }
+        }
+
+        private async Task<Dictionary<string, object>> GetContainerReportDataAsync(ApplicationDbContext dbContext, ContainerBOERelation mapping)
+        {
+            var reportData = new Dictionary<string, object>
+            {
+                ["ContainerNumber"] = mapping.ContainerNumber,
+                ["ScannerType"] = mapping.ScannerType,
+                ["MappingId"] = mapping.Id,
+                ["CreatedAt"] = mapping.CreatedAt
+            };
+
+            try
+            {
+                // Add scanner-specific data
+                switch (mapping.ScannerType.ToUpper())
+                {
+                    case "FS6000":
+                        // ✅ FIXED: Query single record instead of loading ALL scans (was loading 1,924 records)
+                        var fs6000Scan = await dbContext.FS6000Scans
+                            .AsNoTracking()
+                            .Where(s => s.Id.GetHashCode() == mapping.ScannerDataId)
+                            .Select(s => new
+                            {
+                                s.ScanTime,
+                                s.FilePath,
+                                s.FycoPresent,
+                                s.PicNumber
+                            })
+                            .FirstOrDefaultAsync();
+                        if (fs6000Scan != null)
+                        {
+                            reportData["ScanTime"] = fs6000Scan.ScanTime;
+                            reportData["FilePath"] = fs6000Scan.FilePath;
+                            reportData["FycoPresent"] = fs6000Scan.FycoPresent;
+                            reportData["PicNumber"] = fs6000Scan.PicNumber;
+                        }
+                        break;
+                    case "ASE":
+                        // ✅ FIXED: Query single record instead of loading ALL 15,002 scans with 1.7MB images each (was loading 24 GB!)
+                        var aseScan = await dbContext.AseScans
+                            .AsNoTracking()
+                            .Where(s => s.Id.GetHashCode() == mapping.ScannerDataId)
+                            .Select(s => new
+                            {
+                                s.ScanTime,
+                                s.ImageDisplayName,
+                                s.InspectionId,
+                                s.InspectionUuid
+                                // ✅ ScanImage NOT included - saves 1.7 MB per query!
+                            })
+                            .FirstOrDefaultAsync();
+                        if (aseScan != null)
+                        {
+                            reportData["ScanTime"] = aseScan.ScanTime;
+                            reportData["ImageDisplayName"] = aseScan.ImageDisplayName;
+                            reportData["InspectionId"] = aseScan.InspectionId;
+                            reportData["InspectionUuid"] = aseScan.InspectionUuid;
+                        }
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting report data for mapping {MappingId}", mapping.Id);
+            }
+
+            return reportData;
+        }
+
+        private class PendingMapping
+        {
+            public string ContainerNumber { get; set; } = string.Empty;
+            public string ScannerType { get; set; } = string.Empty;
+            public int ScannerDataId { get; set; }
+            public int ICUMSDataId { get; set; }
+        }
+
+        /// <summary>
+        /// Get image paths for a specific container from all scanner types
+        /// </summary>
+        private async Task<List<string>> GetImagePathsForContainer(ApplicationDbContext dbContext, string containerNumber)
+        {
+            var imagePaths = new List<string>();
+
+            try
+            {
+                // ✅ MEMORY OPTIMIZATION: Try to get images from NuctechScannerData (if table exists)
+                List<string> nuctechImages = new();
+                try
+                {
+                    nuctechImages = await dbContext.NuctechScannerData
+                        .AsNoTracking()
+                        .Where(s => s.ContainerId == containerNumber && !string.IsNullOrEmpty(s.ImagePath))
+                        .Select(s => s.ImagePath!)
+                        .ToListAsync();
+                }
+                catch (PostgresException ex) when (ex.SqlState == "42P01") // relation does not exist
+                {
+                    _logger.LogDebug("NuctechScannerData table not found, skipping");
+                }
+
+                // ✅ MEMORY OPTIMIZATION: Try to get images from HeimannSmithScannerData (if table exists)
+                List<string> heimannSmithImages = new();
+                try
+                {
+                    heimannSmithImages = await dbContext.HeimannSmithScannerData
+                        .AsNoTracking()
+                        .Where(s => s.ContainerId == containerNumber && !string.IsNullOrEmpty(s.ImagePath))
+                        .Select(s => s.ImagePath!)
+                        .ToListAsync();
+                }
+                catch (PostgresException ex) when (ex.SqlState == "42P01") // relation does not exist
+                {
+                    _logger.LogDebug("HeimannSmithScannerData table not found, skipping");
+                }
+
+                // ✅ MEMORY OPTIMIZATION: Get images from FS6000Scans with AsNoTracking
+                var fs6000Images = await dbContext.FS6000Scans
+                    .AsNoTracking()
+                    .Where(s => s.ContainerNumber == containerNumber && !string.IsNullOrEmpty(s.FilePath))
+                    .Select(s => s.FilePath!)
+                    .ToListAsync();
+
+                // ✅ MEMORY OPTIMIZATION: Get images from AseScans with AsNoTracking
+                var aseImages = await dbContext.AseScans
+                    .AsNoTracking()
+                    .Where(s => s.ContainerNumber == containerNumber && !string.IsNullOrEmpty(s.ImageDisplayName))
+                    .Select(s => s.ImageDisplayName!)
+                    .ToListAsync();
+
+                // Combine all image paths
+                imagePaths.AddRange(nuctechImages);
+                imagePaths.AddRange(heimannSmithImages);
+                imagePaths.AddRange(fs6000Images);
+                imagePaths.AddRange(aseImages);
+
+                _logger.LogDebug("Found {Count} images for container {ContainerNumber}", imagePaths.Count, containerNumber);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting image paths for container {ContainerNumber}", containerNumber);
+            }
+
+            return imagePaths;
+        }
+    }
+}

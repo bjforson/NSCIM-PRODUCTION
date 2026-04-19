@@ -1,0 +1,31 @@
+<!-- Empty State Component - Shows when no data is available -->
+<!-- Phase 2: Enhanced with modern styling -->
+
+<div class="empty-state-modern" style="@($"min-height: {Height}px;")">
+    <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="fade-in">
+        <div class="empty-state-icon">
+            <MudIcon Icon="@Icon" Size="Size.Large" Style="font-size: 5rem;" Color="@Color" />
+        </div>
+        <MudText Typo="Typo.h5" Class="empty-state-title">@Message</MudText>
+        @if (!string.IsNullOrEmpty(SubMessage))
+        {
+            <MudText Typo="Typo.body1" Class="empty-state-description">@SubMessage</MudText>
+        }
+        @if (ActionButton != null)
+        {
+            <div class="mt-4">
+                @ActionButton
+            </div>
+        }
+    </MudStack>
+</div>
+
+@code {
+    [Parameter] public string Icon { get; set; } = Icons.Material.Outlined.Inbox;
+    [Parameter] public string Message { get; set; } = "No data available";
+    [Parameter] public string? SubMessage { get; set; }
+    [Parameter] public Color Color { get; set; } = Color.Default;
+    [Parameter] public int Height { get; set; } = 300;
+    [Parameter] public RenderFragment? ActionButton { get; set; }
+}
+

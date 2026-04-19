@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\platform\NickERP.Platform.Core\NickERP.Platform.Core.csproj" />
+    <ProjectReference Include="..\..\platform\NickERP.Platform.Tenancy\NickERP.Platform.Tenancy.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.Core\NickScanCentralImagingPortal.Core.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.ScannerServices.ASE\NickScanCentralImagingPortal.ScannerServices.ASE.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.ScannerServices.Nuctech\NickScanCentralImagingPortal.ScannerServices.Nuctech.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.ScannerServices.HeimannSmith\NickScanCentralImagingPortal.ScannerServices.HeimannSmith.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.Infrastructure\NickScanCentralImagingPortal.Infrastructure.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.Services.FS6000\NickScanCentralImagingPortal.Services.FS6000.csproj" />
+    <ProjectReference Include="..\NickScanCentralImagingPortal.Services.ImageProcessing\NickScanCentralImagingPortal.Services.ImageProcessing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.9" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="9.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.9" />
+    <PackageReference Include="Polly" Version="8.6.4" />
+    <PackageReference Include="Polly.Extensions.Http" Version="3.0.0" />
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+    <PackageReference Include="QuestPDF" Version="2024.10.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

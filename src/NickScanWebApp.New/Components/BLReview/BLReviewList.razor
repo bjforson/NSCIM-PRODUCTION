@@ -1,0 +1,306 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using MudBlazor
+@inject BLReviewService BLReviewService
+@inject ILogger<BLReviewList> Logger
+@inject IDialogService DialogService
+
+<MudPaper Elevation="2" Class="pa-4">
+    <!-- Header with controls -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_searchText" 
+                         Label="Search BL Number" 
+                         Variant="Variant.Outlined" 
+                         Adornment="Adornment.Start" 
+                         AdornmentIcon="@Icons.Material.Outlined.Search"
+                         OnKeyUp="HandleSearchKeyPress"
+                         Immediate="true" />
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudSelect @bind-Value="_selectedStatus" 
+                      Label="Status" 
+                      Variant="Variant.Outlined"
+                      T="string"
+                      OnClose="LoadBLGroups">
+                <MudSelectItem Value="@("All")">All</MudSelectItem>
+                <MudSelectItem Value="@("Pending")">Pending</MudSelectItem>
+                <MudSelectItem Value="@("InProgress")">In Progress</MudSelectItem>
+                <MudSelectItem Value="@("Completed")">Completed</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudButton Variant="Variant.Filled" 
+                      Color="Color.Primary" 
+                      StartIcon="@Icons.Material.Outlined.Refresh"
+                      OnClick="LoadBLGroups"
+                      FullWidth="true"
+                      Disabled="_isLoading">
+                Refresh
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Loading state -->
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    }
+
+    <!-- BL Groups Table -->
+    <MudTable Items="_blGroups" 
+              Hover="true" 
+              Breakpoint="Breakpoint.Sm" 
+              Loading="_isLoading"
+              LoadingProgressColor="Color.Primary"
+              Dense="true">
+        <HeaderContent>
+            <MudTh>BL Number</MudTh>
+            <MudTh>Containers</MudTh>
+            <MudTh>Progress</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Decision</MudTh>
+            <MudTh>Reviewed By</MudTh>
+            <MudTh>Last Updated</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="BL Number">
+                <MudText Typo="Typo.body2">
+                    <strong>@context.MasterBlNumber</strong>
+                </MudText>
+            </MudTd>
+            <MudTd DataLabel="Containers">
+                <MudText Typo="Typo.body2">
+                    @context.CompleteContainers / @context.TotalContainers
+                </MudText>
+            </MudTd>
+            <MudTd DataLabel="Progress">
+                <MudProgressLinear Color="@GetProgressColor(context)" 
+                                  Value="@GetProgressPercentage(context)" 
+                                  Size="Size.Small"
+                                  Class="my-2">
+                    <MudText Typo="Typo.body2" Color="Color.Default">
+                        @context.ReviewedContainers/@context.CompleteContainers
+                    </MudText>
+                </MudProgressLinear>
+            </MudTd>
+            <MudTd DataLabel="Status">
+                <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.ReviewStatus)">
+                    @context.ReviewStatus
+                </MudChip>
+            </MudTd>
+            <MudTd DataLabel="Decision">
+                <MudChip T="string" Size="Size.Small" Color="@GetDecisionColor(context.FinalDecision)">
+                    @GetDecisionIcon(context.FinalDecision) @context.FinalDecision
+                </MudChip>
+            </MudTd>
+            <MudTd DataLabel="Reviewed By">
+                <MudText Typo="Typo.body2">@(context.ReviewedBy ?? "-")</MudText>
+            </MudTd>
+            <MudTd DataLabel="Last Updated">
+                <MudText Typo="Typo.body2">
+                    @(context.LastReviewedAt?.ToString("MMM dd, HH:mm") ?? "-")
+                </MudText>
+            </MudTd>
+            <MudTd DataLabel="Actions">
+                <MudButton Variant="Variant.Text" 
+                          Color="Color.Primary" 
+                          Size="Size.Small"
+                          StartIcon="@Icons.Material.Outlined.RateReview"
+                          OnClick="@(() => OpenReviewDialog(context))">
+                    Review
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            <MudText Typo="Typo.body1" Class="pa-4">
+                No BL groups found. Try adjusting your filters.
+            </MudText>
+        </NoRecordsContent>
+    </MudTable>
+
+    <!-- Pagination -->
+    @if (_totalPages > 1)
+    {
+        <MudPagination Class="mt-4" 
+                      Count="_totalPages" 
+                      Selected="_currentPage" 
+                      SelectedChanged="OnPageChanged"
+                      ShowFirstButton="true"
+                      ShowLastButton="true" />
+    }
+
+    <!-- Statistics Summary -->
+    @if (_statistics != null)
+    {
+        <MudGrid Class="mt-4">
+            <MudItem xs="6" sm="3">
+                <MudPaper Elevation="0" Class="pa-2 text-center">
+                    <MudText Typo="Typo.h6">@_statistics.TotalBLs</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total BLs</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" sm="3">
+                <MudPaper Elevation="0" Class="pa-2 text-center">
+                    <MudText Typo="Typo.h6" Color="Color.Warning">@_statistics.PendingBLs</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Pending</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" sm="3">
+                <MudPaper Elevation="0" Class="pa-2 text-center">
+                    <MudText Typo="Typo.h6" Color="Color.Info">@_statistics.InProgressBLs</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">In Progress</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" sm="3">
+                <MudPaper Elevation="0" Class="pa-2 text-center">
+                    <MudText Typo="Typo.h6" Color="Color.Success">@_statistics.CompletedBLs</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Completed</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+</MudPaper>
+
+@code {
+    private List<BLGroupDto> _blGroups = new();
+    private BLReviewStatistics? _statistics;
+    private bool _isLoading = false;
+    private string _searchText = "";
+    private string _selectedStatus = "All";
+    private int _currentPage = 1;
+    private int _pageSize = 20;
+    private int _totalPages = 1;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadBLGroups();
+        await LoadStatistics();
+    }
+
+    private async Task LoadBLGroups()
+    {
+        _isLoading = true;
+        try
+        {
+            Logger.LogInformation("Loading BL groups - Page: {Page}, Status: {Status}", _currentPage, _selectedStatus);
+
+            var status = _selectedStatus == "All" ? null : _selectedStatus;
+            var groups = await BLReviewService.GetBLGroupsAsync(status, _currentPage, _pageSize);
+            _blGroups = groups ?? new List<BLGroupDto>();
+
+            // Filter by search text if provided
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                _blGroups = _blGroups
+                    .Where(b => b.MasterBlNumber.Contains(_searchText, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            Logger.LogInformation("✅ Loaded {Count} BL groups", _blGroups.Count);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading BL groups");
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            _statistics = await BLReviewService.GetStatisticsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading statistics");
+            _statistics = null; // ✅ FIXED: Explicitly set to null on error
+        }
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        _currentPage = page;
+        await LoadBLGroups();
+    }
+
+    private async Task HandleSearchKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            _currentPage = 1; // Reset to first page
+            await LoadBLGroups();
+        }
+    }
+
+    private async Task OpenReviewDialog(BLGroupDto blGroup)
+    {
+        var parameters = new DialogParameters
+        {
+            ["MasterBlNumber"] = blGroup.MasterBlNumber
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraLarge, 
+            FullWidth = true,
+            CloseOnEscapeKey = true,  // ✅ Allow ESC to close
+            CloseButton = true,        // ✅ Show close button in title
+            BackdropClick = false      // Keep backdrop click disabled for safety
+        };
+
+        var dialog = await DialogService.ShowAsync<BLReviewDialog>($"Review BL: {blGroup.MasterBlNumber}", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is { Canceled: false })
+        {
+            // Refresh the list after review
+            await LoadBLGroups();
+            await LoadStatistics();
+        }
+    }
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Pending" => Color.Warning,
+        "InProgress" => Color.Info,
+        "Completed" => Color.Success,
+        _ => Color.Default
+    };
+
+    private Color GetDecisionColor(string decision) => decision switch
+    {
+        "Normal" => Color.Success,
+        "Abnormal" => Color.Error,
+        "Pending" => Color.Default,
+        _ => Color.Default
+    };
+
+    private string GetDecisionIcon(string decision) => decision switch
+    {
+        "Normal" => "✅",
+        "Abnormal" => "⚠️",
+        _ => "⏳"
+    };
+
+    private Color GetProgressColor(BLGroupDto group)
+    {
+        var percentage = GetProgressPercentage(group);
+        if (percentage >= 100) return Color.Success;
+        if (percentage >= 50) return Color.Info;
+        if (percentage > 0) return Color.Warning;
+        return Color.Default;
+    }
+
+    private double GetProgressPercentage(BLGroupDto group)
+    {
+        if (group.CompleteContainers == 0) return 0;
+        return (double)group.ReviewedContainers / group.CompleteContainers * 100;
+    }
+}
+

@@ -1,0 +1,360 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using NickScanCentralImagingPortal.Core.Entities.FS6000;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+
+namespace NickScanCentralImagingPortal.Services.FS6000
+{
+    public class FileSyncService : IFileSyncService, IDisposable
+    {
+        private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly ILogger<FileSyncService> _logger;
+        private readonly FileSyncConfiguration _config;
+        private readonly CancellationTokenSource _cancellationTokenSource;
+        private Task? _syncTask;
+        private bool _disposed = false;
+
+        public FileSyncService(
+            IServiceScopeFactory serviceScopeFactory,
+            ILogger<FileSyncService> logger,
+            IOptions<FileSyncConfiguration> config)
+        {
+            _serviceScopeFactory = serviceScopeFactory;
+            _logger = logger;
+            _config = config.Value;
+            _cancellationTokenSource = new CancellationTokenSource();
+        }
+
+        public async Task StartSyncAsync()
+        {
+            _logger.LogInformation("Starting File Sync Service for FS6000");
+            
+            // Create directories if they don't exist
+            Directory.CreateDirectory(_config.SourcePath);
+            Directory.CreateDirectory(_config.DestinationPath);
+            Directory.CreateDirectory(_config.ProcessedPath);
+
+            // Start the background sync task
+            _syncTask = Task.Run(async () => await SyncLoopAsync(_cancellationTokenSource.Token));
+            
+            _logger.LogInformation("File Sync Service started successfully");
+        }
+
+        public async Task StopSyncAsync()
+        {
+            _logger.LogInformation("Stopping File Sync Service");
+            _cancellationTokenSource.Cancel();
+            
+            if (_syncTask != null)
+            {
+                await _syncTask;
+            }
+            
+            _logger.LogInformation("File Sync Service stopped");
+        }
+
+        private async Task SyncLoopAsync(CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("File sync loop started");
+            
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    _logger.LogDebug("Starting file sync cycle");
+                    await SyncFilesAsync();
+                    _logger.LogDebug("File sync cycle completed");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error during file sync cycle");
+                }
+
+                // Wait for the next sync interval
+                try
+                {
+                    await Task.Delay(_config.SyncInterval, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+            
+            _logger.LogInformation("File sync loop ended");
+        }
+
+        public async Task<bool> IsHealthyAsync()
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+                // Check if source directory is accessible
+                if (!Directory.Exists(_config.SourcePath))
+                {
+                    _logger.LogWarning("Source directory does not exist: {SourcePath}", _config.SourcePath);
+                    return false;
+                }
+
+                // Check if destination directory is accessible
+                if (!Directory.Exists(_config.DestinationPath))
+                {
+                    _logger.LogWarning("Destination directory does not exist: {DestinationPath}", _config.DestinationPath);
+                    return false;
+                }
+
+                // Check database connectivity
+                await context.Database.CanConnectAsync();
+                
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Health check failed for File Sync Service");
+                return false;
+            }
+        }
+
+        public async Task<int> GetPendingSyncCountAsync()
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            return await context.FS6000SyncLogs
+                .CountAsync(s => s.SyncStatus == "Pending" || s.SyncStatus == "Processing");
+        }
+
+        public async Task<int> GetFailedSyncCountAsync()
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            return await context.FS6000SyncLogs
+                .CountAsync(s => s.SyncStatus == "Failed");
+        }
+
+        private async Task SyncFilesAsync()
+        {
+            try
+            {
+                _logger.LogDebug("Starting file sync cycle");
+
+                // Get all year folders (2025, 2026, etc.)
+                var yearFolders = Directory.GetDirectories(_config.SourcePath)
+                    .Where(d => Path.GetFileName(d).Length == 4 && int.TryParse(Path.GetFileName(d), out _))
+                    .OrderBy(d => d)
+                    .ToList();
+
+                _logger.LogDebug("Found {YearCount} year folders", yearFolders.Count);
+
+                foreach (var yearFolder in yearFolders)
+                {
+                    var year = Path.GetFileName(yearFolder);
+                    _logger.LogDebug("Processing year folder: {Year}", year);
+
+                    // Get all month-day folders (0901, 0902, etc.)
+                    var monthDayFolders = Directory.GetDirectories(yearFolder)
+                        .Where(d => Path.GetFileName(d).Length == 4 && int.TryParse(Path.GetFileName(d), out _))
+                        .OrderBy(d => d)
+                        .ToList();
+
+                    _logger.LogDebug("Found {MonthDayCount} month-day folders in {Year}", monthDayFolders.Count, year);
+
+                    foreach (var monthDayFolder in monthDayFolders)
+                    {
+                        var monthDay = Path.GetFileName(monthDayFolder);
+                        _logger.LogDebug("Processing month-day folder: {MonthDay}", monthDay);
+
+                        // Get all serial number folders (0001, 0002, etc.)
+                        var serialFolders = Directory.GetDirectories(monthDayFolder)
+                            .Where(d => Path.GetFileName(d).Length == 4 && int.TryParse(Path.GetFileName(d), out _))
+                            .OrderBy(d => d)
+                            .ToList();
+
+                        _logger.LogDebug("Found {SerialCount} serial folders in {Year}/{MonthDay}", serialFolders.Count, year, monthDay);
+
+                        foreach (var serialFolder in serialFolders)
+                        {
+                            var serial = Path.GetFileName(serialFolder);
+                            _logger.LogDebug("Processing serial folder: {Serial}", serial);
+
+                            await ProcessSerialFolderAsync(serialFolder, year, monthDay, serial);
+                        }
+                    }
+                }
+
+                _logger.LogDebug("File sync cycle completed");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during file sync cycle");
+            }
+        }
+
+        private async Task ProcessSerialFolderAsync(string sourceFolder, string year, string monthDay, string serial)
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+                var relativePath = $"{year}/{monthDay}/{serial}";
+                var destinationFolder = Path.Combine(_config.DestinationPath, relativePath);
+                var processedFolder = Path.Combine(_config.ProcessedPath, relativePath);
+
+                _logger.LogDebug("Processing folder: {SourceFolder} -> {DestinationFolder}", sourceFolder, destinationFolder);
+
+                // Check if already processed
+                if (Directory.Exists(processedFolder))
+                {
+                    _logger.LogDebug("Folder already processed: {RelativePath}", relativePath);
+                    return;
+                }
+
+                // Check if already synced
+                var existingSync = await context.FS6000SyncLogs
+                    .FirstOrDefaultAsync(s => s.SourcePath == sourceFolder && s.SyncStatus == "Completed");
+
+                if (existingSync != null)
+                {
+                    _logger.LogDebug("Folder already synced: {RelativePath}", relativePath);
+                    return;
+                }
+
+                // Create destination directory structure
+                Directory.CreateDirectory(destinationFolder);
+                _logger.LogDebug("Created destination directory: {DestinationFolder}", destinationFolder);
+
+                // Find XML and largest JPEG files
+                var xmlFile = FindXmlFile(sourceFolder);
+                var largestJpegFile = FindLargestJpegFile(sourceFolder);
+
+                if (xmlFile == null)
+                {
+                    _logger.LogWarning("No XML file found in folder: {SourceFolder}", sourceFolder);
+                    return;
+                }
+
+                if (largestJpegFile == null)
+                {
+                    _logger.LogWarning("No JPEG file found in folder: {SourceFolder}", sourceFolder);
+                    return;
+                }
+
+                _logger.LogDebug("Found XML: {XmlFile}, JPEG: {JpegFile}", xmlFile, largestJpegFile);
+
+                // Create sync log entry
+                var syncLog = new FS6000SyncLog
+                {
+                    SourcePath = sourceFolder,
+                    DestinationPath = destinationFolder,
+                    SyncStatus = "Processing"
+                };
+
+                context.FS6000SyncLogs.Add(syncLog);
+                await context.SaveChangesAsync();
+
+                try
+                {
+                    // Copy files with retry mechanism
+                    await CopyFileWithRetryAsync(xmlFile, Path.Combine(destinationFolder, Path.GetFileName(xmlFile)));
+                    _logger.LogDebug("Copied XML file: {XmlFile}", Path.GetFileName(xmlFile));
+
+                    await CopyFileWithRetryAsync(largestJpegFile, Path.Combine(destinationFolder, Path.GetFileName(largestJpegFile)));
+                    _logger.LogDebug("Copied JPEG file: {JpegFile}", Path.GetFileName(largestJpegFile));
+
+                    // Update sync log
+                    syncLog.SyncStatus = "Completed";
+                    syncLog.CompletedAt = DateTime.UtcNow;
+                    await context.SaveChangesAsync();
+
+                    _logger.LogInformation("Successfully synced folder: {RelativePath}", relativePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error copying files for folder: {RelativePath}", relativePath);
+                    syncLog.SyncStatus = "Failed";
+                    syncLog.ErrorMessage = ex.Message;
+                    syncLog.RetryCount++;
+                    syncLog.LastRetryAt = DateTime.UtcNow;
+                    await context.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing serial folder: {SourceFolder}", sourceFolder);
+            }
+        }
+
+        private async Task CopyFileWithRetryAsync(string sourceFile, string destinationFile, int maxRetries = 3)
+        {
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    // Wait a bit before retrying (exponential backoff)
+                    if (attempt > 1)
+                    {
+                        var delay = TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 2));
+                        _logger.LogDebug("Retrying file copy in {Delay}ms (attempt {Attempt}/{MaxRetries})", delay.TotalMilliseconds, attempt, maxRetries);
+                        await Task.Delay(delay);
+                    }
+
+                    // Try to copy the file
+                    File.Copy(sourceFile, destinationFile, true);
+                    _logger.LogDebug("Successfully copied file: {SourceFile} -> {DestinationFile}", sourceFile, destinationFile);
+                    return;
+                }
+                catch (IOException ex) when (ex.Message.Contains("being used by another process"))
+                {
+                    _logger.LogWarning("File is being used by another process (attempt {Attempt}/{MaxRetries}): {SourceFile}", attempt, maxRetries, sourceFile);
+                    
+                    if (attempt == maxRetries)
+                    {
+                        throw new IOException($"Failed to copy file after {maxRetries} attempts: {ex.Message}", ex);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unexpected error copying file (attempt {Attempt}/{MaxRetries}): {SourceFile}", attempt, maxRetries, sourceFile);
+                    throw;
+                }
+            }
+        }
+
+        private string? FindXmlFile(string folder)
+        {
+            var xmlFiles = Directory.GetFiles(folder, "*.xml", SearchOption.TopDirectoryOnly);
+            return xmlFiles.FirstOrDefault();
+        }
+
+        private string? FindLargestJpegFile(string folder)
+        {
+            var jpegFiles = Directory.GetFiles(folder, "*.jpg", SearchOption.TopDirectoryOnly)
+                .Concat(Directory.GetFiles(folder, "*.jpeg", SearchOption.TopDirectoryOnly))
+                .ToList();
+
+            if (!jpegFiles.Any())
+                return null;
+
+            return jpegFiles
+                .OrderByDescending(f => new FileInfo(f).Length)
+                .First();
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _cancellationTokenSource?.Cancel();
+                _cancellationTokenSource?.Dispose();
+                _disposed = true;
+            }
+        }
+    }
+}

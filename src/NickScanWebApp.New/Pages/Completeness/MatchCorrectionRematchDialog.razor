@@ -1,0 +1,75 @@
+@using MudBlazor
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudAlert Severity="Severity.Info" Class="mb-3">
+            Deactivates the current ContainerBOERelation for <strong>@ContainerNumber</strong>
+            and creates a new one against the BOE id you choose. The completeness
+            row is updated immediately. The matching pipeline will reconcile the
+            new state on its next pass.
+        </MudAlert>
+        <MudTextField T="int"
+                      @bind-Value="_newBoeId"
+                      Label="New BOEDocumentId (required)"
+                      Variant="Variant.Outlined"
+                      Required="true"
+                      HelperText="Must exist in ICUMS_Downloads. The BOE will be verified before any change is committed." />
+        <MudTextField T="string"
+                      @bind-Value="_reason"
+                      Label="Reason (required)"
+                      Variant="Variant.Outlined"
+                      Lines="3"
+                      Required="true"
+                      Class="mt-3" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@(string.IsNullOrWhiteSpace(_reason) || _newBoeId <= 0 || _submitting)"
+                   OnClick="SubmitAsync">
+            @(_submitting ? "Rematching…" : "Rematch")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string? CurrentScannerType { get; set; }
+
+    private int _newBoeId;
+    private string _reason = string.Empty;
+    private bool _submitting;
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        try
+        {
+            var body = new
+            {
+                ContainerNumber,
+                NewBOEDocumentId = _newBoeId,
+                ScannerType = CurrentScannerType,
+                Reason = _reason.Trim(),
+            };
+            await ApiService.PostAsync<object, object>("/api/admin/match-corrections/rematch", body);
+            Snackbar.Add($"Container {ContainerNumber} rematched to BOE {_newBoeId}", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Rematch failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

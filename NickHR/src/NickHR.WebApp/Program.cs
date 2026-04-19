@@ -1,0 +1,194 @@
+using System.Text;
+using Blazored.LocalStorage;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using MudBlazor.Services;
+using NickERP.Platform.Tenancy;
+using NickHR.Infrastructure;
+using NickHR.Infrastructure.Data;
+using NickHR.Services;
+using NickHR.WebApp.Components;
+using NickHR.WebApp.Services;
+
+// Single instance enforcement
+using var mutex = new Mutex(true, @"Global\NickHR_WebApp_SingleInstance", out var createdNew);
+if (!createdNew)
+{
+    Console.WriteLine("NickHR WebApp is already running. Exiting.");
+    return;
+}
+
+// Enable legacy timestamp behavior for Npgsql
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Windows Service support
+builder.Host.UseWindowsService();
+
+// Resolve DB password from environment variable
+var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD") ?? "postgres";
+var connString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (!string.IsNullOrEmpty(connString) && connString.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
+{
+    builder.Configuration["ConnectionStrings:DefaultConnection"] =
+        connString.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", dbPassword);
+}
+
+// Resolve SMTP password from environment variable
+var smtpPassword = Environment.GetEnvironmentVariable("NICKHR_SMTP_PASSWORD") ?? "";
+var smtpPwConfig = builder.Configuration["Email:Password"];
+if (!string.IsNullOrEmpty(smtpPwConfig) && smtpPwConfig.Contains("***USE_ENV_VAR_NICKHR_SMTP_PASSWORD***"))
+{
+    builder.Configuration["Email:Password"] = smtpPassword;
+}
+
+// Add MudBlazor
+builder.Services.AddMudServices(config =>
+{
+    config.SnackbarConfiguration.PositionClass = MudBlazor.Defaults.Classes.Position.BottomRight;
+    config.SnackbarConfiguration.PreventDuplicates = false;
+    config.SnackbarConfiguration.NewestOnTop = true;
+    config.SnackbarConfiguration.ShowCloseIcon = true;
+    config.SnackbarConfiguration.VisibleStateDuration = 5000;
+});
+
+// Blazor
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+// Infrastructure (DbContext, Identity, Repositories)
+builder.Services.AddInfrastructure(builder.Configuration);
+
+// DbContextFactory for Blazor Server scoped components
+// NICKSCAN ERP — Phase 1 multi-tenancy: factory uses (sp, options) overload so we
+// can resolve the TenantOwnedEntityInterceptor from DI.
+builder.Services.AddDbContextFactory<NickHR.Infrastructure.Data.NickHRDbContext>((sp, options) =>
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"),
+        npgsql => npgsql.MigrationsAssembly(typeof(NickHR.Infrastructure.Data.NickHRDbContext).Assembly.FullName));
+    options.AddInterceptors(sp.GetRequiredService<TenantOwnedEntityInterceptor>());
+}, ServiceLifetime.Scoped);
+
+// Data Protection - ephemeral keys (invalidates all cookies on service restart)
+builder.Services.AddDataProtection()
+    .UseEphemeralDataProtectionProvider();
+
+// Configure Identity cookie - 15 minute idle timeout
+builder.Services.ConfigureApplicationCookie(options =>
+{
+    options.LoginPath = "/login";
+    options.LogoutPath = "/login";
+    options.AccessDeniedPath = "/login";
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(15);
+    options.SlidingExpiration = true;
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.Name = "NickHR.Auth";
+});
+
+// Application Services
+builder.Services.AddApplicationServices(builder.Configuration);
+
+// Blazored LocalStorage
+builder.Services.AddBlazoredLocalStorage();
+
+// HTTP Client for API calls
+builder.Services.AddHttpClient("NickHR.API", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5206");
+});
+builder.Services.AddScoped<ApiClient>();
+
+// Auth state - use cookie-based server auth (persists across refreshes)
+builder.Services.AddScoped<AuthStateProvider>(); // Keep for backward compat
+builder.Services.AddScoped<CurrentEmployeeService>();
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    app.UseHsts();
+}
+
+// HTTPS redirect disabled - Cloudflare Tunnel handles SSL externally
+// Direct HTTPS available on port 5311 for LAN access
+app.UseStaticFiles();
+
+// Serve uploaded files (photos, documents) from the shared uploads directory
+var uploadsPath = @"C:\Shared\NSCIM_PRODUCTION\NickHR\uploads";
+if (Directory.Exists(uploadsPath))
+{
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uploadsPath),
+        RequestPath = "/uploads"
+    });
+}
+
+app.UseAuthentication();
+app.UseAuthorization();
+// NICKSCAN ERP — Phase 1 multi-tenancy resolution from claims (cookies for now,
+// JWT for SSO in Phase 2). Falls back to default tenant 1.
+app.UseNickERPTenancy();
+app.UseAntiforgery();
+
+// Cookie-based login callback - signs user in with Identity cookie
+app.MapGet("/login-callback", async (string email,
+    Microsoft.AspNetCore.Identity.SignInManager<ApplicationUser> signInManager,
+    Microsoft.AspNetCore.Identity.UserManager<ApplicationUser> userManager,
+    HttpContext httpContext) =>
+{
+    var user = await userManager.FindByEmailAsync(email);
+    if (user != null)
+    {
+        await signInManager.SignInAsync(user, isPersistent: true);
+    }
+    httpContext.Response.Redirect("/");
+}).AllowAnonymous();
+
+// Cookie-based logout
+app.MapGet("/logout", async (
+    Microsoft.AspNetCore.Identity.SignInManager<ApplicationUser> signInManager,
+    HttpContext httpContext) =>
+{
+    await signInManager.SignOutAsync();
+    httpContext.Response.Redirect("/login");
+}).AllowAnonymous();
+
+// Serve employee photos from database (no auth required for images)
+app.MapGet("/employee-photo/{id:int}", async (int id, IServiceProvider sp) =>
+{
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<NickHR.Infrastructure.Data.NickHRDbContext>();
+    var emp = await db.Employees
+        .Where(e => e.Id == id && !e.IsDeleted && e.PhotoData != null)
+        .Select(e => new { e.PhotoData, e.PhotoContentType })
+        .FirstOrDefaultAsync();
+    if (emp?.PhotoData == null) return Results.NotFound();
+    return Results.File(emp.PhotoData, emp.PhotoContentType ?? "image/jpeg");
+}).AllowAnonymous();
+
+// Serve documents from database
+app.MapGet("/employee-document/{id:int}", async (int id, IServiceProvider sp) =>
+{
+    using var scope = sp.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<NickHR.Infrastructure.Data.NickHRDbContext>();
+    var doc = await db.EmployeeDocuments
+        .Where(d => d.Id == id && !d.IsDeleted && d.FileData != null)
+        .Select(d => new { d.FileData, d.ContentType, d.FileName })
+        .FirstOrDefaultAsync();
+    if (doc?.FileData == null) return Results.NotFound();
+    return Results.File(doc.FileData, doc.ContentType ?? "application/octet-stream", doc.FileName);
+});
+
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Run();

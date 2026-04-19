@@ -1,0 +1,25 @@
+@page "/administration/service-control"
+@page "/admin/service-control"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminServiceControl)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Service Control Panel - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Settings" Class="mr-2" />
+            Service Control Panel
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Service monitoring and control interface. Use desktop version for full service management options.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

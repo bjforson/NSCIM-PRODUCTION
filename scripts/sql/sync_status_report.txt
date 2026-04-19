@@ -1,0 +1,108 @@
+﻿========================================
+Database Sync Status Report
+Generated: 2025-12-31 12:36:39
+========================================
+Source Instance: localhost\NS_CIS
+Target Instance: (local)
+Databases Checked: NS_CIS, ICUMS, ICUMS_Downloads
+
+OVERALL SUMMARY
+========================================
+Total Tables:      59
+Complete:          52
+Needs Transfer:    6
+  - Missing:       0
+  - Incomplete:    6
+  - Empty:         
+Errors:            0
+
+DETAILED RESULTS
+========================================
+
+DATABASE: NS_CIS
+============================================================
+Table                             Source Count    Target Count Status       Error
+------------------------------------------------------------------------------------------
+[dbo].[AnalysisAssignments]              43526           43526 Complete     
+[dbo].[AnalysisGroups]                   11613           11613 Complete     
+[dbo].[AnalysisRecords]                  14412           14412 Complete     
+[dbo].[AnalysisSettings]                     1               1 Complete     
+[dbo].[AnalysisSubmissions]                  0               0 Complete     
+[dbo].[ApplicationLogs]                      0               0 Complete     
+[dbo].[AseScans]                         33278           33278 Complete     
+[dbo].[AseSyncLogs]                      10804           10804 Complete     
+[dbo].[AuditDecisions]                      44              44 Complete     
+[dbo].[AuditLogs]                           16              16 Complete     
+[dbo].[BLReviewRecords]                      5               5 Complete     
+[dbo].[ContainerBOERelations]            19966           19966 Complete     
+[dbo].[ContainerCompletenessStatuses]           33907           33907 Complete     
+[dbo].[ContainerReferences]                  0               0 Complete     
+[dbo].[ContainerReviewDecisions]               5               5 Complete     
+[dbo].[Containers]                           0               0 Complete     
+[dbo].[CrossRecordScans]                    21              21 Complete     
+[dbo].[EndpointUsageLog]                256991          256991 Complete     
+[dbo].[ErrorInvestigations]                  0               0 Complete     
+[dbo].[FileSystemCaches]                     0               0 Complete     
+[dbo].[FixAuditLogs]                         0               0 Complete     
+[dbo].[FixProposals]                         0               0 Complete     
+[dbo].[FS6000FileProcessings]                0               0 Complete     
+[dbo].[FS6000Images]                      4146            4146 Complete     
+[dbo].[FS6000Scans]                       4457            4457 Complete     
+[dbo].[FS6000SyncLogs]                    5581            5581 Complete     
+[dbo].[ICUMSDownloadQueues]                  0               0 Complete     
+[dbo].[ICUMSSubmissionQueues]                0               0 Complete     
+[dbo].[ImageAnalysisDecisions]             334             334 Complete     
+[dbo].[ImageAnalysisDecisions_Backup_20251029]              14              42 Incomplete   
+[dbo].[ImageCaches]                        499             499 Complete     
+[dbo].[ManualBOERequests]                 7286            7286 Complete     
+[dbo].[Notifications]                        0               0 Complete     
+[dbo].[PermissionAuditLogs]                  0               0 Complete     
+[dbo].[Permissions]                        225             225 Complete     
+[dbo].[RolePermissions]                   1017            1017 Complete     
+[dbo].[Roles]                               12              12 Complete     
+[dbo].[ServiceConfigurations]                0               0 Complete     
+[dbo].[SettingsHistory]                      4               4 Complete     
+[dbo].[SystemSettings]                     109             109 Complete     
+[dbo].[SystemStates]                         0               0 Complete     
+[dbo].[UserPermissions]                      0               0 Complete     
+[dbo].[UserPreferences]                      0               0 Complete     
+[dbo].[UserReadiness]                        5              15 Incomplete   
+[dbo].[Users]                               11              11 Complete     
+
+
+DATABASE: ICUMS
+============================================================
+Table                             Source Count    Target Count Status       Error
+------------------------------------------------------------------------------------------
+[dbo].[IcumBatchLogs]                      121             121 Complete     
+[dbo].[IcumContainerData]                50099           50099 Complete     
+[dbo].[IcumDocuments]                        0               0 Complete     
+[dbo].[IcumManifestItems]              5555863         5555863 Complete     
+
+
+DATABASE: ICUMS_Downloads
+============================================================
+Table                             Source Count    Target Count Status       Error
+------------------------------------------------------------------------------------------
+[dbo].[BOEDocuments]                    219989               0 Empty        
+[dbo].[CMRRedownloadQueue]                   0               0 Complete     
+[dbo].[CMRValidationMetrics]              1859            1860 Incomplete   
+[dbo].[DownloadedFiles]                  49016           49016 Complete     
+[dbo].[ICUMSDownloadAudit]              115003          115003 Complete     
+[dbo].[ICUMSDownloadQueue]                 279             319 Incomplete   
+[dbo].[ICUMSDownloadQueueArchive]           10688           10688 Complete     
+[dbo].[IngestionLogs]                        0               0 Complete     
+[dbo].[ManifestItems]                 10261511         2960000 Incomplete   
+[dbo].[VehicleImports]                    8895             215 Incomplete   
+
+
+TABLES REQUIRING TRANSFER
+============================================================
+ICUMS_Downloads.[dbo].[BOEDocuments] - Status: Empty (Source: 219989, Target: 0)
+ICUMS_Downloads.[dbo].[CMRValidationMetrics] - Status: Incomplete (Source: 1859, Target: 1860)
+ICUMS_Downloads.[dbo].[ICUMSDownloadQueue] - Status: Incomplete (Source: 279, Target: 319)
+ICUMS_Downloads.[dbo].[ManifestItems] - Status: Incomplete (Source: 10261511, Target: 2960000)
+ICUMS_Downloads.[dbo].[VehicleImports] - Status: Incomplete (Source: 8895, Target: 215)
+NS_CIS.[dbo].[ImageAnalysisDecisions_Backup_20251029] - Status: Incomplete (Source: 14, Target: 42)
+NS_CIS.[dbo].[UserReadiness] - Status: Incomplete (Source: 5, Target: 15)
+

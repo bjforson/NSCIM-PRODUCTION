@@ -1,0 +1,340 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.New.Components.Operations
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject IDialogService DialogService
+@inject ILogger<CrossRecordScansPanel> Logger
+@inject IConfiguration Configuration
+@implements IDisposable
+
+
+<MudText Typo="Typo.h4" Class="mb-4">
+    <MudIcon Icon="@Icons.Material.Outlined.Warning" Color="Color.Warning" Class="mr-2" />
+    Cross-Record Multi-Container Scan Monitor
+</MudText>
+
+<MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+    This page shows scanner images that contain containers from <strong>DIFFERENT records</strong> (different BOEs/Importers).
+    Normal multi-container scans (same BOE) are not shown here.
+</MudText>
+
+@* Date Range Filter *@
+<MudPaper Elevation="2" Class="pa-4 mb-4">
+    <MudStack Row="true" Spacing="3" AlignItems="AlignItems.End">
+        <MudDatePicker Label="Start Date" @bind-Date="_startDate" />
+        <MudDatePicker Label="End Date" @bind-Date="_endDate" />
+        <MudButton OnClick="SetTodayRange" 
+                   Variant="Variant.Outlined" 
+                   Color="Color.Info"
+                   StartIcon="@Icons.Material.Outlined.Today"
+                   Size="Size.Small">
+            Today
+        </MudButton>
+        <MudButton OnClick="SetLast7Days" 
+                   Variant="Variant.Outlined" 
+                   Color="Color.Info"
+                   Size="Size.Small">
+            Last 7 Days
+        </MudButton>
+        <MudButton OnClick="LoadData" 
+                   Variant="Variant.Filled" 
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Outlined.Refresh"
+                   Disabled="_loading">
+            @if (_loading)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                <span class="ml-2">Loading...</span>
+            }
+            else
+            {
+                <span>Apply Filter</span>
+            }
+        </MudButton>
+    </MudStack>
+</MudPaper>
+
+@if (_loading)
+{
+    <MudPaper Class="pa-8" Elevation="2">
+        <MudStack AlignItems="AlignItems.Center" Spacing="3">
+            <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Loading cross-record scan data...</MudText>
+        </MudStack>
+    </MudPaper>
+}
+else if (_analytics != null)
+{
+    @* Statistics Cards *@
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Cross-Record Scans</MudText>
+                        <MudText Typo="Typo.h3">@_analytics.TotalCrossRecordScans</MudText>
+                        <MudText Typo="Typo.caption">
+                            FS6000: @_analytics.FS6000Count | ASE: @_analytics.ASECount
+                        </MudText>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        
+        <MudItem xs="12" md="3">
+            <MudCard>
+                <MudCardContent>
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Info" Color="Color.Info" Size="Size.Large" />
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Different Importers</MudText>
+                            <MudText Typo="Typo.h3" Color="Color.Info">@_analytics.DifferentImportersCount</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Normal</MudChip>
+                        </MudStack>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        
+        <MudItem xs="12" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Warning" Color="Color.Warning" Size="Size.Large" />
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Mixed CRMS Levels</MudText>
+                            <MudText Typo="Typo.h3" Color="Color.Warning">@_analytics.DifferentRiskLevelsCount</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning">Medium Risk</MudChip>
+                        </MudStack>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        
+        <MudItem xs="12" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Info" Color="Color.Info" Size="Size.Large" />
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Import/Export Mix</MudText>
+                            <MudText Typo="Typo.h3" Color="Color.Info">@_analytics.DifferentClearanceTypesCount</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Process Issue</MudChip>
+                        </MudStack>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    @* Detailed Table *@
+    <MudTable Items="@_analytics.Records" 
+              Dense="true" 
+              Hover="true" 
+              Breakpoint="Breakpoint.Sm"
+              Loading="@_loading"
+              LoadingProgressColor="Color.Primary">
+        <ToolBarContent>
+            <MudText Typo="Typo.h6">Detailed Records</MudText>
+            <MudSpacer />
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Showing @_analytics.Records.Count records
+            </MudText>
+        </ToolBarContent>
+        <HeaderContent>
+            <MudTh>Scan Date</MudTh>
+            <MudTh>Original Scan</MudTh>
+            <MudTh>Container 1</MudTh>
+            <MudTh>BOE 1 / Importer</MudTh>
+            <MudTh>Container 2</MudTh>
+            <MudTh>BOE 2 / Importer</MudTh>
+            <MudTh>Issue Type</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Scan Date">
+                @context.ScanDateTime.ToString("dd-MMM-yy HH:mm")
+            </MudTd>
+            <MudTd DataLabel="Original Scan">
+                <MudText Typo="Typo.body2" Style="font-family: monospace;">
+                    @context.OriginalScanRecord
+                </MudText>
+            </MudTd>
+            <MudTd DataLabel="Container 1">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2"><strong>@context.Container1</strong></MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@GetCRMSColor(context.Container1_CRMS)">
+                        @context.Container1_CRMS CRMS
+                    </MudChip>
+                </MudStack>
+            </MudTd>
+            <MudTd DataLabel="BOE 1">
+                <MudStack Spacing="0">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Container1_BOE</MudText>
+                    <MudText Typo="Typo.body2">@TruncateText(context.Container1_Consignee, 25)</MudText>
+                </MudStack>
+            </MudTd>
+            <MudTd DataLabel="Container 2">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2"><strong>@context.Container2</strong></MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@GetCRMSColor(context.Container2_CRMS)">
+                        @context.Container2_CRMS CRMS
+                    </MudChip>
+                </MudStack>
+            </MudTd>
+            <MudTd DataLabel="BOE 2">
+                <MudStack Spacing="0">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Container2_BOE</MudText>
+                    <MudText Typo="Typo.body2">@TruncateText(context.Container2_Consignee, 25)</MudText>
+                </MudStack>
+            </MudTd>
+            <MudTd DataLabel="Issue Type">
+                <MudChip T="string" Size="Size.Small" Color="@GetIssueTypeColor(context.CrossRecordType)">
+                    @FormatIssueType(context.CrossRecordType)
+                </MudChip>
+            </MudTd>
+            <MudTd DataLabel="Actions">
+                <MudTooltip Text="View Details">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Visibility" 
+                                   Size="Size.Small" 
+                                   Color="Color.Primary"
+                                   OnClick="@(() => OpenDetailsDialog(context))" />
+                </MudTooltip>
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            <MudAlert Severity="Severity.Success" Class="my-4">
+                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Class="mr-2" />
+                No cross-record scans detected in the selected date range. All multi-container scans contain containers from the same record.
+            </MudAlert>
+        </NoRecordsContent>
+    </MudTable>
+}
+
+@code {
+    private DateTime? _startDate = DateTime.Today.AddDays(-30);
+    private DateTime? _endDate = DateTime.Today.AddDays(1);
+    private CrossRecordAnalytics? _analytics;
+    private bool _loading = false;
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        var startDateParam = _startDate?.ToString("yyyy-MM-dd") ?? "";
+        var endDateParam = _endDate?.ToString("yyyy-MM-dd") ?? "";
+        
+        try
+        {
+            _analytics = await ApiService.GetAsync<CrossRecordAnalytics>(
+                $"/api/CrossRecordScans/analytics?startDate={startDateParam}&endDate={endDateParam}");
+            
+            Logger.LogInformation("Loaded {Count} cross-record scans for date range: {StartDate} to {EndDate}", 
+                _analytics?.TotalCrossRecordScans ?? 0, startDateParam, endDateParam);
+            
+            Snackbar.Add($"Loaded {_analytics?.TotalCrossRecordScans ?? 0} cross-record scans", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading cross-record data for date range: {StartDate} to {EndDate}", 
+                startDateParam, endDateParam);
+            Snackbar.Add("Error loading data", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Color GetCRMSColor(string? crms) => crms?.ToUpper() switch
+    {
+        "RED" or "H" or "HIGH" => Color.Error,
+        "YELLOW" or "M" or "MEDIUM" => Color.Warning,
+        "GREEN" or "L" or "LOW" => Color.Success,
+        _ => Color.Default
+    };
+
+    private Color GetIssueTypeColor(string type) => type switch
+    {
+        "DifferentImporters" => Color.Default,
+        "DifferentRiskLevels" => Color.Warning,
+        "DifferentClearanceTypes" => Color.Info,
+        _ => Color.Default
+    };
+
+    private string FormatIssueType(string type) => type switch
+    {
+        "DifferentImporters" => "Different Importers",
+        "DifferentRiskLevels" => "Mixed CRMS",
+        "DifferentClearanceTypes" => "Import/Export Mix",
+        "DifferentBOEs" => "Different BOEs",
+        _ => type
+    };
+
+    private string TruncateText(string? text, int maxLength)
+    {
+        if (string.IsNullOrEmpty(text)) return "N/A";
+        return text.Length <= maxLength ? text : text.Substring(0, maxLength) + "...";
+    }
+
+    private async Task OpenDetailsDialog(CrossRecordScanDto scan)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ScanId"] = scan.Id
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<CrossRecordScanDetailsDialog>(
+            $"Cross-Record Scan Details: {scan.Container1} & {scan.Container2}",
+            parameters,
+            options);
+    }
+
+    private async Task SetTodayRange()
+    {
+        _startDate = DateTime.Today;
+        _endDate = DateTime.Today.AddDays(1);
+        await LoadData();
+    }
+
+    private async Task SetLast7Days()
+    {
+        _startDate = DateTime.Today.AddDays(-7);
+        _endDate = DateTime.Today.AddDays(1);
+        await LoadData();
+    }
+
+    // Note: Using shared models from NickScanCentralImagingPortal.Core.Models
+    // CrossRecordAnalytics and CrossRecordScanDto are defined in Core.Models
+}
+

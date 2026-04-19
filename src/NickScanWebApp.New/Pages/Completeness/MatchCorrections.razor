@@ -1,0 +1,302 @@
+@page "/validation/match-corrections"
+@page "/completeness/match-corrections"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationMatchCorrections)]
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<MatchCorrections> Logger
+
+@*
+    Match Corrections — admin tool for fixing wrong image-to-BOE matches.
+
+    Driven by the MatchQualityFlag table populated by ContainerCompletenessService's
+    prevention safeguards (NullDeliveryPlace, FycoMismatch, DuplicateImage) plus any
+    flags raised manually here. Three workflows:
+
+      1. List view  — paginated table of open flags, Critical first.
+      2. Detail     — clicking a row opens a side-by-side container/BOE comparison
+                      with action buttons (Unmatch / Rematch / Confirm).
+      3. Manual flag — small form to flag a container that the pipeline didn't catch.
+
+    Backed entirely by /api/admin/match-corrections endpoints — see
+    AdminMatchCorrectionController.cs for the contract.
+*@
+
+<PageTitle>NICKSCAN ERP — Match Corrections</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+        <div>
+            <MudText Typo="Typo.h4">
+                <MudIcon Icon="@Icons.Material.Outlined.RuleFolder" Class="mr-2" />
+                Match Corrections
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Inspect and correct wrong image-to-BOE matches surfaced by the matching pipeline
+            </MudText>
+        </div>
+        <MudStack Row="true" Spacing="2">
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Outlined.ManageSearch"
+                       Href="/validation/boe-lookup">
+                BOE Lookup
+            </MudButton>
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Outlined.Add"
+                       OnClick="OpenManualFlagDialog">
+                Manual flag
+            </MudButton>
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Default"
+                       StartIcon="@Icons.Material.Outlined.Refresh"
+                       OnClick="LoadFlagsAsync">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudStack>
+
+    @* ── Filters ─────────────────────────────────────────────────────────── *@
+    <MudPaper Elevation="0" Class="pa-3 mb-3" Outlined="true">
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="3">
+                <MudTextField T="string"
+                              @bind-Value="_containerSearch"
+                              Label="Container number"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Adornment="Adornment.End"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              OnAdornmentClick="LoadFlagsAsync"
+                              OnKeyDown="@(e => { if (e.Key == "Enter") _ = LoadFlagsAsync(); })" />
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudSelect T="string?"
+                           @bind-Value="_flagTypeFilter"
+                           Label="Flag type"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Clearable="true">
+                    <MudSelectItem T="string?" Value="@((string?)null)"><em>All</em></MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("NullDeliveryPlace")">NullDeliveryPlace</MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("FycoMismatch")">FycoMismatch</MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("DuplicateImage")">DuplicateImage</MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("ManualFlag")">ManualFlag</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudSelect T="string?"
+                           @bind-Value="_severityFilter"
+                           Label="Severity"
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Clearable="true">
+                    <MudSelectItem T="string?" Value="@((string?)null)"><em>All</em></MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("Critical")">Critical</MudSelectItem>
+                    <MudSelectItem T="string?" Value="@("Warning")">Warning</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="3" Class="d-flex align-center">
+                <MudSwitch T="bool"
+                           @bind-Value="_includeResolved"
+                           Color="Color.Primary"
+                           Label="Include resolved" />
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           OnClick="LoadFlagsAsync"
+                           Class="ml-auto">
+                    Apply
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @* ── Flag list ───────────────────────────────────────────────────────── *@
+    <MudPaper Elevation="0" Outlined="true">
+        <MudTable T="MatchFlagDto"
+                  ServerData="LoadServerData"
+                  @ref="_table"
+                  Hover="true"
+                  Striped="true"
+                  Dense="true"
+                  Loading="_loading"
+                  RowsPerPage="25">
+            <HeaderContent>
+                <MudTh>Severity</MudTh>
+                <MudTh>Type</MudTh>
+                <MudTh>Container</MudTh>
+                <MudTh>Scanner</MudTh>
+                <MudTh>BOE</MudTh>
+                <MudTh>Description</MudTh>
+                <MudTh>Created</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd>
+                    <MudChip T="string"
+                             Size="Size.Small"
+                             Color="@(context.Severity == "Critical" ? Color.Error : Color.Warning)"
+                             Variant="Variant.Filled">
+                        @context.Severity
+                    </MudChip>
+                </MudTd>
+                <MudTd>@context.FlagType</MudTd>
+                <MudTd><strong>@context.ContainerNumber</strong></MudTd>
+                <MudTd>@(context.ScannerType ?? "—")</MudTd>
+                <MudTd>@(context.BOEDocumentId?.ToString() ?? "—")</MudTd>
+                <MudTd Style="max-width: 320px; white-space: normal;">@context.Description</MudTd>
+                <MudTd>@context.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</MudTd>
+                <MudTd>
+                    @if (context.IsResolved)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                            @context.Resolution
+                        </MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                            Open
+                        </MudChip>
+                    }
+                </MudTd>
+                <MudTd>
+                    <MudButton Size="Size.Small"
+                               Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               OnClick="@(() => OpenDetailDialog(context.ContainerNumber))">
+                        Open
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>No matching flags. Try widening the filters or toggling "Include resolved".</MudText>
+            </NoRecordsContent>
+            <LoadingContent>
+                <MudText>Loading flags…</MudText>
+            </LoadingContent>
+            <PagerContent>
+                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudTable>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private MudTable<MatchFlagDto>? _table;
+    private bool _loading;
+    private string? _containerSearch;
+    private string? _flagTypeFilter;
+    private string? _severityFilter;
+    private bool _includeResolved;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFlagsAsync();
+    }
+
+    private async Task LoadFlagsAsync()
+    {
+        if (_table != null)
+        {
+            await _table.ReloadServerData();
+        }
+    }
+
+    private async Task<TableData<MatchFlagDto>> LoadServerData(TableState state, CancellationToken cancellationToken)
+    {
+        _loading = true;
+        try
+        {
+            var page = state.Page + 1;
+            var pageSize = state.PageSize;
+            var qs = new List<string>
+            {
+                $"page={page}",
+                $"pageSize={pageSize}",
+                $"includeResolved={_includeResolved.ToString().ToLower()}",
+            };
+            if (!string.IsNullOrWhiteSpace(_flagTypeFilter)) qs.Add($"flagType={Uri.EscapeDataString(_flagTypeFilter)}");
+            if (!string.IsNullOrWhiteSpace(_severityFilter)) qs.Add($"severity={Uri.EscapeDataString(_severityFilter)}");
+            if (!string.IsNullOrWhiteSpace(_containerSearch)) qs.Add($"containerSearch={Uri.EscapeDataString(_containerSearch.Trim())}");
+
+            var url = "/api/admin/match-corrections?" + string.Join("&", qs);
+            var response = await ApiService.GetAsync<MatchFlagListResponse>(url);
+
+            return new TableData<MatchFlagDto>
+            {
+                TotalItems = response?.TotalCount ?? 0,
+                Items = response?.Rows ?? new List<MatchFlagDto>(),
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load match flags");
+            Snackbar.Add($"Failed to load flags: {ex.Message}", Severity.Error);
+            return new TableData<MatchFlagDto>
+            {
+                TotalItems = 0,
+                Items = new List<MatchFlagDto>(),
+            };
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OpenDetailDialog(string containerNumber)
+    {
+        var parameters = new DialogParameters<MatchCorrectionDetailDialog>
+        {
+            { x => x.ContainerNumber, containerNumber },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<MatchCorrectionDetailDialog>($"Match detail — {containerNumber}", parameters, options);
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            await LoadFlagsAsync();
+        }
+    }
+
+    private async Task OpenManualFlagDialog()
+    {
+        var dialog = await DialogService.ShowAsync<MatchCorrectionManualFlagDialog>("Manual flag");
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            Snackbar.Add("Flag created", Severity.Success);
+            await LoadFlagsAsync();
+        }
+    }
+
+    // Wire-format DTOs mirroring AdminMatchCorrectionController.
+    public class MatchFlagListResponse
+    {
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public List<MatchFlagDto> Rows { get; set; } = new();
+    }
+
+    public class MatchFlagDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string? ScannerType { get; set; }
+        public int? BOEDocumentId { get; set; }
+        public string FlagType { get; set; } = string.Empty;
+        public string Severity { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public bool IsResolved { get; set; }
+        public string? Resolution { get; set; }
+        public string? ResolvedBy { get; set; }
+        public DateTime? ResolvedAt { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+    }
+}

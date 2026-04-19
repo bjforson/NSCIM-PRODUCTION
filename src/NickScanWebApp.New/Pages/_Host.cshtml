@@ -1,0 +1,228 @@
+@page "/"
+@using Microsoft.AspNetCore.Components.Web
+@namespace NickScanWebApp.New.Pages
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#1a237e">
+    <base href="~/" />
+    
+    <!-- Security Headers -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="X-Frame-Options" content="DENY" />
+    <meta http-equiv="X-XSS-Protection" content="1; mode=block" />
+    
+    <!-- MudBlazor Fonts -->
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Icons&display=swap" rel="stylesheet" />
+    
+    <!-- MudBlazor CSS -->
+    <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+    
+    <!-- Custom CSS -->
+    <link href="css/custom.css" rel="stylesheet" />
+    <link href="css/components.css" rel="stylesheet" />
+    <link href="css/mobile-responsive.css" rel="stylesheet" />
+    
+    <title>NICKSCAN ERP — NSCIS</title>
+    
+    <component type="typeof(HeadOutlet)" render-mode="Server" />
+    
+    <style>
+        .loading-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .loading-content {
+            text-align: center;
+        }
+        .loading-spinner {
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 20px;
+        }
+        .loading-spinner circle {
+            animation: spin 1s linear infinite;
+            transform-origin: center;
+        }
+        @@keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .components-reconnect-hide {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <component type="typeof(App)" render-mode="Server" prerender="false" />
+
+    <div id="components-reconnect-modal" style="display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1000; background-color: rgba(0,0,0,0.5); align-items: center; justify-content: center;">
+        <div style="background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; text-align: center;">
+            <div class="mud-spinner" style="margin: 0 auto 1rem;">
+                <svg style="width: 60px; height: 60px;" viewBox="0 0 50 50">
+                    <circle cx="25" cy="25" r="20" fill="none" stroke="#594ae2" stroke-width="4" stroke-dasharray="31.4 31.4" stroke-linecap="round">
+                        <animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" dur="1s" repeatCount="indefinite"/>
+                    </circle>
+                </svg>
+            </div>
+            <h3 style="margin: 0 0 0.5rem; color: #333;">Connecting...</h3>
+            <p style="margin: 0; color: #666; font-size: 14px;">Attempting to reconnect to server</p>
+        </div>
+    </div>
+
+    <div id="blazor-error-ui">
+        <div style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white; padding: 16px; position: fixed; top: 0; width: 100%; z-index: 9999; box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
+            <span style="display: flex; align-items: center;">
+                <span style="font-size: 20px; margin-right: 12px;">⚠️</span>
+                <span style="flex: 1;">
+                    <strong>An error has occurred.</strong> This application may no longer respond until reloaded.
+                </span>
+                <a href="" style="color: white; text-decoration: underline; margin-left: 16px;">Reload</a>
+                <a style="color: white; margin-left: 16px; cursor: pointer;" onclick="document.getElementById('blazor-error-ui').style.display='none'">✕</a>
+            </span>
+        </div>
+    </div>
+
+    <!-- MudBlazor JS -->
+    <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+    
+    <!-- Image Analysis Viewer JS Interop -->
+    <script src="js/imageAnalysisViewer.js"></script>
+    <script src="js/imageCanvasProcessor.js"></script>
+    <script src="js/imageAnalysisTools.js"></script>
+    <script src="js/imageMagnifier.js"></script>
+    <script src="js/xrayInspector.js"></script>
+
+    <!-- Split Review hover coordinate tracker -->
+    <script src="js/splitReviewHover.js"></script>
+    <!-- Mobile Table Helper -->
+    <script src="js/mobileTableHelper.js"></script>
+    <!-- Decision Transition Animations -->
+    <script src="js/decisionTransitions.js"></script>
+
+    <!-- Blazor Script -->
+    <script src="_framework/blazor.server.js"></script>
+    
+    <!-- Server Version Check - Detects server restarts and clears auth -->
+    <script>
+        console.log('🚀 Server version check script loaded');
+        
+        (function() {
+            const VERSION_CHECK_KEY = 'server_start_time';
+            const INSTANCE_CHECK_KEY = 'server_instance_id';
+            const CHECK_INTERVAL = 10000; // Check every 10 seconds
+            let serverStartTime = null;
+            let serverInstanceId = null;
+            let checkCount = 0;
+            
+            async function checkServerVersion() {
+                checkCount++;
+                try {
+                    console.log(`🔍 Check #${checkCount}: Fetching /api/server/version...`);
+                    
+                    const response = await fetch('/api/server/version', {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json'
+                        },
+                        cache: 'no-cache'
+                    });
+                    
+                    console.log(`📡 Response status: ${response.status}`);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log('📦 Server data:', data);
+                        
+                        const currentStartTime = data.startTime;
+                        const currentInstanceId = data.instanceId;
+                        
+                        // Check stored values
+                        const storedStartTime = sessionStorage.getItem(VERSION_CHECK_KEY);
+                        const storedInstanceId = sessionStorage.getItem(INSTANCE_CHECK_KEY);
+                        
+                        console.log('💾 Stored start time:', storedStartTime);
+                        console.log('💾 Current start time:', currentStartTime);
+                        console.log('💾 Stored instance:', storedInstanceId);
+                        console.log('💾 Current instance:', currentInstanceId);
+                        
+                        // Check if server has restarted
+                        let restartDetected = false;
+                        
+                        // If we have a stored start time and it's different, server restarted
+                        if (storedStartTime && storedStartTime !== currentStartTime) {
+                            console.warn('⚠️ Start time mismatch detected!');
+                            restartDetected = true;
+                        }
+                        
+                        // If we have a stored instance ID and it's different, server restarted
+                        if (storedInstanceId && storedInstanceId !== currentInstanceId) {
+                            console.warn('⚠️ Instance ID mismatch detected!');
+                            restartDetected = true;
+                        }
+                        
+                        if (restartDetected) {
+                            // Server has restarted!
+                            console.error('🔄🔄🔄 SERVER RESTART DETECTED! 🔄🔄🔄');
+                            console.error('This will trigger logout and redirect in 2 seconds...');
+                            console.error('Stored start:', storedStartTime, '→ Current:', currentStartTime);
+                            console.error('Stored instance:', storedInstanceId, '→ Current:', currentInstanceId);
+                            
+                            // Clear all storage
+                            sessionStorage.clear();
+                            localStorage.clear();
+                            
+                            // Show alert before redirect
+                            setTimeout(function() {
+                                alert('The server has been restarted. You will be logged out.');
+                                window.location.href = '/login?reason=server_restart';
+                            }, 2000);
+                            return;
+                        }
+                        
+                        // Store the current values
+                        sessionStorage.setItem(VERSION_CHECK_KEY, currentStartTime);
+                        sessionStorage.setItem(INSTANCE_CHECK_KEY, currentInstanceId);
+                        serverStartTime = currentStartTime;
+                        serverInstanceId = currentInstanceId;
+                        
+                        console.log(`✅ Server check #${checkCount} OK. Uptime: ${data.uptime}s, Instance: ${currentInstanceId}`);
+                    } else {
+                        console.error('❌ Server version endpoint returned:', response.status, response.statusText);
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Server version check failed:', error.message);
+                }
+            }
+            
+            // Initial check when page loads
+            console.log('⏰ Scheduling initial server version check in 3 seconds...');
+            setTimeout(function() {
+                console.log('▶️ Starting server version checks (every 10 seconds)');
+                checkServerVersion();
+                
+                // Start periodic checks
+                setInterval(checkServerVersion, CHECK_INTERVAL);
+            }, 3000);
+            
+        })();
+    </script>
+    
+</body>
+</html>

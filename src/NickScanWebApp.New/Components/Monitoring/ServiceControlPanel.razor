@@ -1,0 +1,1361 @@
+@using Microsoft.Extensions.Configuration
+@using NickScanCentralImagingPortal.Core.Constants
+@using MudBlazor
+@using System.Timers
+@implements IDisposable
+@inject IConfiguration Configuration
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-2" />
+        Service Control Panel
+    </MudText>
+
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        <MudText>
+            Real-time monitoring and configuration of all background services. 
+            Health checks are performed by ComprehensiveHealthCheckService every 5 minutes.
+        </MudText>
+    </MudAlert>
+
+    <!-- Summary Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6">Total Services</MudText>
+                    <MudText Typo="Typo.h3" Color="Color.Primary">@_systemServices.Count</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Registered</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6">Running</MudText>
+                    <MudText Typo="Typo.h3" Color="Color.Success">@_systemServices.Count(s => s.Status == "Running")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Active Services</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6">Stopped</MudText>
+                    <MudText Typo="Typo.h3" Color="Color.Default">@_systemServices.Count(s => s.Status == "Stopped")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Inactive Services</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard>
+                <MudCardContent>
+                    <MudText Typo="Typo.h6">Failed</MudText>
+                    <MudText Typo="Typo.h3" Color="Color.Error">@_systemServices.Count(s => s.Status == "Failed")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Requires Attention</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Services Table -->
+    <MudCard>
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Background Services</MudText>
+            </CardHeaderContent>
+            <CardHeaderActions>
+                <MudButton StartIcon="@Icons.Material.Outlined.Refresh" 
+                           Color="Color.Primary" 
+                           Variant="Variant.Filled"
+                           OnClick="LoadServices">
+                    Refresh
+                </MudButton>
+                <MudButton StartIcon="@Icons.Material.Outlined.Settings" 
+                           Color="Color.Secondary" 
+                           Variant="Variant.Outlined"
+                           Href="/admin/settings"
+                           Class="ml-2">
+                    Edit Config
+                </MudButton>
+            </CardHeaderActions>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudTable Items="@_services" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true">
+                <HeaderContent>
+                    <MudTh>Service</MudTh>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Interval</MudTh>
+                    <MudTh>Description</MudTh>
+                    <MudTh>Dependencies</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Service">
+                        <MudStack Row="true" AlignItems="AlignItems.Center">
+                            <MudIcon Icon="@GetServiceIcon(context.Name)" 
+                                     Color="@GetServiceIconColor(context)" />
+                            <div>
+                                <MudText Typo="Typo.body2" Style="font-weight: 500;">
+                                    @context.Name
+                                </MudText>
+                                @if (context.IsDeprecated)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-2">
+                                        DEPRECATED
+                                    </MudChip>
+                                }
+                            </div>
+                        </MudStack>
+                    </MudTd>
+                    <MudTd DataLabel="Status">
+                        @{
+                            var systemService = _systemServices.FirstOrDefault(s => s.Name == context.Name);
+                            var status = systemService?.Status ?? (context.Enabled ? "Running" : "Stopped");
+                        }
+                        <MudChip T="string" Color="@GetStatusColor(status)" Size="Size.Small">
+                            <MudIcon Icon="@GetStatusIcon(status)" Size="Size.Small" Class="mr-1" />
+                            @status
+                        </MudChip>
+                        @if (systemService?.Uptime.HasValue == true && status == "Running")
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">
+                                Uptime: @FormatTimeSpan(systemService.Uptime.Value)
+                            </MudText>
+                        }
+                        @if (!string.IsNullOrEmpty(systemService?.LastError))
+                        {
+                            <MudTooltip Text="@systemService.LastError">
+                                <MudIcon Icon="@Icons.Material.Outlined.Error" Size="Size.Small" Color="Color.Error" Class="ml-1" />
+                            </MudTooltip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Interval">
+                        @if (!string.IsNullOrEmpty(context.Interval))
+                        {
+                            <MudText Typo="Typo.body2">@context.Interval</MudText>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">N/A</MudText>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Description">
+                        <MudText Typo="Typo.body2" Style="max-width: 400px;">
+                            @context.Description
+                        </MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Dependencies">
+                        @if (context.Dependencies.Any())
+                        {
+                            <MudStack Row="true" Spacing="1">
+                                @foreach (var dep in context.Dependencies.Take(2))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@dep</MudChip>
+                                }
+                                @if (context.Dependencies.Count > 2)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                        +@(context.Dependencies.Count - 2)
+                                    </MudChip>
+                                }
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">None</MudText>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        @{
+                            var systemService = _systemServices.FirstOrDefault(s => s.Name == context.Name);
+                            var serviceStatus = systemService?.Status ?? (context.Enabled ? "Running" : "Stopped");
+                            var isTransitioning = IsServiceTransitioning(context.Name);
+                        }
+                        <MudStack Row="true" Spacing="1">
+                            @if (serviceStatus == "Running")
+                            {
+                                <MudButton Size="Size.Small" 
+                                         Color="Color.Warning"
+                                         Variant="Variant.Outlined"
+                                         StartIcon="@Icons.Material.Outlined.Stop"
+                                         OnClick="@(() => StopService(context.Name))"
+                                         Disabled="@isTransitioning">
+                                    Stop
+                                </MudButton>
+                                <MudButton Size="Size.Small" 
+                                         Color="Color.Primary"
+                                         Variant="Variant.Outlined"
+                                         StartIcon="@Icons.Material.Outlined.Refresh"
+                                         OnClick="@(() => RestartService(context.Name))"
+                                         Disabled="@isTransitioning">
+                                    Restart
+                                </MudButton>
+                            }
+                            else if (serviceStatus == "Stopped")
+                            {
+                                <MudButton Size="Size.Small" 
+                                         Color="Color.Success"
+                                         Variant="Variant.Outlined"
+                                         StartIcon="@Icons.Material.Outlined.PlayArrow"
+                                         OnClick="@(() => StartService(context.Name))"
+                                         Disabled="@isTransitioning">
+                                    Start
+                                </MudButton>
+                            }
+                            else if (serviceStatus == "Failed")
+                            {
+                                <MudButton Size="Size.Small" 
+                                         Color="Color.Error"
+                                         Variant="Variant.Outlined"
+                                         StartIcon="@Icons.Material.Outlined.Refresh"
+                                         OnClick="@(() => RestartService(context.Name))">
+                                    Retry
+                                </MudButton>
+                            }
+                            else if (isTransitioning)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                <MudText Typo="Typo.body2">@serviceStatus...</MudText>
+                            }
+                            <MudButton Size="Size.Small" 
+                                     Color="Color.Default"
+                                     Variant="Variant.Text"
+                                     OnClick="@(() => ViewServiceDetails(context))">
+                                Details
+                            </MudButton>
+                        </MudStack>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudCardContent>
+    </MudCard>
+
+    <!-- Service Details Dialog -->
+    <MudDialog @bind-Visible="_showDetailsDialog" Options="_dialogOptions">
+        <TitleContent>
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@GetServiceIcon(_selectedService?.Name ?? "")" Class="mr-2" />
+                @_selectedService?.Name
+            </MudText>
+        </TitleContent>
+        <DialogContent>
+            @if (_selectedService != null)
+            {
+                <MudGrid>
+                    <MudItem xs="12">
+                        @{
+                            var selectedSystemService = _systemServices.FirstOrDefault(s => s.Name == _selectedService?.Name);
+                            var selectedStatus = selectedSystemService?.Status ?? (_selectedService?.Enabled == true ? "Running" : "Stopped");
+                        }
+                        <MudAlert Severity="@(selectedStatus == "Running" ? Severity.Success : selectedStatus == "Failed" ? Severity.Error : Severity.Warning)">
+                            Service is currently <strong>@selectedStatus</strong>
+                            @if (selectedSystemService?.Uptime.HasValue == true && selectedStatus == "Running")
+                            {
+                                <span> - Uptime: @FormatTimeSpan(selectedSystemService.Uptime.Value)</span>
+                            }
+                        </MudAlert>
+                    </MudItem>
+
+                    @if (_selectedService.IsDeprecated)
+                    {
+                        <MudItem xs="12">
+                            <MudAlert Severity="Severity.Error">
+                                <strong>DEPRECATED:</strong> This service is deprecated and should remain disabled.
+                            </MudAlert>
+                        </MudItem>
+                    }
+
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Service Status</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            <MudStack Spacing="2">
+                                @{
+                                    var selectedSystemService = _systemServices.FirstOrDefault(s => s.Name == _selectedService?.Name);
+                                }
+                                <MudText Typo="Typo.body2">
+                                    <strong>Current Status:</strong>
+                                    <MudChip T="string" Color="@GetStatusColor(selectedSystemService?.Status ?? "Unknown")" Size="Size.Small" Class="ml-2">
+                                        @(selectedSystemService?.Status ?? "Unknown")
+                                    </MudChip>
+                                </MudText>
+                                @if (selectedSystemService?.Uptime.HasValue == true)
+                                {
+                                    <MudText Typo="Typo.body2">
+                                        <strong>Uptime:</strong> @FormatTimeSpan(selectedSystemService.Uptime.Value)
+                                    </MudText>
+                                }
+                                @if (selectedSystemService?.LastRestart.HasValue == true)
+                                {
+                                    <MudText Typo="Typo.body2">
+                                        <strong>Last Restart:</strong> @selectedSystemService.LastRestart.Value.ToString("yyyy-MM-dd HH:mm:ss")
+                                    </MudText>
+                                }
+                                <MudText Typo="Typo.body2">
+                                    <strong>Health Status:</strong>
+                                    <MudChip T="string" Color="@GetHealthColor(selectedSystemService?.HealthStatus)" Size="Size.Small" Class="ml-2">
+                                        @(selectedSystemService?.HealthStatus ?? "Unknown")
+                                    </MudChip>
+                                </MudText>
+                                @if (!string.IsNullOrEmpty(selectedSystemService?.LastError))
+                                {
+                                    <MudAlert Severity="Severity.Error" Class="mt-2">
+                                        <strong>Last Error:</strong> @selectedSystemService.LastError
+                                    </MudAlert>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Configuration</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            <MudStack Spacing="2">
+                                <MudText Typo="Typo.body2">
+                                    <strong>Enabled:</strong> @_selectedService.Enabled
+                                </MudText>
+                                @if (!string.IsNullOrEmpty(_selectedService.Interval))
+                                {
+                                    <MudText Typo="Typo.body2">
+                                        <strong>Interval:</strong> @_selectedService.Interval
+                                    </MudText>
+                                }
+                                <MudText Typo="Typo.body2">
+                                    <strong>Category:</strong> @_selectedService.Category
+                                </MudText>
+                                <MudText Typo="Typo.body2">
+                                    <strong>Startup Order:</strong> Phase @_selectedService.StartupPhase
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Service Actions</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            <MudStack Row="true" Spacing="2">
+                                @{
+                                    var selectedSystemServiceForActions = _systemServices.FirstOrDefault(s => s.Name == _selectedService?.Name);
+                                    var selectedStatusForActions = selectedSystemServiceForActions?.Status ?? (_selectedService?.Enabled == true ? "Running" : "Stopped");
+                                }
+                                @if (selectedStatusForActions == "Running")
+                                {
+                                    <MudButton Color="Color.Warning" Variant="Variant.Outlined"
+                                             StartIcon="@Icons.Material.Outlined.Stop"
+                                             OnClick="@(() => StopService(_selectedService.Name))">
+                                        Stop Service
+                                    </MudButton>
+                                    <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                                             StartIcon="@Icons.Material.Outlined.Refresh"
+                                             OnClick="@(() => RestartService(_selectedService.Name))">
+                                        Restart Service
+                                    </MudButton>
+                                }
+                                else if (selectedStatusForActions == "Stopped")
+                                {
+                                    <MudButton Color="Color.Success" Variant="Variant.Outlined"
+                                             StartIcon="@Icons.Material.Outlined.PlayArrow"
+                                             OnClick="@(() => StartService(_selectedService.Name))">
+                                        Start Service
+                                    </MudButton>
+                                }
+                                else if (selectedStatusForActions == "Failed")
+                                {
+                                    <MudButton Color="Color.Error" Variant="Variant.Outlined"
+                                             StartIcon="@Icons.Material.Outlined.Refresh"
+                                             OnClick="@(() => RestartService(_selectedService.Name))">
+                                        Retry Service
+                                    </MudButton>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Dependencies</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            @if (_selectedService.Dependencies.Any())
+                            {
+                                <MudStack Spacing="1">
+                                    @foreach (var dep in _selectedService.Dependencies)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info">@dep</MudChip>
+                                    }
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                    No dependencies - service is independent
+                                </MudText>
+                            }
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Description</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            <MudText Typo="Typo.body2">@_selectedService.Description</MudText>
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Configuration Path</MudText>
+                        <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                            <MudText Typo="Typo.body2" Style="font-family: monospace;">
+                                BackgroundServices:@_selectedService.Name
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+
+                    @if (!string.IsNullOrEmpty(_selectedService.DatabaseDependencies))
+                    {
+                        <MudItem xs="12">
+                            <MudText Typo="Typo.subtitle2" Class="mb-2">Database Dependencies</MudText>
+                            <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+                                <MudText Typo="Typo.body2">@_selectedService.DatabaseDependencies</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+        </DialogContent>
+        <DialogActions>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="CloseDetailsDialog">Close</MudButton>
+        </DialogActions>
+    </MudDialog>
+
+    <!-- Service Architecture Diagram -->
+    <MudCard Class="mt-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">Service Architecture</MudText>
+            </CardHeaderContent>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" @bind-ActivePanelIndex="_activeTab">
+                <MudTabPanel Text="By Category">
+                    <MudGrid>
+                        @foreach (var category in GetServicesByCategory())
+                        {
+                            <MudItem xs="12" md="6" lg="4">
+                                <MudPaper Class="pa-4" Elevation="2">
+                                    <MudText Typo="Typo.h6" Class="mb-2">@category.Key</MudText>
+                                    <MudStack Spacing="1">
+                                        @foreach (var service in category.Value)
+                                        {
+                                            <MudChip T="string" 
+                                                     Size="Size.Small" 
+                                                     Color="@(service.Enabled ? Color.Success : Color.Default)">
+                                                @service.Name
+                                            </MudChip>
+                                        }
+                                    </MudStack>
+                                </MudPaper>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudTabPanel>
+                <MudTabPanel Text="Startup Order">
+                    <MudTimeline TimelinePosition="TimelinePosition.Start">
+                        @foreach (var phase in GetServicesByStartupPhase())
+                        {
+                            <MudTimelineItem Color="Color.Primary">
+                                <ItemOpposite>
+                                    <MudText Color="Color.Primary" Typo="Typo.h6">Phase @phase.Key</MudText>
+                                </ItemOpposite>
+                                <ItemContent>
+                                    <MudStack Spacing="2">
+                                        @foreach (var service in phase.Value)
+                                        {
+                                            <MudPaper Class="pa-3" Elevation="1">
+                                                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                                                    <div>
+                                                        <MudText Typo="Typo.body1" Style="font-weight: 500;">
+                                                            @service.Name
+                                                        </MudText>
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                            @service.Category
+                                                        </MudText>
+                                                    </div>
+                                                    <MudChip T="string" 
+                                                             Size="Size.Small" 
+                                                             Color="@(service.Enabled ? Color.Success : Color.Default)">
+                                                        @(service.Enabled ? "Enabled" : "Disabled")
+                                                    </MudChip>
+                                                </MudStack>
+                                            </MudPaper>
+                                        }
+                                    </MudStack>
+                                </ItemContent>
+                            </MudTimelineItem>
+                        }
+                    </MudTimeline>
+                </MudTabPanel>
+                <MudTabPanel Text="Dependencies">
+                </MudTabPanel>
+                
+                <!-- System Administration Tab -->
+                <MudTabPanel Text="System Admin" Icon="@Icons.Material.Outlined.AdminPanelSettings">
+                    <MudStack Spacing="3">
+                        <!-- System Information -->
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                                <MudText Typo="Typo.h6">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Computer" Class="mr-2" />
+                                    System Information
+                                </MudText>
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="LoadSystemInfo"
+                                          Disabled="@_isLoadingSystem">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                            @if (_systemInfo != null)
+                            {
+                                <MudGrid>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Machine Name</MudText>
+                                        <MudText Typo="Typo.body1">@_systemInfo.MachineName</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">OS Version</MudText>
+                                        <MudText Typo="Typo.body1">@_systemInfo.OSVersion</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">.NET Version</MudText>
+                                        <MudText Typo="Typo.body1">@_systemInfo.DotNetVersion</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Processor Count</MudText>
+                                        <MudText Typo="Typo.body1">@_systemInfo.ProcessorCount</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Working Set Memory</MudText>
+                                        <MudText Typo="Typo.body1">@_systemInfo.WorkingSetMemoryMB MB</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="4">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
+                                        <MudText Typo="Typo.body1">@FormatTimeSpan(_systemInfo.Uptime)</MudText>
+                                    </MudItem>
+                                </MudGrid>
+                            }
+                        </MudPaper>
+
+                        <!-- Performance Metrics -->
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                                <MudText Typo="Typo.h6">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Speed" Class="mr-2" />
+                                    Performance Metrics
+                                </MudText>
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="LoadPerformanceMetrics"
+                                          Disabled="@_isLoadingSystem">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                            @if (_performanceMetrics != null)
+                            {
+                                <MudGrid>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudCard>
+                                            <MudCardContent>
+                                                <MudStack Spacing="1">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">CPU Usage</MudText>
+                                                    <MudText Typo="Typo.h5" Color="@GetCpuColor(_performanceMetrics.CpuUsagePercent)">
+                                                        @_performanceMetrics.CpuUsagePercent.ToString("F1")%
+                                                    </MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudCard>
+                                            <MudCardContent>
+                                                <MudStack Spacing="1">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Memory Usage</MudText>
+                                                    <MudText Typo="Typo.h5">@_performanceMetrics.MemoryUsageMB MB</MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudCard>
+                                            <MudCardContent>
+                                                <MudStack Spacing="1">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Threads</MudText>
+                                                    <MudText Typo="Typo.h5">@_performanceMetrics.ThreadCount</MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudCard>
+                                            <MudCardContent>
+                                                <MudStack Spacing="1">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">GC Memory</MudText>
+                                                    <MudText Typo="Typo.h5">@_performanceMetrics.GCTotalMemoryMB MB</MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudItem>
+                                </MudGrid>
+                            }
+                        </MudPaper>
+
+                        <!-- Service Management -->
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">
+                                <MudIcon Icon="@Icons.Material.Outlined.Build" Class="mr-2" />
+                                Service Management
+                            </MudText>
+                            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                                Service restart functionality requires proper service lifecycle management. 
+                                Use with caution in production environments.
+                            </MudAlert>
+                            @if (_systemServices != null && _systemServices.Any())
+                            {
+                                <MudTable Items="@_systemServices" Hover="true" Dense="true">
+                                    <HeaderContent>
+                                        <MudTh>Service Name</MudTh>
+                                        <MudTh>Type</MudTh>
+                                        <MudTh>Status</MudTh>
+                                        <MudTh>Description</MudTh>
+                                        <MudTh>Actions</MudTh>
+                                    </HeaderContent>
+                                    <RowTemplate>
+                                        <MudTd DataLabel="Service Name">@context.Name</MudTd>
+                                        <MudTd DataLabel="Type">@context.Type</MudTd>
+                                        <MudTd DataLabel="Status">
+                                            <MudChip T="string" 
+                                                    Size="Size.Small" 
+                                                    Color="@(context.Status == "Running" ? Color.Success : Color.Default)">
+                                                @context.Status
+                                            </MudChip>
+                                        </MudTd>
+                                        <MudTd DataLabel="Description">@context.Description</MudTd>
+                                        <MudTd DataLabel="Actions">
+                                            <MudButton Size="Size.Small" 
+                                                      Color="Color.Warning"
+                                                      Variant="Variant.Outlined"
+                                                      StartIcon="@Icons.Material.Outlined.Refresh"
+                                                      OnClick="@(() => RestartService(context.Name))"
+                                                      Disabled="@_isLoadingSystem">
+                                                Restart
+                                            </MudButton>
+                                        </MudTd>
+                                    </RowTemplate>
+                                </MudTable>
+                            }
+                        </MudPaper>
+                    </MudStack>
+                </MudTabPanel>
+                <MudTabPanel Text="Dependencies">
+                    <MudText Typo="Typo.body2" Class="mb-4">
+                        Services with dependencies cannot run without their prerequisite services.
+                    </MudText>
+                    @foreach (var service in _services.Where(s => s.Dependencies.Any()))
+                    {
+                        <MudPaper Class="pa-4 mb-2" Elevation="1">
+                            <MudText Typo="Typo.subtitle1" Style="font-weight: 500;">
+                                @service.Name
+                            </MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-2">
+                                Depends on:
+                            </MudText>
+                            <MudStack Row="true" Spacing="1">
+                                @foreach (var dep in service.Dependencies)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@dep</MudChip>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    }
+                </MudTabPanel>
+            </MudTabs>
+        </MudCardContent>
+    </MudCard>
+
+    <!-- Health Monitoring Info -->
+    <MudCard Class="mt-4">
+        <MudCardHeader>
+            <CardHeaderContent>
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Outlined.Monitor" Class="mr-2" />
+                    Health Monitoring
+                </MudText>
+            </CardHeaderContent>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudAlert Severity="Severity.Info" Class="mb-4">
+                All services are monitored by <strong>ComprehensiveHealthCheckService</strong> which performs health checks every 5 minutes.
+            </MudAlert>
+            <MudGrid>
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.h6">Infrastructure Checks</MudText>
+                            <MudText Typo="Typo.body2">• Database Connectivity</MudText>
+                            <MudText Typo="Typo.body2">• File System Access</MudText>
+                            <MudText Typo="Typo.body2">• Network Connectivity</MudText>
+                            <MudText Typo="Typo.body2">• System Resources</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.h6">Service Checks</MudText>
+                            <MudText Typo="Typo.body2">• Service Availability</MudText>
+                            <MudText Typo="Typo.body2">• API Responsiveness</MudText>
+                            <MudText Typo="Typo.body2">• Queue Statistics</MudText>
+                            <MudText Typo="Typo.body2">• Error Rates</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.h6">Coordinator</MudText>
+                            <MudText Typo="Typo.body2">• Startup Sequencing</MudText>
+                            <MudText Typo="Typo.body2">• Lifecycle Management</MudText>
+                            <MudText Typo="Typo.body2">• Graceful Shutdown</MudText>
+                            <MudText Typo="Typo.body2">• Uptime Tracking</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudCardContent>
+    </MudCard>
+</MudContainer>
+
+@code {
+    private List<ServiceInfo> _services = new();
+    private int _activeTab = 0;
+    private SystemInfoDto? _systemInfo;
+    private PerformanceMetricsDto? _performanceMetrics;
+    private List<SystemServiceInfoDto> _systemServices = new();
+    private bool _isLoadingSystem = false;
+    private ServiceInfo? _selectedService;
+    private bool _showDetailsDialog;
+    private int _totalServices;
+    private int _enabledServices;
+    private int _disabledServices;
+    private System.Timers.Timer? _statusRefreshTimer;
+    private HashSet<string> _transitioningServices = new();
+
+    private DialogOptions _dialogOptions = new() { MaxWidth = MaxWidth.Medium, FullWidth = true };
+
+    protected override async Task OnInitializedAsync()
+    {
+        LoadServices();
+        await LoadSystemInfo();
+        
+        // Set up auto-refresh every 15 seconds
+        _statusRefreshTimer = new System.Timers.Timer(15000);
+        _statusRefreshTimer.Elapsed += async (sender, e) => await RefreshServiceStatus();
+        _statusRefreshTimer.AutoReset = true;
+        _statusRefreshTimer.Start();
+    }
+
+    public void Dispose()
+    {
+        _statusRefreshTimer?.Stop();
+        _statusRefreshTimer?.Dispose();
+    }
+
+    private async Task RefreshServiceStatus()
+    {
+        try
+        {
+            _systemServices = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services") ?? new();
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            // Log error but don't show notification on every poll
+            Console.WriteLine($"Error refreshing service status: {ex.Message}");
+        }
+    }
+
+    private void LoadServices()
+    {
+        _services = new List<ServiceInfo>
+        {
+            new ServiceInfo
+            {
+                Name = "ServiceOrchestrator",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:ServiceOrchestrator:Enabled", true),
+                Interval = "N/A",
+                Description = "Master service coordinator for lifecycle management",
+                Category = "Coordination",
+                StartupPhase = 1,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "None"
+            },
+            new ServiceInfo
+            {
+                Name = "ComprehensiveHealthCheck",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:ComprehensiveHealthCheck:Enabled", true),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:ComprehensiveHealthCheck:CheckIntervalMinutes", 5)} minutes",
+                Description = "Centralized health monitoring for all services and infrastructure",
+                Category = "Monitoring",
+                StartupPhase = 2,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "NS_CIS (read-only)"
+            },
+            new ServiceInfo
+            {
+                Name = "RawImageEngine",
+                Enabled = true,
+                Interval = "Always running (port 5320)",
+                Description = "Python service: raw X-ray image decoding (ASE/FS6000), 16-bit rendering, analysis tools, image splitting",
+                Category = "Image Processing",
+                StartupPhase = 3,
+                Dependencies = new List<string> { "NSCIM_API" },
+                DatabaseDependencies = "NS_CIS (read — asescans, fs6000scans, fs6000images)"
+            },
+            new ServiceInfo
+            {
+                Name = "FS6000BackgroundService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:FS6000BackgroundService:Enabled", true),
+                Interval = "Real-time + Scheduled",
+                Description = "FS6000 scanner file sync and ingestion orchestrator",
+                Category = "Scanner Services",
+                StartupPhase = 3,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "NS_CIS (write)"
+            },
+            new ServiceInfo
+            {
+                Name = "AseDatabaseSyncService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:AseDatabaseSyncService:Enabled", true),
+                Interval = "15 minutes",
+                Description = "ASE scanner database synchronization",
+                Category = "Scanner Services",
+                StartupPhase = 3,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "NS_CIS (write), ASE DB (read)"
+            },
+            new ServiceInfo
+            {
+                Name = "IcumBackgroundService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:IcumBackgroundService:Enabled", false),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:IcumBackgroundService:BatchIntervalMinutes", 30)} minutes",
+                Description = "DEPRECATED - Legacy ICUMS batch API polling (replaced by file-based pipeline)",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "ICUMS_Downloads (write)",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "IcumPipelineOrchestratorService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:IcumPipelineOrchestratorService:Enabled", true),
+                Interval = "Adaptive (FileScanner, DownloadQueue, JsonIngestion, DataTransfer, BackgroundService)",
+                Description = "Single orchestrator for all ICUMS workflows (replaces 5 legacy services)",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 4,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "ICUMS_Downloads (read/write), NS_CIS (write)"
+            },
+            new ServiceInfo
+            {
+                Name = "IcumJsonIngestionService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:IcumJsonIngestionService:Enabled", true),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:IcumJsonIngestionService:ProcessIntervalMinutes", 1)} minute",
+                Description = "Standalone JSON ingestion; orchestrator coordinates timing",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 6,
+                Dependencies = new List<string> { "IcumPipelineOrchestratorService" },
+                DatabaseDependencies = "ICUMS_Downloads (write)"
+            },
+            new ServiceInfo
+            {
+                Name = "ICUMSDownloadBackgroundService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into IcumPipelineOrchestratorService - no longer standalone",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "IcumFileScannerService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into IcumPipelineOrchestratorService - no longer standalone",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "IcumDataTransferService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into IcumPipelineOrchestratorService - no longer standalone",
+                Category = "ICUMS Pipeline",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "ContainerCompletenessOrchestratorService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:ContainerCompletenessService:Enabled", true),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:ContainerCompletenessService:CheckIntervalMinutes", 10)} minutes",
+                Description = "Orchestrates completeness, ManualBOE, and data mapping workflows",
+                Category = "Business Logic",
+                StartupPhase = 8,
+                Dependencies = new List<string> { "FS6000BackgroundService", "AseDatabaseSyncService", "IcumPipelineOrchestratorService" },
+                DatabaseDependencies = "NS_CIS (read/write), ICUMS_Downloads (read)"
+            },
+            new ServiceInfo
+            {
+                Name = "ImageAnalysisOrchestratorService",
+                Enabled = true,
+                Interval = "Adaptive (Intake, Assignment, Submission, Housekeeping)",
+                Description = "Orchestrates Intake, Assignment, Submission, and Housekeeping workflows",
+                Category = "Image Analysis",
+                StartupPhase = 9,
+                Dependencies = new List<string> { "ContainerCompletenessOrchestratorService" },
+                DatabaseDependencies = "NS_CIS (read/write)"
+            },
+            new ServiceInfo
+            {
+                Name = "ContainerCompletenessService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into ContainerCompletenessOrchestratorService - invoked as scoped service",
+                Category = "Business Logic",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "ManualBOESelectivityService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into ContainerCompletenessOrchestratorService - invoked as scoped service",
+                Category = "Business Logic",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "ContainerDataMapperService",
+                Enabled = false,
+                Interval = "N/A",
+                Description = "CONSOLIDATED into ContainerCompletenessOrchestratorService - invoked as scoped service",
+                Category = "Business Logic",
+                StartupPhase = 0,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "N/A",
+                IsDeprecated = true
+            },
+            new ServiceInfo
+            {
+                Name = "ICUMSSubmissionService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:ICUMSSubmissionService:Enabled", true),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:ICUMSSubmissionService:SubmissionIntervalMinutes", 10)} minutes",
+                Description = "Submits scan results to ICUMS",
+                Category = "Business Logic",
+                StartupPhase = 10,
+                Dependencies = new List<string> { "ContainerDataMapperService" },
+                DatabaseDependencies = "NS_CIS (read/write), ICUMSSubmissionQueue (read/write)"
+            },
+            new ServiceInfo
+            {
+                Name = "DashboardBroadcastService",
+                Enabled = Configuration.GetValue<bool>("BackgroundServices:DashboardBroadcastService:Enabled", true),
+                Interval = $"{Configuration.GetValue<int>("BackgroundServices:DashboardBroadcastService:BroadcastIntervalSeconds", 30)} seconds",
+                Description = "Broadcasts real-time updates to dashboard clients",
+                Category = "Broadcasting",
+                StartupPhase = 3,
+                Dependencies = new List<string>(),
+                DatabaseDependencies = "NS_CIS (read-only)"
+            }
+        };
+
+        _totalServices = _services.Count;
+        _enabledServices = _services.Count(s => s.Enabled);
+        _disabledServices = _services.Count(s => !s.Enabled);
+    }
+
+    private void ViewServiceDetails(ServiceInfo service)
+    {
+        _selectedService = service;
+        _showDetailsDialog = true;
+    }
+
+    private void CloseDetailsDialog()
+    {
+        _showDetailsDialog = false;
+        _selectedService = null;
+    }
+
+    private string GetServiceIcon(string serviceName)
+    {
+        return serviceName switch
+        {
+            "ServiceOrchestrator" => Icons.Material.Outlined.AccountTree,
+            "ComprehensiveHealthCheck" => Icons.Material.Outlined.HealthAndSafety,
+            "RawImageEngine" => Icons.Material.Outlined.ViewInAr,
+            "FS6000BackgroundService" => Icons.Material.Outlined.Scanner,
+            "AseDatabaseSyncService" => Icons.Material.Outlined.Sync,
+            "IcumPipelineOrchestratorService" => Icons.Material.Outlined.AccountTree,
+            "IcumBackgroundService" => Icons.Material.Outlined.CloudDownload,
+            "ICUMSDownloadBackgroundService" => Icons.Material.Outlined.CloudQueue,
+            "IcumFileScannerService" => Icons.Material.Outlined.FolderOpen,
+            "IcumJsonIngestionService" => Icons.Material.Outlined.Description,
+            "IcumDataTransferService" => Icons.Material.Outlined.SwapHoriz,
+            "ContainerCompletenessOrchestratorService" => Icons.Material.Outlined.Checklist,
+            "ImageAnalysisOrchestratorService" => Icons.Material.Outlined.ImageSearch,
+            "ContainerCompletenessService" => Icons.Material.Outlined.Checklist,
+            "ManualBOESelectivityService" => Icons.Material.Outlined.TaskAlt,
+            "ContainerDataMapperService" => Icons.Material.Outlined.Map,
+            "ICUMSSubmissionService" => Icons.Material.Outlined.Upload,
+            "DashboardBroadcastService" => Icons.Material.Outlined.CastConnected,
+            _ => Icons.Material.Outlined.Settings
+        };
+    }
+
+    private Color GetServiceIconColor(ServiceInfo service)
+    {
+        if (service.IsDeprecated) return Color.Error;
+        if (!service.Enabled) return Color.Default;
+        return Color.Primary;
+    }
+
+    private Dictionary<string, List<ServiceInfo>> GetServicesByCategory()
+    {
+        return _services
+            .Where(s => !s.IsDeprecated)
+            .GroupBy(s => s.Category)
+            .OrderBy(g => g.Key)
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private Dictionary<int, List<ServiceInfo>> GetServicesByStartupPhase()
+    {
+        return _services
+            .Where(s => !s.IsDeprecated && s.StartupPhase > 0)
+            .GroupBy(s => s.StartupPhase)
+            .OrderBy(g => g.Key)
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private async Task LoadSystemInfo()
+    {
+        _isLoadingSystem = true;
+        try
+        {
+            _systemInfo = await ApiService.GetAsync<SystemInfoDto>("/api/SystemAdmin/system-info");
+            _systemServices = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services") ?? new();
+            Snackbar.Add("System information refreshed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading system info: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingSystem = false;
+        }
+    }
+
+    private async Task LoadPerformanceMetrics()
+    {
+        _isLoadingSystem = true;
+        try
+        {
+            _performanceMetrics = await ApiService.GetAsync<PerformanceMetricsDto>("/api/SystemAdmin/performance");
+            Snackbar.Add("Performance metrics refreshed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading performance metrics: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingSystem = false;
+        }
+    }
+
+    private async Task RestartService(string serviceName)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Restart Service",
+            $"Are you sure you want to restart {serviceName}? This may cause a brief interruption.",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        _transitioningServices.Add(serviceName);
+        var systemService = _systemServices.FirstOrDefault(s => s.Name == serviceName);
+        
+        try
+        {
+            // Update UI immediately
+            if (systemService != null) systemService.Status = "Restarting";
+            StateHasChanged();
+            
+            var result = await ApiService.PostAsync<object, ServiceRestartResponse>(
+                $"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/restart", 
+                new { });
+            
+            Snackbar.Add($"✅ {serviceName} restart initiated", Severity.Info);
+            
+            // Poll for status update (max 30 seconds)
+            await PollServiceStatus(serviceName, maxAttempts: 30);
+            
+            Snackbar.Add($"✅ {serviceName} restarted successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            if (systemService != null) systemService.Status = "Failed";
+            Snackbar.Add($"❌ Error restarting {serviceName}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _transitioningServices.Remove(serviceName);
+            await LoadSystemInfo(); // Refresh all services
+        }
+    }
+
+    private async Task StopService(string serviceName)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Stop Service",
+            $"Are you sure you want to stop {serviceName}? This will halt all processing.",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        _transitioningServices.Add(serviceName);
+        var systemService = _systemServices.FirstOrDefault(s => s.Name == serviceName);
+        
+        try
+        {
+            if (systemService != null) systemService.Status = "Stopping";
+            StateHasChanged();
+            
+            await ApiService.PostAsync<object, object>($"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/stop", new { });
+            
+            Snackbar.Add($"✅ {serviceName} stop initiated", Severity.Info);
+            await Task.Delay(2000); // Brief delay
+            await LoadSystemInfo();
+            Snackbar.Add($"✅ {serviceName} stopped successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            if (systemService != null) systemService.Status = "Failed";
+            Snackbar.Add($"❌ Error stopping {serviceName}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _transitioningServices.Remove(serviceName);
+        }
+    }
+
+    private async Task StartService(string serviceName)
+    {
+        _transitioningServices.Add(serviceName);
+        var systemService = _systemServices.FirstOrDefault(s => s.Name == serviceName);
+        
+        try
+        {
+            if (systemService != null) systemService.Status = "Starting";
+            StateHasChanged();
+            
+            await ApiService.PostAsync<object, object>($"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/start", new { });
+            
+            Snackbar.Add($"✅ {serviceName} start initiated", Severity.Info);
+            await Task.Delay(2000); // Brief delay
+            await LoadSystemInfo();
+            Snackbar.Add($"✅ {serviceName} started successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            if (systemService != null) systemService.Status = "Failed";
+            Snackbar.Add($"❌ Error starting {serviceName}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _transitioningServices.Remove(serviceName);
+        }
+    }
+
+    private async Task PollServiceStatus(string serviceName, int maxAttempts = 30)
+    {
+        for (int i = 0; i < maxAttempts; i++)
+        {
+            await Task.Delay(1000); // Wait 1 second between polls
+            
+            var services = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services");
+            var service = services?.FirstOrDefault(s => s.Name == serviceName);
+            
+            if (service != null && service.Status == "Running")
+            {
+                return; // Service is running
+            }
+            
+            if (service != null && service.Status == "Failed")
+            {
+                throw new Exception("Service failed to start");
+            }
+            
+            // Update UI with current status
+            var currentService = _systemServices.FirstOrDefault(s => s.Name == serviceName);
+            if (currentService != null && service != null)
+            {
+                currentService.Status = service.Status;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        
+        throw new Exception("Service restart timeout - status unknown");
+    }
+
+    private bool IsServiceTransitioning(string serviceName)
+    {
+        return _transitioningServices.Contains(serviceName);
+    }
+
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Running" => Color.Success,
+            "Stopped" => Color.Default,
+            "Starting" => Color.Info,
+            "Stopping" => Color.Info,
+            "Restarting" => Color.Warning,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private string GetStatusIcon(string status)
+    {
+        return status switch
+        {
+            "Running" => Icons.Material.Outlined.CheckCircle,
+            "Stopped" => Icons.Material.Outlined.Cancel,
+            "Starting" => Icons.Material.Outlined.HourglassEmpty,
+            "Stopping" => Icons.Material.Outlined.HourglassEmpty,
+            "Restarting" => Icons.Material.Outlined.Refresh,
+            "Failed" => Icons.Material.Outlined.Error,
+            _ => Icons.Material.Outlined.Help
+        };
+    }
+
+    private Color GetHealthColor(string? healthStatus)
+    {
+        return healthStatus switch
+        {
+            "Healthy" => Color.Success,
+            "Degraded" => Color.Warning,
+            "Unhealthy" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetCpuColor(double cpuUsage)
+    {
+        if (cpuUsage >= 90) return Color.Error;
+        if (cpuUsage >= 75) return Color.Warning;
+        return Color.Success;
+    }
+
+    private string FormatTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan.TotalDays >= 1)
+            return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h {timeSpan.Minutes}m";
+        if (timeSpan.TotalHours >= 1)
+            return $"{timeSpan.Hours}h {timeSpan.Minutes}m {timeSpan.Seconds}s";
+        return $"{timeSpan.Minutes}m {timeSpan.Seconds}s";
+    }
+
+    private class ServiceInfo
+    {
+        public string Name { get; set; } = string.Empty;
+        public bool Enabled { get; set; }
+        public string Interval { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public int StartupPhase { get; set; }
+        public List<string> Dependencies { get; set; } = new();
+        public string DatabaseDependencies { get; set; } = string.Empty;
+        public bool IsDeprecated { get; set; }
+    }
+
+    // System Admin DTOs
+    public class SystemInfoDto
+    {
+        public string MachineName { get; set; } = string.Empty;
+        public string OSVersion { get; set; } = string.Empty;
+        public int ProcessorCount { get; set; }
+        public string DotNetVersion { get; set; } = string.Empty;
+        public long WorkingSetMemoryMB { get; set; }
+        public string TotalProcessorTime { get; set; } = string.Empty;
+        public DateTime StartTime { get; set; }
+        public TimeSpan Uptime { get; set; }
+    }
+
+    public class PerformanceMetricsDto
+    {
+        public double CpuUsagePercent { get; set; }
+        public long MemoryUsageMB { get; set; }
+        public int ThreadCount { get; set; }
+        public int HandleCount { get; set; }
+        public long GCTotalMemoryMB { get; set; }
+    }
+
+    public class SystemServiceInfoDto
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Type { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public DateTime? LastRun { get; set; }
+        public DateTime? LastRestart { get; set; }
+        public TimeSpan? Uptime { get; set; }
+        public string? HealthStatus { get; set; }
+        public string? LastError { get; set; }
+        public bool CanRestart { get; set; } = true;
+        public bool CanStop { get; set; } = true;
+        public bool CanStart { get; set; } = true;
+    }
+
+    public class ServiceRestartResponse
+    {
+        public string ServiceName { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public bool Success { get; set; }
+        public string? Message { get; set; }
+        public DateTime RestartInitiatedAt { get; set; }
+        public TimeSpan? RestartDuration { get; set; }
+    }
+}
+

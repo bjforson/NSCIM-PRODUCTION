@@ -1,0 +1,22 @@
+@page "/services/fs6000-completeness"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesFs6000Completeness)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>FS6000 Completeness Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Scanner" Class="mr-2" />
+            FS6000 Completeness Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        FS6000 completeness service monitoring. Use desktop version for detailed status.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

@@ -1,0 +1,243 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using MudBlazor
+@inject IDialogService DialogService
+@inject ILogger<ContainerReviewCard> Logger
+
+<MudPaper Elevation="2" Class="pa-4">
+    <MudGrid>
+        <!-- Container Header -->
+        <MudItem xs="12">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.h6">
+                        @Container.ContainerNumber
+                    </MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Outlined.Scanner">
+                            @Container.ScannerType
+                        </MudChip>
+                        <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Outlined.Image">
+                            @Container.ImageCount image(s)
+                        </MudChip>
+                        <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Outlined.Description">
+                            @Container.ICUMSRecordCount ICUMS
+                        </MudChip>
+                    </MudStack>
+                </MudStack>
+                
+                <!-- Decision Indicator -->
+                <MudChip T="string" Size="Size.Large" 
+                        Color="@GetDecisionColor(_currentDecision.Decision)">
+                    @GetDecisionIcon(_currentDecision.Decision) @_currentDecision.Decision
+                </MudChip>
+            </MudStack>
+        </MudItem>
+
+        <!-- Data Availability Indicators -->
+        <MudItem xs="12">
+            <MudStack Row="true" Spacing="2">
+                <MudChip T="string" Size="Size.Small" 
+                        Color="@(Container.HasScanner ? Color.Success : Color.Error)" 
+                        Icon="@(Container.HasScanner ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                    Scanner Data
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" 
+                        Color="@(Container.HasICUMS ? Color.Success : Color.Error)"
+                        Icon="@(Container.HasICUMS ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                    ICUMS Data
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" 
+                        Color="@(Container.HasImages ? Color.Success : Color.Error)"
+                        Icon="@(Container.HasImages ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                    Images
+                </MudChip>
+            </MudStack>
+        </MudItem>
+
+        <!-- Quick View Buttons -->
+        <MudItem xs="12">
+            <MudButtonGroup Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small">
+                <MudButton StartIcon="@Icons.Material.Outlined.Image"
+                          OnClick="ViewImages"
+                          Disabled="!Container.HasImages">
+                    View Images
+                </MudButton>
+                <MudButton StartIcon="@Icons.Material.Outlined.Scanner"
+                          OnClick="ViewScannerData"
+                          Disabled="!Container.HasScanner">
+                    Scanner Data
+                </MudButton>
+                <MudButton StartIcon="@Icons.Material.Outlined.Description"
+                          OnClick="ViewICUMSData"
+                          Disabled="!Container.HasICUMS">
+                    ICUMS Data
+                </MudButton>
+            </MudButtonGroup>
+        </MudItem>
+
+        <!-- Decision Buttons -->
+        <MudItem xs="12">
+            <MudText Typo="Typo.body2" GutterBottom="true"><strong>Scan Decision:</strong></MudText>
+            <MudButtonGroup Variant="Variant.Filled" Size="Size.Large" Class="mb-3">
+                <MudButton Color="Color.Success"
+                          OnClick="@(() => SetDecision("Normal"))"
+                          Variant="@(_currentDecision.Decision == "Normal" ? Variant.Filled : Variant.Outlined)"
+                          StartIcon="@Icons.Material.Outlined.CheckCircle">
+                    Normal
+                </MudButton>
+                <MudButton Color="Color.Error"
+                          OnClick="@(() => SetDecision("Abnormal"))"
+                          Variant="@(_currentDecision.Decision == "Abnormal" ? Variant.Filled : Variant.Outlined)"
+                          StartIcon="@Icons.Material.Outlined.Warning">
+                    Abnormal
+                </MudButton>
+                <MudButton Color="Color.Default"
+                          OnClick="@(() => SetDecision("Pending"))"
+                          Variant="@(_currentDecision.Decision == "Pending" ? Variant.Filled : Variant.Outlined)"
+                          StartIcon="@Icons.Material.Outlined.HourglassEmpty">
+                    Pending
+                </MudButton>
+            </MudButtonGroup>
+        </MudItem>
+
+        <!-- Comments -->
+        <MudItem xs="12">
+            <MudTextField @bind-Value="_currentDecision.Comments"
+                        Label="Container Comments"
+                        Variant="Variant.Outlined"
+                        Lines="2"
+                        Immediate="true"
+                        OnBlur="NotifyDecisionChanged"
+                        HelperText="Add any notes or observations for this container" />
+        </MudItem>
+
+        <!-- Scan Date -->
+        @if (Container.ScanDate.HasValue)
+        {
+            <MudItem xs="12">
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Scanned: @Container.ScanDate.Value.ToString("MMM dd, yyyy HH:mm")
+                </MudText>
+            </MudItem>
+        }
+    </MudGrid>
+</MudPaper>
+
+@code {
+    [Parameter] public ContainerInBLDto Container { get; set; } = null!;
+    [Parameter] public EventCallback<ContainerDecisionSubmission> OnDecisionChanged { get; set; }
+
+    private ContainerDecisionSubmission _currentDecision = new();
+
+    protected override void OnParametersSet()
+    {
+        // Initialize decision from container's current state
+        _currentDecision = new ContainerDecisionSubmission
+        {
+            ContainerNumber = Container.ContainerNumber,
+            Decision = Container.CurrentDecision ?? "Pending",
+            Comments = Container.CurrentComments ?? string.Empty
+        };
+    }
+
+    private void SetDecision(string decision)
+    {
+        _currentDecision.Decision = decision;
+        NotifyDecisionChanged();
+    }
+
+    private void NotifyDecisionChanged()
+    {
+        OnDecisionChanged.InvokeAsync(_currentDecision);
+    }
+
+    private async Task ViewImages()
+    {
+        Logger.LogInformation("Opening images for container {Container}", Container.ContainerNumber);
+        
+        // TODO: Open container details modal with images tab
+        var parameters = new DialogParameters
+        {
+            ["ContainerNumber"] = Container.ContainerNumber
+            // NOTE: InitialTab not yet supported by ContainerDetailsModal
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraLarge, 
+            FullWidth = true,
+            CloseOnEscapeKey = true,  // ✅ Allow ESC to close
+            CloseButton = true         // ✅ Show close button
+        };
+
+        await DialogService.ShowAsync<ContainerDetailsModal>(
+            $"Container: {Container.ContainerNumber}", 
+            parameters, 
+            options);
+    }
+
+    private async Task ViewScannerData()
+    {
+        Logger.LogInformation("Opening scanner data for container {Container}", Container.ContainerNumber);
+        
+        var parameters = new DialogParameters
+        {
+            ["ContainerNumber"] = Container.ContainerNumber
+            // NOTE: InitialTab not yet supported by ContainerDetailsModal
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraLarge, 
+            FullWidth = true,
+            CloseOnEscapeKey = true,  // ✅ Allow ESC to close
+            CloseButton = true         // ✅ Show close button
+        };
+
+        await DialogService.ShowAsync<ContainerDetailsModal>(
+            $"Container: {Container.ContainerNumber}", 
+            parameters, 
+            options);
+    }
+
+    private async Task ViewICUMSData()
+    {
+        Logger.LogInformation("Opening ICUMS data for container {Container}", Container.ContainerNumber);
+        
+        var parameters = new DialogParameters
+        {
+            ["ContainerNumber"] = Container.ContainerNumber
+            // NOTE: InitialTab not yet supported by ContainerDetailsModal
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraLarge, 
+            FullWidth = true,
+            CloseOnEscapeKey = true,  // ✅ Allow ESC to close
+            CloseButton = true         // ✅ Show close button
+        };
+
+        await DialogService.ShowAsync<ContainerDetailsModal>(
+            $"Container: {Container.ContainerNumber}", 
+            parameters, 
+            options);
+    }
+
+    private Color GetDecisionColor(string decision) => decision switch
+    {
+        "Normal" => Color.Success,
+        "Abnormal" => Color.Error,
+        "Pending" => Color.Default,
+        _ => Color.Default
+    };
+
+    private string GetDecisionIcon(string decision) => decision switch
+    {
+        "Normal" => "✅",
+        "Abnormal" => "⚠️",
+        _ => "⏳"
+    };
+}
+

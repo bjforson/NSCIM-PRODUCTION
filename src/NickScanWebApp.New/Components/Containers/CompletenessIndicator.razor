@@ -1,0 +1,48 @@
+<!-- CompletenessIndicator Component - Shows data completeness percentage -->
+
+@if (ShowAsProgressBar)
+{
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Style="min-width: 150px;">
+        <MudProgressLinear Color="@GetColor()" 
+                          Value="@Score" 
+                          Min="0" 
+                          Max="100" 
+                          Size="@ProgressSize"
+                          Rounded="true"
+                          Striped="false"
+                          Style="flex: 1;" />
+        <MudText Typo="Typo.caption" Style="min-width: 40px;">@Score%</MudText>
+    </MudStack>
+}
+else
+{
+    <MudChip T="string"
+             Size="@ChipSize" 
+             Color="@GetColor()" 
+             Variant="Variant.Filled"
+             Icon="@GetIcon()">
+        @Score% Complete
+    </MudChip>
+}
+
+@code {
+    [Parameter] public double Score { get; set; }
+    [Parameter] public bool ShowAsProgressBar { get; set; } = true;
+    [Parameter] public Size ChipSize { get; set; } = Size.Small;
+    [Parameter] public Size ProgressSize { get; set; } = Size.Small;
+    
+    private Color GetColor()
+    {
+        return Score >= 90 ? Color.Success :
+               Score >= 70 ? Color.Info :
+               Score >= 50 ? Color.Warning : Color.Error;
+    }
+    
+    private string GetIcon()
+    {
+        return Score >= 90 ? Icons.Material.Outlined.CheckCircle :
+               Score >= 70 ? Icons.Material.Outlined.Info :
+               Score >= 50 ? Icons.Material.Outlined.Warning : Icons.Material.Outlined.Error;
+    }
+}
+

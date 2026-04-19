@@ -1,0 +1,91 @@
+@using System.Security.Claims
+@inject IConfiguration Configuration
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+@if (_showOverlay)
+{
+    <div class="rbac-debug-overlay" style="position: fixed; right: 8px; bottom: 8px; z-index: 12000;">
+        <MudFab Color="Color.Secondary"
+                StartIcon="@(_panelOpen ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.Security)"
+                Size="Size.Small"
+                OnClick="TogglePanelAsync" />
+
+        @if (_panelOpen)
+        {
+            <MudPaper Elevation="8" Class="pa-2 mt-2" Style="max-width: min(100vw - 16px, 360px); max-height: 60vh; overflow: auto;">
+                <MudText Typo="Typo.subtitle2" Class="mb-1">RBAC debug</MudText>
+                <MudDivider Class="mb-2" />
+
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Permissions (Permission claims)</MudText>
+                @if (_permissionClaims.Count == 0)
+                {
+                    <MudText Typo="Typo.caption">—</MudText>
+                }
+                else
+                {
+                    <MudStack Spacing="1" Class="mb-2">
+                        @foreach (var p in _permissionClaims.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@p</MudChip>
+                        }
+                    </MudStack>
+                }
+
+                <MudText Typo="Typo.caption" Color="Color.Secondary">All claims</MudText>
+                <MudStack Spacing="1">
+                    @foreach (var c in _allClaims)
+                    {
+                        <MudPaper Elevation="0" Class="pa-1" Style="background: var(--mud-palette-background-grey);">
+                            <MudText Typo="Typo.caption" Style="word-break: break-all;"><strong>@c.Type</strong></MudText>
+                            <MudText Typo="Typo.caption" Style="word-break: break-word;">@c.Value</MudText>
+                        </MudPaper>
+                    }
+                </MudStack>
+            </MudPaper>
+        }
+    </div>
+}
+
+@code {
+    private bool _showOverlay;
+    private bool _panelOpen;
+    private IReadOnlyList<Claim> _allClaims = Array.Empty<Claim>();
+    private IReadOnlyList<string> _permissionClaims = Array.Empty<string>();
+
+    protected override void OnInitialized()
+    {
+        _showOverlay = Configuration.GetValue<bool>("Debug:RbacOverlay");
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_showOverlay)
+        {
+            return;
+        }
+
+        await RefreshClaimsAsync();
+    }
+
+    private async Task TogglePanelAsync()
+    {
+        _panelOpen = !_panelOpen;
+        if (_panelOpen)
+        {
+            await RefreshClaimsAsync();
+        }
+    }
+
+    private async Task RefreshClaimsAsync()
+    {
+        var state = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+        _allClaims = user.Claims.OrderBy(c => c.Type, StringComparer.OrdinalIgnoreCase).ToList();
+        _permissionClaims = _allClaims
+            .Where(c => c.Type.Equals("Permission", StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+}

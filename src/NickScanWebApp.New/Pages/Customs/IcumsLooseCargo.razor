@@ -1,0 +1,572 @@
+@page "/icums/loose-cargo"
+@page "/customs/icums/loose-cargo"
+@attribute [Authorize(Policy = Permissions.PagesIcumsLooseCargo)]
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.New.Components.ICUMS
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@implements IDisposable
+
+<PageTitle>NICKSCAN ERP — NSCIS — Loose Cargo</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    
+    <!-- Header -->
+    <MudPaper Class="pa-4 mb-4" Elevation="2">
+        <MudGrid>
+            <MudItem xs="12" md="8">
+                <MudText Typo="Typo.h4" Color="Color.Primary">
+                    <MudIcon Icon="@Icons.Material.Outlined.Inventory2" Class="mr-2" />
+                    Loose Cargo / Break Bulk
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Non-containerized cargo from ICUMS
+                </MudText>
+            </MudItem>
+            <MudItem xs="12" md="4" Class="d-flex align-center justify-end">
+                <MudText Typo="Typo.caption" Class="mr-2">
+                    Last updated: @(_lastRefresh?.ToString("HH:mm:ss") ?? "-")
+                </MudText>
+                <MudTooltip Text="Refresh">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Refresh"
+                                   Color="Color.Primary"
+                                   OnClick="LoadLooseCargoData"
+                                   aria-label="Refresh" />
+                </MudTooltip>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Stats Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4">@(_totalRecords > 0 ? _totalRecords.ToString("N0") : "-")</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Total Loose Cargo</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4" Color="Color.Info">@_imports</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Imports (IM)</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4" Color="Color.Warning">@_exports</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Exports (EX)</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudText Typo="Typo.h4" Color="Color.Success">@_cmr</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Transit (CMR)</MudText>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Enhanced Filters -->
+<MudExpansionPanels MultiExpansion="false" Class="mb-4">
+        <MudExpansionPanel Text="Filters" Icon="@Icons.Material.Outlined.FilterList">
+            <MudPaper Class="pa-4" Elevation="0">
+                <MudGrid>
+                    <MudItem xs="12" md="3">
+                        <MudSelect T="string" 
+                                  @bind-Value="_selectedClearanceType" 
+                                  Label="Clearance Type"
+                                  Variant="Variant.Outlined"
+                                  Dense="true">
+                            <MudSelectItem Value="@("All")">All Types</MudSelectItem>
+                            <MudSelectItem Value="@("IM")">Import (IM)</MudSelectItem>
+                            <MudSelectItem Value="@("EX")">Export (EX)</MudSelectItem>
+                            <MudSelectItem Value="@("CMR")">Transit (CMR)</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudSelect T="string" 
+                                  @bind-Value="_selectedCrmsLevel" 
+                                  Label="CRMS Level"
+                                  Variant="Variant.Outlined"
+                                  Dense="true">
+                            <MudSelectItem Value="@("All")">All Risk Levels</MudSelectItem>
+                            <MudSelectItem Value="@("Red")">Red (High Risk)</MudSelectItem>
+                            <MudSelectItem Value="@("Yellow")">Yellow (Medium Risk)</MudSelectItem>
+                            <MudSelectItem Value="@("Green")">Green (Low Risk)</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_countryOfOrigin" 
+                                     Label="Country of Origin" 
+                                     Variant="Variant.Outlined"
+                                     Margin="Margin.Dense"
+                                     Clearable="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_regimeCode" 
+                                     Label="Regime Code" 
+                                     Variant="Variant.Outlined"
+                                     Margin="Margin.Dense"
+                                     Clearable="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudTextField @bind-Value="_searchTerm" 
+                                     Label="Search BL/Declaration/Consignee" 
+                                     Variant="Variant.Outlined"
+                                     Adornment="Adornment.End"
+                                     AdornmentIcon="@Icons.Material.Outlined.Search"
+                                     Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudDatePicker @bind-Date="_fromDate" 
+                                      Label="From Date" 
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      Clearable="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudDatePicker @bind-Date="_toDate" 
+                                      Label="To Date" 
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      Clearable="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="2" Class="d-flex align-center">
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Primary" 
+                                  FullWidth="true"
+                                  OnClick="ApplyFilters"
+                                  StartIcon="@Icons.Material.Outlined.Search">
+                            Search
+                        </MudButton>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+
+    <!-- Loose Cargo Table -->
+    @if (_loading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (!_filteredRecords.Any())
+    {
+        <MudPaper Class="pa-8 text-center" Elevation="0">
+            <MudIcon Icon="@Icons.Material.Outlined.Inbox" Size="Size.Large" Color="Color.Secondary" />
+            <MudText Typo="Typo.h5" Class="mt-4">No Loose Cargo Records Found</MudText>
+            <MudText Typo="Typo.body1" Color="Color.Secondary">
+                Try adjusting your filters or check back later
+            </MudText>
+        </MudPaper>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Showing @_filteredRecords.Count of @_totalRecords records
+            @if (_currentPage > 1 || _hasNextPage)
+            {
+                <span>(Page @_currentPage of @_totalPages)</span>
+            }
+        </MudText>
+
+        <MudTable Items="@_filteredRecords" 
+                  Dense="true" 
+                  Hover="true" 
+                  Striped="true"
+                  Elevation="2"
+                  FixedHeader="true"
+                  Height="600px">
+            <HeaderContent>
+                <MudTh>Declaration</MudTh>
+                <MudTh>Type</MudTh>
+                <MudTh>BL Number</MudTh>
+                <MudTh>Rotation</MudTh>
+                <MudTh>Consignee</MudTh>
+                <MudTh>Goods Description</MudTh>
+                <MudTh>CRMS</MudTh>
+                <MudTh>Regime</MudTh>
+                <MudTh>Date</MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Declaration">
+                    <MudText Typo="Typo.body2" Style="font-family: monospace;">
+                        <strong>@context.DeclarationNumber</strong>
+                    </MudText>
+                </MudTd>
+                <MudTd DataLabel="Type">
+                    <MudChip T="string" Size="Size.Small" 
+                            Color="@(context.ClearanceType == "IM" ? Color.Info : context.ClearanceType == "EX" ? Color.Warning : Color.Success)">
+                        @context.ClearanceType
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="BL Number">
+                    <MudText Typo="Typo.body2" Style="font-family: monospace;">@context.BlNumber</MudText>
+                </MudTd>
+                <MudTd DataLabel="Rotation">
+                    <MudText Typo="Typo.body2">@context.RotationNumber</MudText>
+                </MudTd>
+                <MudTd DataLabel="Consignee">
+                    <MudText Typo="Typo.body2">@context.ConsigneeName</MudText>
+                </MudTd>
+                <MudTd DataLabel="Goods">
+                    <MudText Typo="Typo.caption">
+                        @(context.GoodsDescription?.Length > 50 ? context.GoodsDescription.Substring(0, 50) + "..." : context.GoodsDescription)
+                    </MudText>
+                </MudTd>
+                <MudTd DataLabel="CRMS">
+                    <MudChip T="string" Size="Size.Small" 
+                            Color="@(GetCrmsColor(context.CrmsLevel))">
+                        @(context.CrmsLevel ?? "N/A")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Regime">
+                    <MudText Typo="Typo.body2">@context.RegimeCode</MudText>
+                </MudTd>
+                <MudTd DataLabel="Date">
+                    <MudText Typo="Typo.caption">@context.DeclarationDate</MudText>
+                </MudTd>
+                <MudTd DataLabel="Actions">
+                    <MudTooltip Text="View Details">
+                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility" 
+                                      Size="Size.Small" 
+                                      Color="Color.Primary"
+                                      OnClick="@(() => ViewDetails(context))"
+                                      aria-label="View details" />
+                    </MudTooltip>
+                </MudTd>
+            </RowTemplate>
+            <PagerContent>
+                <MudText Class="px-4 py-2" Typo="Typo.caption">
+                    Showing @(((_currentPage - 1) * _pageSize) + 1) -
+                    @(Math.Min(_currentPage * _pageSize, _totalRecords)) of @_totalRecords items
+                </MudText>
+            </PagerContent>
+        </MudTable>
+    }
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mt-3">
+        <MudSelect T="int"
+                   Label="Rows per page"
+                   Value="_pageSize"
+                   ValueChanged="OnPageSizeChanged"
+                   Dense="true"
+                   Style="width: 160px;">
+            <MudSelectItem Value="10">10</MudSelectItem>
+            <MudSelectItem Value="25">25</MudSelectItem>
+            <MudSelectItem Value="50">50</MudSelectItem>
+            <MudSelectItem Value="100">100</MudSelectItem>
+        </MudSelect>
+
+        <MudPagination Count="@Math.Max(_totalPages, 1)"
+                       Selected="@_currentPage"
+                       SelectedChanged="OnPageChanged"
+                       ShowFirstButton="true"
+                       ShowLastButton="true"
+                       ShowNextButton="true"
+                       ShowPreviousButton="true" />
+    </MudStack>
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private DateTime? _lastRefresh;
+    private string _selectedClearanceType = "All";
+    private string _selectedCrmsLevel = "All";
+    private string _searchTerm = "";
+    private string? _countryOfOrigin = null;
+    private string? _regimeCode = null;
+    private DateTime? _fromDate = null;
+    private DateTime? _toDate = null;
+    
+    private List<LooseCargoDto> _allRecords = new();
+    private List<LooseCargoDto> _filteredRecords = new();
+    
+    // Pagination
+    private int _currentPage = 1;
+    private int _pageSize = 25;
+    private int _totalRecords = 0;
+    private int _totalPages = 0;
+    private bool _hasNextPage = false;
+    
+    private int _imports = 0;
+    private int _exports = 0;
+    private int _cmr = 0;
+    
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load stats first, then data
+        await LoadStats();
+        await LoadLooseCargoData();
+        
+        // Auto-refresh every 60 seconds
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadStats();
+                await LoadLooseCargoData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+
+    private async Task LoadLooseCargoData()
+    {
+        _loading = true;
+        try
+        {
+            await ApplyFilters();
+            _lastRefresh = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading loose cargo data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadStats()
+    {
+        try
+        {
+            var statsResponse = await ApiService.GetAsync<StatsApiResponse>("/api/LooseCargo/stats");
+            
+            if (statsResponse?.Success == true && statsResponse.Data != null)
+            {
+                _totalRecords = statsResponse.Data.TotalRecords;
+                _imports = statsResponse.Data.Imports;
+                _exports = statsResponse.Data.Exports;
+                _cmr = statsResponse.Data.Transit;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Log but don't show error - stats are not critical
+            Console.WriteLine($"Error loading loose cargo stats: {ex.Message}");
+        }
+    }
+
+    private async Task ApplyFilters()
+    {
+        _loading = true;
+        try
+        {
+            // Build query string
+            var queryParams = new List<string>();
+            
+            if (_selectedClearanceType != "All")
+                queryParams.Add($"clearanceType={Uri.EscapeDataString(_selectedClearanceType)}");
+            
+            if (_selectedCrmsLevel != "All")
+                queryParams.Add($"crmsLevel={Uri.EscapeDataString(_selectedCrmsLevel)}");
+            
+            if (!string.IsNullOrWhiteSpace(_searchTerm))
+                queryParams.Add($"search={Uri.EscapeDataString(_searchTerm)}");
+            
+            if (!string.IsNullOrWhiteSpace(_countryOfOrigin))
+                queryParams.Add($"countryOfOrigin={Uri.EscapeDataString(_countryOfOrigin)}");
+            
+            if (!string.IsNullOrWhiteSpace(_regimeCode))
+                queryParams.Add($"regimeCode={Uri.EscapeDataString(_regimeCode)}");
+            
+            if (_fromDate.HasValue)
+                queryParams.Add($"fromDate={_fromDate.Value:yyyy-MM-dd}");
+            
+            if (_toDate.HasValue)
+                queryParams.Add($"toDate={_toDate.Value:yyyy-MM-dd}");
+            
+            queryParams.Add($"pageNumber={_currentPage}");
+            queryParams.Add($"pageSize={_pageSize}");
+            queryParams.Add("sortBy=CreatedAt");
+            queryParams.Add("sortDescending=true");
+            
+            var queryString = string.Join("&", queryParams);
+            var url = $"/api/LooseCargo?{queryString}";
+            
+            // ✅ FIX: Handle both camelCase and PascalCase response formats
+            var response = await ApiService.GetAsync<SearchApiResponse>(url);
+            
+            // Check if response is null or has no data
+            if (response == null)
+            {
+                _filteredRecords = new List<LooseCargoDto>();
+                _totalRecords = 0;
+                _totalPages = 0;
+                _hasNextPage = false;
+                Snackbar.Add("No response from API", Severity.Warning);
+                return;
+            }
+            
+            // ✅ FIX: Properties are now mapped with JsonPropertyName attributes
+            // Direct access should work now that JSON deserialization is configured
+            var isSuccess = response.Success;
+            var data = response.Data;
+            var totalCount = response.TotalCount;
+            var totalPages = response.TotalPages;
+            var hasNextPage = response.HasNextPage;
+            
+            if (isSuccess && data != null)
+            {
+                _filteredRecords = data;
+                _totalRecords = totalCount;
+                _totalPages = totalPages > 0 ? totalPages : (int)Math.Ceiling((double)totalCount / _pageSize);
+                _hasNextPage = hasNextPage;
+            }
+            else
+            {
+                _filteredRecords = new List<LooseCargoDto>();
+                _totalRecords = 0;
+                _totalPages = 0;
+                _hasNextPage = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error applying filters: {ex.Message}", Severity.Error);
+            Console.WriteLine($"Error details: {ex}");
+            _filteredRecords = new List<LooseCargoDto>();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+    
+    private async Task OnPageChanged(int page)
+    {
+        _currentPage = page;
+        await ApplyFilters();
+    }
+    
+    private async Task OnPageSizeChanged(int pageSize)
+    {
+        _pageSize = pageSize;
+        _currentPage = 1; // Reset to first page when page size changes
+        await ApplyFilters();
+    }
+
+    private Color GetCrmsColor(string? crmsLevel)
+    {
+        return crmsLevel?.ToLower() switch
+        {
+            "red" => Color.Error,
+            "yellow" => Color.Warning,
+            "green" => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    private async Task ViewDetails(LooseCargoDto record)
+    {
+        var parameters = new DialogParameters
+        {
+            ["LooseCargoId"] = record.Id,
+            ["DeclarationNumber"] = record.DeclarationNumber
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<LooseCargoDetailDialog>(
+            $"Loose Cargo Details - {record.DeclarationNumber}", 
+            parameters, 
+            options);
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    private class SearchApiResponse
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("success")]
+        public bool Success { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("data")]
+        public List<LooseCargoDto>? Data { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("count")]
+        public int Count { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("totalCount")]
+        public int TotalCount { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("pageNumber")]
+        public int PageNumber { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("pageSize")]
+        public int PageSize { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("totalPages")]
+        public int TotalPages { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("hasPreviousPage")]
+        public bool HasPreviousPage { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("hasNextPage")]
+        public bool HasNextPage { get; set; }
+    }
+
+    private class StatsApiResponse
+    {
+        public bool Success { get; set; }
+        public StatsData? Data { get; set; }
+    }
+
+    private class StatsData
+    {
+        public int TotalRecords { get; set; }
+        public int Imports { get; set; }
+        public int Exports { get; set; }
+        public int Transit { get; set; }
+        public int HighRisk { get; set; }
+        public int MediumRisk { get; set; }
+        public int LowRisk { get; set; }
+        public int RecentRecords { get; set; }
+        public decimal TotalDutyPaid { get; set; }
+        public DateTime? OldestRecord { get; set; }
+        public DateTime? NewestRecord { get; set; }
+    }
+
+    private class LooseCargoDto
+    {
+        public int Id { get; set; }
+        public string DeclarationNumber { get; set; } = "";
+        public string ClearanceType { get; set; } = "";
+        public string BlNumber { get; set; } = "";
+        public string? HouseBl { get; set; }
+        public string RotationNumber { get; set; } = "";
+        public string? ConsigneeName { get; set; }
+        public string? ShipperName { get; set; }
+        public string? GoodsDescription { get; set; }
+        public string? CrmsLevel { get; set; }
+        public string? RegimeCode { get; set; }
+        public string? DeclarationDate { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public decimal? TotalDutyPaid { get; set; }
+        public string? DeclarantName { get; set; }
+    }
+}
+

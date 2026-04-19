@@ -1,0 +1,441 @@
+@using NickScanCentralImagingPortal.Core.Interfaces
+@using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.New.Pages.Administration
+@using MudBlazor
+@implements IDisposable
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-4">
+        <MudText Typo="Typo.h4">
+            <MudIcon Icon="@Icons.Material.Outlined.BugReport" Class="mr-2" />
+            Error Investigations
+        </MudText>
+        <MudStack Row Spacing="2">
+            <MudSwitch T="bool" @bind-Value="_autoRefresh" Color="Color.Primary" Label="Auto-refresh (60s)" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh"
+                       OnClick="RefreshAll" Disabled="_loading">Refresh</MudButton>
+        </MudStack>
+    </MudStack>
+
+    <MudAlert Severity="Severity.Info" Class="mb-4" Dense>
+        Automated error grouping and fix proposals from the error monitoring service. Approve or reject proposals with care; approval can trigger fix implementation workflows.
+    </MudAlert>
+
+    @if (_stats != null)
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Total</MudText>
+                    <MudText Typo="Typo.h4">@_stats.Total</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Critical</MudText>
+                    <MudText Typo="Typo.h4" Color="Color.Error">@_stats.Critical</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Pending action</MudText>
+                    <MudText Typo="Typo.h4" Color="Color.Warning">@(_stats.New + _stats.Investigating + _stats.Proposed)</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Resolved</MudText>
+                    <MudText Typo="Typo.h4" Color="Color.Success">@(_stats.Fixed + _stats.Ignored + _stats.Approved)</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+
+    <MudPaper Class="pa-4 mb-4" Elevation="1">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" Label="Status" Value="@_filterStatus" ValueChanged="OnStatusChanged" Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="string" Value="@("")">All</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("New")">New</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Investigating")">Investigating</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Proposed")">Proposed</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Approved")">Approved</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Fixed")">Fixed</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Ignored")">Ignored</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" Label="Priority" Value="@_filterPriority" ValueChanged="OnPriorityChanged" Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="string" Value="@("")">All</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Critical")">Critical</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("High")">High</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Medium")">Medium</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Low")">Low</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" @bind-Value="_search" Label="Search" Variant="Variant.Outlined" Dense
+                              Adornment="Adornment.End" AdornmentIcon="@Icons.Material.Outlined.Search" />
+            </MudItem>
+            <MudItem xs="12" md="2">
+                <MudButton FullWidth Variant="Variant.Filled" Color="Color.Primary" OnClick="ApplyFilters">Apply</MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudGrid>
+        <MudItem xs="12" lg="@(_detail == null ? 12 : 7)">
+            <MudDataGrid @ref="_dataGrid"
+                         T="ErrorInvestigationDto"
+                         ServerData="@LoadGridData"
+                         Loading="@_loading"
+                         Dense="true"
+                         Hover="true"
+                         Striped="true"
+                         FixedHeader="true"
+                         Height="480px">
+                <Columns>
+                    <PropertyColumn Property="x => x.Id" Title="Id" />
+                    <TemplateColumn Title="Priority">
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Color="@PriorityColor(context.Item.Priority)">@context.Item.Priority</MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Status">
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">@context.Item.Status</MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.ExceptionType" Title="Exception" />
+                    <PropertyColumn Property="x => x.ServiceId" Title="Service" />
+                    <PropertyColumn Property="x => x.OccurrenceCount" Title="#" />
+                    <PropertyColumn Property="x => x.LastSeen" Title="Last seen" Format="yyyy-MM-dd HH:mm" />
+                    <TemplateColumn Title="Fix">
+                        <CellTemplate>
+                            <MudIcon Icon="@(context.Item.HasProposedFix ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Remove)" Color="@(context.Item.HasProposedFix ? Color.Success : Color.Default)" Size="Size.Small" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="" Sortable="false">
+                        <CellTemplate>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" OnClick="@(() => OpenDetailAsync(context.Item.Id))">View</MudButton>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="ErrorInvestigationDto" />
+                </PagerContent>
+            </MudDataGrid>
+        </MudItem>
+        @if (_detail != null)
+        {
+            <MudItem xs="12" lg="5">
+                <MudPaper Class="pa-4" Elevation="2" Style="max-height: 700px; overflow-y: auto;">
+                    <MudStack Spacing="2">
+                        <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.h6">Investigation #@_detail.Id</MudText>
+                            <MudIconButton Icon="@Icons.Material.Outlined.Close" OnClick="@(() => _detail = null)" />
+                        </MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_detail.InvestigationGroupId</MudText>
+                        <MudDivider />
+                        <MudText Typo="Typo.subtitle2">Pattern</MudText>
+                        <MudText Typo="Typo.body2" Style="word-break: break-all;">@_detail.ErrorPattern</MudText>
+                        @if (!string.IsNullOrEmpty(_detail.InvestigationSummary))
+                        {
+                            <MudText Typo="Typo.subtitle2">Summary</MudText>
+                            <MudText Typo="Typo.body2" Style="white-space: pre-wrap;">@_detail.InvestigationSummary</MudText>
+                        }
+                        @if (!string.IsNullOrEmpty(_detail.SampleErrorMessage))
+                        {
+                            <MudExpansionPanels>
+                                <MudExpansionPanel Text="Sample message">
+                                    <MudText Typo="Typo.caption" Style="white-space: pre-wrap; font-family: monospace;">@_detail.SampleErrorMessage</MudText>
+                                </MudExpansionPanel>
+                                @if (!string.IsNullOrEmpty(_detail.SampleStackTrace))
+                                {
+                                    <MudExpansionPanel Text="Stack trace">
+                                        <MudText Typo="Typo.caption" Style="white-space: pre-wrap; font-family: monospace; max-height: 240px; overflow: auto;">@_detail.SampleStackTrace</MudText>
+                                    </MudExpansionPanel>
+                                }
+                            </MudExpansionPanels>
+                        }
+                        <MudText Typo="Typo.subtitle2">Fix proposals</MudText>
+                        @if (_detail.FixProposals == null || _detail.FixProposals.Count == 0)
+                        {
+                            <MudText Typo="Typo.body2">None</MudText>
+                        }
+                        else
+                        {
+                            @foreach (var fp in _detail.FixProposals)
+                            {
+                                <MudPaper Class="pa-3" Outlined>
+                                    <MudText Typo="Typo.subtitle1">@fp.Title</MudText>
+                                    <MudText Typo="Typo.caption">@fp.FixType · @fp.RiskLevel · @fp.Status</MudText>
+                                    <MudText Typo="Typo.body2" Class="mt-2">@fp.Description</MudText>
+                                    @if (fp.Status == "Proposed" && (_detail.Status == "Proposed" || _detail.Status == "New" || _detail.Status == "Investigating"))
+                                    {
+                                        <MudStack Row Class="mt-2" Spacing="1">
+                                            <MudButton Size="Size.Small" Color="Color.Success" Variant="Variant.Filled" OnClick="@(() => ConfirmApprove(fp))">Approve</MudButton>
+                                            <MudButton Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" OnClick="@(() => PromptReject(fp))">Reject</MudButton>
+                                        </MudStack>
+                                    }
+                                </MudPaper>
+                            }
+                        }
+                        @if (_detail.Status != "Ignored" && _detail.Status != "Fixed")
+                        {
+                            <MudButton Color="Color.Default" Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Block" OnClick="PromptIgnore">Ignore investigation</MudButton>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+</MudContainer>
+
+@code {
+    private MudDataGrid<ErrorInvestigationDto>? _dataGrid;
+    private bool _loading;
+    private bool _autoRefresh = true;
+    private InvestigationStatisticsDto? _stats;
+    private ErrorInvestigationDto? _detail;
+
+    private string _filterStatus = "";
+    private string _filterPriority = "";
+    private string _search = "";
+
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStatistics();
+        _refreshTimer = new System.Threading.Timer(async _ => await InvokeAsync(async () =>
+        {
+            if (!_autoRefresh) return;
+            await LoadStatistics();
+            if (_dataGrid != null)
+                await _dataGrid.ReloadServerData();
+            StateHasChanged();
+        }), null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            _stats = await ApiService.GetAsync<InvestigationStatisticsDto>("/api/ErrorInvestigation/statistics");
+        }
+        catch
+        {
+            /* snackbar on main refresh */
+        }
+    }
+
+    private async Task RefreshAll()
+    {
+        _loading = true;
+        try
+        {
+            await LoadStatistics();
+            if (_dataGrid != null)
+                await _dataGrid.ReloadServerData();
+            if (_detail != null)
+                await OpenDetailAsync(_detail.Id);
+            Snackbar.Add("Refreshed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Task OnStatusChanged(string v)
+    {
+        _filterStatus = v;
+        return ApplyFilters();
+    }
+
+    private Task OnPriorityChanged(string v)
+    {
+        _filterPriority = v;
+        return ApplyFilters();
+    }
+
+    private Task OnSearchApplied()
+    {
+        return ApplyFilters();
+    }
+
+    private async Task ApplyFilters()
+    {
+        if (_dataGrid != null)
+            await _dataGrid.ReloadServerData();
+    }
+
+    private async Task<GridData<ErrorInvestigationDto>> LoadGridData(GridState<ErrorInvestigationDto> state)
+    {
+        _loading = true;
+        try
+        {
+            var q = new List<string>
+            {
+                $"page={state.Page + 1}",
+                $"pageSize={state.PageSize}"
+            };
+            if (!string.IsNullOrEmpty(_filterStatus)) q.Add($"status={Uri.EscapeDataString(_filterStatus)}");
+            if (!string.IsNullOrEmpty(_filterPriority)) q.Add($"priority={Uri.EscapeDataString(_filterPriority)}");
+            if (!string.IsNullOrWhiteSpace(_search)) q.Add($"search={Uri.EscapeDataString(_search.Trim())}");
+
+            var url = $"/api/ErrorInvestigation?{string.Join("&", q)}";
+            var page = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Models.PagedResult<ErrorInvestigationDto>>(url);
+            if (page?.Data != null)
+                return new GridData<ErrorInvestigationDto> { Items = page.Data, TotalItems = page.TotalCount };
+            return new GridData<ErrorInvestigationDto> { Items = new List<ErrorInvestigationDto>(), TotalItems = 0 };
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load investigations: {ex.Message}", Severity.Error);
+            return new GridData<ErrorInvestigationDto> { Items = new List<ErrorInvestigationDto>(), TotalItems = 0 };
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OpenDetailAsync(long id)
+    {
+        try
+        {
+            _detail = await ApiService.GetAsync<ErrorInvestigationDto>($"/api/ErrorInvestigation/{id}");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private Color PriorityColor(string? p) => p switch
+    {
+        "Critical" => Color.Error,
+        "High" => Color.Warning,
+        "Medium" => Color.Info,
+        _ => Color.Default
+    };
+
+    private async Task ConfirmApprove(FixProposalDto fp)
+    {
+        if (_detail == null) return;
+        var notes = await PromptStringAsync("Approval notes (optional)", false);
+        if (notes == null) return;
+        try
+        {
+            await ApiService.PostAsync<NotesRequest, object>(
+                $"/api/ErrorInvestigation/{_detail.Id}/proposals/{fp.Id}/approve",
+                new NotesRequest { Notes = string.IsNullOrWhiteSpace(notes) ? null : notes });
+            Snackbar.Add("Proposal approved", Severity.Success);
+            await OpenDetailAsync(_detail.Id);
+            await LoadStatistics();
+            if (_dataGrid != null) await _dataGrid.ReloadServerData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task PromptReject(FixProposalDto fp)
+    {
+        if (_detail == null) return;
+        var reason = await PromptStringAsync("Rejection reason", true);
+        if (string.IsNullOrWhiteSpace(reason)) return;
+        try
+        {
+            await ApiService.PostAsync<ReasonRequest, object>(
+                $"/api/ErrorInvestigation/{_detail.Id}/proposals/{fp.Id}/reject",
+                new ReasonRequest { Reason = reason });
+            Snackbar.Add("Proposal rejected", Severity.Info);
+            await OpenDetailAsync(_detail.Id);
+            await LoadStatistics();
+            if (_dataGrid != null) await _dataGrid.ReloadServerData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task PromptIgnore()
+    {
+        if (_detail == null) return;
+        var reason = await PromptStringAsync("Ignore reason (optional)", false);
+        if (reason == null) return;
+        try
+        {
+            await ApiService.PostAsync<NotesRequest, object>(
+                $"/api/ErrorInvestigation/{_detail.Id}/ignore",
+                new NotesRequest { Reason = string.IsNullOrWhiteSpace(reason) ? null : reason });
+            Snackbar.Add("Investigation ignored", Severity.Info);
+            await OpenDetailAsync(_detail.Id);
+            await LoadStatistics();
+            if (_dataGrid != null) await _dataGrid.ReloadServerData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task<string?> PromptStringAsync(string title, bool required)
+    {
+        var parameters = new DialogParameters<SimplePromptDialog>
+        {
+            { x => x.DialogTitle, title },
+            { x => x.Required, required }
+        };
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<SimplePromptDialog>(title, parameters, options);
+        var result = await dialog.Result;
+        if (result == null || result.Canceled) return null;
+        return result.Data as string;
+    }
+
+    private class NotesRequest
+    {
+        public string? Notes { get; set; }
+        public string? Reason { get; set; }
+    }
+
+    private class ReasonRequest
+    {
+        public string Reason { get; set; } = "";
+    }
+
+    private class InvestigationStatisticsDto
+    {
+        public int Total { get; set; }
+        public int New { get; set; }
+        public int Investigating { get; set; }
+        public int Proposed { get; set; }
+        public int Approved { get; set; }
+        public int Fixed { get; set; }
+        public int Ignored { get; set; }
+        public int Critical { get; set; }
+        public int High { get; set; }
+        public int Medium { get; set; }
+        public int Low { get; set; }
+    }
+}

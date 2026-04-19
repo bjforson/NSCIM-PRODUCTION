@@ -1,0 +1,22 @@
+@page "/services/gateway"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesGateway)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Gateway Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Router" Class="mr-2" />
+            Gateway Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Gateway service monitoring. Use desktop version for detailed status.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

@@ -1,0 +1,351 @@
+@page "/icums/submission-queue"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsSubmissionQueue)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@implements IDisposable
+
+<PageTitle>Submission Queue - ICUMS Integration</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.CloudUpload" Class="mr-2" />
+                ICUMS Submission Queue
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Monitor validation result submissions to ICUMS
+            </MudText>
+            <MudButton Variant="Variant.Outlined" 
+                      Color="Color.Default"
+                      Size="Size.Small"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="@RefreshQueue">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Stats -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Pending</MudText>
+                <MudText Typo="Typo.h4">@pendingCount</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #0288d1 0%, #0277bd 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Submitting</MudText>
+                <MudText Typo="Typo.h4">@submittingCount</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Successful Today</MudText>
+                <MudText Typo="Typo.h4">@successfulToday</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed Today</MudText>
+                <MudText Typo="Typo.h4">@failedToday</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Tabs -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" PanelClass="pa-3" Color="Color.Primary">
+            
+            <MudTabPanel Text="All" Icon="@Icons.Material.Filled.List" BadgeData="@submissions.Count">
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                }
+                else if (submissions.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in submissions.Take(100))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(item.Status)">
+                                            @item.Status
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Queued: @item.QueuedAt.ToString("dd MMM yyyy HH:mm")
+                                    </MudText>
+                                    @if (item.SubmittedAt.HasValue)
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Success">
+                                            Submitted: @item.SubmittedAt.Value.ToString("dd MMM yyyy HH:mm")
+                                        </MudText>
+                                    }
+                                    @if (item.Status == "Failed" && !string.IsNullOrEmpty(item.LastErrorMessage))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            @item.LastErrorMessage
+                                        </MudAlert>
+                                    }
+                                    @if (item.Status == "Failed")
+                                    {
+                                        <MudStack Row="true" Spacing="1">
+                                            <MudButton Size="Size.Small" 
+                                                      Variant="Variant.Outlined" 
+                                                      Color="Color.Primary"
+                                                      StartIcon="@Icons.Material.Filled.Replay"
+                                                      OnClick="@(() => RetrySubmission(item.Id))">
+                                                Retry
+                                            </MudButton>
+                                            <MudButton Size="Size.Small" 
+                                                      Variant="Variant.Text" 
+                                                      Color="Color.Error"
+                                                      StartIcon="@Icons.Material.Filled.Cancel"
+                                                      OnClick="@(() => CancelSubmission(item.Id))">
+                                                Cancel
+                                            </MudButton>
+                                        </MudStack>
+                                    }
+                                </MudStack>
+                            </MudCard>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No submissions in queue</MudAlert>
+                }
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Pending" Icon="@Icons.Material.Filled.PendingActions" BadgeData="@pendingSubmissions.Count" BadgeColor="Color.Warning">
+                @if (pendingSubmissions.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in pendingSubmissions.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="1">
+                                    <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Queued: @item.QueuedAt.ToString("dd MMM yyyy HH:mm")
+                                    </MudText>
+                                </MudStack>
+                            </MudCard>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">No pending submissions</MudAlert>
+                }
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Failed" Icon="@Icons.Material.Filled.Error" BadgeData="@failedSubmissions.Count" BadgeColor="Color.Error">
+                @if (failedSubmissions.Any())
+                {
+                    <MudStack Spacing="2">
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Primary"
+                                  Size="Size.Small"
+                                  StartIcon="@Icons.Material.Filled.Replay"
+                                  OnClick="@RetryAllFailed"
+                                  Class="mb-2">
+                            Retry All (@failedSubmissions.Count)
+                        </MudButton>
+                        @foreach (var item in failedSubmissions.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error">
+                                            Retries: @item.RetryCount
+                                        </MudChip>
+                                    </MudStack>
+                                    @if (!string.IsNullOrEmpty(item.LastErrorMessage))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            @item.LastErrorMessage
+                                        </MudAlert>
+                                    }
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudButton Size="Size.Small" 
+                                                  Variant="Variant.Outlined" 
+                                                  Color="Color.Primary"
+                                                  StartIcon="@Icons.Material.Filled.Replay"
+                                                  OnClick="@(() => RetrySubmission(item.Id))">
+                                            Retry
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            </MudCard>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">No failed submissions</MudAlert>
+                }
+            </MudTabPanel>
+            
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private int pendingCount = 0;
+    private int submittingCount = 0;
+    private int successfulToday = 0;
+    private int failedToday = 0;
+    
+    private List<SubmissionQueueItem> submissions = new();
+    private List<SubmissionQueueItem> pendingSubmissions => submissions.Where(x => x.Status == "Pending").ToList();
+    private List<SubmissionQueueItem> failedSubmissions => submissions.Where(x => x.Status == "Failed").ToList();
+    
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadQueueData();
+        await LoadStatistics();
+        
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadQueueData();
+                await LoadStatistics();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadQueueData()
+    {
+        _isLoading = true;
+        try
+        {
+            var items = await ApiService.GetAsync<List<SubmissionQueueItem>>("/api/ICUMSSubmissionQueue?limit=100");
+            submissions = items ?? new List<SubmissionQueueItem>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading queue: {ex.Message}", Severity.Error);
+            submissions = new List<SubmissionQueueItem>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            var stats = await ApiService.GetAsync<SubmissionStats>("/api/ICUMSSubmissionQueue/stats");
+            if (stats != null)
+            {
+                pendingCount = stats.Pending;
+                submittingCount = stats.Submitting;
+                successfulToday = stats.SuccessfulToday;
+                failedToday = stats.FailedToday;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RefreshQueue()
+    {
+        await LoadQueueData();
+        await LoadStatistics();
+        Snackbar.Add("Queue refreshed", Severity.Success);
+    }
+    
+    private async Task RetrySubmission(int id)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/ICUMSSubmissionQueue/retry/{id}", new { });
+            await LoadQueueData();
+            Snackbar.Add("Retry initiated", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error retrying: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task CancelSubmission(int id)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/ICUMSSubmissionQueue/cancel/{id}", new { });
+            await LoadQueueData();
+            Snackbar.Add("Submission cancelled", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error cancelling: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private void RetryAllFailed()
+    {
+        foreach (var item in failedSubmissions)
+        {
+            RetrySubmission(item.Id);
+        }
+        Snackbar.Add($"Retrying {failedSubmissions.Count} failed submissions", Severity.Success);
+    }
+    
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Successful" => Color.Success,
+            "Pending" => Color.Warning,
+            "Submitting" => Color.Info,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    public class SubmissionQueueItem
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime QueuedAt { get; set; }
+        public DateTime? SubmittedAt { get; set; }
+        public int RetryCount { get; set; }
+        public string? LastErrorMessage { get; set; }
+    }
+    
+    public class SubmissionStats
+    {
+        public int Pending { get; set; }
+        public int Submitting { get; set; }
+        public int Successful { get; set; }
+        public int Failed { get; set; }
+        public int SuccessfulToday { get; set; }
+        public int FailedToday { get; set; }
+    }
+}
+

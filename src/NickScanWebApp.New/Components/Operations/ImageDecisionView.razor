@@ -1,0 +1,1071 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.New.Components.Images
+@using Microsoft.JSInterop
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject IJSRuntime JSRuntime
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @* Header with proper name *@
+    <MudPaper Elevation="2" Class="pa-3 mb-3" Style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); border-left: 5px solid #9c27b0;">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Outlined.Assignment" Size="Size.Medium" Style="color: #7b1fa2;" />
+            <MudText Typo="Typo.h6" Style="font-weight: 700; color: #7b1fa2;">
+                Image Decision Panel
+            </MudText>
+            <MudSpacer />
+            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                Container: @ContainerNumber
+            </MudChip>
+        </MudStack>
+    </MudPaper>
+    
+    @* Visual indicator - click images to open fullscreen viewer for decisions *@
+    <MudAlert Severity="Severity.Info" Variant="Variant.Filled" Class="mb-3">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Outlined.ZoomIn" Size="Size.Medium" />
+            <MudText Typo="Typo.subtitle1"><strong>Image Gallery</strong> - Click any image to open fullscreen viewer for analysis and decision-making</MudText>
+        </MudStack>
+    </MudAlert>
+
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading images and decisions...</MudText>
+            <MudText Typo="Typo.caption">Container: @ContainerNumber</MudText>
+        </MudStack>
+    }
+    else if (images?.Any() == true)
+    {
+        <MudStack Spacing="3" Class="pa-2">
+            @foreach (var image in images)
+            {
+                var decision = _decisions.FirstOrDefault(d => d.ScannerType == image.ImageType);
+                var currentDecision = decision?.Decision ?? "Pending";
+                var currentComments = decision?.Comments ?? "";
+
+                <MudPaper Elevation="3" Class="pa-0" Style="overflow: hidden;">
+                    <!-- Image Header with Decision Status -->
+                    <MudToolBar Dense="true" Style="@GetHeaderStyle(currentDecision)">
+                        <MudIcon Icon="@GetScannerIcon(image.ImageType)" />
+                        <MudText Typo="Typo.subtitle1" Class="ml-2">
+                            <strong>@image.ImageType Scanner Image</strong>
+                        </MudText>
+                        <MudSpacer />
+                        <MudChip T="string" Size="Size.Small" Style="@GetDecisionChipStyle(currentDecision)">
+                            @GetDecisionIcon(currentDecision) @currentDecision
+                        </MudChip>
+                    </MudToolBar>
+
+                    <!-- Image Display Area -->
+                    <MudCardContent Class="pa-0">
+                        <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 400px;" @onclick="@(() => OpenFullImage(image))">
+                            @if (imageLoadError.ContainsKey(image.Id) && imageLoadError[image.Id])
+                            {
+                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                    <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Color="Color.Error" Size="Size.Large" />
+                                    <MudText Typo="Typo.body2" Color="Color.Error">Image failed to load</MudText>
+                                    @if (imageErrorMessages.ContainsKey(image.Id) && !string.IsNullOrEmpty(imageErrorMessages[image.Id]))
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 500px; text-align: center; word-break: break-all;">
+                                            @imageErrorMessages[image.Id]
+                                        </MudText>
+                                    }
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 500px; text-align: center; word-break: break-all;">
+                                        URL: @image.ThumbnailUrl
+                                    </MudText>
+                                    @if (imageRetryCount.ContainsKey(image.Id) && imageRetryCount[image.Id] > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                            Retry attempt: @imageRetryCount[image.Id]
+                                        </MudChip>
+                                    }
+                                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="@(() => RetryImageLoad(image))">
+                                            Retry
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Outlined.OpenInNew" OnClick="@(() => TestImageUrl(image))">
+                                            Test URL
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Outlined.Search" OnClick="@(() => CheckImageExists(image))" Disabled="@(_checkingImageExists)">
+                                            @if (_checkingImageExists)
+                                            {
+                                                <MudProgressCircular Class="ms-n1" Size="Size.Small" Indeterminate="true" />
+                                                <span class="ml-2">Checking...</span>
+                                            }
+                                            else
+                                            {
+                                                <span>Check DB</span>
+                                            }
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Default" StartIcon="@Icons.Material.Outlined.Clear" OnClick="@(() => ClearImageError(image.Id))">
+                                            Dismiss
+                                        </MudButton>
+                                    </MudStack>
+                                    @if (_imageExistsCheckResult.ContainsKey(image.Id))
+                                    {
+                                        var checkResult = _imageExistsCheckResult[image.Id];
+                                        <MudAlert Severity="@(checkResult.Exists ? Severity.Success : Severity.Warning)" Dense="true" Class="mt-2">
+                                            <MudText Typo="Typo.caption">
+                                                @if (checkResult.Exists)
+                                                {
+                                                    <text>✅ Image exists in database (@checkResult.Details)</text>
+                                                }
+                                                else
+                                                {
+                                                    <text>❌ Image NOT found in database: @checkResult.Details</text>
+                                                }
+                                            </MudText>
+                                        </MudAlert>
+                                    }
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <img src="@GetImageSrc(image)"
+                                     alt="@image.ImageType Image"
+                                     style="max-width: 100%; max-height: 600px; cursor: none;"
+                                     @ref="@(_imageRefs[image.Id])"
+                                     @onerror="@(() => HandleImageError(image.Id, GetImageSrc(image)))"
+                                     @onload="@(() => HandleImageLoadWithMagnifier(image))"
+                                     @onloadstart="@(() => HandleImageLoadStart(image))"
+                                     loading="lazy" />
+                                
+                                <!-- Rectangle overlays for suspicious areas -->
+                                @if (_imageRectangles.ContainsKey(image.ImageType) && _imageRectangles[image.ImageType].Any())
+                                {
+                                    <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;">
+                                        @foreach (var rect in _imageRectangles[image.ImageType])
+                                        {
+                                            <rect x="@(rect.X)" 
+                                                  y="@(rect.Y)" 
+                                                  width="@(rect.Width)" 
+                                                  height="@(rect.Height)"
+                                                  fill="none"
+                                                  stroke="red"
+                                                  stroke-width="3"
+                                                  opacity="0.8" />
+                                        }
+                                    </svg>
+                                }
+                            }
+                        </div>
+
+                        <!-- Decision Status Info (Read-Only) -->
+                        @if (decision != null)
+                        {
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: #fafafa; border-top: 2px solid #e0e0e0;">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Reviewed by <strong>@decision.ReviewedBy</strong> on @decision.ReviewedAt.ToString("MMM dd, yyyy HH:mm")
+                                    </MudText>
+                                    @if (!string.IsNullOrEmpty(decision.Comments))
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            | Comments: @decision.Comments
+                                        </MudText>
+                                    }
+                                    @if (!string.IsNullOrEmpty(decision.Tags))
+                                    {
+                                        <MudSpacer />
+                                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                                            @foreach (var tag in decision.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()))
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Text">@tag</MudChip>
+                                            }
+                                        </MudStack>
+                                    }
+                                </MudStack>
+                            </MudPaper>
+                        }
+                        else
+                        {
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: #fafafa; border-top: 2px solid #e0e0e0;">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-style: italic;">
+                                    💡 Click the image above to open fullscreen viewer for analysis and decision-making
+                                </MudText>
+                            </MudPaper>
+                        }
+                    </MudCardContent>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudPaper Elevation="0" Class="pa-8 text-center">
+            <MudIcon Icon="@Icons.Material.Outlined.ImageNotSupported" Size="Size.Large" Color="Color.Secondary" />
+            <MudText Typo="Typo.h6" Color="Color.Secondary" Class="mt-2">No images available</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Container: @ContainerNumber</MudText>
+        </MudPaper>
+    }
+</MudContainer>
+
+@implements IDisposable
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
+    [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public EventCallback OnDecisionChanged { get; set; }
+    [Parameter] public EventCallback OnDecisionSaved { get; set; }
+    [Parameter] public EventCallback<string?> OnNextContainer { get; set; }
+    [Parameter] public EventCallback OnAllContainersDecided { get; set; }
+    [Parameter] public bool AutoOpenImage { get; set; }
+    [Parameter] public EventCallback OnAutoOpenHandled { get; set; }
+
+    // Response DTO for decision save
+    private class DecisionSaveResponse
+    {
+        public bool Success { get; set; }
+        public bool AdvancedToAudit { get; set; }
+        public bool AllContainersDecided { get; set; }
+        public string? NextContainerNumber { get; set; }
+        public string? Message { get; set; }
+    }
+
+    private bool isLoading = true;
+    private List<NickScanWebApp.Shared.Models.ImageMetadata>? images;
+    
+    // ✅ Helper method to log to browser console (not server console)
+    private async Task LogToBrowserConsole(string message)
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("console.log", message);
+        }
+        catch
+        {
+            // Silently fail if JS interop isn't available (e.g., during prerendering)
+        }
+    }
+    private Dictionary<int, bool> imageLoadError = new();
+    private Dictionary<int, int> imageRetryCount = new(); // ✅ Track retry attempts
+    private Dictionary<int, string> imageErrorMessages = new(); // ✅ Store error messages
+    private Dictionary<int, ElementReference> _imageRefs = new(); // Magnifier element refs
+    private Dictionary<int, ImageExistsCheckResult> _imageExistsCheckResult = new(); // ✅ Store image existence check results
+    private bool _checkingImageExists = false; // ✅ Track if check is in progress
+    private List<ImageAnalysisDecisionDto> _decisions = new();
+    private Dictionary<string, string> _imageComments = new();
+    private Dictionary<string, List<SuspiciousAreaRect>> _imageRectangles = new();
+    private string _currentUsername = "System";
+    private Dictionary<string, string> _selectedDecision = new();
+    private string _lastContainerNumber = string.Empty;
+    private bool _hasLoadedOnce = false;
+    private bool _isLoading = false;
+    private bool _pendingAutoOpen = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get current user
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUsername = authState.User.Identity?.Name ?? "System";
+        Console.WriteLine($"👤 [ImageDecisionView] Current user: {_currentUsername}");
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // ✅ FIX: Load data when parameters are set (especially when used in tabs)
+        // Also reload if ContainerNumber changes (for non-consolidated cargo with multiple containers)
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            if (ContainerNumber != _lastContainerNumber)
+            {
+                Console.WriteLine($"🎬 [ImageDecisionView] Container changed from '{_lastContainerNumber}' to '{ContainerNumber}', resetting state");
+                _lastContainerNumber = ContainerNumber;
+                _hasLoadedOnce = false; // Reset flag when container changes
+                _isLoading = false; // Reset loading flag
+                images = null; // Clear previous images
+                _decisions.Clear(); // Clear previous decisions
+            }
+            
+            // ✅ FIX: Check both flags to prevent double loading
+            if (!_hasLoadedOnce && !_isLoading)
+            {
+                _isLoading = true; // Set loading flag first to prevent concurrent loads
+                _hasLoadedOnce = true; // Mark as loaded to prevent OnAfterRenderAsync from also loading
+                Console.WriteLine($"🎬 [ImageDecisionView] Parameters set for container: {ContainerNumber}, Group: {GroupIdentifier} - Loading images...");
+                isLoading = true;
+                await InvokeAsync(StateHasChanged); // Show loading state immediately
+                try
+                {
+                await LoadImages();
+                await LoadDecisions();
+                }
+                finally
+                {
+                    _isLoading = false; // Reset loading flag
+                }
+                await InvokeAsync(StateHasChanged); // Update UI after loading
+            }
+            else
+            {
+                if (_isLoading)
+                {
+                    Console.WriteLine($"ℹ️ [ImageDecisionView] Already loading for container: {ContainerNumber}, skipping duplicate load");
+            }
+            else
+            {
+                Console.WriteLine($"ℹ️ [ImageDecisionView] Already loaded for container: {ContainerNumber}, skipping reload");
+                }
+            }
+        }
+
+        if (AutoOpenImage && !_pendingAutoOpen && _hasLoadedOnce && images?.Any() == true)
+        {
+            _pendingAutoOpen = true;
+            Console.WriteLine($"🔄 [ImageDecisionView] Scheduling auto-open for container: {ContainerNumber}");
+            _ = InvokeAsync(async () =>
+            {
+                try
+                {
+                    await Task.Delay(400);
+                    if (!_pendingAutoOpen) return;
+                    _pendingAutoOpen = false;
+                    Console.WriteLine($"🔄 [ImageDecisionView] Auto-opening fullscreen viewer for container: {ContainerNumber}");
+                    if (OnAutoOpenHandled.HasDelegate)
+                        await OnAutoOpenHandled.InvokeAsync();
+                    if (images?.Any() == true)
+                        await OpenFullImage(images.First());
+                }
+                catch (ObjectDisposedException) { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ [ImageDecisionView] Auto-open error: {ex.Message}");
+                }
+            });
+        }
+    }
+    
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !string.IsNullOrEmpty(ContainerNumber) && !_hasLoadedOnce && !_isLoading)
+        {
+            _isLoading = true;
+            _hasLoadedOnce = true;
+            Console.WriteLine($"🖼️ [ImageDecisionView] First render fallback - loading images for: {ContainerNumber}");
+            isLoading = true;
+            await InvokeAsync(StateHasChanged);
+            try
+            {
+            await LoadImages();
+            await LoadDecisions();
+            }
+            finally
+            {
+                _isLoading = false;
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadImages()
+    {
+        isLoading = true;
+        try
+        {
+            Console.WriteLine($"🔍 [ImageDecisionView] Loading images for container: {ContainerNumber}");
+            images = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            
+            if (images != null && images.Any())
+            {
+                // Ensure ElementReference entries exist for magnifier attachment
+                foreach (var img in images)
+                {
+                    if (!_imageRefs.ContainsKey(img.Id))
+                        _imageRefs[img.Id] = default;
+                }
+
+                Console.WriteLine($"✅ [ImageDecisionView] Loaded {images.Count} image(s)");
+
+                // ✅ NOTE: URLs are already normalized by ContainerDetailsService, but verify they're correct
+                var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                Console.WriteLine($"🔧 [ImageDecisionView] API Base URL: {apiBaseUrl}");
+                
+                foreach (var img in images)
+                {
+                    Console.WriteLine($"   📸 [ImageDecisionView] Processing image {img.Id} ({img.ImageType})");
+                    Console.WriteLine($"      ThumbnailUrl: {img.ThumbnailUrl}");
+                    Console.WriteLine($"      FullImageUrl: {img.FullImageUrl}");
+                    
+                    // ✅ Verify URL format - check if imageType parameter is present
+                    if (!string.IsNullOrEmpty(img.ThumbnailUrl))
+                    {
+                        if (img.ThumbnailUrl.Contains("imageType="))
+                        {
+                            Console.WriteLine($"      ✅ imageType parameter found in URL");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"      ⚠️ WARNING: imageType parameter missing from URL!");
+                        }
+                        
+                        // Verify URL is absolute
+                        if (Uri.TryCreate(img.ThumbnailUrl, UriKind.Absolute, out var uri))
+                        {
+                            Console.WriteLine($"      ✅ URL is absolute: {uri.AbsoluteUri}");
+                            Console.WriteLine($"      ✅ Query string: {uri.Query}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"      ⚠️ WARNING: URL is not absolute, normalizing...");
+                            img.ThumbnailUrl = NormalizeImageUrl(img.ThumbnailUrl, apiBaseUrl);
+                            img.FullImageUrl = NormalizeImageUrl(img.FullImageUrl, apiBaseUrl);
+                            Console.WriteLine($"      ✅ Normalized ThumbnailUrl: {img.ThumbnailUrl}");
+                        }
+                    }
+                    
+                    _imageComments[img.ImageType] = "";
+                    _selectedDecision[img.ImageType] = "Pending";
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [ImageDecisionView] No images found");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageDecisionView] Error loading images: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    /// <summary>
+    /// Normalize image URL to ensure it's a full URL (not relative)
+    /// </summary>
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        // Already a full URL
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        // Relative URL with leading slash
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        // Relative URL without leading slash
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private async Task LoadDecisions()
+    {
+        try
+        {
+            Console.WriteLine($"🔍 [ImageDecisionView] Loading decisions for container: {ContainerNumber}");
+            _decisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}") ?? new();
+            
+            Console.WriteLine($"✅ [ImageDecisionView] Loaded {_decisions.Count} decision(s)");
+            
+            // Populate comment fields and rectangles from existing decisions
+            foreach (var decision in _decisions)
+            {
+                Console.WriteLine($"   - {decision.ScannerType}: {decision.Decision} ('{decision.Comments}')");
+                if (!string.IsNullOrEmpty(decision.Comments))
+                {
+                    _imageComments[decision.ScannerType] = decision.Comments;
+                }
+                _selectedDecision[decision.ScannerType] = string.IsNullOrEmpty(decision.Decision) ? "Pending" : decision.Decision;
+                
+                // Load suspicious area rectangles
+                if (!string.IsNullOrEmpty(decision.SuspiciousAreas))
+                {
+                    try
+                    {
+                        var rectangles = System.Text.Json.JsonSerializer.Deserialize<List<SuspiciousAreaRect>>(decision.SuspiciousAreas);
+                        if (rectangles != null && rectangles.Any())
+                        {
+                            _imageRectangles[decision.ScannerType] = rectangles;
+                            Console.WriteLine($"   - Loaded {rectangles.Count} suspicious area(s) for {decision.ScannerType}");
+                        }
+                    }
+                    catch (Exception parseEx)
+                    {
+                        Console.WriteLine($"⚠️ [ImageDecisionView] Error parsing rectangles for {decision.ScannerType}: {parseEx.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageDecisionView] Error loading decisions: {ex.Message}");
+        }
+    }
+
+    private async Task SaveImageDecision(string scannerType, string decision, string comments)
+    {
+        // ✅ PRIORITY 2.1: Retry logic for API failures
+        const int maxRetries = 3;
+        const int retryDelayMs = 1000; // 1 second
+        
+        DecisionSaveResponse? response = null;
+        Exception? lastException = null;
+        
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+    {
+        try
+        {
+            // Guard missing dictionary keys
+            var selectedDecision = _selectedDecision.TryGetValue(scannerType, out var d) ? d : (string.IsNullOrWhiteSpace(decision) ? "Pending" : decision);
+            var selectedComments = _imageComments.TryGetValue(scannerType, out var c) ? c : comments ?? string.Empty;
+
+                if (attempt == 1)
+                {
+                    await LogToBrowserConsole($"➡️ [ImageDecisionView] Saving decision | Container={ContainerNumber} | Scanner={scannerType} | Decision={selectedDecision} | User={_currentUsername}");
+                }
+                else
+                {
+                    await LogToBrowserConsole($"🔄 [ImageDecisionView] Retry attempt {attempt}/{maxRetries} | Container={ContainerNumber} | Scanner={scannerType}");
+                    Snackbar.Add($"Retrying... (Attempt {attempt}/{maxRetries})", Severity.Warning);
+                    await Task.Delay(retryDelayMs * attempt); // Exponential backoff
+                }
+
+            var request = new
+            {
+                ContainerNumber,
+                ScannerType = scannerType,
+                Decision = selectedDecision,
+                Comments = selectedComments,
+                ReviewedBy = _currentUsername,
+                GroupIdentifier,
+                IsConsolidated
+            };
+
+                response = await ApiService.PostAsync<object, DecisionSaveResponse>("/api/ImageAnalysisDecision", request);
+                
+                // Success - break out of retry loop
+                await LogToBrowserConsole($"✅ [ImageDecisionView] Decision saved | Scanner={scannerType} | Decision={selectedDecision} (Attempt {attempt})");
+                
+                // ✅ DIAGNOSTIC: Log raw response values for debugging (TO BROWSER CONSOLE)
+                if (response != null)
+                {
+                    await LogToBrowserConsole($"🔍 [ImageDecisionView] API Response received:");
+                    await LogToBrowserConsole($"   - Success: {response.Success}");
+                    await LogToBrowserConsole($"   - AllContainersDecided: {response.AllContainersDecided}");
+                    await LogToBrowserConsole($"   - NextContainerNumber: {response.NextContainerNumber ?? "null"}");
+                    await LogToBrowserConsole($"   - AdvancedToAudit: {response.AdvancedToAudit}");
+                    await LogToBrowserConsole($"   - Message: {response.Message ?? "null"}");
+                }
+                else
+                {
+                    await LogToBrowserConsole($"⚠️ [ImageDecisionView] API Response is NULL!");
+                }
+                
+                break;
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                await LogToBrowserConsole($"❌ [ImageDecisionView] Error saving decision (Attempt {attempt}/{maxRetries}): {ex.Message}");
+                
+                // Check if it's a transient error (network, timeout, etc.)
+                bool isTransientError = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("500", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("502", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("503", StringComparison.OrdinalIgnoreCase) ||
+                                       ex.Message.Contains("504", StringComparison.OrdinalIgnoreCase);
+                
+                if (!isTransientError || attempt == maxRetries)
+                {
+                    // Not a transient error or max retries reached - don't retry
+                    break;
+                }
+            }
+        }
+        
+        // Check if we have a response or if all retries failed
+        if (response == null)
+        {
+            var errorMessage = lastException != null 
+                ? $"Failed to save decision after {maxRetries} attempts: {lastException.Message}" 
+                : $"Failed to save decision after {maxRetries} attempts";
+            Console.WriteLine($"❌ [ImageDecisionView] {errorMessage}");
+            Snackbar.Add(errorMessage, Severity.Error);
+            return;
+        }
+        
+        try
+        {
+            // Get selected decision for success message
+            var selectedDecision = _selectedDecision.TryGetValue(scannerType, out var d) ? d : (string.IsNullOrWhiteSpace(decision) ? "Pending" : decision);
+            
+            // ✅ AUTO-PROGRESSION: Check response for next container or completion
+            string? nextContainer = response?.NextContainerNumber;
+            bool allDecided = response?.AllContainersDecided ?? false;
+            
+            await LogToBrowserConsole($"🔄 [ImageDecisionView] Auto-progression check: allDecided={allDecided}, nextContainer={nextContainer ?? "null"}");
+            
+            Snackbar.Add($"{scannerType} image marked as {selectedDecision}", Severity.Success);
+            
+            // Reload decisions to update UI
+            await LoadDecisions();
+            
+            // Notify parent that decision changed (for overall calculation)
+            await OnDecisionChanged.InvokeAsync();
+            
+            // ✅ AUTO-PROGRESSION: Handle next container or completion
+            if (allDecided)
+            {
+                // ✅ FIX: Only close dialog when ALL containers are truly decided
+                await LogToBrowserConsole($"✅ [ImageDecisionView] All containers decided - closing dialog and returning to assignments");
+                Snackbar.Add("All containers in this group have been decided. Group moved to audit queue.", Severity.Success);
+                await OnAllContainersDecided.InvokeAsync();
+                await OnDecisionSaved.InvokeAsync(); // Close dialog
+            }
+            else if (!string.IsNullOrEmpty(nextContainer))
+            {
+                // ✅ FIX: Load next container - dialog stays open
+                await LogToBrowserConsole($"🔄 [ImageDecisionView] Loading next container: {nextContainer} - dialog stays open");
+                Snackbar.Add($"Decision saved. Loading next container: {nextContainer}...", Severity.Info);
+                await OnNextContainer.InvokeAsync(nextContainer);
+                // Don't close dialog - it will reload with next container
+            }
+            else
+            {
+                // ✅ FIX: Don't close dialog if nextContainer is null but allDecided is false
+                // This might indicate an API issue, but we shouldn't close prematurely
+                await LogToBrowserConsole($"⚠️ [ImageDecisionView] No next container returned but allDecided=false - keeping dialog open");
+                Snackbar.Add("Decision saved. Please check if there are more containers to analyze.", Severity.Info);
+                // Don't close dialog - let user manually navigate or wait for API to return correct nextContainer
+            }
+        }
+        catch (Exception ex)
+        {
+            await LogToBrowserConsole($"❌ [ImageDecisionView] Error processing decision response: {ex.Message}");
+            Snackbar.Add($"Error processing decision response: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // Dead code removed: OnSaveClick had no UI binding anywhere. The actual
+    // save path is SaveImageDecision(...), invoked from the ImageAnalysisViewer
+    // dialog after the auditor clicks Save. See 1.11.0 CHANGELOG.
+
+    /// <summary>
+    /// Get image source URL with cache buster, removing duplicate retry/t parameters
+    /// </summary>
+    private string GetImageSrc(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        var currentRetry = imageRetryCount.TryGetValue(image.Id, out var count) ? count : 0;
+        var cacheBuster = $"&retry={currentRetry}&t={DateTime.Now.Ticks}";
+        
+        var baseUrl = image.FullImageUrl;
+        
+        // Use regex to remove retry and t parameters (handles both &retry=... and ?retry=...)
+        baseUrl = System.Text.RegularExpressions.Regex.Replace(baseUrl, @"[&?]retry=\d+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        baseUrl = System.Text.RegularExpressions.Regex.Replace(baseUrl, @"[&?]t=\d+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        // Clean up double ampersands, ?&, and trailing/leading separators
+        baseUrl = baseUrl.Replace("&&", "&").Replace("?&", "?").TrimEnd('&', '?');
+        
+        // Append cache buster
+        if (!baseUrl.Contains("?"))
+        {
+            return $"{baseUrl}?{cacheBuster.TrimStart('&')}";
+        }
+        else
+        {
+            return $"{baseUrl}{cacheBuster}";
+        }
+    }
+
+    private void HandleImageError(int imageId, string imageUrl)
+    {
+        var retries = imageRetryCount.GetValueOrDefault(imageId, 0);
+
+        // Auto-retry once on first failure (transient network issues)
+        if (retries == 0)
+        {
+            imageRetryCount[imageId] = 1;
+            Console.WriteLine($"[ImageDecisionView] Image {imageId} failed — auto-retrying (attempt 1)");
+            StateHasChanged();
+            return;
+        }
+
+        imageLoadError[imageId] = true;
+        var image = images?.FirstOrDefault(i => i.Id == imageId);
+        if (image != null)
+        {
+            var actualSrc = GetImageSrc(image);
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+
+            imageErrorMessages[imageId] = $"Image could not be loaded for container {ContainerNumber}. The scan data may be missing or corrupted in the database.";
+
+            Console.WriteLine($"[ImageDecisionView] Image {imageId} ({image.ImageType}) failed after retry | Container: {ContainerNumber} | URL: {actualSrc}");
+
+            Snackbar.Add($"Image {image.ImageType} unavailable for {ContainerNumber}.", Severity.Info);
+        }
+        StateHasChanged();
+    }
+
+    private void HandleImageLoad(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        // ✅ FIX: Only log and update state once per image load (prevent excessive re-renders)
+        // The @onload event can fire multiple times, but we only need to update state once
+        var wasAlreadyLoaded = imageLoadError.ContainsKey(image.Id) && !imageLoadError[image.Id];
+
+        if (!wasAlreadyLoaded)
+        {
+            imageLoadError[image.Id] = false; // Mark as successfully loaded
+        Console.WriteLine($"✅ [ImageDecisionView] Image {image.Id} ({image.ImageType}) loaded successfully");
+        Console.WriteLine($"   URL: {GetImageSrc(image)}");
+        StateHasChanged();
+        }
+        // If already loaded, skip StateHasChanged to prevent render loop
+    }
+
+    private async Task HandleImageLoadWithMagnifier(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        HandleImageLoad(image);
+        // Attach magnifying glass after image loads
+        try
+        {
+            if (_imageRefs.ContainsKey(image.Id))
+            {
+                await JSRuntime.InvokeVoidAsync("ImageMagnifier.attach", _imageRefs[image.Id], new { size = 220, zoom = 2.5 });
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Magnifier] Could not attach to image {image.Id}: {ex.Message}");
+        }
+    }
+
+    private void HandleImageLoadStart(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        Console.WriteLine($"🔄 [ImageDecisionView] Starting to load image {image.Id} ({image.ImageType}): {GetImageSrc(image)}");
+    }
+
+    private async Task RetryImageLoad(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        // ✅ Increment retry count
+        if (!imageRetryCount.ContainsKey(image.Id))
+            imageRetryCount[image.Id] = 0;
+        imageRetryCount[image.Id]++;
+
+        // ✅ Clear error state
+        imageLoadError[image.Id] = false;
+        imageErrorMessages.Remove(image.Id);
+
+        // ✅ Clear cache for this container to force fresh load
+        ContainerDetailsService.ClearContainerCache(ContainerNumber);
+
+        // ✅ FIX: Don't modify the original URL - GetImageSrc will handle cache busting
+        // This prevents duplicate query parameters from accumulating
+        // The retry count is tracked in imageRetryCount dictionary, and GetImageSrc
+        // will append fresh cache buster parameters each time
+
+        Console.WriteLine($"🔄 [ImageDecisionView] Retrying image {image.Id} (attempt {imageRetryCount[image.Id]})");
+        Console.WriteLine($"   URL will be: {GetImageSrc(image)}");
+        
+        Snackbar.Add($"Retrying image load (attempt {imageRetryCount[image.Id]})...", Severity.Info);
+        StateHasChanged();
+
+        // ✅ Small delay to allow UI to update
+        await Task.Delay(100);
+    }
+
+    private void ClearImageError(int imageId)
+    {
+        imageLoadError[imageId] = false;
+        imageErrorMessages.Remove(imageId);
+        imageRetryCount.Remove(imageId);
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Open image URL in new tab to test and see HTTP status
+    /// </summary>
+    private async Task TestImageUrl(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        var testUrl = GetImageSrc(image);
+        Console.WriteLine($"🔍 [ImageDecisionView] Testing image URL in new tab: {testUrl}");
+        
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("window.open", testUrl, "_blank");
+            Snackbar.Add("Opened image URL in new tab. Check the browser address bar for HTTP status.", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageDecisionView] Error opening URL: {ex.Message}");
+            Snackbar.Add($"Error opening URL: {ex.Message}", Severity.Error);
+        }
+    }
+
+    /// <summary>
+    /// Check if image exists in database by calling the existing image processing pipeline
+    /// </summary>
+    private async Task CheckImageExists(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        _checkingImageExists = true;
+        StateHasChanged();
+        
+        try
+        {
+            Console.WriteLine($"🔍 [ImageDecisionView] Checking if image exists in database for container {ContainerNumber}, imageType: {image.ImageType}");
+            
+            // ✅ Use existing image processing endpoint to check if image exists
+            // This calls the same pipeline that serves the image (reuses existing functionality)
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var checkUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
+            
+            // Add imageType parameter if it's not ASE (ASE doesn't need it, but FS6000 does)
+            if (image.ImageType != "ASE")
+            {
+                checkUrl += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
+            }
+            
+            // Make GET request to check existence (API doesn't support HEAD)
+            // We'll check the status code to determine if image exists
+            // Use ResponseHeadersRead to avoid downloading full image
+            using var httpClient = new System.Net.Http.HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
+            
+            using var response = await httpClient.GetAsync(checkUrl, HttpCompletionOption.ResponseHeadersRead);
+            
+            // Dispose content without reading to minimize data transfer
+            response.Content?.Dispose();
+            
+            var result = new ImageExistsCheckResult
+            {
+                Exists = response.IsSuccessStatusCode,
+                StatusCode = (int)response.StatusCode,
+                Details = response.IsSuccessStatusCode 
+                    ? $"HTTP {response.StatusCode} - Image found in database" 
+                    : $"HTTP {response.StatusCode} - {response.ReasonPhrase}"
+            };
+            
+            _imageExistsCheckResult[image.Id] = result;
+            
+            Console.WriteLine($"{(result.Exists ? "✅" : "❌")} [ImageDecisionView] Image existence check: {result.Details}");
+            Console.WriteLine($"   Container: {ContainerNumber}");
+            Console.WriteLine($"   ImageType: {image.ImageType}");
+            Console.WriteLine($"   Check URL: {checkUrl}");
+            
+            if (result.Exists)
+            {
+                Snackbar.Add($"✅ Image exists in database (HTTP {result.StatusCode})", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"❌ Image NOT found in database: {result.Details}", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            var result = new ImageExistsCheckResult
+            {
+                Exists = false,
+                StatusCode = 0,
+                Details = $"Error checking: {ex.Message}"
+            };
+            _imageExistsCheckResult[image.Id] = result;
+            
+            Console.WriteLine($"❌ [ImageDecisionView] Error checking image existence: {ex.Message}");
+            Console.WriteLine($"   Stack trace: {ex.StackTrace}");
+            Snackbar.Add($"Error checking image: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _checkingImageExists = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Result of image existence check
+    /// </summary>
+    private class ImageExistsCheckResult
+    {
+        public bool Exists { get; set; }
+        public int StatusCode { get; set; }
+        public string Details { get; set; } = string.Empty;
+    }
+
+    private async Task OpenFullImage(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        Console.WriteLine($"🖼️ Opening advanced image viewer for: {image.ImageType} - {image.FullImageUrl}");
+        await LogToBrowserConsole($"🖼️ [ImageDecisionView] Opening fullscreen viewer for container: {ContainerNumber}, image: {image.ImageType}");
+        
+        // ✅ Capture container info in closure (don't capture images - use component field directly in callback)
+        var currentContainerNumber = ContainerNumber;
+        var currentGroupIdentifier = GroupIdentifier;
+        var currentIsConsolidated = IsConsolidated;
+        
+        // ✅ CRITICAL: Notify parent that this container is being processed
+        // This ensures _currentProcessingContainer is set correctly for auto-progression
+        await LogToBrowserConsole($"🔄 [ImageDecisionView] Notifying parent that container {currentContainerNumber} is being processed");
+        
+        // ✅ Log current images state when dialog opens
+        Console.WriteLine($"📋 [ImageDecisionView] Images list at dialog open: {images?.Count ?? 0} image(s)");
+        if (images != null && images.Any())
+        {
+            Console.WriteLine($"   - Images: {string.Join(", ", images.Select(i => i.ImageType))}");
+        }
+        
+        IDialogReference? dialogRef = null;
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = image.FullImageUrl,
+            ["ContainerNumber"] = currentContainerNumber,
+            ["ScannerType"] = image.ImageType,
+            ["ScanDate"] = DateTime.Now,
+            ["GroupIdentifier"] = currentGroupIdentifier,
+            ["IsConsolidated"] = currentIsConsolidated,
+            ["OnClose"] = EventCallback.Factory.Create(this, () =>
+            {
+                // ✅ Close the dialog when OnClose is called
+                if (dialogRef != null)
+                {
+                    dialogRef.Close(DialogResult.Ok(true));
+                }
+                return Task.CompletedTask;
+            }),
+            ["OnDecisionSaved"] = EventCallback.Factory.Create<ImageAnalysisViewer.DecisionSaveResponse?>(this, async (response) =>
+            {
+                if (response == null || !response.Success || dialogRef == null)
+                    return;
+                
+                string? nextContainer = response.NextContainerNumber;
+                bool allDecided = response.AllContainersDecided;
+                
+                Console.WriteLine($"🔄 [ImageDecisionView] Decision saved - allDecided={allDecided}, nextContainer={nextContainer ?? "null"}");
+                
+                dialogRef.Close(DialogResult.Ok(true));
+                await Task.Delay(300);
+                
+                try
+                {
+                    await LoadDecisions();
+                    await OnDecisionChanged.InvokeAsync();
+                        
+                    if (allDecided)
+                    {
+                        Snackbar.Add("All containers in this group have been decided.", Severity.Success);
+                        if (OnAllContainersDecided.HasDelegate)
+                            await OnAllContainersDecided.InvokeAsync();
+                        await OnDecisionSaved.InvokeAsync();
+                    }
+                    else if (!string.IsNullOrEmpty(nextContainer))
+                    {
+                        Snackbar.Add($"Decision saved. Loading next container: {nextContainer}...", Severity.Info);
+                        if (OnNextContainer.HasDelegate)
+                            await OnNextContainer.InvokeAsync(nextContainer);
+                        else
+                            Snackbar.Add($"Error: Cannot auto-progress to {nextContainer}.", Severity.Error);
+                    }
+                    else
+                    {
+                        Snackbar.Add("Decision saved. Check if there are more containers to analyze.", Severity.Info);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ [ImageDecisionView] Auto-progression error: {ex.Message}");
+                    Snackbar.Add($"Error during auto-progression: {ex.Message}", Severity.Error);
+                }
+            })
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            FullScreen = true, // ✅ Always open in fullscreen to make all functions visible
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        dialogRef = await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"🔍 Image Analysis - {image.ImageType} Scanner - {ContainerNumber}", 
+            parameters, 
+            options);
+        
+        var result = await dialogRef.Result;
+
+        // Reload decisions after viewer closes (in case tags were added)
+        await LoadDecisions();
+        await OnDecisionChanged.InvokeAsync();
+    }
+
+    private string GetScannerIcon(string scannerType) => scannerType switch
+    {
+        "FS6000" => Icons.Material.Outlined.CameraAlt,
+        "ASE" => Icons.Material.Outlined.Scanner,
+        _ => Icons.Material.Outlined.Image
+    };
+
+    private string GetHeaderStyle(string decision) => decision switch
+    {
+        "Normal" => "background: linear-gradient(135deg, #43a047 0%, #66bb6a 100%); color: white;",
+        "Abnormal" => "background: linear-gradient(135deg, #e53935 0%, #ef5350 100%); color: white;",
+        _ => "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;"
+    };
+
+    private string GetDecisionChipStyle(string decision) => decision switch
+    {
+        "Normal" => "background: rgba(255,255,255,0.3); color: white; font-weight: bold;",
+        "Abnormal" => "background: rgba(255,255,255,0.3); color: white; font-weight: bold;",
+        _ => "background: rgba(255,255,255,0.2); color: white;"
+    };
+
+    private string GetDecisionIcon(string decision) => decision switch
+    {
+        "Normal" => "✓",
+        "Abnormal" => "⚠",
+        _ => "⏳"
+    };
+
+    // DTO
+    public class ImageAnalysisDecisionDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Decision { get; set; } = string.Empty;
+        public string? Comments { get; set; }
+        public string? Tags { get; set; }
+        public string? SuspiciousAreas { get; set; }
+        public string ReviewedBy { get; set; } = string.Empty;
+        public DateTime ReviewedAt { get; set; }
+    }
+
+    public class SuspiciousAreaRect
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+    }
+    
+    // ✅ MEMORY FIX: Dispose dictionaries to free memory
+    public void Dispose()
+    {
+        imageLoadError?.Clear();
+        imageRetryCount?.Clear();
+        imageErrorMessages?.Clear();
+        _imageExistsCheckResult?.Clear();
+        _decisions?.Clear();
+        _imageComments?.Clear();
+        _imageRectangles?.Clear();
+        _selectedDecision?.Clear();
+        images = null;
+    }
+}
+

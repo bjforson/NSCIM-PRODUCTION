@@ -1,0 +1,371 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Entities.FS6000;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Xml.Linq;
+
+namespace NickScanCentralImagingPortal.Services.FS6000
+{
+    public class IngestionService : IIngestionService
+    {
+        private readonly ILogger<IngestionService> _logger;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly IngestionConfiguration _config;
+
+        public IngestionService(
+            ILogger<IngestionService> logger,
+            IServiceScopeFactory serviceScopeFactory,
+            Microsoft.Extensions.Options.IOptions<IngestionConfiguration> config)
+        {
+            _logger = logger;
+            _serviceScopeFactory = serviceScopeFactory;
+            _config = config.Value;
+        }
+
+        public async Task StartIngestionAsync()
+        {
+            _logger.LogInformation("Starting FS6000 ingestion service");
+            await ProcessAllFoldersAsync();
+        }
+
+        public async Task StopIngestionAsync()
+        {
+            _logger.LogInformation("Stopping FS6000 ingestion service");
+        }
+
+        public async Task<bool> IsHealthyAsync()
+        {
+            try
+            {
+                var failedCount = await GetFailedIngestionCountAsync();
+                return failedCount < 10; // Consider healthy if less than 10 failed items
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public async Task<int> GetPendingIngestionCountAsync()
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                return await dbContext.FS6000Scans.CountAsync(s => s.SyncStatus == "Pending");
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public async Task<int> ProcessAllFoldersAsync()
+        {
+            try
+            {
+                _logger.LogDebug("Starting ingestion cycle");
+                var dataFolders = GetDataFolders();
+                _logger.LogDebug("Found {Count} data folders to process", dataFolders.Count);
+
+                var processedCount = 0;
+                foreach (var folder in dataFolders)
+                {
+                    try
+                    {
+                        await ProcessFolderAsync(folder);
+                        processedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing folder: {Folder}", folder);
+                    }
+                }
+
+                _logger.LogDebug("Ingestion cycle completed");
+                return processedCount;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in ingestion cycle");
+                return 0;
+            }
+        }
+
+        public async Task<int> GetFailedIngestionCountAsync()
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                return await dbContext.FS6000Scans.CountAsync(s => s.SyncStatus == "Failed");
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public async Task ProcessFolderAsync(string folderPath)
+        {
+            try
+            {
+                _logger.LogDebug("Processing folder: {Folder}", folderPath);
+
+                var xmlFiles = Directory.GetFiles(folderPath, "*.xml");
+                var jpegFiles = Directory.GetFiles(folderPath, "*.jpg")
+                    .Concat(Directory.GetFiles(folderPath, "*.jpeg"))
+                    .ToList();
+
+                if (!xmlFiles.Any())
+                {
+                    _logger.LogWarning("No XML file found in folder: {Folder}", folderPath);
+                    return;
+                }
+
+                if (!jpegFiles.Any())
+                {
+                    _logger.LogWarning("No JPEG file found in folder: {Folder}", folderPath);
+                    return;
+                }
+
+                var xmlFile = xmlFiles.First();
+                var jpegFile = GetLargestJpegFile(jpegFiles);
+
+                if (jpegFile == null)
+                {
+                    _logger.LogWarning("No valid JPEG file found in folder: {Folder}", folderPath);
+                    return;
+                }
+
+                await ProcessXmlAndImageAsync(xmlFile, jpegFile, folderPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing folder: {Folder}", folderPath);
+            }
+        }
+
+        private async Task ProcessXmlAndImageAsync(string xmlFile, string jpegFile, string folderPath)
+        {
+            try
+            {
+                var xmlDoc = XDocument.Load(xmlFile);
+                var containerNumbers = ExtractContainerNumbers(xmlDoc);
+
+                if (!containerNumbers.Any())
+                {
+                    _logger.LogWarning("No container numbers found in XML: {XmlFile}", xmlFile);
+                    return;
+                }
+
+                using var scope = _serviceScopeFactory.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+                foreach (var containerNumber in containerNumbers)
+                {
+                    try
+                    {
+                        var existingScan = await dbContext.FS6000Scans
+                            .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+
+                        if (existingScan != null)
+                        {
+                            _logger.LogDebug("FS6000 scan already exists for container: {ContainerNumber}", containerNumber);
+                            continue;
+                        }
+
+                        var imageData = await File.ReadAllBytesAsync(jpegFile);
+                        var base64Data = Convert.ToBase64String(imageData);
+
+                        // Extract PicNumber from XML
+                        var picNumber = xmlDoc.Descendants("PICNO").FirstOrDefault()?.Value ?? string.Empty;
+                        
+                        var scan = new FS6000Scan
+                        {
+                            ContainerNumber = containerNumber,
+                            PicNumber = picNumber,
+                            ScanTime = DateTime.UtcNow,
+                            SyncStatus = "Processed",
+                            CreatedAt = DateTime.UtcNow
+                        };
+
+                        var image = new FS6000Image
+                        {
+                            ScanId = scan.Id,
+                            ImageType = "Main",
+                            FileName = Path.GetFileName(jpegFile),
+                            ImageData = imageData,
+                            FileSizeBytes = imageData.Length,
+                            CreatedAt = DateTime.UtcNow
+                        };
+
+                        scan.Images = new List<FS6000Image> { image };
+
+                        dbContext.FS6000Scans.Add(scan);
+                        await dbContext.SaveChangesAsync();
+
+                        _logger.LogDebug("Successfully processed FS6000 scan for container: {ContainerNumber}", containerNumber);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing container: {ContainerNumber}", containerNumber);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing XML and image: {XmlFile}", xmlFile);
+            }
+        }
+
+        private List<string> ExtractContainerNumbers(XDocument xmlDoc)
+        {
+            var containerNumbers = new List<string>();
+
+            try
+            {
+                // Look for container numbers in various XML elements
+                var containerElements = xmlDoc.Descendants()
+                    .Where(e => e.Name.LocalName.ToLower().Contains("container") || 
+                               e.Name.LocalName.ToLower().Contains("unit") ||
+                               e.Name.LocalName.ToLower().Contains("equipment"))
+                    .ToList();
+
+                foreach (var element in containerElements)
+                {
+                    var value = element.Value?.Trim();
+                    if (!string.IsNullOrEmpty(value) && IsValidContainerNumber(value))
+                    {
+                        containerNumbers.Add(value);
+                    }
+                }
+
+                // If no containers found, try to extract from any text content
+                if (!containerNumbers.Any())
+                {
+                    var allText = string.Join(" ", xmlDoc.Descendants().Select(e => e.Value));
+                    var words = allText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    
+                    foreach (var word in words)
+                    {
+                        if (IsValidContainerNumber(word))
+                        {
+                            containerNumbers.Add(word);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting container numbers from XML");
+            }
+
+            return containerNumbers.Distinct().ToList();
+        }
+
+        private bool IsValidContainerNumber(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length < 4)
+                return false;
+
+            // Check for common container number patterns
+            var patterns = new[]
+            {
+                @"^[A-Z]{4}\d{7}$",  // Standard ISO format
+                @"^[A-Z]{3}U\d{7}$", // Common format
+                @"^[A-Z]{2}[A-Z0-9]{2}\d{7}$" // Alternative format
+            };
+
+            return patterns.Any(pattern => System.Text.RegularExpressions.Regex.IsMatch(value, pattern));
+        }
+
+        private List<string> GetDataFolders()
+        {
+            var dataFolders = new List<string>();
+            
+            try
+            {
+                // Create destination path if it doesn't exist
+                if (!Directory.Exists(_config.DestinationPath))
+                {
+                    _logger.LogInformation("Creating destination directory: {Path}", _config.DestinationPath);
+                    Directory.CreateDirectory(_config.DestinationPath);
+                }
+
+                // Create processed path if it doesn't exist
+                if (!Directory.Exists(_config.ProcessedPath))
+                {
+                    _logger.LogInformation("Creating processed directory: {Path}", _config.ProcessedPath);
+                    Directory.CreateDirectory(_config.ProcessedPath);
+                }
+
+                var yearFolders = Directory.GetDirectories(_config.DestinationPath)
+                    .Where(d => Path.GetFileName(d).StartsWith("2025"))
+                    .OrderBy(d => d)
+                    .ToList();
+
+                foreach (var yearFolder in yearFolders)
+                {
+                    var monthDayFolders = Directory.GetDirectories(yearFolder)
+                        .OrderBy(d => d)
+                        .ToList();
+
+                    foreach (var monthDayFolder in monthDayFolders)
+                    {
+                        var serialFolders = Directory.GetDirectories(monthDayFolder)
+                            .OrderBy(d => d)
+                            .ToList();
+
+                        foreach (var serialFolder in serialFolders)
+                        {
+                            var hasXml = Directory.GetFiles(serialFolder, "*.xml").Any();
+                            var hasJpeg = Directory.GetFiles(serialFolder, "*.jpg").Any() || Directory.GetFiles(serialFolder, "*.jpeg").Any();
+                            
+                            if (hasXml && hasJpeg)
+                            {
+                                dataFolders.Add(serialFolder);
+                            }
+                            else
+                            {
+                                _logger.LogDebug("Skipping empty/parent folder: {Folder} (XML: {HasXml}, JPEG: {HasJpeg})", 
+                                    serialFolder, hasXml, hasJpeg);
+                            }
+                        }
+                    }
+                }
+
+                _logger.LogDebug("Found {Count} data folders with both XML and JPEG files", dataFolders.Count);
+                return dataFolders;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting data folders from {Path}", _config.DestinationPath);
+                return dataFolders;
+            }
+        }
+
+        private string? GetLargestJpegFile(List<string> jpegFiles)
+        {
+            try
+            {
+                return jpegFiles
+                    .Select(f => new { File = f, Size = new FileInfo(f).Length })
+                    .OrderByDescending(f => f.Size)
+                    .FirstOrDefault()?.File;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting largest JPEG file");
+                return null;
+            }
+        }
+    }
+}

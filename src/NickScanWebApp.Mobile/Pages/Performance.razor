@@ -1,0 +1,17 @@
+@page "/performance"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesPerformance)]
+@using NickScanWebApp.Mobile.Services
+@inject NavigationManager NavigationManager
+
+<PageTitle>Performance - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <!-- Redirect to performance metrics -->
+    @code {
+        protected override void OnInitialized()
+        {
+            NavigationManager.NavigateTo("/services/performance");
+        }
+    }
+</MudContainer>
+

@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NickScan Central Imaging Portal - System Monitoring Dashboard</title>
+    <script src="https://unpkg.com/@microsoft/signalr@latest/dist/browser/signalr.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 25px;
+            font-weight: bold;
+            font-size: 1.1em;
+            margin: 10px;
+        }
+
+        .status-healthy { background: #27ae60; color: white; }
+        .status-degraded { background: #f39c12; color: white; }
+        .status-unhealthy { background: #e74c3c; color: white; }
+        .status-unknown { background: #95a5a6; color: white; }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-weight: bold;
+            z-index: 1000;
+        }
+
+        .connected { background: #27ae60; color: white; }
+        .disconnected { background: #e74c3c; color: white; }
+        .connecting { background: #f39c12; color: white; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card h3 {
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .service-item:last-child {
+            border-bottom: none;
+        }
+
+        .service-name {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .service-status {
+            padding: 4px 12px;
+            border-radius: 15px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .metric {
+            text-align: center;
+            padding: 15px;
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 10px;
+        }
+
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .metric-label {
+            font-size: 0.9em;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+
+        .alerts-container {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .alert {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 8px;
+            border-left: 4px solid;
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+        .alert-high { border-left-color: #e74c3c; background: rgba(231, 76, 60, 0.1); }
+        .alert-medium { border-left-color: #f39c12; background: rgba(243, 156, 18, 0.1); }
+        .alert-low { border-left-color: #3498db; background: rgba(52, 152, 219, 0.1); }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 15px;
+        }
+
+        .refresh-btn {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s ease;
+        }
+
+        .refresh-btn:hover {
+            background: #2980b9;
+        }
+
+        .timestamp {
+            color: #7f8c8d;
+            font-size: 0.9em;
+            text-align: center;
+            margin-top: 15px;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .loading {
+            animation: pulse 1.5s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status" id="connectionStatus">Connecting...</div>
+
+    <div class="container">
+        <div class="header">
+            <h1>🚀 NickScan Central Imaging Portal</h1>
+            <h2>System Monitoring Dashboard</h2>
+            <div id="overallStatus" class="status-indicator status-unknown">Loading...</div>
+            <div class="timestamp" id="lastUpdate">Last updated: Never</div>
+        </div>
+
+        <div class="grid">
+            <!-- System Overview Card -->
+            <div class="card">
+                <h3>📊 System Overview</h3>
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <div class="metric-value" id="totalServices">-</div>
+                        <div class="metric-label">Total Services</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="healthyServices">-</div>
+                        <div class="metric-label">Healthy</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="degradedServices">-</div>
+                        <div class="metric-label">Degraded</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="unhealthyServices">-</div>
+                        <div class="metric-label">Unhealthy</div>
+                    </div>
+                </div>
+                <button class="refresh-btn" onclick="refreshData()">🔄 Refresh</button>
+            </div>
+
+            <!-- Service Health Card -->
+            <div class="card">
+                <h3>🔧 Service Health</h3>
+                <div id="serviceHealth">
+                    <div class="loading">Loading service health...</div>
+                </div>
+            </div>
+
+            <!-- Database Statistics Card -->
+            <div class="card">
+                <h3>🗄️ Database Statistics</h3>
+                <div id="databaseStats">
+                    <div class="loading">Loading database statistics...</div>
+                </div>
+            </div>
+
+            <!-- System Resources Card -->
+            <div class="card">
+                <h3>💻 System Resources</h3>
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <div class="metric-value" id="memoryUsage">-</div>
+                        <div class="metric-label">Memory (MB)</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="cpuUsage">-</div>
+                        <div class="metric-label">CPU (ms)</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="diskFree">-</div>
+                        <div class="metric-label">Disk Free (GB)</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value" id="threadCount">-</div>
+                        <div class="metric-label">Threads</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Chart Card -->
+            <div class="card">
+                <h3>📈 Performance Trends</h3>
+                <div class="chart-container">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Alerts Card -->
+            <div class="card">
+                <h3>🚨 Recent Alerts</h3>
+                <div class="alerts-container" id="alertsContainer">
+                    <div class="loading">Loading alerts...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let connection;
+        let performanceChart;
+        let performanceData = [];
+
+        // Initialize SignalR connection
+        async function startConnection() {
+            try {
+                connection = new signalR.HubConnectionBuilder()
+                    .withUrl("/monitoringhub")
+                    .withAutomaticReconnect()
+                    .build();
+
+                // Connection event handlers
+                connection.onclose(async () => {
+                    updateConnectionStatus('disconnected');
+                    await startConnection();
+                });
+
+                connection.onreconnecting(() => {
+                    updateConnectionStatus('connecting');
+                });
+
+                connection.onreconnected(() => {
+                    updateConnectionStatus('connected');
+                });
+
+                // Message handlers
+                connection.on("SystemStatusUpdate", (data) => {
+                    updateSystemOverview(data.Data);
+                });
+
+                connection.on("Alert", (alert) => {
+                    addAlert(alert);
+                });
+
+                connection.on("ServiceHealthUpdate", (update) => {
+                    updateServiceHealth(update.ServiceName, update.Data);
+                });
+
+                connection.on("PerformanceUpdate", (data) => {
+                    updatePerformanceChart(data.Data);
+                });
+
+                await connection.start();
+                updateConnectionStatus('connected');
+                
+                // Request initial data
+                await connection.invoke("RequestSystemStatus");
+                
+                // Load initial data
+                loadInitialData();
+                
+            } catch (err) {
+                console.error('SignalR connection error:', err);
+                updateConnectionStatus('disconnected');
+                setTimeout(startConnection, 5000);
+            }
+        }
+
+        function updateConnectionStatus(status) {
+            const statusElement = document.getElementById('connectionStatus');
+            statusElement.textContent = status === 'connected' ? '🟢 Connected' : 
+                                       status === 'connecting' ? '🟡 Connecting...' : '🔴 Disconnected';
+            statusElement.className = `connection-status ${status}`;
+        }
+
+        async function loadInitialData() {
+            try {
+                // Load system health overview
+                const healthResponse = await fetch('/api/monitoring/health/overview');
+                const healthData = await healthResponse.json();
+                updateSystemOverview(healthData.SystemHealth);
+
+                // Load database statistics
+                const dbResponse = await fetch('/api/monitoring/database/statistics');
+                const dbData = await dbResponse.json();
+                updateDatabaseStats(dbData);
+
+                // Load performance metrics
+                const perfResponse = await fetch('/api/monitoring/performance/metrics');
+                const perfData = await perfResponse.json();
+                updateSystemResources(perfData);
+
+                // Load recent events
+                const eventsResponse = await fetch('/api/monitoring/events/recent');
+                const eventsData = await eventsResponse.json();
+                updateAlerts(eventsData.Events);
+
+            } catch (error) {
+                console.error('Error loading initial data:', error);
+            }
+        }
+
+        function updateSystemOverview(healthSummary) {
+            if (!healthSummary) return;
+
+            // Update overall status
+            const overallStatus = document.getElementById('overallStatus');
+            const statusClass = `status-${healthSummary.OverallStatus.toLowerCase()}`;
+            const statusText = healthSummary.OverallStatus === 0 ? 'HEALTHY' :
+                              healthSummary.OverallStatus === 1 ? 'DEGRADED' :
+                              healthSummary.OverallStatus === 2 ? 'UNHEALTHY' : 'UNKNOWN';
+            
+            overallStatus.textContent = statusText;
+            overallStatus.className = `status-indicator ${statusClass}`;
+
+            // Update metrics
+            document.getElementById('totalServices').textContent = healthSummary.TotalServices || 0;
+            document.getElementById('healthyServices').textContent = healthSummary.HealthyServices || 0;
+            document.getElementById('degradedServices').textContent = healthSummary.DegradedServices || 0;
+            document.getElementById('unhealthyServices').textContent = healthSummary.UnhealthyServices || 0;
+
+            // Update service health
+            updateServiceHealthList(healthSummary.ServiceStatuses);
+
+            // Update timestamp
+            document.getElementById('lastUpdate').textContent = 
+                `Last updated: ${new Date(healthSummary.Timestamp).toLocaleString()}`;
+        }
+
+        function updateServiceHealthList(serviceStatuses) {
+            const container = document.getElementById('serviceHealth');
+            
+            if (!serviceStatuses || Object.keys(serviceStatuses).length === 0) {
+                container.innerHTML = '<div class="loading">No service data available</div>';
+                return;
+            }
+
+            let html = '';
+            for (const [serviceName, status] of Object.entries(serviceStatuses)) {
+                const statusClass = `status-${getStatusText(status.Status).toLowerCase()}`;
+                const statusText = getStatusText(status.Status);
+                const responseTime = status.ResponseTimeMs ? `${status.ResponseTimeMs}ms` : '-';
+                
+                html += `
+                    <div class="service-item">
+                        <span class="service-name">${serviceName}</span>
+                        <div>
+                            <span class="service-status ${statusClass}">${statusText}</span>
+                            <small style="margin-left: 10px; color: #7f8c8d;">${responseTime}</small>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+
+        function updateServiceHealth(serviceName, serviceStatus) {
+            // Update individual service in the list
+            const container = document.getElementById('serviceHealth');
+            const serviceItems = container.querySelectorAll('.service-item');
+            
+            for (const item of serviceItems) {
+                const nameElement = item.querySelector('.service-name');
+                if (nameElement && nameElement.textContent === serviceName) {
+                    const statusClass = `status-${getStatusText(serviceStatus.Status).toLowerCase()}`;
+                    const statusText = getStatusText(serviceStatus.Status);
+                    const responseTime = serviceStatus.ResponseTimeMs ? `${serviceStatus.ResponseTimeMs}ms` : '-';
+                    
+                    const statusElement = item.querySelector('.service-status');
+                    statusElement.textContent = statusText;
+                    statusElement.className = `service-status ${statusClass}`;
+                    
+                    const timeElement = item.querySelector('small');
+                    if (timeElement) {
+                        timeElement.textContent = responseTime;
+                    }
+                    break;
+                }
+            }
+        }
+
+        function updateDatabaseStats(dbData) {
+            const container = document.getElementById('databaseStats');
+            
+            if (!dbData) {
+                container.innerHTML = '<div class="loading">No database data available</div>';
+                return;
+            }
+
+            const html = `
+                <div class="metrics-grid">
+                    <div class="metric">
+                        <div class="metric-value">${dbData.TotalContainers || 0}</div>
+                        <div class="metric-label">Total Containers</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${dbData.TotalFS6000Scans || 0}</div>
+                        <div class="metric-label">FS6000 Scans</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${dbData.TotalFS6000Images || 0}</div>
+                        <div class="metric-label">FS6000 Images</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-value">${dbData.RecentActivity?.Last24Hours?.Containers || 0}</div>
+                        <div class="metric-label">Recent (24h)</div>
+                    </div>
+                </div>
+            `;
+            
+            container.innerHTML = html;
+        }
+
+        function updateSystemResources(perfData) {
+            if (!perfData || !perfData.ProcessMetrics) return;
+
+            document.getElementById('memoryUsage').textContent = 
+                Math.round(perfData.ProcessMetrics.MemoryUsageMB || 0);
+            document.getElementById('cpuUsage').textContent = 
+                Math.round(perfData.ProcessMetrics.CpuUsageMs || 0);
+            document.getElementById('threadCount').textContent = 
+                perfData.ProcessMetrics.ThreadCount || 0;
+
+            // Update disk space if available
+            if (perfData.SystemMetrics && perfData.SystemMetrics.FreeSpaceGB) {
+                document.getElementById('diskFree').textContent = 
+                    Math.round(perfData.SystemMetrics.FreeSpaceGB);
+            }
+        }
+
+        function updateAlerts(events) {
+            const container = document.getElementById('alertsContainer');
+            
+            if (!events || events.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #7f8c8d;">No recent alerts</div>';
+                return;
+            }
+
+            let html = '';
+            events.forEach(event => {
+                const severityClass = `alert-${event.Severity.toLowerCase()}`;
+                const timestamp = new Date(event.Timestamp).toLocaleString();
+                
+                html += `
+                    <div class="alert ${severityClass}">
+                        <div style="font-weight: bold;">${event.Type}</div>
+                        <div>${event.Message}</div>
+                        <div style="font-size: 0.8em; color: #7f8c8d; margin-top: 5px;">
+                            ${event.ServiceName ? `Service: ${event.ServiceName} • ` : ''}${timestamp}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        function addAlert(alert) {
+            const container = document.getElementById('alertsContainer');
+            const severityClass = `alert-${alert.Severity.toLowerCase()}`;
+            const timestamp = new Date(alert.Timestamp).toLocaleString();
+            
+            const alertHtml = `
+                <div class="alert ${severityClass}">
+                    <div style="font-weight: bold;">${alert.AlertType}</div>
+                    <div>${alert.Message}</div>
+                    <div style="font-size: 0.8em; color: #7f8c8d; margin-top: 5px;">
+                        ${alert.ServiceName ? `Service: ${alert.ServiceName} • ` : ''}${timestamp}
+                    </div>
+                </div>
+            `;
+            
+            container.insertAdjacentHTML('afterbegin', alertHtml);
+            
+            // Keep only the last 20 alerts
+            const alerts = container.querySelectorAll('.alert');
+            if (alerts.length > 20) {
+                alerts[alerts.length - 1].remove();
+            }
+        }
+
+        function updatePerformanceChart(perfData) {
+            if (!performanceChart) {
+                initPerformanceChart();
+            }
+
+            performanceData.push({
+                timestamp: new Date().toLocaleTimeString(),
+                memory: perfData.ProcessMetrics?.MemoryUsageMB || 0,
+                cpu: perfData.ProcessMetrics?.CpuUsageMs || 0
+            });
+
+            // Keep only last 20 data points
+            if (performanceData.length > 20) {
+                performanceData.shift();
+            }
+
+            performanceChart.data.labels = performanceData.map(d => d.timestamp);
+            performanceChart.data.datasets[0].data = performanceData.map(d => d.memory);
+            performanceChart.data.datasets[1].data = performanceData.map(d => d.cpu);
+            performanceChart.update();
+        }
+
+        function initPerformanceChart() {
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            performanceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'Memory (MB)',
+                            data: [],
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'CPU (ms)',
+                            data: [],
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        }
+                    }
+                }
+            });
+        }
+
+        function getStatusText(status) {
+            switch (status) {
+                case 0: return 'Healthy';
+                case 1: return 'Degraded';
+                case 2: return 'Unhealthy';
+                default: return 'Unknown';
+            }
+        }
+
+        async function refreshData() {
+            await loadInitialData();
+            if (connection && connection.state === signalR.HubConnectionState.Connected) {
+                await connection.invoke("RequestSystemStatus");
+            }
+        }
+
+        // Initialize everything when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            startConnection();
+            
+            // Refresh data every 30 seconds
+            setInterval(refreshData, 30000);
+        });
+    </script>
+</body>
+</html>

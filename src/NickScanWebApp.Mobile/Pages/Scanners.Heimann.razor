@@ -1,0 +1,185 @@
+@page "/scanners/heimann-smith"
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Mobile.Services
+@attribute [Authorize(Policy = Permissions.PagesScannersHeimann)]
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>Heimann Smith Scanner - NickScan Mobile</PageTitle>
+
+@if (!_initialized)
+{
+    <MudContainer Class="d-flex flex-column align-center justify-center" Style="height: 100vh;">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" Class="mb-4" />
+        <MudText Typo="Typo.h6" Align="Align.Center">
+            Loading Heimann Smith scanner data&hellip;
+        </MudText>
+    </MudContainer>
+}
+else
+{
+    <MudContainer MaxWidth="MaxWidth.False" Class="pt-2 pb-8 px-2">
+        <MudStack Spacing="1">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h6">Heimann Smith Scanner</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Today: @_todayScans • Total: @_totalScans
+                </MudText>
+            </MudStack>
+
+            <MudPaper Class="pa-2" Elevation="1">
+                <MudStack Spacing="1">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Uptime</MudText>
+                        <MudText Typo="Typo.caption">@_uptime.ToString("F1")%</MudText>
+                    </MudStack>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Success rate</MudText>
+                        <MudText Typo="Typo.caption">@_successRate.ToString("F1")%</MudText>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+
+            <MudDivider Class="my-2" />
+
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Recent scans</MudText>
+
+            @if (_recentScans.Count == 0)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    No recent scans found.
+                </MudText>
+            }
+            else
+            {
+                <MudStack Spacing="1">
+                    @foreach (var scan in _recentScans)
+                    {
+                        <MudPaper Class="pa-2" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                    <MudText Typo="Typo.subtitle2">@scan.ContainerNumber</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @scan.ScanDate.ToString("dd MMM HH:mm")
+                                    </MudText>
+                                </MudStack>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @scan.Origin → @scan.Destination
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    }
+                </MudStack>
+            }
+        </MudStack>
+    </MudContainer>
+}
+
+@code {
+    private bool _initialized;
+    private bool _isLoading;
+
+    private int _todayScans;
+    private int _totalScans;
+    private double _uptime;
+    private double _successRate;
+
+    private readonly List<HsScanRecord> _recentScans = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated != true)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        await LoadData();
+        _initialized = true;
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+        try
+        {
+            try
+            {
+                var stats = await ApiService.GetAsync<HeimannStatistics>("/api/Heimann/statistics");
+                if (stats != null)
+                {
+                    _totalScans = stats.TotalScans;
+                    _todayScans = stats.TodayScans;
+                    _uptime = stats.UptimePercentage;
+                    _successRate = stats.SuccessRate;
+                }
+            }
+            catch
+            {
+                _totalScans = 0;
+                _todayScans = 0;
+                _uptime = 0;
+                _successRate = 0;
+            }
+
+            try
+            {
+                var scans = await ApiService.GetAsync<List<HeimannScanDto>>("/api/Heimann/scans?pageSize=20");
+                _recentScans.Clear();
+                if (scans != null)
+                {
+                    _recentScans.AddRange(scans.Select(s => new HsScanRecord
+                    {
+                        ContainerNumber = s.ContainerNumber ?? "Unknown",
+                        ScanDate = s.ScanTime,
+                        Origin = s.Origin ?? "N/A",
+                        Destination = s.Destination ?? "N/A"
+                    }));
+                }
+            }
+            catch
+            {
+                _recentScans.Clear();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading Heimann data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    public class HsScanRecord
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public DateTime ScanDate { get; set; }
+        public string Origin { get; set; } = string.Empty;
+        public string Destination { get; set; } = string.Empty;
+    }
+
+    public class HeimannStatistics
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public double UptimePercentage { get; set; }
+        public double SuccessRate { get; set; }
+    }
+
+    public class HeimannScanDto
+    {
+        public Guid Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public DateTime ScanTime { get; set; }
+        public string? Origin { get; set; }
+        public string? Destination { get; set; }
+    }
+}
+
+

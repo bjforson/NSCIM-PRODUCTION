@@ -1,0 +1,152 @@
+@page "/administration/logs"
+@page "/admin/logs"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminLogs)]
+@using NickScanWebApp.Shared.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Log Viewer - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.Assignment" Class="mr-2" />
+                System Logs
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                View and monitor application logs
+            </MudText>
+            <MudButton Variant="Variant.Outlined" 
+                      Color="Color.Default"
+                      Size="Size.Small"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="@LoadLogs">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Filters -->
+    <MudPaper Elevation="1" Class="pa-3 mb-3">
+        <MudStack Spacing="2">
+            <MudSelect T="string" @bind-Value="_levelFilter" Label="Log Level" Variant="Variant.Outlined" Size="Size.Small">
+                <MudSelectItem Value="@("All")">All Levels</MudSelectItem>
+                <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                <MudSelectItem Value="@("Information")">Information</MudSelectItem>
+                <MudSelectItem Value="@("Debug")">Debug</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="_searchText" 
+                         Label="Search" 
+                         Variant="Variant.Outlined" 
+                         Size="Size.Small"
+                         Adornment="Adornment.Start"
+                         AdornmentIcon="@Icons.Material.Filled.Search" />
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Logs List -->
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (_logs.Any())
+    {
+        <MudStack Spacing="2">
+            @foreach (var log in _logs.Take(100))
+            {
+                <MudCard Elevation="1" Class="pa-3">
+                    <MudStack Spacing="1">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                            <MudChip T="string" Size="Size.Small" Color="@GetLevelColor(log.Level)">
+                                @log.Level
+                            </MudChip>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                @log.Timestamp.ToString("dd MMM HH:mm:ss")
+                            </MudText>
+                        </MudStack>
+                        <MudText Typo="Typo.body2">@log.Message</MudText>
+                        @if (!string.IsNullOrEmpty(log.Exception))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Error">@log.Exception</MudText>
+                        }
+                    </MudStack>
+                </MudCard>
+            }
+            @if (_logs.Count > 100)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                    Showing first 100 of @_logs.Count logs
+                </MudText>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">No logs found</MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private string _levelFilter = "All";
+    private string _searchText = "";
+    private List<LogEntryDto> _logs = new();
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadLogs();
+    }
+    
+    private async Task LoadLogs()
+    {
+        _isLoading = true;
+        try
+        {
+            // TODO: Replace with actual API call
+            // var queryParams = $"level={_levelFilter}&search={_searchText}&limit=100";
+            // var response = await ApiService.GetAsync<List<LogEntryDto>>($"/api/logs?{queryParams}");
+            // _logs = response ?? new();
+            
+            // Mock data for now
+            _logs = new List<LogEntryDto>
+            {
+                new() { Level = "Information", Message = "Application started successfully", Timestamp = DateTime.Now.AddMinutes(-5) },
+                new() { Level = "Warning", Message = "Low memory detected", Timestamp = DateTime.Now.AddMinutes(-10) },
+                new() { Level = "Error", Message = "Failed to connect to database", Exception = "Connection timeout", Timestamp = DateTime.Now.AddMinutes(-15) }
+            };
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading logs: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private Color GetLevelColor(string level)
+    {
+        return level switch
+        {
+            "Error" => Color.Error,
+            "Warning" => Color.Warning,
+            "Information" => Color.Info,
+            "Debug" => Color.Default,
+            _ => Color.Default
+        };
+    }
+    
+    public class LogEntryDto
+    {
+        public string Level { get; set; } = "";
+        public string Message { get; set; } = "";
+        public DateTime Timestamp { get; set; }
+        public string? Exception { get; set; }
+    }
+}
+

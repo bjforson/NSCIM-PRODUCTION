@@ -1,0 +1,234 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@inject IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Medium" />
+            <MudText Typo="Typo.body2">Loading ICUMS data...</MudText>
+        </MudStack>
+    }
+    else if (icumsData?.Data?.Any() == true)
+    {
+        <MudExpansionPanels MultiExpansion="true" Class="pa-1">
+            @foreach (var categoryGroup in GetGroupedData())
+            {
+                <MudExpansionPanel Text="@categoryGroup.Key" 
+                                   Icon="@GetCategoryIcon(categoryGroup.Key)"
+                                   Color="@GetCategoryColor(categoryGroup.Key)"
+                                   IsExpanded="false"
+                                   Dense="true">
+                    <MudStack Spacing="2" Class="pa-2">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                            @categoryGroup.Value.Count field(s)
+                        </MudChip>
+                        
+                        <!-- Category Data as Grid - Mobile Optimized -->
+                        <MudGrid Spacing="1">
+                            @foreach (var record in categoryGroup.Value)
+                            {
+                                <MudItem xs="12">
+                                    <MudPaper Elevation="1" Class="pa-2">
+                                        <MudStack Spacing="1">
+                                            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight: 600;">
+                                                    @record.Field
+                                                </MudText>
+                                                @if (record.IsRequired)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 16px; font-size: 0.65rem;">Required</MudChip>
+                                                }
+                                            </MudStack>
+                                            <MudText Typo="Typo.body2">@record.Value</MudText>
+                                        </MudStack>
+                                    </MudPaper>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    </MudStack>
+                </MudExpansionPanel>
+            }
+            
+            <!-- Unmapped Fields Section -->
+            @if (HasUnmappedFields)
+            {
+                <MudExpansionPanel Text="Additional Fields" 
+                                   Icon="@Icons.Material.Filled.Info"
+                                   Color="Color.Warning"
+                                   IsExpanded="false"
+                                   Class="mt-2"
+                                   Dense="true">
+                    <MudStack Spacing="2" Class="pa-2">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">
+                            @UnmappedFieldsCount field(s)
+                        </MudChip>
+                        
+                        <MudGrid Spacing="1">
+                            @foreach (var record in GetUnmappedFields())
+                            {
+                                <MudItem xs="12">
+                                    <MudPaper Elevation="1" Class="pa-2">
+                                        <MudStack Spacing="1">
+                                            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                <MudText Typo="Typo.caption" Color="Color.Warning" Style="font-weight: 600;">
+                                                    @record.Field
+                                                </MudText>
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text" Style="height: 16px; font-size: 0.65rem;">
+                                                    @record.Category
+                                                </MudChip>
+                                            </MudStack>
+                                            <MudText Typo="Typo.body2">@record.Value</MudText>
+                                        </MudStack>
+                                    </MudPaper>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    </MudStack>
+                </MudExpansionPanel>
+            }
+            
+            <!-- Summary -->
+            <MudAlert Severity="Severity.Success" Variant="Variant.Text" Dense="true" Class="mt-2">
+                <MudText Typo="Typo.caption">
+                    Total ICUMS Fields: @icumsData.TotalCount | Categories: @GetGroupedData().Count
+                    @if (HasUnmappedFields)
+                    {
+                        <span> | Additional Fields: @UnmappedFieldsCount</span>
+                    }
+                </MudText>
+            </MudAlert>
+        </MudExpansionPanels>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Text" Class="ma-2" Dense="true">
+            <MudText Typo="Typo.body2">No ICUMS data available for this container</MudText>
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public int TotalRecords { get; set; }
+
+    private PagedResult<ICUMSDataRecord>? icumsData;
+    private bool isLoading = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        isLoading = true;
+        try
+        {
+            icumsData = await ContainerDetailsService.GetICUMSDataAsync(ContainerNumber, 1, 1000);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add("Could not load ICUMS data", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Dictionary<string, List<ICUMSDataRecord>> GetGroupedData()
+    {
+        if (icumsData?.Data == null) return new Dictionary<string, List<ICUMSDataRecord>>();
+        
+        var standardFields = icumsData.Data.Where(d => !IsUnmappedField(d)).ToList();
+        
+        return standardFields
+            .GroupBy(d => d.Category)
+            .OrderBy(g => GetCategoryOrder(g.Key))
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private bool HasUnmappedFields => GetUnmappedFields().Any();
+
+    private int UnmappedFieldsCount => GetUnmappedFields().Count;
+
+    private List<ICUMSDataRecord> GetUnmappedFields()
+    {
+        if (icumsData?.Data == null) return new List<ICUMSDataRecord>();
+        
+        return icumsData.Data
+            .Where(IsUnmappedField)
+            .ToList();
+    }
+
+    private bool IsUnmappedField(ICUMSDataRecord record)
+    {
+        return record.Category == "Additional Fields" || 
+               (record.Category == "Data Info" && record.Field.Contains("⚠️"));
+    }
+
+    private int GetCategoryOrder(string category)
+    {
+        return category switch
+        {
+            "Container Info" => 1,
+            "Declaration Info" => 2,
+            "CMR Info" => 3,
+            "Manifest Info" => 4,
+            "Party Info" => 5,
+            "Location Info" => 6,
+            "Cargo Info" => 7,
+            "Financial Info" => 8,
+            "Risk Assessment" => 9,
+            "Status" => 10,
+            "Data Info" => 11,
+            "Additional Fields" => 12,
+            _ => 99
+        };
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Icons.Material.Filled.Inventory,
+            "Declaration Info" => Icons.Material.Filled.Description,
+            "CMR Info" => Icons.Material.Filled.Sailing,
+            "Manifest Info" => Icons.Material.Filled.Assignment,
+            "Party Info" => Icons.Material.Filled.People,
+            "Location Info" => Icons.Material.Filled.LocationOn,
+            "Cargo Info" => Icons.Material.Filled.LocalShipping,
+            "Financial Info" => Icons.Material.Filled.AttachMoney,
+            "Risk Assessment" => Icons.Material.Filled.Security,
+            "Status" => Icons.Material.Filled.CheckCircle,
+            "Data Info" => Icons.Material.Filled.Info,
+            "Additional Fields" => Icons.Material.Filled.Info,
+            _ => Icons.Material.Filled.Label
+        };
+    }
+
+    private Color GetCategoryColor(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Color.Primary,
+            "Declaration Info" => Color.Secondary,
+            "CMR Info" => Color.Info,
+            "Manifest Info" => Color.Info,
+            "Party Info" => Color.Success,
+            "Location Info" => Color.Warning,
+            "Cargo Info" => Color.Tertiary,
+            "Financial Info" => Color.Error,
+            "Risk Assessment" => Color.Warning,
+            "Status" => Color.Success,
+            "Data Info" => Color.Default,
+            "Additional Fields" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+}
+

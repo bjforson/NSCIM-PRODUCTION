@@ -1,0 +1,562 @@
+@page "/services/diagnostics"
+@page "/monitoring/diagnostics"
+@page "/admin/database"
+@page "/services/database"
+@page "/monitoring/database"
+@page "/services/gateway"
+@page "/monitoring/gateway"
+@page "/services/ingestion"
+@page "/monitoring/ingestion"
+@page "/services/image-processing"
+@page "/monitoring/image-processing"
+@page "/services/debug"
+@page "/monitoring/debug"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDiagnostics)]
+@using MudBlazor
+@using NickScanWebApp.New.Components.Monitoring
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<Diagnostics> Logger
+@inject NavigationManager NavManager
+
+<PageTitle>NICKSCAN ERP — NSCIS — System Diagnostics</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Diagnostics" Icon="@Icons.Material.Filled.BugReport">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.BugReport" Class="mr-2" />
+        System Diagnostics
+    </MudText>
+
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+        <!-- Container Diagnostics Tab -->
+        <MudTabPanel Text="Container Diagnostics" Icon="@Icons.Material.Outlined.Inventory">
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="@_containerNumber" 
+                             Label="Container Number" 
+                             Variant="Variant.Outlined"
+                             Placeholder="Enter container number..."
+                             Adornment="Adornment.End"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             OnAdornmentClick="DiagnoseContainer" />
+                @if (_containerDiagnostics != null)
+                {
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-4">Diagnostics for @_containerNumber</MudText>
+                        <MudGrid Spacing="3">
+                            <MudItem xs="12" md="6">
+                                <MudText Typo="Typo.subtitle1">Downloaded Files</MudText>
+                                <MudText>Count: @(_containerDiagnostics.DownloadedFilesCount ?? 0)</MudText>
+                                @if (_containerDiagnostics.DownloadedFiles != null && _containerDiagnostics.DownloadedFiles.Any())
+                                {
+                                    <MudTable Items="@_containerDiagnostics.DownloadedFiles" Hover="true" Dense="true" MaxHeight="200px">
+                                        <HeaderContent>
+                                            <MudTh>File Name</MudTh>
+                                            <MudTh>Status</MudTh>
+                                            <MudTh>Date</MudTh>
+                                        </HeaderContent>
+                                        <RowTemplate>
+                                            @{
+                                                var file = (dynamic)context;
+                                            }
+                                            <MudTd DataLabel="File Name">@(file.FileName ?? "")</MudTd>
+                                            <MudTd DataLabel="Status">@(file.ProcessingStatus ?? "")</MudTd>
+                                            <MudTd DataLabel="Date">@FormatDateTime(file.DownloadDate)</MudTd>
+                                        </RowTemplate>
+                                    </MudTable>
+                                }
+                            </MudItem>
+                            <MudItem xs="12" md="6">
+                                <MudText Typo="Typo.subtitle1">BOE Documents</MudText>
+                                <MudText>Count: @(_containerDiagnostics.BOEDocumentsCount ?? 0)</MudText>
+                                @if (_containerDiagnostics.BOEDocuments != null && _containerDiagnostics.BOEDocuments.Any())
+                                {
+                                    <MudTable Items="@_containerDiagnostics.BOEDocuments" Hover="true" Dense="true" MaxHeight="200px">
+                                        <HeaderContent>
+                                            <MudTh>Declaration</MudTh>
+                                            <MudTh>BL Number</MudTh>
+                                            <MudTh>Clearance</MudTh>
+                                        </HeaderContent>
+                                        <RowTemplate>
+                                            @{
+                                                var doc = (dynamic)context;
+                                            }
+                                            <MudTd DataLabel="Declaration">@(doc.DeclarationNumber ?? "")</MudTd>
+                                            <MudTd DataLabel="BL Number">@(doc.BlNumber ?? "")</MudTd>
+                                            <MudTd DataLabel="Clearance">@(doc.ClearanceType ?? "")</MudTd>
+                                        </RowTemplate>
+                                    </MudTable>
+                                }
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- System Diagnostics Tab -->
+        <MudTabPanel Text="System Diagnostics" Icon="@Icons.Material.Outlined.Computer">
+            <MudStack Spacing="3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RunSystemDiagnostics">
+                    Run System Diagnostics
+                </MudButton>
+                @if (_systemDiagnostics != null)
+                {
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-4">System Diagnostics Results</MudText>
+                        <MudSimpleTable>
+                            <tbody>
+                                <tr>
+                                    <td><strong>Database Connection</strong></td>
+                                    <td>
+                                        <MudChip T="string" Color="@(_systemDiagnostics.DatabaseConnected == true ? Color.Success : Color.Error)" Size="Size.Small">
+                                            @(_systemDiagnostics.DatabaseConnected == true ? "Connected" : "Disconnected")
+                                        </MudChip>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>File System Access</strong></td>
+                                    <td>
+                                        <MudChip T="string" Color="@(_systemDiagnostics.FileSystemAccessible == true ? Color.Success : Color.Error)" Size="Size.Small">
+                                            @(_systemDiagnostics.FileSystemAccessible == true ? "Accessible" : "Not Accessible")
+                                        </MudChip>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><strong>ICUMS API</strong></td>
+                                    <td>
+                                        <MudChip T="string" Color="@(_systemDiagnostics.IcumsApiReachable == true ? Color.Success : Color.Error)" Size="Size.Small">
+                                            @(_systemDiagnostics.IcumsApiReachable == true ? "Reachable" : "Not Reachable")
+                                        </MudChip>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </MudSimpleTable>
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- Memory Diagnostics Tab -->
+        <MudTabPanel Text="Memory Diagnostics" Icon="@Icons.Material.Outlined.Memory">
+            <MudStack Spacing="3">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.h6">Memory Status & GC Statistics</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.Refresh"
+                                  OnClick="LoadMemoryStatus"
+                                  Disabled="@_isLoadingMemory">
+                            Refresh
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Warning"
+                                  StartIcon="@Icons.Material.Outlined.DeleteSweep"
+                                  OnClick="ForceGarbageCollection"
+                                  Disabled="@_isLoadingMemory">
+                            Force GC
+                        </MudButton>
+                    </MudStack>
+                </MudStack>
+
+                @if (_memoryStatus != null)
+                {
+                    <!-- Memory Status Cards -->
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard>
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Working Set</MudText>
+                                        <MudText Typo="Typo.h5">@_memoryStatus.WorkingSetMB.ToString("F1") MB</MudText>
+                                        <MudText Typo="Typo.caption">Process memory</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard>
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Managed Memory</MudText>
+                                        <MudText Typo="Typo.h5">@_memoryStatus.TotalAllocatedMB.ToString("F1") MB</MudText>
+                                        <MudText Typo="Typo.caption">GC allocated</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard>
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Memory Load</MudText>
+                                        <MudText Typo="Typo.h5" Color="@GetMemoryLoadColor(_memoryStatus.MemoryLoadPercentage)">
+                                            @_memoryStatus.MemoryLoadPercentage.ToString("F1")%
+                                        </MudText>
+                                        <MudText Typo="Typo.caption">System memory</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard>
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Threads</MudText>
+                                        <MudText Typo="Typo.h5">@_memoryStatus.ThreadCount</MudText>
+                                        <MudText Typo="Typo.caption">Active threads</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- GC Statistics -->
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-4">Garbage Collection Statistics</MudText>
+                        <MudGrid>
+                            <MudItem xs="12" md="6">
+                                <MudSimpleTable>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>Gen 0 Collections</strong></td>
+                                            <td>@_memoryStatus.Gen0Collections</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Gen 1 Collections</strong></td>
+                                            <td>@_memoryStatus.Gen1Collections</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Gen 2 Collections</strong></td>
+                                            <td>@_memoryStatus.Gen2Collections</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Heap Size</strong></td>
+                                            <td>@_memoryStatus.HeapSizeMB.ToString("F1") MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Fragmented</strong></td>
+                                            <td>@_memoryStatus.FragmentedMB.ToString("F1") MB</td>
+                                        </tr>
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudItem>
+                            <MudItem xs="12" md="6">
+                                <MudSimpleTable>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>GC Mode</strong></td>
+                                            <td>@(_memoryStatus.IsServerGC ? "Server" : "Workstation")</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Latency Mode</strong></td>
+                                            <td>@_memoryStatus.LatencyMode</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Total Available</strong></td>
+                                            <td>@_memoryStatus.TotalAvailableMemoryMB.ToString("F1") MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>High Load Threshold</strong></td>
+                                            <td>@_memoryStatus.HighMemoryLoadThresholdMB.ToString("F1") MB</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Process Uptime</strong></td>
+                                            <td>@FormatTimeSpan(_memoryStatus.ProcessUptime)</td>
+                                        </tr>
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+
+                    @if (_gcStats != null)
+                    {
+                        <!-- Detailed GC Stats -->
+                        <MudPaper Class="pa-4" Elevation="2">
+                            <MudText Typo="Typo.h6" Class="mb-4">Detailed GC Statistics</MudText>
+                            <MudGrid>
+                                <MudItem xs="12" md="6">
+                                    <MudSimpleTable>
+                                        <tbody>
+                                            <tr>
+                                                <td><strong>Gen 0 Size</strong></td>
+                                                <td>@_gcStats.Gen0SizeMB.ToString("F1") MB</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>Gen 1 Size</strong></td>
+                                                <td>@_gcStats.Gen1SizeMB.ToString("F1") MB</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>Gen 2 Size</strong></td>
+                                                <td>@_gcStats.Gen2SizeMB.ToString("F1") MB</td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>Promoted</strong></td>
+                                                <td>@_gcStats.PromotedMB.ToString("F1") MB</td>
+                                            </tr>
+                                        </tbody>
+                                    </MudSimpleTable>
+                                </MudItem>
+                                <MudItem xs="12" md="6">
+                                    <MudSimpleTable>
+                                        <tbody>
+                                            <tr>
+                                                <td><strong>Concurrent GC</strong></td>
+                                                <td>
+                                                    <MudChip T="string" Color="@(_gcStats.Concurrent ? Color.Success : Color.Default)" Size="Size.Small">
+                                                        @(_gcStats.Concurrent ? "Yes" : "No")
+                                                    </MudChip>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>Compacted</strong></td>
+                                                <td>
+                                                    <MudChip T="string" Color="@(_gcStats.Compacted ? Color.Success : Color.Default)" Size="Size.Small">
+                                                        @(_gcStats.Compacted ? "Yes" : "No")
+                                                    </MudChip>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td><strong>Memory Load</strong></td>
+                                                <td>@_gcStats.MemoryLoadMB.ToString("F1") MB (@_gcStats.MemoryLoadPercentage.ToString("F1")%)</td>
+                                            </tr>
+                                        </tbody>
+                                    </MudSimpleTable>
+                                </MudItem>
+                            </MudGrid>
+                        </MudPaper>
+                    }
+                }
+            </MudStack>
+        </MudTabPanel>
+    </MudTabs>
+    </MudTabPanel>
+
+    <MudTabPanel Text="Database" Icon="@Icons.Material.Filled.Storage">
+        <DatabasePanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Gateway" Icon="@Icons.Material.Filled.Cloud">
+        <GatewayPanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Ingestion" Icon="@Icons.Material.Filled.FileUpload">
+        <IngestionPanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Image Processing" Icon="@Icons.Material.Filled.Image">
+        <ImageProcessingPanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Debug" Icon="@Icons.Material.Filled.BugReport">
+        <DebugPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // Top-level hub tab
+    private int _activeHubTab = 0;
+
+    private int activeTab = 0;
+    private string _containerNumber = "";
+    private ContainerDiagnosticsDto? _containerDiagnostics;
+    private SystemDiagnosticsDto? _systemDiagnostics;
+    private MemoryStatusDto? _memoryStatus;
+    private GCStatsDto? _gcStats;
+    private bool _isLoadingMemory = false;
+
+    protected override void OnInitialized()
+    {
+        // Route-based initial hub tab
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        _activeHubTab = path switch
+        {
+            "/admin/database" or "/services/database" or "/monitoring/database"     => 1,
+            "/services/gateway" or "/monitoring/gateway"                              => 2,
+            "/services/ingestion" or "/monitoring/ingestion"                          => 3,
+            "/services/image-processing" or "/monitoring/image-processing"            => 4,
+            "/services/debug" or "/monitoring/debug"                                  => 5,
+            _                                                                         => 0
+        };
+    }
+
+    private async Task DiagnoseContainer()
+    {
+        if (string.IsNullOrWhiteSpace(_containerNumber))
+        {
+            Snackbar.Add("Please enter a container number", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            _containerDiagnostics = await ApiService.GetAsync<ContainerDiagnosticsDto>($"/api/Diagnostics/container/{_containerNumber}");
+            Snackbar.Add("Container diagnostics completed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error diagnosing container");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task RunSystemDiagnostics()
+    {
+        try
+        {
+            _systemDiagnostics = await ApiService.GetAsync<SystemDiagnosticsDto>("/api/Diagnostics/system");
+            Snackbar.Add("System diagnostics completed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error running system diagnostics");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadMemoryStatus()
+    {
+        _isLoadingMemory = true;
+        try
+        {
+            _memoryStatus = await ApiService.GetAsync<MemoryStatusDto>("/api/MemoryDiagnostics/status");
+            _gcStats = await ApiService.GetAsync<GCStatsDto>("/api/MemoryDiagnostics/gc/stats");
+            Snackbar.Add("Memory status refreshed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading memory status");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingMemory = false;
+        }
+    }
+
+    private async Task ForceGarbageCollection()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Force Garbage Collection",
+            "Are you sure you want to force a garbage collection? This may cause a brief pause in the application.",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        _isLoadingMemory = true;
+        try
+        {
+            var result = await ApiService.PostAsync<object, GCCollectResultDto>("/api/MemoryDiagnostics/gc/collect?generation=2", new { });
+            if (result != null)
+            {
+                Snackbar.Add($"✅ {result.Message}", Severity.Success);
+                await LoadMemoryStatus();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error forcing GC");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingMemory = false;
+        }
+    }
+
+    private Color GetMemoryLoadColor(double percentage)
+    {
+        if (percentage >= 90) return Color.Error;
+        if (percentage >= 75) return Color.Warning;
+        return Color.Success;
+    }
+
+    private string FormatTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan.TotalDays >= 1)
+            return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h {timeSpan.Minutes}m";
+        if (timeSpan.TotalHours >= 1)
+            return $"{timeSpan.Hours}h {timeSpan.Minutes}m {timeSpan.Seconds}s";
+        return $"{timeSpan.Minutes}m {timeSpan.Seconds}s";
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    // DTOs
+    public class ContainerDiagnosticsDto
+    {
+        public string? ContainerNumber { get; set; }
+        public int? DownloadedFilesCount { get; set; }
+        public List<object>? DownloadedFiles { get; set; }
+        public int? BOEDocumentsCount { get; set; }
+        public List<object>? BOEDocuments { get; set; }
+    }
+
+    public class SystemDiagnosticsDto
+    {
+        public bool? DatabaseConnected { get; set; }
+        public bool? FileSystemAccessible { get; set; }
+        public bool? IcumsApiReachable { get; set; }
+    }
+
+    public class MemoryStatusDto
+    {
+        public double WorkingSetMB { get; set; }
+        public double PrivateMemoryMB { get; set; }
+        public double VirtualMemoryMB { get; set; }
+        public double TotalAllocatedMB { get; set; }
+        public double HeapSizeMB { get; set; }
+        public double FragmentedMB { get; set; }
+        public int Gen0Collections { get; set; }
+        public int Gen1Collections { get; set; }
+        public int Gen2Collections { get; set; }
+        public bool IsServerGC { get; set; }
+        public string LatencyMode { get; set; } = string.Empty;
+        public double TotalAvailableMemoryMB { get; set; }
+        public double HighMemoryLoadThresholdMB { get; set; }
+        public double MemoryLoadPercentage { get; set; }
+        public TimeSpan ProcessUptime { get; set; }
+        public int ThreadCount { get; set; }
+    }
+
+    public class GCStatsDto
+    {
+        public int Gen0Collections { get; set; }
+        public int Gen1Collections { get; set; }
+        public int Gen2Collections { get; set; }
+        public double TotalAllocatedMB { get; set; }
+        public double HeapSizeMB { get; set; }
+        public double FragmentedMB { get; set; }
+        public double PromotedMB { get; set; }
+        public double Gen0SizeMB { get; set; }
+        public double Gen1SizeMB { get; set; }
+        public double Gen2SizeMB { get; set; }
+        public bool IsServerGC { get; set; }
+        public string LatencyMode { get; set; } = string.Empty;
+        public bool Concurrent { get; set; }
+        public bool Compacted { get; set; }
+        public double TotalAvailableMemoryMB { get; set; }
+        public double HighMemoryLoadThresholdMB { get; set; }
+        public double MemoryLoadMB { get; set; }
+        public double MemoryLoadPercentage { get; set; }
+    }
+
+    public class GCCollectResultDto
+    {
+        public int Generation { get; set; }
+        public double BeforeMB { get; set; }
+        public double AfterMB { get; set; }
+        public double FreedMB { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+}
+

@@ -1,0 +1,990 @@
+@implements IDisposable
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <!-- Header -->
+    <MudBreadcrumbs Items="@_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Analytics" Class="mr-2" />
+                    ICUMS Performance Analytics
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Detailed performance metrics and historical trends
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="@LoadData">
+                    Refresh
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Info"
+                          StartIcon="@Icons.Material.Outlined.ArrowBack"
+                          Href="/icums">
+                    Back to Dashboard
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Tabs for different analytics views -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary">
+            
+            <!-- Performance Overview Tab -->
+            <MudTabPanel Text="Performance" Icon="@Icons.Material.Outlined.Speed">
+                <MudGrid>
+                    <!-- Success Rate Breakdown -->
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Success Rate Analysis</MudText>
+                            
+                            <MudStack Spacing="2">
+                                <div>
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2">Today</MudText>
+                                        <MudText Typo="Typo.body2" Color="@GetSuccessColor(_todaySuccessRate)">
+                                            <strong>@(_todaySuccessRate.ToString("F1"))%</strong>
+                                        </MudText>
+                                    </MudStack>
+                                    <MudProgressLinear Color="@GetSuccessColor(_todaySuccessRate)" 
+                                                      Value="@_todaySuccessRate" 
+                                                      Min="0" Max="100" 
+                                                      Size="Size.Medium" 
+                                                      Rounded="true" 
+                                                      Class="mt-1" />
+                                </div>
+                                
+                                <div>
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2">7-Day Average</MudText>
+                                        <MudText Typo="Typo.body2"><strong>@(_sevenDayAvgSuccess.ToString("F1"))%</strong></MudText>
+                                    </MudStack>
+                                    <MudProgressLinear Color="Color.Info" 
+                                                      Value="@_sevenDayAvgSuccess" 
+                                                      Min="0" Max="100" 
+                                                      Size="Size.Small" 
+                                                      Rounded="true" 
+                                                      Class="mt-1" />
+                                </div>
+                                
+                                <div>
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2">30-Day Average</MudText>
+                                        <MudText Typo="Typo.body2"><strong>@(_thirtyDayAvgSuccess.ToString("F1"))%</strong></MudText>
+                                    </MudStack>
+                                    <MudProgressLinear Color="Color.Secondary" 
+                                                      Value="@_thirtyDayAvgSuccess" 
+                                                      Min="0" Max="100" 
+                                                      Size="Size.Small" 
+                                                      Rounded="true" 
+                                                      Class="mt-1" />
+                                </div>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <!-- Processing Time Distribution -->
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Processing Time Distribution</MudText>
+                            
+                            <MudStack Spacing="2">
+                                @foreach (var bucket in _processingTimeBuckets)
+                                {
+                                    <div>
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                            <MudText Typo="Typo.body2">@bucket.Label</MudText>
+                                            <MudText Typo="Typo.body2"><strong>@bucket.Percentage.ToString("F0")%</strong></MudText>
+                                        </MudStack>
+                                        <MudProgressLinear Color="@bucket.Color" 
+                                                          Value="@bucket.Percentage" 
+                                                          Min="0" Max="100" 
+                                                          Size="Size.Small" 
+                                                          Rounded="true" 
+                                                          Class="mt-1" />
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            @bucket.Count containers
+                                        </MudText>
+                                    </div>
+                                }
+                            </MudStack>
+                            
+                            <MudDivider Class="my-3" />
+                            <MudText Typo="Typo.body2">
+                                Average Processing Time: <strong>@(_avgProcessingTime > 0 ? $"{_avgProcessingTime:F1} min" : "N/A")</strong>
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <!-- Throughput Metrics -->
+                    <MudItem xs="12">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Throughput & Capacity</MudText>
+                            
+                            <MudGrid>
+                                <MudItem xs="6" md="3">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Hourly Rate</MudText>
+                                    <MudText Typo="Typo.h5">@_hourlyRate.ToString("F1")</MudText>
+                                    <MudText Typo="Typo.caption">containers/hour</MudText>
+                                </MudItem>
+                                <MudItem xs="6" md="3">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Daily Capacity</MudText>
+                                    <MudText Typo="Typo.h5">@((int)(_hourlyRate * 24))</MudText>
+                                    <MudText Typo="Typo.caption">containers/day</MudText>
+                                </MudItem>
+                                <MudItem xs="6" md="3">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Peak Hour</MudText>
+                                    <MudText Typo="Typo.h5">@(_peakHour.HasValue ? $"{_peakHour}:00" : "N/A")</MudText>
+                                    <MudText Typo="Typo.caption">highest volume</MudText>
+                                </MudItem>
+                                <MudItem xs="6" md="3">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Efficiency</MudText>
+                                    <MudText Typo="Typo.h5" Color="@GetEfficiencyColor()">@_efficiency%</MudText>
+                                    <MudText Typo="Typo.caption">vs capacity</MudText>
+                                </MudItem>
+                            </MudGrid>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+            
+            <!-- Error Analysis Tab -->
+            <MudTabPanel Text="Errors" Icon="@Icons.Material.Outlined.Error">
+                <MudGrid>
+                    <!-- Error Type Breakdown -->
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Error Types (Last 7 Days)</MudText>
+                            
+                            @if (_errorTypes.Any())
+                            {
+                                <MudStack Spacing="2">
+                                    @foreach (var error in _errorTypes.OrderByDescending(e => e.Count).Take(5))
+                                    {
+                                        var percentage = (_totalErrors > 0) ? (error.Count / (double)_totalErrors) * 100 : 0;
+                                        
+                                        <div>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">@error.Type</MudText>
+                                                <MudText Typo="Typo.body2"><strong>@error.Count (@percentage.ToString("F0")%)</strong></MudText>
+                                            </MudStack>
+                                            <MudProgressLinear Color="Color.Error" 
+                                                              Value="@percentage" 
+                                                              Min="0" Max="100" 
+                                                              Size="Size.Small" 
+                                                              Rounded="true" 
+                                                              Class="mt-1" />
+                                        </div>
+                                    }
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Success" Dense="true">
+                                    No errors recorded in the last 7 days! 🎉
+                                </MudAlert>
+                            }
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <!-- Error Heatmap (Simple Day/Hour View) -->
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Error Frequency Heatmap</MudText>
+                            
+                            <MudSimpleTable Dense="true" Hover="true" Class="mb-2">
+                                <thead>
+                                    <tr>
+                                        <th>Day</th>
+                                        <th>Errors</th>
+                                        <th>Intensity</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @for (int i = 6; i >= 0; i--)
+                                    {
+                                        var day = DateTime.Now.AddDays(-i);
+                                        var errorCount = GetErrorCountForDay(i);
+                                        var intensity = GetErrorIntensity(errorCount);
+                                        
+                                        <tr>
+                                            <td>@day.ToString("ddd, MMM dd")</td>
+                                            <td>
+                                                <MudChip T="string" Size="Size.Small" Color="@intensity.Color">
+                                                    @errorCount
+                                                </MudChip>
+                                            </td>
+                                            <td>
+                                                <MudProgressLinear Color="@intensity.Color" 
+                                                                  Value="@intensity.Percentage" 
+                                                                  Min="0" Max="100" 
+                                                                  Size="Size.Small" 
+                                                                  Rounded="true" />
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                            
+                            <MudAlert Severity="Severity.Info" Dense="true">
+                                <MudText Typo="Typo.caption">
+                                    <strong>Pattern Detected:</strong> Higher errors on @_peakErrorDay
+                                </MudText>
+                            </MudAlert>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <!-- Recent Errors List -->
+                    <MudItem xs="12">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Recent Error Details</MudText>
+                            
+                            <MudTable Items="@_recentErrors" Dense="true" Hover="true">
+                                <HeaderContent>
+                                    <MudTh>Time</MudTh>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Error Type</MudTh>
+                                    <MudTh>Message</MudTh>
+                                    <MudTh>Retry Count</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.Timestamp.ToString("MMM dd HH:mm")</MudTd>
+                                    <MudTd>@context.ContainerNumber</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error">@context.ErrorType</MudChip>
+                                    </MudTd>
+                                    <MudTd>
+                                        <MudText Typo="Typo.caption">@TruncateMessage(context.ErrorMessage, 50)</MudText>
+                                    </MudTd>
+                                    <MudTd>@context.RetryCount / @context.MaxRetries</MudTd>
+                                </RowTemplate>
+                                <NoRecordsContent>
+                                    <MudText Align="Align.Center" Class="pa-4">No recent errors</MudText>
+                                </NoRecordsContent>
+                            </MudTable>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+            
+            <!-- Historical Trends Tab -->
+            <MudTabPanel Text="Trends" Icon="@Icons.Material.Outlined.TrendingUp">
+                <MudGrid>
+                    <!-- Volume Trend -->
+                    <MudItem xs="12">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                                <MudText Typo="Typo.h6">Download Volume Trend (Last 30 Days)</MudText>
+                                <MudButtonGroup Variant="Variant.Outlined" Size="Size.Small">
+                                    <MudButton OnClick="@(() => SetPeriod(7))">7 Days</MudButton>
+                                    <MudButton OnClick="@(() => SetPeriod(30))">30 Days</MudButton>
+                                    <MudButton OnClick="@(() => SetPeriod(90))">90 Days</MudButton>
+                                </MudButtonGroup>
+                            </MudStack>
+                            
+                            <MudSimpleTable Dense="true" Hover="true">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Downloads</th>
+                                        <th>Success Rate</th>
+                                        <th>Visual</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var day in _historicalData.TakeLast(30))
+                                    {
+                                        <tr>
+                                            <td>@day.Date.ToString("MMM dd")</td>
+                                            <td><strong>@day.TotalDownloads</strong></td>
+                                            <td>
+                                                <MudChip T="string" Size="Size.Small" Color="@GetSuccessColor(day.SuccessRate)">
+                                                    @day.SuccessRate.ToString("F1")%
+                                                </MudChip>
+                                            </td>
+                                            <td>
+                                                <MudProgressLinear Color="Color.Primary" 
+                                                                  Value="@day.TotalDownloads" 
+                                                                  Min="0" Max="@_maxDailyDownloads" 
+                                                                  Size="Size.Small" 
+                                                                  Rounded="true" />
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <!-- Key Insights -->
+                    <MudItem xs="12">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">📊 Key Insights</MudText>
+                            
+                            <MudGrid>
+                                <MudItem xs="12" md="6">
+                                    <MudAlert Severity="Severity.Success" Dense="true">
+                                        <strong>Best Day:</strong> @(_bestDay.HasValue ? _bestDay.Value.ToString("MMMM dd, yyyy") : "N/A") - @_bestDayCount downloads (@_bestDaySuccessRate.ToString("F1")% success)
+                                    </MudAlert>
+                                </MudItem>
+                                <MudItem xs="12" md="6">
+                                    <MudAlert Severity="Severity.Warning" Dense="true">
+                                        <strong>Peak Volume Day:</strong> @_peakVolumeDay - Highest processing load
+                                    </MudAlert>
+                                </MudItem>
+                            </MudGrid>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+            
+            <!-- Capacity Planning Tab -->
+            <MudTabPanel Text="Capacity" Icon="@Icons.Material.Outlined.Storage">
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Current Capacity</MudText>
+                            
+                            <MudStack Spacing="3">
+                                <div>
+                                    <MudText Typo="Typo.body2" Class="mb-1">Queue Utilization</MudText>
+                                    <MudProgressLinear Color="@GetCapacityColor(_queueUtilization)" 
+                                                      Value="@_queueUtilization" 
+                                                      Min="0" Max="100" 
+                                                      Size="Size.Large" 
+                                                      Rounded="true">
+                                        <MudText Typo="Typo.body2" Color="Color.Surface">@_queueUtilization.ToString("F0")%</MudText>
+                                    </MudProgressLinear>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @_currentQueueSize / @_maxQueueCapacity (recommended max)
+                                    </MudText>
+                                </div>
+                                
+                                <MudDivider />
+                                
+                                <MudSimpleTable Dense="true">
+                                    <tbody>
+                                        <tr>
+                                            <td>Current Processing Rate</td>
+                                            <td><strong>@_hourlyRate.ToString("F1") items/hour</strong></td>
+                                        </tr>
+                                        <tr>
+                                            <td>Theoretical Max Rate</td>
+                                            <td><strong>60 items/hour</strong> (1 per min)</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Efficiency</td>
+                                            <td>
+                                                <MudChip T="string" Size="Size.Small" Color="@GetEfficiencyColor()">
+                                                    @((_hourlyRate / 60.0 * 100).ToString("F0"))%
+                                                </MudChip>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td>Headroom</td>
+                                            <td><strong>@((_maxQueueCapacity - _currentQueueSize)) items</strong></td>
+                                        </tr>
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="1" Class="pa-4">
+                            <MudText Typo="Typo.h6" Class="mb-3">Recommendations</MudText>
+                            
+                            <MudStack Spacing="2">
+                                @if (_queueUtilization > 80)
+                                {
+                                    <MudAlert Severity="Severity.Error" Dense="true">
+                                        <strong>Action Required:</strong> Queue approaching capacity. Increase batch size or processing frequency.
+                                    </MudAlert>
+                                }
+                                else if (_queueUtilization > 60)
+                                {
+                                    <MudAlert Severity="Severity.Warning" Dense="true">
+                                        <strong>Monitor:</strong> Queue utilization above 60%. Plan for scaling.
+                                    </MudAlert>
+                                }
+                                else
+                                {
+                                    <MudAlert Severity="Severity.Success" Dense="true">
+                                        <strong>Healthy:</strong> Queue operating within normal parameters.
+                                    </MudAlert>
+                                }
+                                
+                                <MudPaper Elevation="0" Class="pa-3" Style="background: #f5f5f5;">
+                                    <MudText Typo="Typo.subtitle2" Class="mb-2">💡 Optimization Tips:</MudText>
+                                    <MudList T="string" Dense="true">
+                                        <MudListItem T="string" Icon="@Icons.Material.Outlined.CheckCircle" IconColor="Color.Success">
+                                            Current settings processing @_hourlyRate.ToString("F1") items/hour
+                                        </MudListItem>
+                                        <MudListItem T="string" Icon="@Icons.Material.Outlined.Info" IconColor="Color.Info">
+                                            Increase batch size to 100 for 2x throughput
+                                        </MudListItem>
+                                        <MudListItem T="string" Icon="@Icons.Material.Outlined.Schedule" IconColor="Color.Primary">
+                                            Reduce interval to 1 minute for faster processing
+                                        </MudListItem>
+                                    </MudList>
+                                </MudPaper>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private System.Threading.Timer? _refreshTimer;
+    
+    // Performance metrics (initialized to 0, will be loaded from API)
+    private double _todaySuccessRate = 0;
+    private double _sevenDayAvgSuccess = 0;
+    private double _thirtyDayAvgSuccess = 0;
+    private double _hourlyRate = 0;
+    private int? _peakHour = null;
+    private double _efficiency = 0;
+    private double _avgProcessingTime = 0;
+    
+    // Capacity metrics (initialized to 0, will be loaded from API)
+    private int _currentQueueSize = 0;
+    private int _maxQueueCapacity = 500;
+    private double _queueUtilization = 0;
+    
+    // Error analysis (initialized to empty, will be loaded from API)
+    private List<ErrorTypeData> _errorTypes = new();
+    private int _totalErrors = 0;
+    private string _peakErrorDay = "";
+    private List<ErrorDetail> _recentErrors = new();
+    
+    // Historical data (initialized to empty, will be loaded from API)
+    private List<HistoricalDataPoint> _historicalData = new();
+    private int _maxDailyDownloads = 0;
+    private DateTime? _bestDay = null;
+    private int _bestDayCount = 0;
+    private double _bestDaySuccessRate = 0;
+    private string _peakVolumeDay = "";
+    
+    // Processing time buckets (initialized to empty, will be loaded from API)
+    private List<ProcessingTimeBucket> _processingTimeBuckets = new();
+    
+    private int _selectedPeriod = 30;
+    private bool _isLoadingAnalytics = false;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("ICUMS", href: "/icums", icon: Icons.Material.Outlined.Cloud),
+            new BreadcrumbItem("Analytics", href: null, disabled: true)
+        };
+        
+        await LoadData();
+        
+        // Auto-refresh every 60 seconds (analytics don't need to be as fresh)
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadData()
+    {
+        // Load real data from APIs
+        await LoadPerformanceMetrics();
+        await LoadErrorAnalysis();
+        await LoadHistoricalTrends();
+        await LoadProcessingTimeBuckets();
+        
+        // Calculate derived metrics
+        if (_historicalData.Any())
+        {
+            // Calculate hourly rate (average downloads per hour)
+            var totalDownloads = _historicalData.Sum(d => d.TotalDownloads);
+            var totalHours = _historicalData.Count * 24; // Approximate
+            _hourlyRate = totalHours > 0 ? (double)totalDownloads / totalHours : 0;
+            
+            // Peak hour requires hourly breakdown endpoint (not yet available)
+            _peakHour = null;
+            
+            // Calculate efficiency (success rate weighted by volume)
+            if (_historicalData.Any())
+            {
+                var totalVolume = _historicalData.Sum(d => d.TotalDownloads);
+                var weightedSuccess = _historicalData.Sum(d => d.SuccessfulDownloads);
+                _efficiency = totalVolume > 0 ? (int)((double)weightedSuccess / totalVolume * 100) : 0;
+            }
+            
+            // Calculate average processing time from buckets
+            if (_processingTimeBuckets.Any())
+            {
+                var totalCount = _processingTimeBuckets.Sum(b => b.Count);
+                if (totalCount > 0)
+                {
+                    // Estimate average (midpoint of each bucket)
+                    var weightedSum = _processingTimeBuckets.Sum(b =>
+                    {
+                        var midpoint = b.Label switch
+                        {
+                            "< 1 minute" => 0.5,
+                            "1-2 minutes" => 1.5,
+                            "2-5 minutes" => 3.5,
+                            _ => 7.0
+                        };
+                        return midpoint * b.Count;
+                    });
+                    _avgProcessingTime = weightedSum / totalCount;
+                }
+            }
+        }
+    }
+    
+    private async Task LoadPerformanceMetrics()
+    {
+        try
+        {
+            _isLoadingAnalytics = true;
+            
+            // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
+            // Get download queue stats
+            var downloadStats = await ApiService.GetAsync<DownloadQueueStatsDto>("/api/ICUMSDownloadQueue/stats");
+            if (downloadStats != null)
+            {
+                var completed = downloadStats.Completed;
+                var failed = downloadStats.Failed;
+                var total = completed + failed;
+                
+                if (total > 0)
+                {
+                    _todaySuccessRate = downloadStats.SuccessRate > 0 ? downloadStats.SuccessRate : (double)completed / total * 100;
+                }
+                
+                // Get queue size
+                var queueItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?limit=1000");
+                _currentQueueSize = queueItems?.Count ?? 0;
+                _queueUtilization = _maxQueueCapacity > 0 ? (double)_currentQueueSize / _maxQueueCapacity * 100 : 0;
+            }
+            
+            // Get submission queue stats for success rate
+            var submissionStats = await ApiService.GetAsync<SubmissionQueueStatsDto>("/api/ICUMSSubmissionQueue/stats");
+            if (submissionStats != null)
+            {
+                var successful = submissionStats.Successful;
+                var failed = submissionStats.Failed;
+                var total = successful + failed;
+                
+                if (total > 0 && _todaySuccessRate == 0)
+                {
+                    _todaySuccessRate = submissionStats.SuccessRate > 0 ? submissionStats.SuccessRate : (double)successful / total * 100;
+                }
+            }
+            
+            // Calculate averages from historical data (will be populated by LoadHistoricalTrends)
+            if (_historicalData.Any())
+            {
+                var last7Days = _historicalData.TakeLast(7);
+                var last30Days = _historicalData.TakeLast(30);
+                
+                if (last7Days.Any())
+                {
+                    _sevenDayAvgSuccess = last7Days.Average(d => d.SuccessRate);
+                }
+                
+                if (last30Days.Any())
+                {
+                    _thirtyDayAvgSuccess = last30Days.Average(d => d.SuccessRate);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Error loading performance metrics: {ex.Message}");
+            // Don't use mock data - leave values at 0
+        }
+        finally
+        {
+            _isLoadingAnalytics = false;
+        }
+    }
+    
+    private async Task LoadErrorAnalysis()
+    {
+        try
+        {
+            // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
+            // Get failed queue items to analyze errors
+            var failedItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?status=Failed&limit=100");
+            
+            if (failedItems != null && failedItems.Any())
+            {
+                // Group errors by type
+                var errorGroups = failedItems
+                    .GroupBy(item => 
+                    {
+                        var errorMsg = item.ErrorMessage ?? "Unknown Error";
+                        if (errorMsg.Contains("404", StringComparison.OrdinalIgnoreCase) || errorMsg.Contains("not found", StringComparison.OrdinalIgnoreCase)) return "404 Not Found";
+                        if (errorMsg.Contains("timeout", StringComparison.OrdinalIgnoreCase)) return "Timeout";
+                        if (errorMsg.Contains("500", StringComparison.OrdinalIgnoreCase) || errorMsg.Contains("Server Error", StringComparison.OrdinalIgnoreCase)) return "500 Server Error";
+                        if (errorMsg.Contains("network", StringComparison.OrdinalIgnoreCase) || errorMsg.Contains("connection", StringComparison.OrdinalIgnoreCase)) return "Network Error";
+                        return "Other Error";
+                    })
+                    .Select(g => new ErrorTypeData
+                    {
+                        Type = g.Key,
+                        Count = g.Count(),
+                        Description = GetErrorDescription(g.Key)
+                    })
+                    .OrderByDescending(e => e.Count)
+                    .ToList();
+                
+                _errorTypes = errorGroups;
+                _totalErrors = _errorTypes.Sum(e => e.Count);
+                
+                // Get recent errors (last 10 failed items)
+                _recentErrors = failedItems
+                    .OrderByDescending(item => item.CompletedAt ?? item.QueuedAt)
+                    .Take(10)
+                    .Select(item => new ErrorDetail
+                    {
+                        Timestamp = item.CompletedAt ?? item.QueuedAt,
+                        ContainerNumber = item.ContainerNumber ?? "Unknown",
+                        ErrorType = ExtractErrorType(item.ErrorMessage ?? ""),
+                        ErrorMessage = item.ErrorMessage ?? "Unknown error",
+                        RetryCount = item.RetryCount,
+                        MaxRetries = 5
+                    })
+                    .ToList();
+            }
+            else
+            {
+                _errorTypes = new List<ErrorTypeData>();
+                _totalErrors = 0;
+                _recentErrors = new List<ErrorDetail>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Error loading error analysis: {ex.Message}");
+            _errorTypes = new List<ErrorTypeData>();
+            _totalErrors = 0;
+            _recentErrors = new List<ErrorDetail>();
+        }
+    }
+    
+    private string GetErrorDescription(string errorType)
+    {
+        return errorType switch
+        {
+            "404 Not Found" => "Container data not in ICUMS",
+            "Timeout" => "API response timeout",
+            "500 Server Error" => "ICUMS internal error",
+            "Network Error" => "Connection issues",
+            _ => "Unknown error type"
+        };
+    }
+    
+    private string ExtractErrorType(string errorMessage)
+    {
+        if (string.IsNullOrEmpty(errorMessage)) return "Unknown";
+        if (errorMessage.Contains("404") || errorMessage.Contains("not found")) return "404";
+        if (errorMessage.Contains("timeout") || errorMessage.Contains("Timeout")) return "Timeout";
+        if (errorMessage.Contains("500") || errorMessage.Contains("Server Error")) return "500";
+        if (errorMessage.Contains("network") || errorMessage.Contains("connection")) return "Network";
+        return "Other";
+    }
+    
+    private async Task LoadHistoricalTrends()
+    {
+        try
+        {
+            _historicalData.Clear();
+            
+            // Get daily stats from API (last 30 days)
+            var endDate = DateTime.Today;
+            var startDate = endDate.AddDays(-30);
+            
+            // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
+            // Query completed downloads grouped by date
+            var allCompleted = await ApiService.GetAsync<List<DownloadQueueItemDto>>($"/api/ICUMSDownloadQueue?startDate={startDate:yyyy-MM-dd}&endDate={endDate:yyyy-MM-dd}&status=Completed");
+            var allFailed = await ApiService.GetAsync<List<DownloadQueueItemDto>>($"/api/ICUMSDownloadQueue?startDate={startDate:yyyy-MM-dd}&endDate={endDate:yyyy-MM-dd}&status=Failed");
+            
+            // Group by date
+            var completedByDate = allCompleted?
+                .Where(item => item.CompletedAt.HasValue)
+                .GroupBy(item => item.CompletedAt!.Value.Date)
+                .ToDictionary(g => g.Key, g => g.Count()) ?? new Dictionary<DateTime, int>();
+            
+            var failedByDate = allFailed?
+                .Where(item => item.CompletedAt.HasValue)
+                .GroupBy(item => item.CompletedAt!.Value.Date)
+                .ToDictionary(g => g.Key, g => g.Count()) ?? new Dictionary<DateTime, int>();
+            
+            // Build historical data points
+            for (int i = 0; i < 30; i++)
+            {
+                var date = startDate.AddDays(i);
+                var completed = completedByDate.GetValueOrDefault(date, 0);
+                var failed = failedByDate.GetValueOrDefault(date, 0);
+                var total = completed + failed;
+                
+                _historicalData.Add(new HistoricalDataPoint
+                {
+                    Date = date,
+                    TotalDownloads = total,
+                    SuccessfulDownloads = completed,
+                    FailedDownloads = failed,
+                    SuccessRate = total > 0 ? (double)completed / total * 100 : 0
+                });
+            }
+            
+            if (_historicalData.Any())
+            {
+                _maxDailyDownloads = _historicalData.Max(d => d.TotalDownloads);
+                var bestDayData = _historicalData.OrderByDescending(d => d.SuccessRate).ThenByDescending(d => d.TotalDownloads).FirstOrDefault();
+                if (bestDayData != null)
+                {
+                    _bestDay = bestDayData.Date;
+                    _bestDayCount = bestDayData.TotalDownloads;
+                    _bestDaySuccessRate = bestDayData.SuccessRate;
+                }
+                
+                // Find peak volume day
+                var peakDayData = _historicalData.OrderByDescending(d => d.TotalDownloads).FirstOrDefault();
+                if (peakDayData != null)
+                {
+                    _peakVolumeDay = peakDayData.Date.DayOfWeek.ToString();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Error loading historical trends: {ex.Message}");
+            _historicalData = new List<HistoricalDataPoint>();
+        }
+    }
+    
+    private async Task LoadProcessingTimeBuckets()
+    {
+        try
+        {
+            // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
+            // Get completed items to analyze processing times
+            var completedItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?status=Completed&limit=1000");
+            
+            if (completedItems != null && completedItems.Any())
+            {
+                var buckets = new Dictionary<string, int>
+                {
+                    { "< 1 minute", 0 },
+                    { "1-2 minutes", 0 },
+                    { "2-5 minutes", 0 },
+                    { "> 5 minutes", 0 }
+                };
+                
+                foreach (var item in completedItems)
+                {
+                    if (item.CompletedAt.HasValue)
+                    {
+                        var duration = (item.CompletedAt.Value - item.QueuedAt).TotalMinutes;
+                        
+                        if (duration < 1) buckets["< 1 minute"]++;
+                        else if (duration < 2) buckets["1-2 minutes"]++;
+                        else if (duration < 5) buckets["2-5 minutes"]++;
+                        else buckets["> 5 minutes"]++;
+                    }
+                }
+                
+                var total = buckets.Values.Sum();
+                _processingTimeBuckets = buckets.Select(kvp => new ProcessingTimeBucket
+                {
+                    Label = kvp.Key,
+                    Count = kvp.Value,
+                    Percentage = total > 0 ? (double)kvp.Value / total * 100 : 0,
+                    Color = kvp.Key switch
+                    {
+                        "< 1 minute" => Color.Success,
+                        "1-2 minutes" => Color.Info,
+                        "2-5 minutes" => Color.Warning,
+                        _ => Color.Error
+                    }
+                }).ToList();
+            }
+            else
+            {
+                _processingTimeBuckets = new List<ProcessingTimeBucket>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ Error loading processing time buckets: {ex.Message}");
+            _processingTimeBuckets = new List<ProcessingTimeBucket>();
+        }
+    }
+    
+    private int GetErrorCountForDay(int daysAgo)
+    {
+        // Get error count from historical data
+        var targetDate = DateTime.Today.AddDays(-daysAgo);
+        var dayData = _historicalData.FirstOrDefault(d => d.Date.Date == targetDate.Date);
+        return dayData?.FailedDownloads ?? 0;
+    }
+    
+    private (Color Color, double Percentage) GetErrorIntensity(int errorCount)
+    {
+        if (errorCount > 10) return (Color.Error, 100);
+        if (errorCount > 5) return (Color.Warning, 60);
+        if (errorCount > 0) return (Color.Info, 30);
+        return (Color.Success, 0);
+    }
+    
+    private Color GetSuccessColor(double rate)
+    {
+        if (rate >= 95) return Color.Success;
+        if (rate >= 85) return Color.Info;
+        if (rate >= 75) return Color.Warning;
+        return Color.Error;
+    }
+    
+    private Color GetCapacityColor(double utilization)
+    {
+        if (utilization > 80) return Color.Error;
+        if (utilization > 60) return Color.Warning;
+        return Color.Success;
+    }
+    
+    private Color GetEfficiencyColor()
+    {
+        if (_efficiency > 80) return Color.Success;
+        if (_efficiency > 60) return Color.Info;
+        return Color.Warning;
+    }
+    
+    private void SetPeriod(int days)
+    {
+        _selectedPeriod = days;
+        LoadHistoricalTrends();
+        StateHasChanged();
+    }
+    
+    private string TruncateMessage(string message, int maxLength)
+    {
+        if (string.IsNullOrEmpty(message)) return "-";
+        return message.Length <= maxLength ? message : message.Substring(0, maxLength) + "...";
+    }
+    
+    // Data classes
+    public class ErrorTypeData
+    {
+        public string Type { get; set; } = "";
+        public int Count { get; set; }
+        public string Description { get; set; } = "";
+    }
+    
+    public class ErrorDetail
+    {
+        public DateTime Timestamp { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string ErrorType { get; set; } = "";
+        public string ErrorMessage { get; set; } = "";
+        public int RetryCount { get; set; }
+        public int MaxRetries { get; set; }
+    }
+    
+    public class HistoricalDataPoint
+    {
+        public DateTime Date { get; set; }
+        public int TotalDownloads { get; set; }
+        public int SuccessfulDownloads { get; set; }
+        public int FailedDownloads { get; set; }
+        public double SuccessRate { get; set; }
+    }
+    
+    public class ProcessingTimeBucket
+    {
+        public string Label { get; set; } = "";
+        public int Count { get; set; }
+        public double Percentage { get; set; }
+        public Color Color { get; set; }
+    }
+    
+    // ✅ FIX: Add proper DTOs for API responses (handles both camelCase and PascalCase)
+    public class DownloadQueueStatsDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("pending")]
+        public int Pending { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("processing")]
+        public int Processing { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("completed")]
+        public int Completed { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("failed")]
+        public int Failed { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("highPriority")]
+        public int HighPriority { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("normalPriority")]
+        public int NormalPriority { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("lowPriority")]
+        public int LowPriority { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("averageWaitTimeMinutes")]
+        public double AverageWaitTimeMinutes { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("successRate")]
+        public double SuccessRate { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("oldestPendingQueuedAt")]
+        public DateTime? OldestPendingQueuedAt { get; set; }
+    }
+    
+    public class SubmissionQueueStatsDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("pending")]
+        public int Pending { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("submitting")]
+        public int Processing { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("successful")]
+        public int Successful { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("failed")]
+        public int Failed { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("successRate")]
+        public double SuccessRate { get; set; }
+    }
+    
+    public class DownloadQueueItemDto
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("id")]
+        public int Id { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("containerNumber")]
+        public string? ContainerNumber { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public string Status { get; set; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("queuedAt")]
+        public DateTime QueuedAt { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("completedAt")]
+        public DateTime? CompletedAt { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
+        public string? ErrorMessage { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("retryCount")]
+        public int RetryCount { get; set; }
+    }
+}
+

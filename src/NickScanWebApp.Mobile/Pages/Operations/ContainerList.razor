@@ -1,0 +1,17 @@
+@page "/operations/containers"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesContainersView)]
+@using NickScanWebApp.Mobile.Services
+@inject NavigationManager NavigationManager
+
+<PageTitle>Containers - Operations</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <!-- Redirect to containers list -->
+    @code {
+        protected override void OnInitialized()
+        {
+            NavigationManager.NavigateTo("/containers");
+        }
+    }
+</MudContainer>
+

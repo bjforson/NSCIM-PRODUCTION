@@ -1,0 +1,136 @@
+﻿{
+    "Services":  [
+                     {
+                         "Status":  "Running",
+                         "Name":  "NickHR_API",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NickHR_WebApp",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NSCIM_API",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NSCIM_ImageSplitter",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NSCIM_Mobile",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NSCIM_NickComms",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "NSCIM_WebApp",
+                         "StartType":  "Automatic"
+                     },
+                     {
+                         "Status":  "Running",
+                         "Name":  "postgresql-x64-18",
+                         "StartType":  "Automatic"
+                     }
+                 ],
+    "Timestamp":  "2026-04-18 17:48:55",
+    "SmbMappings":  [
+                        {
+                            "Status":  "OK",
+                            "RemotePath":  "\\\\10.0.0.79\\Shared",
+                            "LocalPath":  "W:"
+                        },
+                        {
+                            "Status":  "OK",
+                            "RemotePath":  "\\\\10.0.2.1\\ndb",
+                            "LocalPath":  "X:"
+                        },
+                        {
+                            "Status":  "Disconnected",
+                            "RemotePath":  "\\\\10.0.0.140\\30300111",
+                            "LocalPath":  "Y:"
+                        },
+                        {
+                            "Status":  "OK",
+                            "RemotePath":  "\\\\172.16.1.1\\Image\\23301FS01",
+                            "LocalPath":  "Z:"
+                        }
+                    ],
+    "Certs":  [
+                  {
+                      "Subject":  "CN=10.0.1.254, CN=test-server",
+                      "Thumbprint":  "DC3C9465CF6334CFB795F902307F700CF067389B",
+                      "NotAfter":  "2035-12-29"
+                  },
+                  {
+                      "Subject":  "CN=10.0.1.254, CN=test-server",
+                      "Thumbprint":  "C32A9AB4AE7A9673311640C9B63B907BE1E68792",
+                      "NotAfter":  "2035-06-27"
+                  }
+              ],
+    "Endpoints":  [
+
+                  ],
+    "ListeningPorts":  [
+                           {
+                               "Proc":  "NickScanCentralImagingPortal.API",
+                               "Port":  5205
+                           },
+                           {
+                               "Proc":  "NickScanCentralImagingPortal.API",
+                               "Port":  5206
+                           },
+                           {
+                               "Proc":  "NickHR.API",
+                               "Port":  5215
+                           },
+                           {
+                               "Proc":  "NickComms.Gateway",
+                               "Port":  5220
+                           },
+                           {
+                               "Proc":  "NickScanWebApp.Mobile",
+                               "Port":  5280
+                           },
+                           {
+                               "Proc":  "NickScanWebApp.Mobile",
+                               "Port":  5281
+                           },
+                           {
+                               "Proc":  "NickScanWebApp.New",
+                               "Port":  5299
+                           },
+                           {
+                               "Proc":  "NickScanWebApp.New",
+                               "Port":  5300
+                           },
+                           {
+                               "Proc":  "NickHR.WebApp",
+                               "Port":  5310
+                           },
+                           {
+                               "Proc":  "NickHR.WebApp",
+                               "Port":  5311
+                           },
+                           {
+                               "Proc":  "python",
+                               "Port":  5320
+                           },
+                           {
+                               "Proc":  "postgres",
+                               "Port":  5432
+                           },
+                           {
+                               "Proc":  "postgres",
+                               "Port":  5432
+                           }
+                       ]
+}

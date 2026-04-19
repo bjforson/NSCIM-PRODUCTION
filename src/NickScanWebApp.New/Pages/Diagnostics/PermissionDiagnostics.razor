@@ -1,0 +1,239 @@
+@page "/diagnostics/permissions"
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanCentralImagingPortal.Core.Constants
+@attribute [Authorize(Policy = Permissions.PagesAdminSettings)]
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Services.Permissions
+@inject AuthenticationStateProvider AuthStateProvider
+@inject PermissionGuard PermissionGuard
+@inject ILogger<PermissionDiagnostics> Logger
+
+<PageTitle>Permission Diagnostics</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    <MudText Typo="Typo.h4" Class="mb-4">🔍 Permission Diagnostics</MudText>
+    
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" Class="mb-2">Authentication Status</MudText>
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudText>Is Authenticated: <MudChip T="string" Color="@(_isAuthenticated ? Color.Success : Color.Error)" Size="Size.Small">@(_isAuthenticated ? "Yes" : "No")</MudChip></MudText>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudText>Username: <strong>@(_username ?? "N/A")</strong></MudText>
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudText>Role: <strong>@(_role ?? "N/A")</strong></MudText>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" Class="mb-2">Permission Claims (from Principal)</MudText>
+        @if (_permissionClaims.Any())
+        {
+            <MudChipSet T="string">
+                @foreach (var claim in _permissionClaims)
+                {
+                    <MudChip T="string" Color="Color.Primary" Size="Size.Small">@claim</MudChip>
+                }
+            </MudChipSet>
+            <MudText Class="mt-2">Total: <strong>@_permissionClaims.Count</strong> permission claims</MudText>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Warning">No permission claims found in principal</MudAlert>
+        }
+    </MudPaper>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" Class="mb-2">Permission Tests</MudText>
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="_testPermission" Label="Test Permission" Variant="Variant.Outlined" />
+            </MudItem>
+            <MudItem xs="12" md="6" Class="d-flex align-center">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="TestPermission" Class="mr-2">Test Permission</MudButton>
+                @if (!string.IsNullOrEmpty(_testResult))
+                {
+                    <MudChip T="string" Color="@(_testResult == "Granted" ? Color.Success : Color.Error)" Size="Size.Small">@_testResult</MudChip>
+                }
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" Class="mb-2">Common Permissions Test</MudText>
+        <MudSimpleTable>
+            <thead>
+                <tr>
+                    <th>Permission</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var perm in _commonPermissions)
+                {
+                    <tr>
+                        <td>@perm</td>
+                        <td>
+                            @if (_permissionStatus.ContainsKey(perm))
+                            {
+                                <MudChip T="string" Color="@(_permissionStatus[perm] ? Color.Success : Color.Error)" Size="Size.Small">
+                                    @(_permissionStatus[perm] ? "Granted" : "Denied")
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Color="Color.Default" Size="Size.Small">Not Tested</MudChip>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="TestAllPermissions" Class="mt-2">Test All Permissions</MudButton>
+    </MudPaper>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6" Class="mb-2">Actions</MudText>
+        <MudStack Row="true" Spacing="2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RefreshDiagnostics">🔄 Refresh Diagnostics</MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" OnClick="ExportDiagnostics">📋 Export Diagnostics</MudButton>
+        </MudStack>
+    </MudPaper>
+
+    @if (!string.IsNullOrEmpty(_diagnosticsJson))
+    {
+        <MudPaper Elevation="2" Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Diagnostics JSON</MudText>
+            <MudTextField Value="@_diagnosticsJson" Variant="Variant.Outlined" ReadOnly="true" Lines="10" />
+        </MudPaper>
+    }
+</MudContainer>
+
+@code {
+    private bool _isAuthenticated;
+    private string? _username;
+    private string? _role;
+    private List<string> _permissionClaims = new();
+    private string _testPermission = "";
+    private string _testResult = "";
+    private Dictionary<string, bool> _permissionStatus = new();
+    private string _diagnosticsJson = "";
+
+    private readonly List<string> _commonPermissions = new()
+    {
+        "pages.dashboard",
+        "pages.admin",
+        "pages.admin.logs",
+        "pages.admin.audit",
+        "pages.operations",
+        "pages.operations.containercompleteness",
+        "pages.images",
+        "pages.images.analysis",
+        "pages.images.edit",
+        "pages.images.annotate"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshDiagnostics();
+    }
+
+    private async Task RefreshDiagnostics()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+
+            _isAuthenticated = user.Identity?.IsAuthenticated ?? false;
+            _username = user.Identity?.Name;
+            _role = user.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+
+            _permissionClaims = user.Claims
+                .Where(c => c.Type == "Permission")
+                .Select(c => c.Value)
+                .OrderBy(p => p)
+                .ToList();
+
+            Logger.LogInformation("Permission Diagnostics: User={User}, Authenticated={Auth}, PermissionCount={Count}",
+                _username, _isAuthenticated, _permissionClaims.Count);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing permission diagnostics");
+        }
+    }
+
+    private void TestPermission()
+    {
+        if (string.IsNullOrWhiteSpace(_testPermission))
+        {
+            _testResult = "Please enter a permission";
+            return;
+        }
+
+        try
+        {
+            var hasPermission = PermissionGuard.Can(PermissionId.From(_testPermission), "Diagnostics");
+            _testResult = hasPermission ? "Granted" : "Denied";
+            
+            Logger.LogInformation("Permission test: {Permission} = {Result}", _testPermission, _testResult);
+        }
+        catch (Exception ex)
+        {
+            _testResult = $"Error: {ex.Message}";
+            Logger.LogError(ex, "Error testing permission: {Permission}", _testPermission);
+        }
+    }
+
+    private void TestAllPermissions()
+    {
+        _permissionStatus.Clear();
+        
+        foreach (var perm in _commonPermissions)
+        {
+            try
+            {
+                var hasPermission = PermissionGuard.Can(PermissionId.From(perm), "Diagnostics");
+                _permissionStatus[perm] = hasPermission;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Error testing permission: {Permission}", perm);
+                _permissionStatus[perm] = false;
+            }
+        }
+        
+        Logger.LogInformation("Tested {Count} permissions", _permissionStatus.Count);
+    }
+
+    private void ExportDiagnostics()
+    {
+        var diagnostics = new
+        {
+            timestamp = DateTime.UtcNow,
+            user = new
+            {
+                username = _username,
+                role = _role,
+                isAuthenticated = _isAuthenticated
+            },
+            permissions = new
+            {
+                claimCount = _permissionClaims.Count,
+                claims = _permissionClaims,
+                testResults = _permissionStatus
+            }
+        };
+
+        _diagnosticsJson = System.Text.Json.JsonSerializer.Serialize(diagnostics, new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+    }
+}
+

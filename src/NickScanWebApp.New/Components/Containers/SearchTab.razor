@@ -1,0 +1,153 @@
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Models
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    <MudStack Spacing="3">
+        <!-- Search Input -->
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+                <MudTextField @bind-Value="searchQuery" 
+                             Label="Search in container data" 
+                             Variant="Variant.Outlined"
+                             Adornment="Adornment.End"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             OnKeyUp="@OnSearchKeyUp"
+                             Class="flex-grow-1" />
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          OnClick="PerformSearch"
+                          Disabled="@isSearching">
+                    @if (isSearching)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Outlined.Search" />
+                    }
+                    Search
+                </MudButton>
+            </MudStack>
+        </MudPaper>
+
+        <!-- Search Results -->
+        @if (searchResults != null)
+        {
+            <MudPaper Class="pa-4" Elevation="1">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6">
+                        Search Results (@searchResults.TotalResults found)
+                    </MudText>
+                    
+                    @if (searchResults.ScannerResults?.Any() == true)
+                    {
+                        <MudExpansionPanels MultiExpansion="true">
+                            <MudExpansionPanel Text="Scanner Data Results" Icon="@Icons.Material.Outlined.Scanner">
+                                @foreach (var result in searchResults.ScannerResults)
+                                {
+                                    <MudCard Elevation="1" Class="ma-2">
+                                        <MudCardContent>
+                                            <MudStack Spacing="1">
+                                                <MudText Typo="Typo.body2"><strong>@result.Field</strong></MudText>
+                                                <MudText Typo="Typo.body1">@result.Value</MudText>
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Info">@result.Source</MudChip>
+                                            </MudStack>
+                                        </MudCardContent>
+                                    </MudCard>
+                                }
+                            </MudExpansionPanel>
+                        </MudExpansionPanels>
+                    }
+
+                    @if (searchResults.ICUMSResults?.Any() == true)
+                    {
+                        <MudExpansionPanels MultiExpansion="true">
+                            <MudExpansionPanel Text="ICUMS Data Results" Icon="@Icons.Material.Outlined.Description">
+                                @foreach (var result in searchResults.ICUMSResults)
+                                {
+                                    <MudCard Elevation="1" Class="ma-2">
+                                        <MudCardContent>
+                                            <MudStack Spacing="1">
+                                                <MudText Typo="Typo.body2"><strong>@result.Field</strong></MudText>
+                                                <MudText Typo="Typo.body1">@result.Value</MudText>
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Success">@result.Source</MudChip>
+                                            </MudStack>
+                                        </MudCardContent>
+                                    </MudCard>
+                                }
+                            </MudExpansionPanel>
+                        </MudExpansionPanels>
+                    }
+
+                    @if (searchResults.TotalResults == 0)
+                    {
+                        <MudAlert Severity="Severity.Info" Variant="Variant.Text">
+                            <MudText Typo="Typo.body1">No results found for "@searchQuery"</MudText>
+                        </MudAlert>
+                    }
+                </MudStack>
+            </MudPaper>
+        }
+        else if (hasSearched)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Text">
+                <MudText Typo="Typo.body1">Enter a search term to find data in this container</MudText>
+            </MudAlert>
+        }
+    </MudStack>
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+
+    private string searchQuery = string.Empty;
+    private NickScanWebApp.Shared.Models.UnifiedSearchResults? searchResults;
+    private bool isSearching = false;
+    private bool hasSearched = false;
+
+    private async Task OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(searchQuery))
+        {
+            await PerformSearch();
+        }
+    }
+
+    private async Task PerformSearch()
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery))
+        {
+            Snackbar.Add("Please enter a search term", Severity.Warning);
+            return;
+        }
+
+        isSearching = true;
+        hasSearched = true;
+        
+        try
+        {
+            searchResults = await ContainerDetailsService.SearchContainerDataAsync(ContainerNumber, searchQuery);
+            
+            if (searchResults != null && searchResults.TotalResults > 0)
+            {
+                Snackbar.Add($"Found {searchResults.TotalResults} results", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add("No results found", Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error performing search: {ex.Message}");
+            Snackbar.Add("Search failed", Severity.Error);
+            searchResults = null;
+        }
+        finally
+        {
+            isSearching = false;
+        }
+    }
+}

@@ -1,0 +1,223 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using MudBlazor
+@using NickScanWebApp.New.Components.Operations
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (CargoGroup?.Data?.ImageData?.Any() == true)
+    {
+        @foreach (var imageGroup in CargoGroup.Data.ImageData)
+        {
+            <MudPaper Elevation="2" Class="pa-4 mb-4">
+                <MudStack Spacing="3">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Secondary" />
+                        <MudText Typo="Typo.h6">
+                            Container: <strong>@imageGroup.ContainerNumber</strong>
+                        </MudText>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary">
+                            @imageGroup.ImageCount image(s)
+                        </MudChip>
+                    </MudStack>
+
+                    @if (imageGroup.Images.Any())
+                    {
+                        <MudGrid Spacing="2">
+                            @foreach (var image in imageGroup.Images)
+                            {
+                                var imageKey = $"{imageGroup.ContainerNumber}_{image.Id}";
+                                var hasError = imageLoadError.ContainsKey(imageKey) && imageLoadError[imageKey];
+                                
+                                <MudItem xs="12" sm="6" md="4" lg="3">
+                                    <MudCard Elevation="1" Style="height: 100%;">
+                                        <MudCardContent>
+                                            @if (hasError)
+                                            {
+                                                <!-- Error State -->
+                                                <div style="width: 100%; height: 200px; display: flex; align-items: center; justify-content: center; background: #f5f5f5; border: 1px dashed #ccc;">
+                                                    <MudStack AlignItems="AlignItems.Center" Spacing="1" Style="text-align: center; padding: 8px;">
+                                                        <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Color="Color.Error" Size="Size.Medium" />
+                                                        <MudText Typo="Typo.caption" Color="Color.Error">Failed to load</MudText>
+                                                        @if (imageRetryCount.ContainsKey(imageKey) && imageRetryCount[imageKey] > 0)
+                                                        {
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Style="font-size: 0.7rem;">
+                                                                Retry: @imageRetryCount[imageKey]
+                                                            </MudChip>
+                                                        }
+                                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="@(() => RetryImageLoad(image, imageGroup.ContainerNumber, imageKey))" Style="margin-top: 4px;">
+                                                            Retry
+                                                        </MudButton>
+                                                    </MudStack>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <img src="@image.ThumbnailUrl" 
+                                                     alt="@image.FileName"
+                                                     style="width: 100%; height: 200px; object-fit: contain; cursor: pointer;"
+                                                     @onclick="@(() => OpenImage(image, imageGroup.ContainerNumber))"
+                                                     @onerror="@(() => HandleImageError(imageKey, image.ThumbnailUrl))" />
+                                            }
+                                            <MudText Typo="Typo.caption" Class="mt-2" Style="word-break: break-all;">
+                                                @image.FileName
+                                            </MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                @image.ImageType • @image.CreatedAt.ToString("g")
+                                            </MudText>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    }
+                </MudStack>
+            </MudPaper>
+        }
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No images available for this cargo group.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public CargoGroupDto? CargoGroup { get; set; }
+
+    // ✅ Error handling state
+    private Dictionary<string, bool> imageLoadError = new(); // Key: containerNumber_imageId
+    private Dictionary<string, int> imageRetryCount = new();
+    private Dictionary<string, string> imageErrorMessages = new();
+
+    protected override void OnParametersSet()
+    {
+        // ✅ FIX: Normalize all image URLs when CargoGroup is set
+        if (CargoGroup?.Data?.ImageData != null)
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            foreach (var imageGroup in CargoGroup.Data.ImageData)
+            {
+                foreach (var image in imageGroup.Images)
+                {
+                    image.ThumbnailUrl = NormalizeImageUrl(image.ThumbnailUrl, apiBaseUrl);
+                    image.FullImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+    }
+
+    private async Task OpenImage(ImageMetadataDto image, string containerNumber)
+    {
+        if (string.IsNullOrEmpty(containerNumber))
+        {
+            Snackbar.Add("Container number not available for this image", Severity.Warning);
+            return;
+        }
+
+        // ✅ FIX: Normalize image URL to ensure it's a full URL
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        var normalizedImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = normalizedImageUrl,
+            ["ContainerNumber"] = containerNumber,
+            ["ScannerType"] = image.ImageType,
+            ["ScanDate"] = image.CreatedAt
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"🔍 Advanced Image Analysis - {image.ImageType} Scanner - {containerNumber}", 
+            parameters, 
+            options);
+    }
+
+    /// <summary>
+    /// Normalize image URL to ensure it's a full URL (not relative)
+    /// </summary>
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        // Already a full URL
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        // Relative URL with leading slash
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        // Relative URL without leading slash
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    /// <summary>
+    /// Handle image load error
+    /// </summary>
+    private void HandleImageError(string imageKey, string imageUrl)
+    {
+        var retries = imageRetryCount.GetValueOrDefault(imageKey, 0);
+        if (retries == 0)
+        {
+            imageRetryCount[imageKey] = 1;
+            Console.WriteLine($"[CargoGroupImagesTab] Image {imageKey} failed — auto-retrying");
+            StateHasChanged();
+            return;
+        }
+        imageLoadError[imageKey] = true;
+        imageErrorMessages[imageKey] = "Image data unavailable — scan may be missing or corrupted.";
+        Console.WriteLine($"[CargoGroupImagesTab] Image {imageKey} failed after retry: {imageUrl}");
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Retry loading an image
+    /// </summary>
+    private async Task RetryImageLoad(ImageMetadataDto image, string containerNumber, string imageKey)
+    {
+        // ✅ Increment retry count
+        if (!imageRetryCount.ContainsKey(imageKey))
+            imageRetryCount[imageKey] = 0;
+        imageRetryCount[imageKey]++;
+
+        // ✅ Clear error state
+        imageLoadError[imageKey] = false;
+        imageErrorMessages.Remove(imageKey);
+
+        // ✅ Add cache buster to URL — preserve existing query params (imageType, size, etc.)
+        image.ThumbnailUrl = AppendCacheBuster(image.ThumbnailUrl, imageRetryCount[imageKey]);
+        image.FullImageUrl = AppendCacheBuster(image.FullImageUrl, imageRetryCount[imageKey]);
+
+        Console.WriteLine($"🔄 [CargoGroupImagesTab] Retrying image {imageKey} (attempt {imageRetryCount[imageKey]}): {image.ThumbnailUrl}");
+        
+        Snackbar.Add($"Retrying image load (attempt {imageRetryCount[imageKey]})...", Severity.Info);
+        StateHasChanged();
+
+        // ✅ Small delay to allow UI to update
+        await Task.Delay(100);
+    }
+
+    private static string AppendCacheBuster(string url, int retryCount)
+    {
+        var cacheBuster = $"retry={retryCount}&t={DateTime.UtcNow.Ticks}";
+
+        url = System.Text.RegularExpressions.Regex.Replace(url, @"[&?]retry=\d+", "");
+        url = System.Text.RegularExpressions.Regex.Replace(url, @"[&?]t=\d+", "");
+        url = url.Replace("&&", "&").Replace("?&", "?").TrimEnd('&', '?');
+
+        return url.Contains('?') ? $"{url}&{cacheBuster}" : $"{url}?{cacheBuster}";
+    }
+}
+

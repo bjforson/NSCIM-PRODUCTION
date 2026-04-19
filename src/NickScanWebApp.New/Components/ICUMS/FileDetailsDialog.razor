@@ -1,0 +1,541 @@
+@using MudBlazor
+@using System.Text.Json
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.InsertDriveFile" Class="mr-2" />
+            File Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-height: 80vh; overflow-y: auto;">
+        @if (File != null)
+        {
+            var file = File;
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0">
+                
+                <MudTabPanel Text="File Information" Icon="@Icons.Material.Outlined.Info">
+                    <MudGrid Spacing="3" Class="pa-4">
+                <MudItem xs="12">
+                    <MudTextField Label="File Name" 
+                                 Value="@((string?)file.GetType().GetProperty("FileName")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="File Path" 
+                                 Value="@((string?)file.GetType().GetProperty("FilePath")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="Download Date" 
+                                 Value="@(((DateTime?)file.GetType().GetProperty("DownloadDate")?.GetValue(file))?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="Status" 
+                                 Value="@((string?)file.GetType().GetProperty("ProcessingStatus")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="Record Count" 
+                                 Value="@(((int?)file.GetType().GetProperty("RecordCount")?.GetValue(file))?.ToString("N0") ?? "0")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="File Size" 
+                                 Value="@FormatFileSize((long)(file.GetType().GetProperty("FileSizeBytes")?.GetValue(file) ?? 0L))" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true" />
+                </MudItem>
+                @{
+                    var errorMsg = (string?)file.GetType().GetProperty("ErrorMessage")?.GetValue(file);
+                }
+                @if (!string.IsNullOrEmpty(errorMsg))
+                {
+                    <MudItem xs="12">
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Filled">
+                            <MudText Typo="Typo.body2"><strong>Error:</strong> @errorMsg</MudText>
+                        </MudAlert>
+                    </MudItem>
+                }
+            </MudGrid>
+                </MudTabPanel>
+                
+                <MudTabPanel Text="Records" Icon="@Icons.Material.Outlined.List" BadgeData="@_records.Count">
+                    <MudPaper Elevation="0" Class="pa-4">
+                        @if (_isLoadingRecords)
+                        {
+                            <MudStack Justify="Justify.Center" AlignItems="AlignItems.Center" Spacing="2" Style="min-height: 200px;">
+                                <MudProgressCircular Indeterminate="true" Size="Size.Large" />
+                                <MudText>Loading records...</MudText>
+                            </MudStack>
+                        }
+                        else if (_records.Count == 0)
+                        {
+                            <MudStack Justify="Justify.Center" AlignItems="AlignItems.Center" Spacing="2" Style="min-height: 200px;">
+                                <MudIcon Icon="@Icons.Material.Outlined.Inbox" Size="Size.Large" Color="Color.Default" />
+                                <MudText Typo="Typo.h6">No records found</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">This file does not contain any BOE records.</MudText>
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <MudTable Items="@_records" 
+                                     Hover="true" 
+                                     Striped="true"
+                                     Dense="true"
+                                     Height="500px"
+                                     FixedHeader="true">
+                                <HeaderContent>
+                                    <MudTh Style="width:40px;"></MudTh>
+                                    <MudTh>#</MudTh>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Declaration</MudTh>
+                                    <MudTh>BL Number</MudTh>
+                                    <MudTh>Type</MudTh>
+                                    <MudTh>CRMS</MudTh>
+                                    <MudTh>Consignee</MudTh>
+                                    <MudTh>Goods Description</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>
+                                        <MudIconButton Size="Size.Small" 
+                                                      Icon="@(IsExpanded(context.Id) ? Icons.Material.Outlined.ExpandLess : Icons.Material.Outlined.ExpandMore)" 
+                                                      OnClick="@(() => ToggleExpand(context.Id))" />
+                                    </MudTd>
+                                    <MudTd DataLabel="#">@context.DocumentIndex</MudTd>
+                                    <MudTd DataLabel="Container">
+                                        <MudText Typo="Typo.body2" Style="font-weight: 600; font-family: monospace;">
+                                            @(string.IsNullOrEmpty(context.ContainerNumber) || context.ContainerNumber == "N/A" ? "N/A" : context.ContainerNumber)
+                                        </MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="Declaration">
+                                        <MudText Typo="Typo.body2" Style="font-family: monospace;">@DisplayValue(context.DeclarationNumber)</MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="BL Number">
+                                        <MudText Typo="Typo.body2" Style="font-family: monospace;">@DisplayValue(context.BlNumber)</MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="Type">
+                                        <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(context.ClearanceType)" Variant="Variant.Filled">
+                                            @DisplayValue(context.ClearanceType)
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd DataLabel="CRMS">
+                                        <MudChip T="string" Size="Size.Small" Color="@GetCrmsColor(context.CrmsLevel)" Variant="Variant.Filled">
+                                            @DisplayValue(context.CrmsLevel)
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd DataLabel="Consignee">
+                                        <MudText Typo="Typo.body2" Style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
+                                                Title="@context.ConsigneeName">
+                                            @DisplayValue(context.ConsigneeName)
+                                        </MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="Goods Description">
+                                        <MudText Typo="Typo.body2" Style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
+                                                Title="@context.GoodsDescription">
+                                            @DisplayValue(context.GoodsDescription)
+                                        </MudText>
+                                    </MudTd>
+                                </RowTemplate>
+                                <ChildRowContent>
+                                    @if (IsExpanded(context.Id))
+                                    {
+                                        <MudTr>
+                                            <td colspan="9">
+                                                <MudPaper Elevation="0" Class="pa-4 ma-2" Style="background-color: var(--mud-palette-background-grey);">
+                                                    <MudGrid Spacing="2">
+                                                        <MudItem xs="12">
+                                                            <MudText Typo="Typo.subtitle2" Style="font-weight:700;">Container Details</MudText>
+                                                        </MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Number" Value="@DisplayValue(context.ContainerNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" Style="font-family:monospace;" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container ISO" Value="@DisplayValue(context.ContainerISO)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Size" Value="@DisplayValue(context.ContainerSize)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Description" Value="@DisplayValue(context.ContainerDescription)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Quantity" Value="@(context.ContainerQuantity > 0 ? context.ContainerQuantity.ToString() : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Weight" Value="@(context.ContainerWeight.HasValue ? $"{context.ContainerWeight.Value:N2} kg" : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Seal Number" Value="@DisplayValue(context.SealNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Truck Plate Number" Value="@DisplayValue(context.TruckPlateNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Driver Name" Value="@DisplayValue(context.DriverName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Driver License" Value="@DisplayValue(context.DriverLicense)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Status" Value="@DisplayValue(context.ContainerStatus)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Container Remarks" Value="@DisplayValue(context.ContainerRemarks)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Consolidated" Value="@(context.IsConsolidated ? "Yes" : "No")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+
+                                                        <MudItem xs="12"><MudDivider Class="my-1" /></MudItem>
+                                                        <MudItem xs="12">
+                                                            <MudText Typo="Typo.subtitle2" Style="font-weight:700;">Declaration / Header</MudText>
+                                                        </MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Declaration Number" Value="@DisplayValue(context.DeclarationNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" Style="font-family:monospace;" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Declaration Date" Value="@DisplayValue(context.DeclarationDate)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Declaration Version" Value="@(context.DeclarationVersion.HasValue ? context.DeclarationVersion.Value.ToString() : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Clearance Type" Value="@DisplayValue(context.ClearanceType)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="CRMS Level" Value="@DisplayValue(context.CrmsLevel)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Regime Code" Value="@DisplayValue(context.RegimeCode)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Total Duty Paid" Value="@(context.TotalDutyPaid.HasValue ? context.TotalDutyPaid.Value.ToString("N2") : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="No. of Containers" Value="@(context.NoOfContainers.HasValue ? context.NoOfContainers.Value.ToString() : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Declarant Name" Value="@DisplayValue(context.DeclarantName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="8"><MudTextField Label="Declarant Address" Value="@DisplayValue(context.DeclarantAddress)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Importer Name" Value="@DisplayValue(context.ImpName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Importer Address" Value="@DisplayValue(context.ImpAddress)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Exporter Name" Value="@DisplayValue(context.ExpName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Exporter Address" Value="@DisplayValue(context.ExpAddress)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Imp/Exp Name" Value="@DisplayValue(context.ImpExpName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12"><MudTextField Label="Comp. Officer Remarks" Value="@DisplayValue(context.CompOffRemarks)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12"><MudTextField Label="CCVR Intel Remarks" Value="@DisplayValue(context.CcvrIntelRemarks)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+
+                                                        <MudItem xs="12"><MudDivider Class="my-1" /></MudItem>
+                                                        <MudItem xs="12">
+                                                            <MudText Typo="Typo.subtitle2" Style="font-weight:700;">Manifest Details</MudText>
+                                                        </MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="BL Number" Value="@DisplayValue(context.BlNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" Style="font-family:monospace;" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="House BL" Value="@DisplayValue(context.HouseBl)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" Style="font-family:monospace;" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Rotation Number" Value="@DisplayValue(context.RotationNumber)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Consignee Name" Value="@DisplayValue(context.ConsigneeName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Consignee Address" Value="@DisplayValue(context.ConsigneeAddress)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Shipper Name" Value="@DisplayValue(context.ShipperName)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="6"><MudTextField Label="Shipper Address" Value="@DisplayValue(context.ShipperAddress)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Country of Origin" Value="@DisplayValue(context.CountryOfOrigin)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Delivery Place" Value="@DisplayValue(context.DeliveryPlace)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="Marks & Numbers" Value="@DisplayValue(context.MarksNumbers)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12"><MudTextField Label="Goods Description" Value="@DisplayValue(context.GoodsDescription)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                    </MudGrid>
+                                                </MudPaper>
+                                            </td>
+                                        </MudTr>
+                                    }
+                                </ChildRowContent>
+                                <PagerContent>
+                                    <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                                </PagerContent>
+                            </MudTable>
+                        }
+                    </MudPaper>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Ingestion Verification" Icon="@Icons.Material.Outlined.VerifiedUser">
+                    <MudPaper Elevation="0" Class="pa-4">
+                        @if (_verification == null)
+                        {
+                            <MudStack Justify="Justify.Center" AlignItems="AlignItems.Center" Spacing="2" Style="min-height: 200px;">
+                                @if (_isLoadingVerification)
+                                {
+                                    <MudProgressCircular Indeterminate="true" Size="Size.Large" />
+                                    <MudText>Loading verification data...</MudText>
+                                }
+                                else
+                                {
+                                    <MudIcon Icon="@Icons.Material.Outlined.HourglassEmpty" Size="Size.Large" Color="Color.Default" />
+                                    <MudText Typo="Typo.h6">No verification data</MudText>
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Verification runs after ingestion completes.</MudText>
+                                }
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <MudGrid Spacing="3" Class="mb-4">
+                                <MudItem xs="12" sm="3">
+                                    <MudPaper Elevation="2" Class="pa-3 text-center" Style="border-radius:12px;">
+                                        <MudText Typo="Typo.h3" Color="@GetAccuracyColor(_verification.AverageAccuracyPercent ?? 0)">@(_verification.AverageAccuracyPercent.HasValue ? $"{_verification.AverageAccuracyPercent:F1}%" : "N/A")</MudText>
+                                        <MudText Typo="Typo.caption">Average Accuracy</MudText>
+                                    </MudPaper>
+                                </MudItem>
+                                <MudItem xs="12" sm="3">
+                                    <MudPaper Elevation="2" Class="pa-3 text-center" Style="border-radius:12px;">
+                                        <MudText Typo="Typo.h3" Color="Color.Success">@_verification.PerfectDocumentCount</MudText>
+                                        <MudText Typo="Typo.caption">Perfect (100%)</MudText>
+                                    </MudPaper>
+                                </MudItem>
+                                <MudItem xs="12" sm="3">
+                                    <MudPaper Elevation="2" Class="pa-3 text-center" Style="border-radius:12px;">
+                                        <MudText Typo="Typo.h3" Color="Color.Warning">@_verification.PartialDocumentCount</MudText>
+                                        <MudText Typo="Typo.caption">Partial</MudText>
+                                    </MudPaper>
+                                </MudItem>
+                                <MudItem xs="12" sm="3">
+                                    <MudPaper Elevation="2" Class="pa-3 text-center" Style="border-radius:12px;">
+                                        <MudText Typo="Typo.h3">@_verification.VerifiedDocumentCount</MudText>
+                                        <MudText Typo="Typo.caption">Total Verified</MudText>
+                                    </MudPaper>
+                                </MudItem>
+                            </MudGrid>
+
+                            @if (_verification.LowestAccuracyPercent < 100)
+                            {
+                                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                                    Lowest accuracy: <strong>@($"{_verification.LowestAccuracyPercent:F1}%")</strong> on container <strong>@_verification.LowestAccuracyContainer</strong>
+                                </MudAlert>
+                            }
+
+                            <MudTable Items="@_verification.Documents" Hover="true" Striped="true" Dense="true" Height="350px" FixedHeader="true">
+                                <HeaderContent>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Accuracy</MudTh>
+                                    <MudTh>Source Fields</MudTh>
+                                    <MudTh>Matched</MudTh>
+                                    <MudTh>Missing Fields</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd DataLabel="Container">
+                                        <MudText Typo="Typo.body2" Style="font-family:monospace; font-weight:600;">@context.Container</MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="Accuracy">
+                                        <MudChip T="string" Size="Size.Small" Color="@GetAccuracyColor(context.Accuracy)" Variant="Variant.Filled">
+                                            @($"{context.Accuracy:F1}%")
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd DataLabel="Source Fields">@context.SourceFields</MudTd>
+                                    <MudTd DataLabel="Matched">@context.MatchedFields</MudTd>
+                                    <MudTd DataLabel="Missing Fields">
+                                        @if (context.Missing.Count == 0)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">None</MudChip>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var field in context.Missing)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text">@field</MudChip>
+                                            }
+                                        }
+                                    </MudTd>
+                                </RowTemplate>
+                                <PagerContent>
+                                    <MudTablePager PageSizeOptions="new int[] { 10, 25, 50 }" />
+                                </PagerContent>
+                            </MudTable>
+                        }
+                    </MudPaper>
+                </MudTabPanel>
+                
+            </MudTabs>
+        }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="CloseDialog">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public object? File { get; set; }
+    
+    private List<BOERecordDto> _records = new();
+    private bool _isLoadingRecords = false;
+    private bool _isLoadingVerification = false;
+    private HashSet<int> _expandedRows = new();
+    private FileVerificationDto? _verification;
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+        if (File != null)
+        {
+            await LoadRecordsAsync();
+            await LoadVerificationAsync();
+        }
+    }
+    
+    private bool IsExpanded(int id) => _expandedRows.Contains(id);
+    
+    private void ToggleExpand(int id)
+    {
+        if (!_expandedRows.Remove(id))
+            _expandedRows.Add(id);
+    }
+    
+    private string DisplayValue(string? value) => string.IsNullOrEmpty(value) ? "N/A" : value;
+    
+    private async Task LoadRecordsAsync()
+    {
+        if (File == null) return;
+        
+        int fileId = 0;
+        var idProp = File.GetType().GetProperty("Id");
+        if (idProp != null)
+        {
+            var idValue = idProp.GetValue(File);
+            if (idValue is int intId) fileId = intId;
+            else if (idValue != null && int.TryParse(idValue.ToString(), out var parsedId)) fileId = parsedId;
+        }
+        
+        if (fileId == 0)
+        {
+            Snackbar.Add("Error: Could not determine file ID", Severity.Error);
+            return;
+        }
+        
+        _isLoadingRecords = true;
+        try
+        {
+            var response = await ApiService.GetAsync<List<BOERecordDto>>($"/api/icums/batch/files/{fileId}/records");
+            _records = response ?? new List<BOERecordDto>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading records: {ex.Message}", Severity.Error);
+            _records = new List<BOERecordDto>();
+        }
+        finally
+        {
+            _isLoadingRecords = false;
+        }
+    }
+    
+    private async Task LoadVerificationAsync()
+    {
+        if (File == null) return;
+        int fileId = 0;
+        var idProp = File.GetType().GetProperty("Id");
+        if (idProp != null)
+        {
+            var idValue = idProp.GetValue(File);
+            if (idValue is int intId) fileId = intId;
+            else if (idValue != null && int.TryParse(idValue.ToString(), out var parsedId)) fileId = parsedId;
+        }
+        if (fileId == 0) return;
+
+        _isLoadingVerification = true;
+        try
+        {
+            _verification = await ApiService.GetAsync<FileVerificationDto>($"/api/icums/batch/files/{fileId}/verification");
+            if (_verification != null && _verification.VerifiedDocumentCount == 0)
+                _verification = null;
+        }
+        catch
+        {
+            _verification = null;
+        }
+        finally
+        {
+            _isLoadingVerification = false;
+        }
+    }
+
+    private Color GetAccuracyColor(double accuracy) => accuracy switch
+    {
+        >= 100 => Color.Success,
+        >= 90 => Color.Info,
+        >= 70 => Color.Warning,
+        _ => Color.Error
+    };
+
+    private void CloseDialog() => MudDialog.Close(DialogResult.Ok(true));
+    
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1) { order++; len /= 1024; }
+        return $"{len:0.##} {sizes[order]}";
+    }
+    
+    private Color GetClearanceTypeColor(string clearanceType) => clearanceType switch
+    {
+        "IM" => Color.Info,
+        "EX" => Color.Warning,
+        "CMR" => Color.Success,
+        _ => Color.Default
+    };
+    
+    private Color GetCrmsColor(string crmsLevel) => crmsLevel?.ToUpper() switch
+    {
+        "GREEN" => Color.Success,
+        "YELLOW" => Color.Warning,
+        "RED" => Color.Error,
+        "BLUE" => Color.Info,
+        _ => Color.Default
+    };
+
+    public class BOERecordDto
+    {
+        public int Id { get; set; }
+        public int DocumentIndex { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string BlNumber { get; set; } = string.Empty;
+        public string HouseBl { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public string CrmsLevel { get; set; } = string.Empty;
+        public string ImpName { get; set; } = string.Empty;
+        public string ExpName { get; set; } = string.Empty;
+        public string ImpAddress { get; set; } = string.Empty;
+        public string ExpAddress { get; set; } = string.Empty;
+        public string ImpExpName { get; set; } = string.Empty;
+        public string DeclarantName { get; set; } = string.Empty;
+        public string DeclarantAddress { get; set; } = string.Empty;
+        public string DeclarationDate { get; set; } = string.Empty;
+        public int? DeclarationVersion { get; set; }
+        public string RegimeCode { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string ContainerISO { get; set; } = string.Empty;
+        public string ContainerSize { get; set; } = string.Empty;
+        public string ContainerDescription { get; set; } = string.Empty;
+        public int ContainerQuantity { get; set; }
+        public decimal? ContainerWeight { get; set; }
+        public string SealNumber { get; set; } = string.Empty;
+        public string TruckPlateNumber { get; set; } = string.Empty;
+        public string DriverName { get; set; } = string.Empty;
+        public string DriverLicense { get; set; } = string.Empty;
+        public string ContainerStatus { get; set; } = string.Empty;
+        public string ContainerRemarks { get; set; } = string.Empty;
+        public int? NoOfContainers { get; set; }
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string ConsigneeAddress { get; set; } = string.Empty;
+        public string ShipperName { get; set; } = string.Empty;
+        public string ShipperAddress { get; set; } = string.Empty;
+        public string CountryOfOrigin { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string DeliveryPlace { get; set; } = string.Empty;
+        public string MarksNumbers { get; set; } = string.Empty;
+        public string CompOffRemarks { get; set; } = string.Empty;
+        public string CcvrIntelRemarks { get; set; } = string.Empty;
+        public bool IsConsolidated { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public List<UnmappedFieldDto> UnmappedFields { get; set; } = new();
+        public int? UnmappedFieldsCount { get; set; }
+        public bool UnmappedFieldsOverflow { get; set; }
+        public string? RawJsonData { get; set; }
+    }
+
+    public class UnmappedFieldDto
+    {
+        public string Label { get; set; } = string.Empty;
+        public string? Value { get; set; }
+        public string Section { get; set; } = string.Empty;
+        public string FieldName { get; set; } = string.Empty;
+        public bool IsTruncated { get; set; }
+    }
+
+    public class FileVerificationDto
+    {
+        public int VerifiedDocumentCount { get; set; }
+        public int PerfectDocumentCount { get; set; }
+        public int PartialDocumentCount { get; set; }
+        public double? AverageAccuracyPercent { get; set; }
+        public double? LowestAccuracyPercent { get; set; }
+        public string LowestAccuracyContainer { get; set; } = string.Empty;
+        public List<DocVerificationDetailDto> Documents { get; set; } = new();
+    }
+
+    public class DocVerificationDetailDto
+    {
+        public string Container { get; set; } = string.Empty;
+        public double Accuracy { get; set; }
+        public int SourceFields { get; set; }
+        public int MatchedFields { get; set; }
+        public List<string> Missing { get; set; } = new();
+    }
+}
+

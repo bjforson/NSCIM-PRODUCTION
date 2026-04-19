@@ -1,0 +1,425 @@
+﻿@page "/validation"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationCompleteness)]
+@using NickScanWebApp.Shared.Services
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject ApiService ApiService
+@implements IDisposable
+
+<PageTitle>Container Completeness - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.FactCheck" Class="mr-2" />
+                Container Completeness Dashboard
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Monitor data completeness between scanner systems and ICUMS
+            </MudText>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudChip T="string" 
+                         Size="Size.Small" 
+                         Color="@(serviceRunning ? Color.Success : Color.Error)">
+                    Service: @(serviceRunning ? "Running" : "Stopped")
+                </MudChip>
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          Size="Size.Small"
+                          StartIcon="@Icons.Material.Filled.PlayArrow"
+                          OnClick="@TriggerManualCheck"
+                          Disabled="@isChecking">
+                    @if (isChecking)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>Checking...</span>
+                    }
+                    else
+                    {
+                        <span>Check Now</span>
+                    }
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Overview Stats -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Total Scanned</MudText>
+                <MudText Typo="Typo.h4">@totalContainers</MudText>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Complete</MudText>
+                <MudText Typo="Typo.h4">@completeContainers</MudText>
+                <MudText Typo="Typo.caption">@completenessRate.ToString("F1")%</MudText>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Missing ICUMS</MudText>
+                <MudText Typo="Typo.h4">@missingContainers</MudText>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="6">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed</MudText>
+                <MudText Typo="Typo.h4">@failedRequests</MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Scanner Breakdown -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="12">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg">
+                <MudText Typo="Typo.h6" Class="mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Scanner" Color="Color.Primary" Class="mr-2" />
+                    FS6000: @fs6000Complete/@fs6000Total (@fs6000Rate.ToString("F1")%)
+                </MudText>
+                <MudProgressLinear Color="@(fs6000Rate >= 95 ? Color.Success : fs6000Rate >= 85 ? Color.Warning : Color.Error)" 
+                                  Value="@fs6000Rate" 
+                                  Size="Size.Small"
+                                  Rounded="true" />
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12">
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg">
+                <MudText Typo="Typo.h6" Class="mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Scanner" Color="Color.Secondary" Class="mr-2" />
+                    ASE: @aseComplete/@aseTotal (@aseRate.ToString("F1")%)
+                </MudText>
+                <MudProgressLinear Color="@(aseRate >= 95 ? Color.Success : aseRate >= 85 ? Color.Warning : Color.Error)" 
+                                  Value="@aseRate" 
+                                  Size="Size.Small"
+                                  Rounded="true" />
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Missing Data List -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" PanelClass="pa-3" Color="Color.Primary">
+            
+            <MudTabPanel Text="Missing" Icon="@Icons.Material.Filled.Warning" BadgeData="@missingContainers" BadgeColor="Color.Error">
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                }
+                else if (filteredMissingData.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in filteredMissingData.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3" OnClick="@(() => ViewContainer(item.ContainerNumber))">
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@item.ContainerNumber</strong></MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetScannerColor(item.ScannerType)">
+                                            @item.ScannerType
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudStack Row="true" Spacing="2">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            @item.ScanDate.ToString("dd MMM yyyy")
+                                        </MudText>
+                                        <MudText Typo="Typo.caption" Color="@GetAgeColor(item.DaysMissing)">
+                                            @item.DaysMissing days missing
+                                        </MudText>
+                                    </MudStack>
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudButton Size="Size.Small" 
+                                                  Variant="Variant.Outlined" 
+                                                  Color="Color.Primary"
+                                                  StartIcon="@Icons.Material.Filled.CloudDownload"
+                                                  OnClick="@(() => RequestBOE(item.ContainerNumber))">
+                                            Request BOE
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" 
+                                                  Variant="Variant.Text" 
+                                                  Color="Color.Default"
+                                                  StartIcon="@Icons.Material.Filled.Visibility"
+                                                  OnClick="@(() => ViewContainer(item.ContainerNumber))">
+                                            View
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            </MudCard>
+                        }
+                        @if (filteredMissingData.Count > 50)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                                Showing first 50 of @filteredMissingData.Count items
+                            </MudText>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">
+                        All containers are complete! No missing data.
+                    </MudAlert>
+                }
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Complete" Icon="@Icons.Material.Filled.CheckCircle" BadgeData="@completeContainers" BadgeColor="Color.Success">
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                }
+                else if (completeData.Any())
+                {
+                    <MudStack Spacing="2">
+                        @foreach (var item in completeData.Take(50))
+                        {
+                            <MudCard Elevation="1" Class="pa-3" OnClick="@(() => ViewContainer(item.ContainerNumber))">
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <MudText Typo="Typo.body1" Style="font-family: monospace;">@item.ContainerNumber</MudText>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetScannerColor(item.ScannerType)">
+                                            @item.ScannerType
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Scanned: @item.ScanDate.ToString("dd MMM yyyy HH:mm")
+                                    </MudText>
+                                </MudStack>
+                            </MudCard>
+                        }
+                        @if (completeData.Count > 50)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                                Showing first 50 of @completeData.Count items
+                            </MudText>
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">No complete containers to display</MudAlert>
+                }
+            </MudTabPanel>
+            
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private bool serviceRunning = true;
+    private bool isChecking = false;
+    private DateTime lastCheckTime = DateTime.Now.AddMinutes(-3);
+    
+    private int totalContainers = 1247;
+    private int completeContainers = 1189;
+    private int missingContainers = 58;
+    private int failedRequests = 3;
+    private double completenessRate = 95.35;
+    
+    private int fs6000Total = 532;
+    private int fs6000Complete = 507;
+    private double fs6000Rate = 95.3;
+    
+    private int aseTotal = 447;
+    private int aseComplete = 433;
+    private double aseRate = 96.9;
+    
+    private List<MissingContainerData> allMissingData = new();
+    private List<MissingContainerData> filteredMissingData = new();
+    private List<CompleteContainerData> completeData = new();
+    
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadData()
+    {
+        _isLoading = true;
+        try
+        {
+            var stats = await ApiService.GetAsync<CompletenessStatsApi>("/api/containercompleteness/stats");
+            if (stats != null)
+            {
+                totalContainers = stats.TotalContainers;
+                completeContainers = stats.CompleteContainers;
+                missingContainers = stats.MissingContainers;
+                failedRequests = stats.FailedRequests;
+                completenessRate = stats.CompletenessRate;
+                
+                fs6000Total = stats.FS6000Total;
+                fs6000Complete = stats.FS6000Complete;
+                fs6000Rate = fs6000Total > 0 ? (double)fs6000Complete / fs6000Total * 100 : 0;
+                
+                aseTotal = stats.ASETotal;
+                aseComplete = stats.ASEComplete;
+                aseRate = aseTotal > 0 ? (double)aseComplete / aseTotal * 100 : 0;
+                
+                lastCheckTime = stats.LastCheckTime;
+                serviceRunning = stats.ServiceRunning;
+            }
+            
+            var missingResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/missing");
+            if (missingResponse != null)
+            {
+                allMissingData = missingResponse.Select(m => new MissingContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    DaysMissing = (int)(DateTime.Now - m.ScanDate).TotalDays,
+                    Status = m.Status ?? "Missing",
+                    RetryCount = m.RetryCount,
+                    LastChecked = m.LastCheckedAt
+                }).ToList();
+                
+                filteredMissingData = allMissingData;
+            }
+            
+            var completeResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/complete");
+            if (completeResponse != null)
+            {
+                completeData = completeResponse.Select(m => new CompleteContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    ICUMSDataDate = DateTime.Now.AddDays(-1)
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task TriggerManualCheck()
+    {
+        isChecking = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/containercompleteness/trigger-check", new { });
+            lastCheckTime = DateTime.Now;
+            Snackbar.Add("Completeness check completed", Severity.Success);
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error triggering check: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isChecking = false;
+        }
+    }
+    
+    private async Task RequestBOE(string containerNumber)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/containercompleteness/request-boe/{containerNumber}", new { });
+            Snackbar.Add($"BOE request queued for {containerNumber}", Severity.Success);
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error requesting BOE: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private void ViewContainer(string containerNumber)
+    {
+        NavigationManager.NavigateTo($"/containers/{containerNumber}");
+    }
+    
+    private Color GetScannerColor(string scanner) => scanner switch
+    {
+        "FS6000" => Color.Primary,
+        "ASE" => Color.Secondary,
+        "HeimannSmith" => Color.Tertiary,
+        _ => Color.Default
+    };
+    
+    private Color GetAgeColor(int days) => days switch
+    {
+        <= 1 => Color.Info,
+        <= 7 => Color.Warning,
+        _ => Color.Error
+    };
+    
+    public class CompletenessStatsApi
+    {
+        public int TotalContainers { get; set; }
+        public int CompleteContainers { get; set; }
+        public int MissingContainers { get; set; }
+        public int FailedRequests { get; set; }
+        public double CompletenessRate { get; set; }
+        public int FS6000Total { get; set; }
+        public int FS6000Complete { get; set; }
+        public int ASETotal { get; set; }
+        public int ASEComplete { get; set; }
+        public DateTime LastCheckTime { get; set; }
+        public bool ServiceRunning { get; set; }
+    }
+    
+    public class ApiMissingContainer
+    {
+        public string? ContainerNumber { get; set; }
+        public string? ScannerType { get; set; }
+        public DateTime ScanDate { get; set; }
+        public string? Status { get; set; }
+        public int RetryCount { get; set; }
+        public DateTime? LastCheckedAt { get; set; }
+    }
+    
+    public class MissingContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public int DaysMissing { get; set; }
+        public string Status { get; set; } = "";
+        public int RetryCount { get; set; }
+        public DateTime? LastChecked { get; set; }
+    }
+    
+    public class CompleteContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public DateTime? ICUMSDataDate { get; set; }
+    }
+}
+

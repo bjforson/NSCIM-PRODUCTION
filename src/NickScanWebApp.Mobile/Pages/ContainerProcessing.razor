@@ -1,0 +1,227 @@
+﻿@page "/container-processing"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesContainerProcessing)]
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@inject ContainerProcessingService ProcessingService
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@implements IDisposable
+
+<PageTitle>Container Processing</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.Inventory" Class="mr-2" />
+                Container Processing
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                View containers grouped by BOE (IM/EX) or BL (CMR)
+            </MudText>
+            <MudButton Variant="Variant.Outlined" 
+                      Color="Color.Primary"
+                      Size="Size.Small"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="LoadData">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Summary Stats -->
+    @if (_summary != null)
+    {
+        <MudGrid Class="mb-3">
+            <MudItem xs="6">
+                <MudPaper Elevation="2" Class="pa-3">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total Groups</MudText>
+                    <MudText Typo="Typo.h5">@_summary.TotalGroups</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6">
+                <MudPaper Elevation="2" Class="pa-3">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                    <MudText Typo="Typo.h5">@_summary.TotalContainers</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="4">
+                <MudPaper Elevation="2" Class="pa-3">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">IM</MudText>
+                    <MudText Typo="Typo.h6">@_summary.IMGroups</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="4">
+                <MudPaper Elevation="2" Class="pa-3">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">EX</MudText>
+                    <MudText Typo="Typo.h6">@_summary.EXGroups</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="4">
+                <MudPaper Elevation="2" Class="pa-3">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">CMR</MudText>
+                    <MudText Typo="Typo.h6">@_summary.CMRGroups</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+    
+    <!-- Groups List -->
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (_groups.Any())
+    {
+        <MudStack Spacing="2">
+            @foreach (var group in _groups)
+            {
+                <MudExpansionPanels>
+                    <MudExpansionPanel>
+                        <TitleContent>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudChip T="string" Color="@GetClearanceTypeColor(group.ClearanceType)" Size="Size.Small">
+                                    @group.ClearanceType
+                                </MudChip>
+                                <MudStack Spacing="0">
+                                    <MudText Typo="Typo.body1"><strong>@group.GroupingKey:</strong> @group.GroupingValue</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @group.TotalContainers container(s) | @group.PrimaryScannerType
+                                    </MudText>
+                                </MudStack>
+                                <MudSpacer />
+                                <MudText Typo="Typo.body2">
+                                    @group.CompleteContainers/@group.TotalContainers
+                                </MudText>
+                            </MudStack>
+                        </TitleContent>
+                        <ChildContent>
+                            <MudStack Spacing="2" Class="pa-2">
+                                @foreach (var container in group.Containers)
+                                {
+                                    <MudCard Elevation="1" Class="pa-2" OnClick="@(() => ViewContainer(container.ContainerNumber))">
+                                        <MudStack Spacing="1">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                <MudText Typo="Typo.body2" Style="font-family: monospace;"><strong>@container.ContainerNumber</strong></MudText>
+                                                <MudChip T="string" Size="Size.Small" Color="@GetCompletenessColor(container.CompletenessScore)">
+                                                    @container.CompletenessScore%
+                                                </MudChip>
+                                            </MudStack>
+                                            <MudStack Row="true" Spacing="1">
+                                                <MudIcon Icon="@Icons.Material.Filled.Scanner" 
+                                                       Color="@(container.HasScannerData ? Color.Success : Color.Error)" 
+                                                       Size="Size.Small" />
+                                                <MudIcon Icon="@Icons.Material.Filled.Description" 
+                                                       Color="@(container.HasICUMSData ? Color.Success : Color.Error)" 
+                                                       Size="Size.Small" />
+                                                <MudIcon Icon="@Icons.Material.Filled.Image" 
+                                                       Color="@(container.HasImages ? Color.Success : Color.Error)" 
+                                                       Size="Size.Small" />
+                                            </MudStack>
+                                        </MudStack>
+                                    </MudCard>
+                                }
+                            </MudStack>
+                        </ChildContent>
+                    </MudExpansionPanel>
+                </MudExpansionPanels>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No container groups found.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private List<ContainerGroupDto> _groups = new();
+    private ContainerProcessingSummaryDto? _summary;
+    private bool _isLoading = true;
+    private int _currentPage = 1;
+    private int _pageSize = 20;
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadSummary();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadData()
+    {
+        await LoadSummary();
+        await LoadGroups();
+    }
+    
+    private async Task LoadSummary()
+    {
+        try
+        {
+            _summary = await ProcessingService.GetSummaryStatisticsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add("Error loading summary", Severity.Error);
+        }
+    }
+    
+    private async Task LoadGroups()
+    {
+        _isLoading = true;
+        try
+        {
+            var groups = await ProcessingService.GetContainerGroupsAsync(null, _currentPage, _pageSize);
+            _groups = groups ?? new List<ContainerGroupDto>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add("Error loading groups", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private void ViewContainer(string containerNumber)
+    {
+        NavigationManager.NavigateTo($"/containers/{containerNumber}");
+    }
+    
+    private Color GetClearanceTypeColor(string clearanceType)
+    {
+        return clearanceType switch
+        {
+            "IM" => Color.Primary,
+            "EX" => Color.Success,
+            "CMR" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetCompletenessColor(int score)
+    {
+        if (score >= 100) return Color.Success;
+        if (score >= 75) return Color.Info;
+        if (score >= 50) return Color.Warning;
+        return Color.Error;
+    }
+}

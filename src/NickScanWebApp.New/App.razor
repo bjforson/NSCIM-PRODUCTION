@@ -1,0 +1,140 @@
+﻿@using System
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.Extensions.Logging
+@using NickScanWebApp.New.Components.Authentication
+@using NickScanWebApp.New.Services.Permissions
+@inject IHttpContextAccessor HttpContextAccessor
+@inject NavigationManager Navigation
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject AuthBootstrapper AuthBootstrapper
+@inject ILogger<App> Logger
+@implements IDisposable
+
+@* ✨ MudBlazor providers at root level - prevents duplicate registration errors *@
+<MudPopoverProvider />
+<MudDialogProvider FullWidth="true" MaxWidth="MaxWidth.Medium" />
+<MudSnackbarProvider />
+
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(Components.Layout.MainLayout)">
+                <NotAuthorized>
+                    @if (context.User.Identity?.IsAuthenticated != true)
+                    {
+                        <RedirectToLogin />
+                    }
+                    else
+                    {
+                        @* User is authenticated but doesn't have permission for this specific page *@
+                        <LayoutView Layout="@typeof(Components.Layout.MainLayout)">
+                            <MudContainer MaxWidth="MaxWidth.Medium" Class="mt-16">
+                                <MudPaper Elevation="4" Class="pa-8 text-center rounded-lg">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Lock" Size="Size.Large" Color="Color.Error" Style="font-size: 5rem;" />
+                                    <MudText Typo="Typo.h4" Class="mt-4">Access Denied</MudText>
+                                    <MudText Typo="Typo.body1" Color="Color.Secondary" Class="mt-2">
+                                        You don't have permission to access this page.
+                                    </MudText>
+                                    <MudButton Variant="Variant.Filled" 
+                                               Color="Color.Primary" 
+                                               Href="/dashboard" 
+                                               StartIcon="@Icons.Material.Outlined.Home"
+                                               Class="mt-4">
+                                        Go Home
+                                    </MudButton>
+                                </MudPaper>
+                            </MudContainer>
+                        </LayoutView>
+                    }
+                </NotAuthorized>
+                <Authorizing>
+                    @* No UI shown - redirect happens immediately *@
+                </Authorizing>
+            </AuthorizeRouteView>
+            <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+        </Found>
+        <NotFound>
+            <PageTitle>Not found</PageTitle>
+            <LayoutView Layout="@typeof(Components.Layout.MainLayout)">
+                <MudContainer MaxWidth="MaxWidth.Medium" Class="mt-16">
+                    <MudPaper Elevation="4" Class="pa-8 text-center rounded-lg">
+                        <MudIcon Icon="@Icons.Material.Outlined.SearchOff" Size="Size.Large" Color="Color.Secondary" Style="font-size: 5rem;" />
+                        <MudText Typo="Typo.h4" Class="mt-4">Page Not Found</MudText>
+                        <MudText Typo="Typo.body1" Color="Color.Secondary" Class="mt-2">
+                            Sorry, there's nothing at this address.
+                        </MudText>
+                        <MudButton Variant="Variant.Filled" 
+                                   Color="Color.Primary" 
+                                   Href="/dashboard" 
+                                   StartIcon="@Icons.Material.Outlined.Home"
+                                   Class="mt-4">
+                            Go Home
+                        </MudButton>
+                    </MudPaper>
+                </MudContainer>
+            </LayoutView>
+        </NotFound>
+    </Router>
+</CascadingAuthenticationState>
+
+@code {
+    private bool _isPrerendering => HttpContextAccessor.HttpContext?.Response.HasStarted == false;
+    private Task? _bootstrapTask;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_isPrerendering)
+        {
+            AuthenticationStateProvider.AuthenticationStateChanged += OnAuthenticationStateChanged;
+            _bootstrapTask = TryBootstrapAsync();
+            await _bootstrapTask;
+        }
+    }
+
+    private async Task TryBootstrapAsync()
+    {
+        try
+        {
+            await AuthBootstrapper.EnsureInitializedAsync();
+                AuthBootstrapper.StartPeriodicRefresh(TimeSpan.FromMinutes(10));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to hydrate authentication state during application bootstrap.");
+        }
+    }
+
+    private async void OnAuthenticationStateChanged(Task<AuthenticationState> task)
+    {
+        try
+        {
+            var authState = await task;
+            if (_bootstrapTask != null)
+            {
+                await _bootstrapTask;
+            }
+
+            if (authState.User.Identity?.IsAuthenticated == true)
+            {
+                await AuthBootstrapper.RefreshAsync();
+                AuthBootstrapper.StartPeriodicRefresh(TimeSpan.FromMinutes(10));
+            }
+            else
+            {
+                AuthBootstrapper.StopPeriodicRefresh();
+            }
+
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error handling authentication state change.");
+        }
+    }
+
+    public void Dispose()
+    {
+        AuthenticationStateProvider.AuthenticationStateChanged -= OnAuthenticationStateChanged;
+        AuthBootstrapper.StopPeriodicRefresh();
+    }
+}

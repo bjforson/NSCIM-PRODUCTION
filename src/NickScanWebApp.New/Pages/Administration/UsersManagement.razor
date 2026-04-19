@@ -1,0 +1,793 @@
+@page "/admin/users/management"
+@attribute [Authorize(Policy = Permissions.PagesAdminUsers)]
+@using System.Security.Claims
+@using NickScanWebApp.New.Services
+@using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.Shared.Services
+@using RoleOption = NickScanWebApp.New.Services.RoleLookupService.RoleOption
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject RoleLookupService RoleLookup
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>NICKSCAN ERP — NSCIS — User Management</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h4">User Management</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Manage system users and their permissions</MudText>
+            </MudStack>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.PersonAdd" OnClick="CreateUser">
+                    Create User
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadUsers">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Statistics -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Total Users</MudText>
+                    <MudText Typo="Typo.h4">@_users.Count</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Active Users</MudText>
+                    <MudText Typo="Typo.h4">@_users.Count(u => u.IsActive)</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Administrators</MudText>
+                    <MudText Typo="Typo.h4">@_users.Count(u => u.RoleName == "Admin")</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Inactive Users</MudText>
+                    <MudText Typo="Typo.h4">@_users.Count(u => !u.IsActive)</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Create User Form -->
+    @if (_showCreateForm)
+    {
+        <MudPaper Elevation="2" Class="mb-4 pa-4">
+            <MudForm @ref="_form" @bind-IsValid="@_formValid">
+                <MudText Typo="Typo.h6" Class="mb-4">Create New User</MudText>
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.Username" Label="Username" Required="true" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.Email" Label="Email" Required="true" InputType="InputType.Email" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.FirstName" Label="First Name" Required="true" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.LastName" Label="Last Name" Required="true" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.Password" Label="Password" Required="true" InputType="InputType.Password" Variant="Variant.Outlined" HelperText="Minimum 6 characters" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="int" @bind-Value="_newUser.RoleId" Label="Role" Required="true" Variant="Variant.Outlined" Disabled="_isLoadingRoles">
+                            @if (_availableRoles.Count == 0)
+                            {
+                                <MudSelectItem T="int" Disabled="true" Value="-1">@( _isLoadingRoles ? "Loading roles..." : "No roles available" )</MudSelectItem>
+                            }
+                            else
+                            {
+                                @foreach (var role in _availableRoles)
+                                {
+                                    <MudSelectItem T="int" Value="@role.Id">@role.DisplayName</MudSelectItem>
+                                }
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.Department" Label="Department" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_newUser.PhoneNumber" Label="Phone Number" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudStack Row="true" Spacing="2" Justify="Justify.FlexEnd">
+                            <MudButton Variant="Variant.Text" OnClick="CancelCreate">Cancel</MudButton>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitCreateUser" Disabled="@(!_formValid || _isSubmitting)">
+                                @if (_isSubmitting)
+                                {
+                                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                    <MudText Class="ml-2">Creating...</MudText>
+                                }
+                                else
+                                {
+                                    <MudText>Create User</MudText>
+                                }
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+            </MudForm>
+        </MudPaper>
+    }
+
+    <!-- Edit User Form -->
+    @if (_showEditForm && _editingUser != null)
+    {
+        <MudPaper Elevation="2" Class="mb-4 pa-4">
+            <MudForm @ref="_editForm" @bind-IsValid="@_editFormValid">
+                <MudText Typo="Typo.h6" Class="mb-4">Edit User: @_editingUser.Username</MudText>
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_editUserDto.Email" Label="Email" Required="true" InputType="InputType.Email" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_editUserDto.FirstName" Label="First Name" Required="true" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_editUserDto.LastName" Label="Last Name" Required="true" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="int" @bind-Value="_editUserDto.RoleId" Label="Role" Required="true" Variant="Variant.Outlined" Disabled="_isLoadingRoles">
+                            @if (_availableRoles.Count == 0)
+                            {
+                                <MudSelectItem T="int" Disabled="true" Value="-1">@( _isLoadingRoles ? "Loading roles..." : "No roles available" )</MudSelectItem>
+                            }
+                            else
+                            {
+                                @foreach (var role in _availableRoles)
+                                {
+                                    <MudSelectItem T="int" Value="@role.Id">@role.DisplayName</MudSelectItem>
+                                }
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_editUserDto.Department" Label="Department" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_editUserDto.PhoneNumber" Label="Phone Number" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                            Username cannot be changed. To reset password, use the password reset button.
+                        </MudAlert>
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudStack Row="true" Spacing="2" Justify="Justify.FlexEnd">
+                            <MudButton Variant="Variant.Text" OnClick="CancelEdit">Cancel</MudButton>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitEditUser" Disabled="@(!_editFormValid || _isSubmitting)">
+                                @if (_isSubmitting)
+                                {
+                                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                    <MudText Class="ml-2">Updating...</MudText>
+                                }
+                                else
+                                {
+                                    <MudText>Update User</MudText>
+                                }
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+            </MudForm>
+        </MudPaper>
+    }
+
+    <!-- Users Table -->
+    <MudPaper Elevation="2">
+        <MudDataGrid T="UserItem" Items="@_filteredUsers" Loading="@_isLoading" Dense="true" Hover="true" Striped="true" Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterRow">
+            <Columns>
+                <PropertyColumn Property="x => x.Username" Title="Username" />
+                <PropertyColumn Property="x => x.Email" Title="Email" />
+                <PropertyColumn Property="x => x.FirstName" Title="First Name" />
+                <PropertyColumn Property="x => x.LastName" Title="Last Name" />
+                <PropertyColumn Property="x => x.RoleDisplayName" Title="Role">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@RolePresentation.GetChipColor(context.Item.RoleName)">
+                            @context.Item.RoleDisplayName
+                        </MudChip>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.LastLogin" Title="Last Login" Format="yyyy-MM-dd HH:mm" />
+                <TemplateColumn Title="Status">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@(context.Item.IsActive ? Color.Success : Color.Default)">
+                            @(context.Item.IsActive ? "Active" : "Inactive")
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Actions" Sortable="false">
+                    <CellTemplate>
+                        <MudStack Row="true" Spacing="1">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Edit" Size="Size.Small" Color="Color.Primary" OnClick="@(async () => await EditUser(context.Item))" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.VpnKey" Size="Size.Small" Color="Color.Warning" OnClick="@(() => ResetPassword(context.Item))" />
+                            <MudIconButton Icon="@(context.Item.IsActive ? Icons.Material.Outlined.Block : Icons.Material.Outlined.CheckCircle)" 
+                                           Size="Size.Small" 
+                                           Color="@(context.Item.IsActive ? Color.Warning : Color.Success)" 
+                                           OnClick="@(() => ToggleUserStatus(context.Item))" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteUser(context.Item))" />
+                        </MudStack>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <PagerContent>
+                <MudDataGridPager T="UserItem" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private List<UserItem> _users = new();
+    private List<UserItem> _filteredUsers = new();
+    private List<RoleOption> _availableRoles = new();
+    private bool _isLoading = false;
+    private bool _isLoadingRoles = false;
+    private bool _showCreateForm = false;
+    private bool _formValid = false;
+    private bool _isSubmitting = false;
+    private MudForm? _form;
+    private CreateUserDto _newUser = new();
+    
+    // Edit user fields
+    private bool _showEditForm = false;
+    private bool _editFormValid = false;
+    private MudForm? _editForm;
+    private UserItem? _editingUser;
+    private EditUserDto _editUserDto = new();
+    
+    // Current logged-in user
+    private string? _username = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Administration", href: "#", icon: Icons.Material.Outlined.AdminPanelSettings),
+            new BreadcrumbItem("Users", href: null, disabled: true)
+        };
+        
+        // Get current username for audit trail
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            _username = authState.User.Identity?.Name 
+                       ?? authState.User.FindFirst("name")?.Value 
+                       ?? authState.User.FindFirst("sub")?.Value;
+        }
+        catch
+        {
+            _username = "admin";
+        }
+        
+        await LoadRoles();
+        await LoadUsers();
+    }
+
+    private async Task LoadRoles(bool forceRefresh = false)
+    {
+        if (_isLoadingRoles)
+        {
+            return;
+        }
+
+        _isLoadingRoles = true;
+        try
+        {
+            var rolesFromApi = await RoleLookup.GetRolesAsync(forceRefresh);
+            _availableRoles = rolesFromApi.Where(r => r.IsActive).ToList();
+
+            Console.WriteLine($"📋 Loaded {_availableRoles.Count} roles from API: {string.Join(", ", _availableRoles.Select(r => $"{r.Id}:{r.DisplayName}"))}");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading roles: {ex.Message}", Severity.Error);
+            _availableRoles = new List<RoleOption>();
+        }
+        finally
+        {
+            _isLoadingRoles = false;
+        }
+    }
+
+    private async Task LoadUsers()
+    {
+        if (_availableRoles.Count == 0 && !_isLoadingRoles)
+        {
+            await LoadRoles();
+        }
+
+        _isLoading = true;
+        try
+        {
+            Console.WriteLine("🔄 LoadUsers: Fetching users from API...");
+            var usersFromApi = await ApiService.GetAsync<List<UserDto>>("/api/Users");
+            
+            if (usersFromApi != null && usersFromApi.Any())
+            {
+                Console.WriteLine($"📥 LoadUsers: Received {usersFromApi.Count} users from API");
+                
+                // Log pmarmah specifically
+                var pmarmah = usersFromApi.FirstOrDefault(u => u.Username == "pmarmah");
+                if (pmarmah != null)
+                {
+                    Console.WriteLine($"👤 pmarmah from API: RoleName='{pmarmah.RoleName}'");
+                }
+                
+                _users = usersFromApi.Select(u =>
+                {
+                    var roleDisplay = !string.IsNullOrWhiteSpace(u.RoleDisplayName)
+                        ? u.RoleDisplayName!
+                        : !string.IsNullOrWhiteSpace(u.RoleName) ? u.RoleName! : "Viewer";
+
+                    return new UserItem
+                    {
+                        Id = u.Id,
+                        Username = u.Username ?? string.Empty,
+                        Email = u.Email ?? string.Empty,
+                        FirstName = u.FirstName ?? string.Empty,
+                        LastName = u.LastName ?? string.Empty,
+                        RoleId = u.RoleId ?? -1,
+                        RoleName = u.RoleName ?? string.Empty,
+                        RoleDisplayName = roleDisplay,
+                        Department = u.Department ?? string.Empty,
+                        PhoneNumber = u.PhoneNumber ?? string.Empty,
+                        IsActive = u.IsActive,
+                        LastLogin = u.LastLogin ?? DateTime.MinValue,
+                        CreatedAt = u.CreatedAt
+                    };
+                }).ToList();
+                
+                _filteredUsers = _users;
+                
+                // Log pmarmah after mapping
+                var pmarmahMapped = _users.FirstOrDefault(u => u.Username == "pmarmah");
+                if (pmarmahMapped != null)
+                {
+                    Console.WriteLine($"👤 pmarmah after mapping: Role='{pmarmahMapped.RoleName}' (Display='{pmarmahMapped.RoleDisplayName}')");
+                }
+                
+                Snackbar.Add($"✅ Loaded {_users.Count} users from API", Severity.Success);
+            }
+            else
+            {
+                _users = new List<UserItem>();
+                _filteredUsers = _users;
+                Snackbar.Add("⚠️ No users found", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading users: {ex.Message}", Severity.Error);
+            _users = new List<UserItem>();
+            _filteredUsers = _users;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task CreateUser()
+    {
+        if (_availableRoles.Count == 0 && !_isLoadingRoles)
+        {
+            await LoadRoles();
+        }
+
+        if (_availableRoles.Count == 0)
+        {
+            Snackbar.Add("⚠️ Unable to load roles. Please refresh the page or try again after re-authenticating.", Severity.Warning);
+            return;
+        }
+
+        Console.WriteLine($"📋 Roles available for Create: {_availableRoles.Count}");
+        _showCreateForm = true;
+        _newUser = new CreateUserDto
+        {
+            RoleId = _availableRoles.FirstOrDefault()?.Id ?? -1
+        };
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void CancelCreate()
+    {
+        _showCreateForm = false;
+        _newUser = new CreateUserDto();
+    }
+
+    private async Task SubmitCreateUser()
+    {
+        if (_form != null)
+        {
+            await _form.Validate();
+            if (!_form.IsValid)
+            {
+                Snackbar.Add("⚠️ Please fill in all required fields", Severity.Warning);
+                return;
+            }
+        }
+
+        _isSubmitting = true;
+        try
+        {
+            if (_newUser.RoleId <= 0)
+            {
+                Snackbar.Add("⚠️ Please select a role for the new user", Severity.Warning);
+                return;
+            }
+
+            var selectedRole = _availableRoles.FirstOrDefault(r => r.Id == _newUser.RoleId);
+            if (selectedRole == null)
+            {
+                Snackbar.Add("⚠️ Selected role is no longer available. Please choose another role.", Severity.Warning);
+                return;
+            }
+
+            var createRequest = new
+            {
+                _newUser.Username,
+                _newUser.Email,
+                _newUser.FirstName,
+                _newUser.LastName,
+                Role = selectedRole.Name,
+                RoleId = selectedRole.Id,
+                _newUser.Department,
+                _newUser.PhoneNumber,
+                Password = _newUser.Password,
+                IsActive = true,
+                CreatedBy = "superadmin"
+            };
+
+            await ApiService.PostAsync<object, object>("/api/Users", createRequest);
+            Snackbar.Add($"✅ User '{_newUser.Username}' created successfully!", Severity.Success);
+            
+            _showCreateForm = false;
+            _newUser = new CreateUserDto();
+            await LoadUsers();
+        }
+        catch (NickScanWebApp.Shared.Services.ApiException apiEx)
+        {
+            // Extract user-friendly message from API exception
+            string errorMessage = apiEx.Message;
+            if (apiEx.Message.Contains("409") || apiEx.Message.Contains("Conflict"))
+            {
+                if (apiEx.Message.Contains("Email already exists"))
+                {
+                    errorMessage = $"❌ Email '{_newUser.Email}' is already registered. Please use a different email address.";
+                }
+                else if (apiEx.Message.Contains("Username already exists"))
+                {
+                    errorMessage = $"❌ Username '{_newUser.Username}' is already taken. Please choose a different username.";
+                }
+                else
+                {
+                    errorMessage = "❌ A user with these details already exists. Please check the email and username.";
+                }
+            }
+            else if (apiEx.Message.Contains("400") || apiEx.Message.Contains("BadRequest"))
+            {
+                errorMessage = $"❌ Invalid data: {apiEx.Message}";
+            }
+            else
+            {
+                errorMessage = $"❌ Error creating user: {apiEx.Message}";
+            }
+            
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Unexpected error creating user: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private async Task EditUser(UserItem user)
+    {
+        if (_availableRoles.Count == 0 && !_isLoadingRoles)
+        {
+            await LoadRoles();
+        }
+
+        if (_availableRoles.Count == 0)
+        {
+            Snackbar.Add("⚠️ Unable to load roles. Please refresh the page or try again after re-authenticating.", Severity.Warning);
+            return;
+        }
+
+        Console.WriteLine($"📋 Roles available for Edit: {_availableRoles.Count}");
+        _editingUser = user;
+        var resolvedRoleId = user.RoleId > 0 ? user.RoleId : _availableRoles.FirstOrDefault()?.Id ?? -1;
+        _editUserDto = new EditUserDto
+        {
+            Email = user.Email,
+            FirstName = user.FirstName,
+            LastName = user.LastName,
+            RoleId = resolvedRoleId,
+            Department = user.Department ?? "",
+            PhoneNumber = user.PhoneNumber ?? "",
+            IsActive = user.IsActive
+        };
+        _showEditForm = true;
+        _showCreateForm = false; // Close create form if open
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void CancelEdit()
+    {
+        _showEditForm = false;
+        _editingUser = null;
+        _editUserDto = new EditUserDto();
+    }
+
+    private async Task SubmitEditUser()
+    {
+        if (_editForm != null)
+        {
+            await _editForm.Validate();
+            if (!_editForm.IsValid)
+            {
+                Snackbar.Add("⚠️ Please fill in all required fields", Severity.Warning);
+                return;
+            }
+        }
+
+        if (_editingUser == null) return;
+
+        _isSubmitting = true;
+        try
+        {
+            if (_editUserDto.RoleId <= 0)
+            {
+                Snackbar.Add("⚠️ Please select a role before saving", Severity.Warning);
+                return;
+            }
+
+            var selectedRole = _availableRoles.FirstOrDefault(r => r.Id == _editUserDto.RoleId);
+            if (selectedRole == null)
+            {
+                Snackbar.Add("⚠️ Selected role is no longer available. Please choose another role.", Severity.Warning);
+                return;
+            }
+
+            var updateRequest = new
+            {
+                _editUserDto.Email,
+                _editUserDto.FirstName,
+                _editUserDto.LastName,
+                Role = selectedRole.Name,
+                RoleId = selectedRole.Id,
+                _editUserDto.Department,
+                _editUserDto.PhoneNumber,
+                _editUserDto.IsActive,
+                UpdatedBy = _username ?? "admin"
+            };
+
+            Console.WriteLine($"🔍 UPDATE REQUEST DEBUG:");
+            Console.WriteLine($"   User ID: {_editingUser.Id}");
+            Console.WriteLine($"   Username: {_editingUser.Username}");
+            Console.WriteLine($"   Email: {updateRequest.Email}");
+            Console.WriteLine($"   Role being sent: '{selectedRole.Name}'");
+            Console.WriteLine($"   RoleId being sent: '{selectedRole.Id}'");
+            Console.WriteLine($"   IsActive: {_editUserDto.IsActive}");
+            Console.WriteLine($"   Department: {_editUserDto.Department}");
+            Console.WriteLine($"   PhoneNumber: {_editUserDto.PhoneNumber}");
+            
+            await ApiService.PutAsync<object, object>($"/api/Users/{_editingUser.Id}", updateRequest);
+            
+            Console.WriteLine("✅ API returned success for user update");
+            Snackbar.Add($"✅ User '{_editingUser.Username}' updated successfully!", Severity.Success);
+            
+            _showEditForm = false;
+            _editingUser = null;
+            _editUserDto = new EditUserDto();
+            
+            Console.WriteLine("🔄 Reloading users after update...");
+            await LoadUsers();
+            Console.WriteLine("✅ Users reloaded");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error updating user: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private async Task ResetPassword(UserItem user)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            "Reset Password",
+            $"Reset password for {user.Username}? A new temporary password will be generated.",
+            yesText: "Reset", cancelText: "Cancel");
+        
+        if (confirmed == true)
+        {
+            try
+            {
+                var response = await ApiService.PostAsync<object, ResetPasswordResponse>($"/api/Users/{user.Id}/reset-password", new { });
+                
+                if (!string.IsNullOrEmpty(response?.TemporaryPassword))
+                {
+                    // Show the temporary password in a dialog
+                    await DialogService.ShowMessageBox(
+                        "✅ Password Reset Successful",
+                        $"New temporary password for {user.Username}:\n\n{response.TemporaryPassword}\n\nPlease save this password and share it securely with the user.\nThey should change it immediately after logging in.",
+                        yesText: "OK");
+                    
+                    Snackbar.Add($"✅ Password reset for {user.Username}", Severity.Success);
+                }
+                else
+                {
+                    Snackbar.Add($"✅ Password reset for {user.Username}", Severity.Success);
+                }
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"❌ Error resetting password: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private async Task ToggleUserStatus(UserItem user)
+    {
+        var newStatus = !user.IsActive;
+        var action = newStatus ? "activate" : "deactivate";
+        
+        var confirmed = await DialogService.ShowMessageBox(
+            $"{(newStatus ? "Activate" : "Deactivate")} User",
+            $"Are you sure you want to {action} {user.Username}?",
+            yesText: "Confirm", cancelText: "Cancel");
+        
+        if (confirmed == true)
+        {
+            try
+            {
+                var updateRequest = new
+                {
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    Role = user.RoleName,
+                    RoleId = user.RoleId,
+                    IsActive = newStatus,
+                    UpdatedBy = "superadmin"
+                };
+                
+                await ApiService.PutAsync<object, object>($"/api/Users/{user.Id}", updateRequest);
+                user.IsActive = newStatus;
+                Snackbar.Add($"✅ User {user.Username} {(newStatus ? "activated" : "deactivated")}", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"❌ Error updating user status: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private async Task DeleteUser(UserItem user)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            "Delete User",
+            $"Are you sure you want to delete {user.Username}? This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel");
+        
+        if (confirmed == true)
+        {
+            try
+            {
+                await ApiService.DeleteAsync($"/api/Users/{user.Id}");
+                _users.Remove(user);
+                _filteredUsers = _users;
+                Snackbar.Add($"✅ User {user.Username} deleted successfully", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"❌ Error deleting user: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    public class UserItem
+    {
+        public int Id { get; set; }
+        public string Username { get; set; } = "";
+        public string Email { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public int RoleId { get; set; } = -1;
+        public string RoleName { get; set; } = string.Empty;
+        public string RoleDisplayName { get; set; } = string.Empty;
+        public string? Department { get; set; }
+        public string? PhoneNumber { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime LastLogin { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    // DTO matching the API response
+    public class UserDto
+    {
+        public int Id { get; set; }
+        public string? UserId { get; set; }
+        public string? Username { get; set; }
+        public string? Email { get; set; }
+        public string? FirstName { get; set; }
+        public string? LastName { get; set; }
+        public string? Department { get; set; }
+        public string? PhoneNumber { get; set; }
+        public string? RoleName { get; set; }
+        public string? RoleDisplayName { get; set; }
+        public int? RoleId { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime? LastLogin { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? CreatedBy { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+
+    // DTO for create operations
+    public class CreateUserDto
+    {
+        public string Username { get; set; } = "";
+        public string Email { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string Password { get; set; } = "";
+        public int RoleId { get; set; } = -1;
+        public string? Department { get; set; }
+        public string? PhoneNumber { get; set; }
+    }
+
+    // DTO for edit operations (no username or password)
+    public class EditUserDto
+    {
+        public string Email { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public int RoleId { get; set; } = -1;
+        public string? Department { get; set; }
+        public string? PhoneNumber { get; set; }
+        public bool IsActive { get; set; } = true;
+    }
+
+    private sealed class ResetPasswordResponse
+    {
+        public string? TemporaryPassword { get; set; }
+    }
+
+}
+

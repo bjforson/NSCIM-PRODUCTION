@@ -1,0 +1,22 @@
+@page "/services/ingestion"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesIngestion)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Ingestion Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Upload" Class="mr-2" />
+            Ingestion Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Data ingestion service monitoring. Use desktop version for detailed ingestion status.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

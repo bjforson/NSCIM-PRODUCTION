@@ -1,0 +1,202 @@
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.New.Components.ICUMS
+@using MudBlazor
+@inject ContainerViewPreloader ViewPreloader
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog ContentClass="overflow-y-auto" Style="max-height: 90vh;">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.ViewInAr" Class="mr-2" />
+            Container: @ContainerNumber
+        </MudText>
+    </TitleContent>
+    
+    <DialogContent>
+        @if (isLoading)
+        {
+            <MudContainer Class="pa-8">
+                <MudStack AlignItems="AlignItems.Center" Spacing="4">
+                    <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+                    <MudText Typo="Typo.h6">Loading container data...</MudText>
+                    <MudProgressLinear Color="Color.Primary" Value="@loadingProgress" Min="0" Max="100" Class="mt-4" Style="width: 300px;" />
+                </MudStack>
+            </MudContainer>
+        }
+        else if (basicInfo != null)
+        {
+            <!-- Summary Cards -->
+            <MudGrid Class="mb-4">
+                <MudItem xs="12" sm="6" md="3">
+                    <MudCard Elevation="2">
+                        <MudCardContent>
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Scanner" Color="Color.Primary" Size="Size.Large" />
+                                <MudText Typo="Typo.h6">@basicInfo.ScannerRecordCount</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Scanner Records</MudText>
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                </MudItem>
+                
+                <MudItem xs="12" sm="6" md="3">
+                    <MudCard Elevation="2">
+                        <MudCardContent>
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Description" Color="Color.Success" Size="Size.Large" />
+                                <MudText Typo="Typo.h6">@basicInfo.ICUMSRecordCount</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">ICUMS Records</MudText>
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                </MudItem>
+                
+                <MudItem xs="12" sm="6" md="3">
+                    <MudCard Elevation="2">
+                        <MudCardContent>
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Warning" Size="Size.Large" />
+                                <MudText Typo="Typo.h6">@basicInfo.ImageCount</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Images</MudText>
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                </MudItem>
+                
+                <MudItem xs="12" sm="6" md="3">
+                    <MudCard Elevation="2">
+                        <MudCardContent>
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Update" Color="Color.Info" Size="Size.Large" />
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Last Updated</MudText>
+                                <MudText Typo="Typo.body2">@basicInfo.LastUpdated.ToString("MMM dd, HH:mm")</MudText>
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                </MudItem>
+            </MudGrid>
+
+            <!-- Tabbed Interface -->
+            <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+                <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner" BadgeData="@basicInfo.ScannerRecordCount" BadgeColor="Color.Primary">
+                    <ScannerDataTab ContainerNumber="@ContainerNumber"
+                                    TotalRecords="@basicInfo.ScannerRecordCount"
+                                    PreloadedData="@viewContext?.ScannerData" />
+                </MudTabPanel>
+                
+                <MudTabPanel Text="ICUMS Data" Icon="@Icons.Material.Outlined.Description" BadgeData="@basicInfo.ICUMSRecordCount" BadgeColor="Color.Success">
+                    <ICUMSDataTab ContainerNumber="@ContainerNumber"
+                                   TotalRecords="@basicInfo.ICUMSRecordCount"
+                                   PreloadedData="@viewContext?.ICUMSData" />
+                </MudTabPanel>
+                
+                <MudTabPanel Text="Images" Icon="@Icons.Material.Outlined.Image" BadgeData="@basicInfo.ImageCount" BadgeColor="Color.Warning">
+                    <ImagesTab ContainerNumber="@ContainerNumber"
+                               ImageCount="@basicInfo.ImageCount"
+                               PreloadedImages="@viewContext?.Images" />
+                </MudTabPanel>
+                
+                <MudTabPanel Text="Search" Icon="@Icons.Material.Outlined.Search">
+                    <SearchTab ContainerNumber="@ContainerNumber" />
+                </MudTabPanel>
+            </MudTabs>
+        }
+        else if (errorMessage != null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="ma-4">
+                <MudText Typo="Typo.h6">Error loading container data</MudText>
+                <MudText Typo="Typo.body2">@errorMessage</MudText>
+            </MudAlert>
+        }
+    </DialogContent>
+    
+    <DialogActions>
+        @if (basicInfo != null)
+        {
+            <MudButton OnClick="RefreshData" Variant="Variant.Text" Color="Color.Info" StartIcon="@Icons.Material.Outlined.Refresh">
+                Refresh
+            </MudButton>
+            <MudButton OnClick="ExportData" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Download">
+                Export
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+
+    private NickScanWebApp.Shared.Models.ContainerBasicInfo? basicInfo;
+    private NickScanWebApp.New.Models.ContainerViewContext? viewContext;
+    private bool isLoading = false;
+    private int loadingProgress = 0;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadContainerData();
+        }
+    }
+
+    private async Task LoadContainerData(bool forceRefresh = false)
+    {
+        isLoading = true;
+        loadingProgress = 0;
+        errorMessage = null;
+
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+
+            loadingProgress = 10;
+            await InvokeAsync(StateHasChanged);
+
+            // Use the orchestrator to load all view data (basic, scanner, ICUMS, images)
+            viewContext = await ViewPreloader.LoadAsync(ContainerNumber, forceRefresh);
+
+            loadingProgress = 100;
+
+            basicInfo = viewContext?.BasicInfo;
+
+            if (basicInfo == null)
+            {
+                errorMessage = $"Container {ContainerNumber} not found";
+                Snackbar.Add(errorMessage, Severity.Warning);
+            }
+            else
+            {
+                var message = forceRefresh
+                    ? $"Refreshed container {ContainerNumber}"
+                    : $"Loaded container {ContainerNumber}";
+                Snackbar.Add(message, Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "Failed to load container data. Please try again.";
+            Snackbar.Add(errorMessage, Severity.Error);
+            Console.WriteLine($"Error loading container data: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshData()
+    {
+        await LoadContainerData(forceRefresh: true);
+        Snackbar.Add("Data refreshed", Severity.Info);
+    }
+
+    private void ExportData()
+    {
+        Snackbar.Add($"Export functionality for container {ContainerNumber} will be implemented soon!", Severity.Info);
+    }
+}
+

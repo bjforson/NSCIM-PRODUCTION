@@ -1,0 +1,343 @@
+@using MudBlazor
+@using System.Text.Json
+@inject NickScanWebApp.Mobile.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.InsertDriveFile" Class="mr-2" />
+            File Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-height: 70vh; overflow-y: auto;">
+        @if (File != null)
+        {
+            var file = File;
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0">
+                
+                <!-- File Information Tab -->
+                <MudTabPanel Text="File Info" Icon="@Icons.Material.Filled.Info">
+                    <MudGrid Spacing="2" Class="pa-2">
+                <MudItem xs="12">
+                    <MudTextField Label="File Name" 
+                                 Value="@((string?)file.GetType().GetProperty("FileName")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="File Path" 
+                                 Value="@((string?)file.GetType().GetProperty("FilePath")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="Download Date" 
+                                 Value="@(((DateTime?)file.GetType().GetProperty("DownloadDate")?.GetValue(file))?.ToString("yyyy-MM-dd HH:mm:ss") ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField Label="Status" 
+                                 Value="@((string?)file.GetType().GetProperty("ProcessingStatus")?.GetValue(file) ?? "")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="Record Count" 
+                                 Value="@(((int?)file.GetType().GetProperty("RecordCount")?.GetValue(file))?.ToString("N0") ?? "0")" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudTextField Label="File Size" 
+                                 Value="@FormatFileSize((long)(file.GetType().GetProperty("FileSizeBytes")?.GetValue(file) ?? 0L))" 
+                                 Variant="Variant.Outlined"
+                                 ReadOnly="true"
+                                 Size="Size.Small" />
+                </MudItem>
+                @{
+                    var errorMsg = (string?)file.GetType().GetProperty("ErrorMessage")?.GetValue(file);
+                }
+                @if (!string.IsNullOrEmpty(errorMsg))
+                {
+                    <MudItem xs="12">
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Dense="true">
+                            <MudText Typo="Typo.body2"><strong>Error:</strong> @errorMsg</MudText>
+                        </MudAlert>
+                    </MudItem>
+                }
+            </MudGrid>
+                </MudTabPanel>
+                
+                <!-- Records Tab - Mobile Optimized with Cards -->
+                <MudTabPanel Text="Records" Icon="@Icons.Material.Filled.List" BadgeData="@_records.Count">
+                    <MudPaper Elevation="0" Class="pa-2">
+                        @if (_isLoadingRecords)
+                        {
+                            <MudStack Justify="Justify.Center" AlignItems="AlignItems.Center" Spacing="2" Style="min-height: 200px;">
+                                <MudProgressCircular Indeterminate="true" Size="Size.Medium" />
+                                <MudText Typo="Typo.body2">Loading records...</MudText>
+                            </MudStack>
+                        }
+                        else if (_records.Count == 0)
+                        {
+                            <MudStack Justify="Justify.Center" AlignItems="AlignItems.Center" Spacing="2" Style="min-height: 200px;">
+                                <MudIcon Icon="@Icons.Material.Filled.Inbox" Size="Size.Large" Color="Color.Default" />
+                                <MudText Typo="Typo.h6">No records found</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">This file does not contain any BOE records.</MudText>
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <!-- Mobile: Card view instead of table -->
+                            <MudStack Spacing="2">
+                                @foreach (var record in _records)
+                                {
+                                    <MudCard Elevation="2" Class="pa-3">
+                                        <MudStack Spacing="2">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                                                <MudText Typo="Typo.body2" Style="font-weight: 600;">#@record.DocumentIndex</MudText>
+                                                <MudChip T="string" Size="Size.Small" 
+                                                        Color="@GetClearanceTypeColor(record.ClearanceType)"
+                                                        Variant="Variant.Filled">
+                                                    @(string.IsNullOrEmpty(record.ClearanceType) ? "N/A" : record.ClearanceType)
+                                                </MudChip>
+                                            </MudStack>
+                                            
+                                            @if (!string.IsNullOrEmpty(record.ContainerNumber) && record.ContainerNumber != "N/A")
+                                            {
+                                                <MudText Typo="Typo.body2">
+                                                    <strong>Container:</strong> <span style="font-family: monospace;">@record.ContainerNumber</span>
+                                                </MudText>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.body2" Color="Color.Info">
+                                                    <strong>Loose Cargo</strong>
+                                                </MudText>
+                                            }
+                                            
+                                            @if (!string.IsNullOrEmpty(record.DeclarationNumber))
+                                            {
+                                                <MudText Typo="Typo.body2">
+                                                    <strong>Declaration:</strong> @record.DeclarationNumber
+                                                </MudText>
+                                            }
+                                            
+                                            @if (!string.IsNullOrEmpty(record.BlNumber))
+                                            {
+                                                <MudText Typo="Typo.body2">
+                                                    <strong>BL:</strong> <span style="font-family: monospace;">@record.BlNumber</span>
+                                                </MudText>
+                                            }
+                                            
+                                            @if (!string.IsNullOrEmpty(record.HouseBl))
+                                            {
+                                                <MudText Typo="Typo.body2">
+                                                    <strong>House BL:</strong> <span style="font-family: monospace;">@record.HouseBl</span>
+                                                </MudText>
+                                            }
+                                            
+                                            @if (record.TotalDutyPaid.HasValue)
+                                            {
+                                                <MudText Typo="Typo.body2">
+                                                    <strong>Duty Paid:</strong> @record.TotalDutyPaid.Value.ToString("N2")
+                                                </MudText>
+                                            }
+                                            
+                                            @if (record.UnmappedFieldsCount > 0 || record.UnmappedFields.Any())
+                                            {
+                                                <MudChip T="string" Size="Size.Small" 
+                                                        Color="Color.Warning" 
+                                                        Variant="Variant.Outlined">
+                                                    @(record.UnmappedFieldsCount ?? record.UnmappedFields.Count) additional field(s)
+                                                </MudChip>
+                                            }
+                                        </MudStack>
+                                    </MudCard>
+                                }
+                            </MudStack>
+                            
+                            <!-- Unmapped Fields Section for each record -->
+                            @foreach (var record in _records.Where(r => r.UnmappedFieldsCount > 0 || r.UnmappedFields.Any()))
+                            {
+                                <UnmappedFieldsSection 
+                                    UnmappedFields="@ConvertUnmappedFields(record.UnmappedFields)"
+                                    UnmappedFieldsCount="@record.UnmappedFieldsCount"
+                                    UnmappedFieldsOverflow="@record.UnmappedFieldsOverflow"
+                                    RawJsonData="@record.RawJsonData"
+                                    Class="mt-2" />
+                            }
+                        }
+                    </MudPaper>
+                </MudTabPanel>
+                
+            </MudTabs>
+        }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="CloseDialog" Size="Size.Small">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public object? File { get; set; }
+    
+    private List<BOERecordDto> _records = new();
+    private bool _isLoadingRecords = false;
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+        if (File != null)
+        {
+            await LoadRecordsAsync();
+        }
+    }
+    
+    private async Task LoadRecordsAsync()
+    {
+        if (File == null) return;
+        
+        int fileId = 0;
+        var idProp = File.GetType().GetProperty("Id");
+        if (idProp != null)
+        {
+            var idValue = idProp.GetValue(File);
+            if (idValue is int intId)
+            {
+                fileId = intId;
+            }
+            else if (idValue != null && int.TryParse(idValue.ToString(), out var parsedId))
+            {
+                fileId = parsedId;
+            }
+        }
+        
+        if (fileId == 0)
+        {
+            Snackbar.Add("Error: Could not determine file ID", Severity.Error);
+            return;
+        }
+        
+        _isLoadingRecords = true;
+        try
+        {
+            var response = await ApiService.GetAsync<List<BOERecordDto>>($"/api/icums/batch/files/{fileId}/records");
+            
+            if (response != null && response.Count > 0)
+            {
+                _records = response;
+            }
+            else
+            {
+                _records = new List<BOERecordDto>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading records: {ex.Message}", Severity.Error);
+            _records = new List<BOERecordDto>();
+        }
+        finally
+        {
+            _isLoadingRecords = false;
+        }
+    }
+    
+    private Task CloseDialog() => Task.CompletedTask;
+    
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+    
+    private Color GetClearanceTypeColor(string clearanceType) => clearanceType switch
+    {
+        "CMR" => Color.Success,
+        "GREEN" => Color.Success,
+        "YELLOW" => Color.Warning,
+        "RED" => Color.Error,
+        _ => Color.Default
+    };
+
+    private List<object> ConvertUnmappedFields(List<UnmappedFieldDto> fields)
+    {
+        var result = new List<object>();
+        var sectionType = typeof(UnmappedFieldsSection);
+        var dtoType = sectionType.GetNestedTypes(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+            .FirstOrDefault(t => t.Name == "UnmappedFieldDto");
+        
+        if (dtoType == null) return result;
+        
+        foreach (var f in fields)
+        {
+            var instance = Activator.CreateInstance(dtoType);
+            if (instance != null)
+            {
+                dtoType.GetProperty("Label")?.SetValue(instance, f.Label);
+                dtoType.GetProperty("Value")?.SetValue(instance, f.Value);
+                dtoType.GetProperty("Section")?.SetValue(instance, f.Section);
+                dtoType.GetProperty("FieldName")?.SetValue(instance, f.FieldName);
+                dtoType.GetProperty("IsTruncated")?.SetValue(instance, f.IsTruncated);
+                result.Add(instance);
+            }
+        }
+        
+        return result;
+    }
+    
+    public class UnmappedFieldDto
+    {
+        public string Label { get; set; } = string.Empty;
+        public string? Value { get; set; }
+        public string Section { get; set; } = string.Empty;
+        public string FieldName { get; set; } = string.Empty;
+        public bool IsTruncated { get; set; }
+    }
+
+    public class BOERecordDto
+    {
+        public int Id { get; set; }
+        public int DocumentIndex { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string BlNumber { get; set; } = string.Empty;
+        public string HouseBl { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public string ImpName { get; set; } = string.Empty;
+        public string ExpName { get; set; } = string.Empty;
+        public string DeclarationDate { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string ContainerISO { get; set; } = string.Empty;
+        public int ContainerQuantity { get; set; }
+        public decimal? ContainerWeight { get; set; }
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string ShipperName { get; set; } = string.Empty;
+        public string CountryOfOrigin { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
+        
+        public List<UnmappedFieldDto> UnmappedFields { get; set; } = new();
+        public int? UnmappedFieldsCount { get; set; }
+        public bool UnmappedFieldsOverflow { get; set; }
+        public string? RawJsonData { get; set; }
+    }
+}
+

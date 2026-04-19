@@ -1,0 +1,2457 @@
+@using MudBlazor
+@using NickScanWebApp.New.Components.Containers
+@using NickScanWebApp.New.Components.Operations
+@using NickScanWebApp.New.Components.CargoGroup
+@using NickScanWebApp.New.Components.ICUMS
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.New.Models
+@using NickScanWebApp.New.Services
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject CargoGroupService CargoGroupService
+@inject CargoSummaryService CargoSummaryService
+@inject NickScanWebApp.New.Services.ImageAnalysisViewPreloader ImageAnalysisPreloader
+@inject IJSRuntime JSRuntime
+@inject AuthenticationStateProvider AuthStateProvider
+
+        <MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Size="Size.Small" Class="mr-2" />
+            Image Analysis View - @GroupIdentifier
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @* The overall decision banner + cargo type header scroll naturally — only
+           the MAIN TAB STRIP below it is sticky. Previously both elements were
+           position:sticky;top:0 (header z-index 10, tabs z-index 9), so when the
+           user scrolled, the tabs pinned to top:0 but the higher-z-index header
+           covered them and the tab strip appeared to "disappear". Removing the
+           sticky from the header lets it scroll out of view, leaving the tab
+           strip pinned alone at the top of the viewport. *@
+        <div style="padding: 0; display: flex; flex-direction: column; height: 100%;">
+            <div style="background: var(--mud-palette-surface); padding: 16px; border-bottom: 2px solid var(--mud-palette-lines-default);">
+            @* Overall Decision Banner *@
+            <MudAlert Severity="@GetOverallSeverity()" Variant="Variant.Filled" Class="mb-3">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@GetOverallIcon()" Size="Size.Large" />
+                    <div>
+                        <MudText Typo="Typo.h6">Overall Decision: @_overallDecision</MudText>
+                        <MudText Typo="Typo.body2">
+                            @_normalCount Normal | @_abnormalCount Abnormal | @_totalImages Total Images
+                        </MudText>
+                        @* ✅ PRIORITY 3.2: Progress indicator for multi-container records *@
+                        @if (!IsConsolidated && Containers?.Count > 1 && !string.IsNullOrEmpty(_currentProcessingContainer))
+                        {
+                            var currentIndex = Containers.IndexOf(_currentProcessingContainer) + 1;
+                            var totalContainers = Containers.Count;
+                            <MudText Typo="Typo.body2" Class="mt-1">
+                                <MudIcon Icon="@Icons.Material.Outlined.List" Size="Size.Small" /> 
+                                Analyzing Container @currentIndex of @totalContainers
+                            </MudText>
+                        }
+                        @* Display tags from all decisions *@
+                        @if (_allDecisions.Any(d => !string.IsNullOrEmpty(d.Tags)))
+                        {
+                            <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mt-2">
+                                @foreach (var decision in _allDecisions.Where(d => !string.IsNullOrEmpty(d.Tags)))
+                                {
+                                    @foreach (var tag in decision.Tags!.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()))
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">
+                                            @tag (@decision.ScannerType)
+                                        </MudChip>
+                                    }
+                                }
+                            </MudStack>
+                        }
+                    </div>
+                    <MudSpacer />
+                    @if (!string.IsNullOrEmpty(_lastReviewedBy))
+                    {
+                        <MudText Typo="Typo.caption">
+                            Last reviewed by <strong>@_lastReviewedBy</strong>
+                        </MudText>
+                    }
+                </MudStack>
+            </MudAlert>
+
+            @* Wave Processing Banner *@
+            @if (_waveContext != null && _waveContext.IsWave)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="mb-2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Waves" Size="Size.Small" />
+                        <MudText Typo="Typo.body2">
+                            <strong>Wave @_waveContext.WaveNumber of @_waveContext.TotalWaves</strong>
+                            — BOL: @_waveContext.ParentGroupIdentifier
+                            — Overall: @_waveContext.DecidedContainers/@_waveContext.TotalContainers decided
+                            @if (_waveContext.PendingContainers > 0)
+                            {
+                                <text> — @_waveContext.PendingContainers awaiting images</text>
+                            }
+                        </MudText>
+                    </MudStack>
+                </MudAlert>
+            }
+
+            @* Cargo Type Header *@
+            @if (IsConsolidated)
+            {
+                <MudText Typo="Typo.h6" Class="mb-0">
+                    <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" />
+                    Consolidated Cargo - Container: @GroupIdentifier
+                </MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.h6" Class="mb-0">
+                    <MudIcon Icon="@Icons.Material.Outlined.Description" Color="Color.Success" />
+                    Non-Consolidated Cargo - BOE: @GroupIdentifier
+                </MudText>
+            }
+        </div>
+
+        @* ✅ STATIC TABS: Sticky tab strip — pins to top of dialog viewport when
+           the user scrolls within a tab panel. *@
+        @* Legacy view *@
+        @if (IsConsolidated)
+        {
+            <div style="position: sticky; top: 0; z-index: 10; background: var(--mud-palette-surface); border-bottom: 2px solid var(--mud-palette-lines-default);">
+                @* CONSOLIDATED: Single Container → Show Scanner + Images + Multiple House BLs *@
+                <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="false" PanelClass="" ActivePanelIndex="@_activeTabIndex" ActivePanelIndexChanged="@OnActiveTabChanged">
+                <!-- Summary Tab -->
+                <MudTabPanel Text="Summary" Icon="@Icons.Material.Outlined.Summarize">
+                    <div @ref="_tabScrollRefSummary" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(-1))">
+                        @{
+                            var summaryCargoGroup = _imageAnalysisContext?.CargoGroupContext?.Group ?? _cargoGroupForSummary;
+                        }
+                        @if (summaryCargoGroup != null)
+                        {
+                            <CargoGroupSummaryTab CargoGroup="@summaryCargoGroup" />
+                        }
+                        else if (_loadingCargoGroupForSummary || _isLoadingImageAnalysisContext)
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                                <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                                <MudText Typo="Typo.body2">Loading cargo summary...</MudText>
+                            </MudStack>
+                        }
+                        else
+                        {
+                            @if (_cargoGroupLoadFailed)
+                            {
+                                <MudAlert Severity="Severity.Warning" Variant="Variant.Filled">
+                                    <MudStack Spacing="2">
+                                        <MudText Typo="Typo.h6">Summary Not Available</MudText>
+                                        <MudText Typo="Typo.body2">
+                                            @if (IsConsolidated)
+                                            {
+                                                <text>Unable to load cargo summary for container <strong>@GroupIdentifier</strong>.</text>
+                                            }
+                                            else
+                                            {
+                                                <text>Unable to load cargo summary for declaration <strong>@GroupIdentifier</strong>.</text>
+                                            }
+                                        </MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            @if (IsConsolidated)
+                                            {
+                                                <text>The cargo summary requires a Master BL (Bill of Lading) number from the BOE document. The BOE document may exist but may be missing the BlNumber field, or the container may not have been processed through the customs system yet.</text>
+                                            }
+                                            else
+                                            {
+                                                <text>The cargo summary requires a Declaration Number from the BOE document. The BOE document may exist but may be missing the DeclarationNumber field, or the declaration may not have been processed through the customs system yet.</text>
+                                            }
+                                        </MudText>
+                                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="@(() => { _cargoGroupLoadFailed = false; _ = LoadCargoGroupForSummary(); })" StartIcon="@Icons.Material.Outlined.Refresh" Class="mt-2">
+                                            Retry Loading Summary
+                                        </MudButton>
+                                    </MudStack>
+                                </MudAlert>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Info">
+                                    Cargo summary will be available once cargo group data is loaded.
+                                </MudAlert>
+                            }
+                        }
+                    </div>
+                </MudTabPanel>
+                
+                <!-- Scanner Data Tab - ✅ FIX #2: Always load first tab -->
+                <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner">
+                    <div @ref="_tabScrollRef0" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(0))">
+                        @{
+                            var consolidatedContainerCtx = _imageAnalysisContext?.GetConsolidatedContainerContext();
+                        }
+                        <ScannerDataTab ContainerNumber="@GroupIdentifier" 
+                                       TotalRecords="@(consolidatedContainerCtx?.BasicInfo?.ScannerRecordCount ?? 0)"
+                                       PreloadedData="@consolidatedContainerCtx?.ScannerData" />
+                    </div>
+                </MudTabPanel>
+
+                <!-- Images Tab - With Decision Buttons -->
+                <MudTabPanel Text="Images & Decisions" Icon="@Icons.Material.Outlined.Image">
+                    <div @ref="_tabScrollRef1" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(1))">
+                        @* Split choice step: shown for 2-container scans before the normal viewer *@
+                        <SplitChoiceDialog ContainerNumber="@GroupIdentifier"
+                                           OnSplitChosen="@StateHasChanged"
+                                           OnSplitSkipped="@StateHasChanged" />
+                        <ImageDecisionView ContainerNumber="@GroupIdentifier"
+                                           GroupIdentifier="@GroupIdentifier"
+                                           IsConsolidated="@IsConsolidated"
+                                           OnDecisionChanged="@RefreshOverallDecision"
+                                           OnDecisionSaved="@CloseDialogAfterSave"
+                                           OnNextContainer="@HandleNextContainer"
+                                           OnAllContainersDecided="@HandleAllContainersDecided" />
+                    </div>
+                </MudTabPanel>
+
+                <!-- House BLs Tab — Expandable rows showing full HBL details + BOE fields per HBL -->
+                <MudTabPanel Text="House BLs" Icon="@Icons.Material.Outlined.Description">
+                    <div @ref="_tabScrollRef2" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(3))">
+                        @if (!_houseBLsLoaded)
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@(async () => { _houseBLsLoaded = true; await LoadHouseBLs(); })">
+                                    Load House BLs
+                                </MudButton>
+                            </MudStack>
+                        }
+                        else if (_loadingHouseBLs)
+                        {
+                            <MudProgressCircular Indeterminate="true" />
+                        }
+                        else if (_houseBLDetails.Any())
+                        {
+                            <MudText Typo="Typo.subtitle1" Class="mb-3">
+                                House Bills of Lading in this Container (@_houseBLDetails.Count)
+                            </MudText>
+                            <MudTable Items="_houseBLDetails" Dense="true" Hover="true" Bordered="true" Striped="true">
+                                <HeaderContent>
+                                    <MudTh Style="width:30px;"></MudTh>
+                                    <MudTh>House BL</MudTh>
+                                    <MudTh>Declaration</MudTh>
+                                    <MudTh>Rotation</MudTh>
+                                    <MudTh>Consignee</MudTh>
+                                    <MudTh>Type</MudTh>
+                                    <MudTh>Status</MudTh>
+                                    <MudTh Style="width:90px;">Details</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>
+                                        @if (_expandedHouseBLs.Contains(context.HouseBL))
+                                        {
+                                            <MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" />
+                                        }
+                                        else
+                                        {
+                                            <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" />
+                                        }
+                                    </MudTd>
+                                    <MudTd Style="font-family: monospace;">@context.HouseBL</MudTd>
+                                    <MudTd Style="font-family: monospace;">@context.DeclarationNumber</MudTd>
+                                    <MudTd>@context.RotationNumber</MudTd>
+                                    <MudTd>@context.ConsigneeName</MudTd>
+                                    <MudTd><MudChip T="string" Size="Size.Small">@context.ClearanceType</MudChip></MudTd>
+                                    <MudTd>
+                                        @if (context.IsComplete)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" /> Complete
+                                            </MudChip>
+                                        }
+                                        else
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Small" /> Partial
+                                            </MudChip>
+                                        }
+                                    </MudTd>
+                                    <MudTd>
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined"
+                                                   Color="@(_expandedHouseBLs.Contains(context.HouseBL) ? Color.Default : Color.Primary)"
+                                                   OnClick="@(() => ToggleHouseBLExpansion(context.HouseBL))">
+                                            @(_expandedHouseBLs.Contains(context.HouseBL) ? "Hide" : "View")
+                                        </MudButton>
+                                    </MudTd>
+                                </RowTemplate>
+                                <ChildRowContent>
+                                    @if (_expandedHouseBLs.Contains(context.HouseBL))
+                                    {
+                                        <MudTr>
+                                            <td colspan="8" style="background: var(--mud-palette-background-grey); padding: 16px; border-left: 4px solid var(--mud-palette-primary);">
+                                                @{
+                                                    var hblBOEData = _allBOEData?.Where(r => r.HouseBL == context.HouseBL).ToList() ?? new List<ICUMSDataRecordDto>();
+                                                }
+                                                @if (hblBOEData.Any())
+                                                {
+                                                    var hblCategoryGroups = hblBOEData.GroupBy(r => r.Category ?? "Other").OrderBy(g => GetCategoryOrder(g.Key)).ToList();
+                                                    <MudText Typo="Typo.subtitle2" Class="mb-2">
+                                                        Full BOE / ICUMS Details
+                                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-2">
+                                                            @hblBOEData.Count field(s) across @hblCategoryGroups.Count category/categories
+                                                        </MudChip>
+                                                    </MudText>
+                                                    @foreach (var categoryGroup in hblCategoryGroups)
+                                                    {
+                                                        <MudPaper Elevation="0" Class="pa-2 mb-2" Style="border: 1px solid var(--mud-palette-lines-default);">
+                                                            <MudText Typo="Typo.caption" Color="Color.Primary" Style="font-weight:600;">
+                                                                <MudIcon Icon="@GetCategoryIcon(categoryGroup.Key)" Size="Size.Small" /> @categoryGroup.Key
+                                                            </MudText>
+                                                            @if (string.Equals(categoryGroup.Key, "Cargo Info", StringComparison.OrdinalIgnoreCase))
+                                                            {
+                                                                @* Cargo Info — render as line-item table *@
+                                                                @RenderCargoInfoTable(categoryGroup.ToList())
+                                                            }
+                                                            else
+                                                            {
+                                                                @* Generic field/value grid for other categories *@
+                                                                <MudGrid Spacing="1" Class="mt-1">
+                                                                    @foreach (var record in categoryGroup)
+                                                                    {
+                                                                        <MudItem xs="12" sm="6" md="4">
+                                                                            <MudStack Row="true" Spacing="1">
+                                                                                <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600; min-width: 120px;">
+                                                                                    @record.Field
+                                                                                </MudText>
+                                                                                <MudText Typo="Typo.caption">@(record.Value ?? "N/A")</MudText>
+                                                                            </MudStack>
+                                                                        </MudItem>
+                                                                    }
+                                                                </MudGrid>
+                                                            }
+                                                        </MudPaper>
+                                                    }
+                                                }
+                                                else if (_allBOEData == null || !_allBOEData.Any())
+                                                {
+                                                    <MudAlert Severity="Severity.Info" Dense="true">
+                                                        Open the <strong>ICUMS Data</strong> tab once to load full BOE details for each House BL.
+                                                    </MudAlert>
+                                                }
+                                                else
+                                                {
+                                                    <MudAlert Severity="Severity.Warning" Dense="true">
+                                                        No BOE / ICUMS field data found for House BL <strong>@context.HouseBL</strong>.
+                                                    </MudAlert>
+                                                }
+                                            </td>
+                                        </MudTr>
+                                    }
+                                </ChildRowContent>
+                            </MudTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info">No House BL details available</MudAlert>
+                        }
+                    </div>
+                </MudTabPanel>
+                
+                <!-- ICUMS Data Tab (Shows BOE for IM/EX, CMR data for CMR clearance) - ✅ FIX: Lazy load like images -->
+                <MudTabPanel Text="ICUMS Data" Icon="@Icons.Material.Outlined.ListAlt">
+                    <div @ref="_tabScrollRef3" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(3))">
+                        @if (_icumsDataLoaded)
+                    {
+                        @if (_loadingBOEDetails)
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+                                <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                                <MudText Typo="Typo.body1">Loading ICUMS data...</MudText>
+                            </MudStack>
+                        }
+                        else if (_allBOEData?.Any() == true)
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-4">Complete ICUMS Details (BOE/CMR)</MudText>
+                            
+                            @* ✅ DYNAMIC: Consolidated cargo - Show House BLs in collapsible panels *@
+                            @if (_allBOEData.Any(r => !string.IsNullOrEmpty(r.HouseBL)))
+                            {
+                                var houseBLGroups = _allBOEData.GroupBy(r => r.HouseBL ?? "N/A").OrderBy(g => g.Key).ToList();
+                                var houseBLCount = houseBLGroups.Count();
+                                
+                                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Inventory" Class="mr-2" />
+                                    <strong>Consolidated Cargo:</strong> @houseBLCount House BL(s) for container @GroupIdentifier
+                                </MudAlert>
+                                
+                                <MudExpansionPanels MultiExpansion="true" Class="mt-3">
+                                    @foreach (var houseBLGroup in houseBLGroups)
+                                    {
+                                        var houseBLData = houseBLGroup.ToList();
+                                        var categoryGroups = houseBLData.GroupBy(r => r.Category).OrderBy(g => GetCategoryOrder(g.Key)).ToList();
+                                        var totalFields = houseBLData.Count;
+                                        
+                                        <MudExpansionPanel Text="@($"House BL: {houseBLGroup.Key}")" 
+                                                           Icon="@Icons.Material.Outlined.Article"
+                                                           IsExpanded="false">
+                                            <MudStack Spacing="2" Class="pa-2">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                                    @totalFields field(s) across @categoryGroups.Count category/categories
+                                                </MudChip>
+                                                
+                                                @* Display categories for this House BL - Now collapsible.
+                                                   The "Cargo Info" category is rendered as a line-item TABLE
+                                                   (matches the Summary tab), all others use a field/value grid. *@
+                                                <MudExpansionPanels MultiExpansion="true" Class="mt-2">
+                                                    @foreach (var categoryGroup in categoryGroups)
+                                                    {
+                                                        <MudExpansionPanel Text="@categoryGroup.Key"
+                                                                           Icon="@GetCategoryIcon(categoryGroup.Key)"
+                                                                           IsExpanded="@(string.Equals(categoryGroup.Key, "Cargo Info", StringComparison.OrdinalIgnoreCase))">
+                                                            <MudStack Spacing="2" Class="pa-2">
+                                                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                                                                    @categoryGroup.Count() field(s)
+                                                                </MudChip>
+
+                                                                @if (string.Equals(categoryGroup.Key, "Cargo Info", StringComparison.OrdinalIgnoreCase))
+                                                                {
+                                                                    @RenderCargoInfoTable(categoryGroup.ToList())
+                                                                }
+                                                                else
+                                                                {
+                                                                    <MudGrid Spacing="2">
+                                                                        @foreach (var record in categoryGroup)
+                                                                        {
+                                                                            <MudItem xs="12" sm="6" md="4">
+                                                                                <MudStack Spacing="0">
+                                                                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                                            <strong>@record.Field</strong>
+                                                                                        </MudText>
+                                                                                        @if (record.IsRequired)
+                                                                                        {
+                                                                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 18px; font-size: 0.7rem;">Required</MudChip>
+                                                                                        }
+                                                                                    </MudStack>
+                                                                                    <MudText Typo="Typo.body2">@(record.Value ?? "N/A")</MudText>
+                                                                                </MudStack>
+                                                                            </MudItem>
+                                                                        }
+                                                                    </MudGrid>
+                                                                }
+                                                            </MudStack>
+                                                        </MudExpansionPanel>
+                                                    }
+                                                </MudExpansionPanels>
+                                            </MudStack>
+                                        </MudExpansionPanel>
+                                    }
+                                </MudExpansionPanels>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Warning">No ICUMS details with House BL grouping available</MudAlert>
+                            }
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Warning">No ICUMS data available</MudAlert>
+                        }
+                    }
+                    </div>
+                </MudTabPanel>
+            </MudTabs>
+            </div>
+        }
+        else
+        {
+            @* NON-CONSOLIDATED: Multiple Containers under one BOE *@
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                Containers under this Bill of Entry:
+            </MudText>
+
+            @if (_loadingContainers)
+            {
+                <MudProgressCircular Indeterminate="true" />
+            }
+            else if (Containers?.Any() == true)
+            {
+                @* ✅ PRIORITY 3.2: Warning for containers without images *@
+                @* Note: Full image check happens in backend, this is just for UI display *@
+                
+                @* Use existing ContainerDetailsModal pattern for each container *@
+                @if (Containers?.Count > 1)
+                {
+                    <MudStack Row="true" Spacing="2" Class="mb-3" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Bulk Action:</MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success"
+                                   StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                   OnClick="@(() => BulkDecision("Normal"))"
+                                   Disabled="@_bulkProcessing">
+                            All Normal
+                        </MudButton>
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error"
+                                   StartIcon="@Icons.Material.Outlined.Warning"
+                                   OnClick="@(() => BulkDecision("Abnormal"))"
+                                   Disabled="@_bulkProcessing">
+                            All Abnormal
+                        </MudButton>
+                        @if (_bulkProcessing)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                            <MudText Typo="Typo.caption">@_bulkProgressText</MudText>
+                        }
+                    </MudStack>
+                }
+                <MudExpansionPanels MultiExpansion="true">
+                    @foreach (var container in Containers)
+                    {
+                        var containerIndex = Containers.IndexOf(container) + 1;
+                        var totalContainers = Containers.Count;
+                        var isExpanded = _containerPanelsExpanded.ContainsKey(container) && _containerPanelsExpanded[container];
+                        <MudExpansionPanel IsExpanded="@isExpanded"
+                                           IsExpandedChanged="@((bool expanded) => { 
+                                               _containerPanelsExpanded[container] = expanded; 
+                                               // ✅ Track current container when manually expanded
+                                               if (expanded) _currentProcessingContainer = container;
+                                           })">
+                            <TitleContent>
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Inventory2" 
+                                             Color="@GetContainerDecisionColor(container)" 
+                                             Size="Size.Medium" />
+                                    <MudText Typo="Typo.body1">
+                                        @container (@containerIndex/@totalContainers)
+                                    </MudText>
+                                    @* ✅ PRIORITY 3.2: Warning icon for containers without images (if detected) *@
+                                    @* Note: Full image check happens in backend, this is just visual indicator *@
+                                </MudStack>
+                            </TitleContent>
+                            <ChildContent>
+                                @* Each container gets its own tab view with Scanner, Images, and ICUMS data - ✅ FIX: Add tab change handler *@
+                                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="false" PanelClass="" 
+                                         ActivePanelIndex="@(_containerTabIndices.TryGetValue(container, out var idx) ? idx : 0)"
+                                         ActivePanelIndexChanged="@((int newIdx) => OnNestedTabChanged(container, newIdx))">
+                                    <!-- Summary Tab -->
+                                    <MudTabPanel Text="Summary" Icon="@Icons.Material.Outlined.Summarize">
+                                        <div style="height: calc(100vh - 400px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveNestedScrollPosition(container, -1))">
+                                            @{
+                                                var nestedSummaryCargoGroup = _imageAnalysisContext?.CargoGroupContext?.Group ?? _cargoGroupForSummary;
+                                            }
+                                            @if (nestedSummaryCargoGroup != null)
+                                            {
+                                                <CargoGroupSummaryTab CargoGroup="@nestedSummaryCargoGroup" />
+                                            }
+                                            else if (_loadingCargoGroupForSummary || _isLoadingImageAnalysisContext)
+                                            {
+                                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                                                    <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                                                    <MudText Typo="Typo.body2">Loading cargo summary...</MudText>
+                                                </MudStack>
+                                            }
+                                            else
+                                            {
+                                                @if (_cargoGroupLoadFailed)
+                                                {
+                                                    <MudAlert Severity="Severity.Warning" Variant="Variant.Filled">
+                                                        <MudStack Spacing="2">
+                                                            <MudText Typo="Typo.h6">Summary Not Available</MudText>
+                                                            <MudText Typo="Typo.body2">
+                                                                Unable to load cargo summary for container <strong>@container</strong>.
+                                                            </MudText>
+                                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                The cargo summary requires BOE data with a valid Declaration Number or Master BL. The BOE document may exist but may be missing required grouping fields, or the container may not have been processed through the customs system yet.
+                                                            </MudText>
+                                                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="@(() => { _cargoGroupLoadFailed = false; _ = LoadCargoGroupForSummary(); })" StartIcon="@Icons.Material.Outlined.Refresh" Class="mt-2">
+                                                                Retry Loading Summary
+                                                            </MudButton>
+                                                        </MudStack>
+                                                    </MudAlert>
+                                                }
+                                                else
+                                                {
+                                                    <MudAlert Severity="Severity.Info">
+                                                        Cargo summary will be available once cargo group data is loaded.
+                                                    </MudAlert>
+                                                }
+                                            }
+                                        </div>
+                                    </MudTabPanel>
+                                    
+                                    <!-- Scanner Data Tab -->
+                                    <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner">
+                                        <div style="height: calc(100vh - 400px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveNestedScrollPosition(container, 0))">
+                                            @{
+                                                var containerCtx = _imageAnalysisContext?.GetContainerContext(container);
+                                            }
+                                            <ScannerDataTab ContainerNumber="@container" 
+                                                           TotalRecords="@(containerCtx?.BasicInfo?.ScannerRecordCount ?? 0)"
+                                                           PreloadedData="@containerCtx?.ScannerData" />
+                                        </div>
+                                    </MudTabPanel>
+
+                                    <!-- Images Tab - With Decision Buttons -->
+                                    <MudTabPanel Text="Images & Decisions" Icon="@Icons.Material.Outlined.Image">
+                                        <div style="height: calc(100vh - 400px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveNestedScrollPosition(container, 1))">
+                                            @* Split choice step: shown for 2-container scans before the normal viewer *@
+                                            <SplitChoiceDialog ContainerNumber="@container"
+                                                               OnSplitChosen="@StateHasChanged"
+                                                               OnSplitSkipped="@StateHasChanged" />
+                                            <ImageDecisionView ContainerNumber="@container"
+                                                               GroupIdentifier="@GroupIdentifier"
+                                                               IsConsolidated="@IsConsolidated"
+                                                               OnDecisionChanged="@RefreshOverallDecision"
+                                                               OnDecisionSaved="@CloseDialogAfterSave"
+                                                               OnNextContainer="@HandleNextContainer"
+                                                               OnAllContainersDecided="@HandleAllContainersDecided"
+                                                               AutoOpenImage="@(_containerAutoOpen.TryGetValue(container, out var ao) && ao)"
+                                                               OnAutoOpenHandled="@(() => _containerAutoOpen[container] = false)" />
+                                        </div>
+                                    </MudTabPanel>
+
+                                    <!-- ICUMS Data Tab (Shows BOE for IM/EX, CMR data for CMR clearance) - ✅ FIX: Lazy load like images -->
+                                    <MudTabPanel Text="ICUMS Data" Icon="@Icons.Material.Outlined.Description">
+                                        <div style="height: calc(100vh - 400px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveNestedScrollPosition(container, 2))">
+                                            @* ✅ FIX: ICUMS data is shared across all containers for non-consolidated cargo *@
+                                            @if (_icumsDataLoaded)
+                                        {
+                                            @* ✅ DYNAMIC: Non-consolidated cargo - Show containers in collapsible panels with shared BOE data *@
+                                            @if (_loadingBOEDetails)
+                                            {
+                                                <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+                                                    <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                                                    <MudText Typo="Typo.body1">Loading ICUMS data...</MudText>
+                                                </MudStack>
+                                            }
+                                            else if (_allBOEData?.Any() == true && Containers?.Any() == true)
+                                            {
+                                                <MudText Typo="Typo.h6" Class="mb-4">Complete ICUMS Details (BOE/CMR)</MudText>
+                                                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                                                    <MudIcon Icon="@Icons.Material.Outlined.Description" Class="mr-2" />
+                                                    <strong>Declaration Number:</strong> @GroupIdentifier | <strong>Containers:</strong> @Containers.Count container(s) (shared BOE data)
+                                                </MudAlert>
+                                                
+                                                <MudExpansionPanels MultiExpansion="true" Class="mt-3">
+                                                    @foreach (var container in Containers)
+                                                    {
+                                                        var categoryGroups = _allBOEData.GroupBy(r => r.Category).OrderBy(g => GetCategoryOrder(g.Key)).ToList();
+                                                        var totalFields = _allBOEData.Count;
+                                                        
+                                                        <MudExpansionPanel Text="@($"Container: {container}")" 
+                                                                           Icon="@Icons.Material.Outlined.Inventory2"
+                                                                           IsExpanded="false">
+                                                            <MudStack Spacing="2" Class="pa-2">
+                                                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                                                    @totalFields field(s) across @categoryGroups.Count category/categories
+                                                                </MudChip>
+                                                                
+                                                                @* Display categories (shared BOE data for all containers) - Now collapsible *@
+                                                                <MudExpansionPanels MultiExpansion="true" Class="mt-2">
+                                                                    @foreach (var categoryGroup in categoryGroups)
+                                                                    {
+                                                                        <MudExpansionPanel Text="@categoryGroup.Key" 
+                                                                                           Icon="@GetCategoryIcon(categoryGroup.Key)"
+                                                                                           IsExpanded="false">
+                                                                            <MudStack Spacing="2" Class="pa-2">
+                                                                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                                                                                    @categoryGroup.Count() field(s)
+                                                                                </MudChip>
+                                                                                
+                                                                                <MudGrid Spacing="2">
+                                                                                    @foreach (var record in categoryGroup)
+                                                                                    {
+                                                                                        <MudItem xs="12" sm="6" md="4">
+                                                                                            <MudStack Spacing="0">
+                                                                                                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                                                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                                                        <strong>@record.Field</strong>
+                                                                                                    </MudText>
+                                                                                                    @if (record.IsRequired)
+                                                                                                    {
+                                                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text" Style="height: 18px; font-size: 0.7rem;">Required</MudChip>
+                                                                                                    }
+                                                                                                </MudStack>
+                                                                                                <MudText Typo="Typo.body2">@(record.Value ?? "N/A")</MudText>
+                                                                                            </MudStack>
+                                                                                        </MudItem>
+                                                                                    }
+                                                                                </MudGrid>
+                                                                            </MudStack>
+                                                                        </MudExpansionPanel>
+                                                                    }
+                                                                </MudExpansionPanels>
+                                                            </MudStack>
+                                                        </MudExpansionPanel>
+                                                    }
+                                                </MudExpansionPanels>
+                                            }
+                                            else if (_allBOEData?.Any() == true && (Containers == null || !Containers.Any()))
+                                            {
+                                                <MudAlert Severity="Severity.Warning">BOE data loaded but no containers found</MudAlert>
+                                            }
+                                            else
+                                            {
+                                                <MudAlert Severity="Severity.Warning">No ICUMS data available</MudAlert>
+                                            }
+                                        }
+                                        </div>
+                                    </MudTabPanel>
+                                </MudTabs>
+                            </ChildContent>
+                        </MudExpansionPanel>
+                    }
+                </MudExpansionPanels>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Warning">No containers found for this record</MudAlert>
+            }
+        }
+        </div>
+    </DialogContent>
+    
+</MudDialog>
+
+@code {
+    [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
+    [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public string ScannerType { get; set; } = string.Empty;
+    [Parameter] public List<string>? Containers { get; set; }
+    [Parameter] public EventCallback? OnDecisionSaved { get; set; } // ✅ Callback to close dialog after save
+    [Parameter] public EventCallback? OnAllContainersDecided { get; set; } // ✅ Callback when all containers in group are decided
+    
+    // ✅ FIX #1: Disabled standardized view to prevent tab switching
+    private CargoType? _cargoType;
+    private string? _standardizedGroupIdentifier;
+    private bool _useStandardizedView = false;
+    private bool _determiningView = false; // ✅ Always false - no view determination needed
+
+    // ✅ FIX #2: Lazy loading flags for tabs - load only when tab is clicked
+    private int _activeTabIndex = 0;
+    private bool _imagesTabLoaded = false;
+    private bool _houseBLsLoaded = false;
+    private bool _icumsDataLoaded = false;
+    
+    // ✅ FIX #4: Per-container state tracking for non-consolidated view
+    private Dictionary<string, int> _containerTabIndices = new();
+    private Dictionary<string, bool> _containerImagesLoaded = new();
+    private Dictionary<string, bool> _containerPanelsExpanded = new();
+    private Dictionary<string, bool> _containerAutoOpen = new();
+    // Note: ICUMS data is shared across all containers for non-consolidated cargo, so use _icumsDataLoaded
+    
+    // ✅ AUTO-PROGRESSION: Track current container being processed
+    private string? _currentProcessingContainer = null;
+
+    // ✅ BULK DECISION: State tracking
+    private bool _bulkProcessing = false;
+    private string _bulkProgressText = "";
+
+    // Wave Processing context
+    private WaveContextDto? _waveContext;
+    
+    // ✅ Helper method to log to browser console (not server console)
+    private async Task LogToBrowserConsole(string message)
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("console.log", message);
+        }
+        catch
+        {
+            // Silently fail if JS interop isn't available (e.g., during prerendering)
+        }
+    }
+    
+    // ✅ SCROLL POSITION TRACKING: Remember scroll position for each tab
+    private ElementReference _tabScrollRef0, _tabScrollRef1, _tabScrollRef2, _tabScrollRef3, _tabScrollRefSummary; // Consolidated view tab scroll refs
+    private Dictionary<int, double> _tabScrollPositions = new(); // Consolidated view scroll positions
+    private Dictionary<string, Dictionary<int, double>> _nestedTabScrollPositions = new(); // Non-consolidated: container -> tab index -> position
+    
+    // ✅ CARGO GROUP FOR SUMMARY: Variables for Summary tab
+    private CargoGroupDto? _cargoGroupForSummary = null;
+    private bool _loadingCargoGroupForSummary = false;
+    private bool _cargoGroupLoadFailed = false; // ✅ Track if load failed (e.g., no BOE document)
+    private ImageAnalysisViewContext? _imageAnalysisContext;
+    private bool _isLoadingImageAnalysisContext = false;
+    
+    // ✅ PERFORMANCE FIX #3: Cache group identifier resolution to avoid repeated API calls
+    private static readonly Dictionary<string, CachedGroupIdentifier> _groupIdentifierCache = new();
+    private static readonly object _groupIdentifierCacheLock = new();
+    private const int MaxGroupIdentifierCacheSize = 100;
+    
+    private class CachedGroupIdentifier
+    {
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public CargoType Type { get; set; }
+        public DateTime CachedAt { get; set; }
+    }
+    
+    // ✅ FIX #2: Handle tab changes for lazy loading (CONSOLIDATED view)
+    private async Task OnActiveTabChanged(int newIndex)
+    {
+        Console.WriteLine($"🔄 [ImageAnalysisViewDialog] Tab changed from {_activeTabIndex} to {newIndex} (Consolidated)");
+        
+        // Save scroll position of previous tab
+        SaveScrollPosition(_activeTabIndex);
+        
+        _activeTabIndex = newIndex;
+        
+        // Restore scroll position of new tab
+        await RestoreScrollPosition(newIndex);
+        
+        // Load tab content when activated
+        if (newIndex == 0 && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
+        {
+            // Summary tab - load cargo group if not already loaded (or retry if it failed)
+            Console.WriteLine($"📊 [ImageAnalysisViewDialog] Summary tab activated (consolidated), loading cargo group for {GroupIdentifier}");
+            _cargoGroupLoadFailed = false; // Reset failure flag when retrying
+            _ = LoadCargoGroupForSummary();
+        }
+        else if (newIndex == 1 && !_imagesTabLoaded)
+        {
+            Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Images & Decisions tab activated, loading images for {GroupIdentifier}");
+            _imagesTabLoaded = true;
+            // Force immediate UI update to show ImageDecisionView
+            await InvokeAsync(StateHasChanged);
+            // Small delay to ensure UI is updated before component renders
+            await Task.Delay(50);
+            await InvokeAsync(StateHasChanged);
+        }
+        else if (newIndex == 2 && !_houseBLsLoaded && IsConsolidated)
+        {
+            _houseBLsLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            _ = LoadHouseBLs();
+        }
+        else if (newIndex == 3 && IsConsolidated)
+        {
+            // If data is already loaded, just show it
+            if (_allBOEData != null && _allBOEData.Any())
+            {
+                Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS data already loaded ({_allBOEData.Count} records), displaying immediately");
+                _icumsDataLoaded = true;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+            
+            // If not loaded yet, set flag and load
+            if (!_icumsDataLoaded)
+            {
+                _icumsDataLoaded = true;
+                await InvokeAsync(StateHasChanged); // Update UI immediately to show loading spinner
+                await LoadBOEDetailsForConsolidated();
+                await InvokeAsync(StateHasChanged); // Update UI after loading completes
+            }
+            else
+            {
+                // Data is loading, just wait for it
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+    
+    // ✅ FIX #1: Handle tab changes for nested tabs (NON-CONSOLIDATED view)
+    private async Task OnNestedTabChanged(string containerNumber, int newIndex)
+    {
+        Console.WriteLine($"🔄 [ImageAnalysisViewDialog] Nested tab changed for container {containerNumber}: index {newIndex} (Non-Consolidated)");
+        
+        // Save scroll position of previous tab
+        var oldIndex = _containerTabIndices.TryGetValue(containerNumber, out var idx) ? idx : 0;
+        SaveNestedScrollPosition(containerNumber, oldIndex);
+        
+        _containerTabIndices[containerNumber] = newIndex;
+        
+        // Restore scroll position of new tab
+        await RestoreNestedScrollPosition(containerNumber, newIndex);
+        
+        // Load tab content when activated
+        if (newIndex == 0 && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
+        {
+            // Summary tab - load cargo group if not already loaded (or retry if it failed)
+            Console.WriteLine($"📊 [ImageAnalysisViewDialog] Summary tab activated, loading cargo group for {GroupIdentifier}");
+            _cargoGroupLoadFailed = false; // Reset failure flag when retrying
+            _ = LoadCargoGroupForSummary();
+        }
+        else if (newIndex == 1 && (!_containerImagesLoaded.ContainsKey(containerNumber) || !_containerImagesLoaded[containerNumber]))
+        {
+            Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Images & Decisions tab activated (non-consolidated) for container {containerNumber}");
+            _containerImagesLoaded[containerNumber] = true;
+            // Force immediate UI update to show ImageDecisionView
+            await InvokeAsync(StateHasChanged);
+            // Small delay to ensure UI is updated before component renders
+            await Task.Delay(50);
+            await InvokeAsync(StateHasChanged);
+        }
+        else if (newIndex == 2)
+        {
+            // ✅ FIX: ICUMS data is shared across all containers for non-consolidated, use shared flag
+            Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS tab activated for non-consolidated cargo (BOE: {GroupIdentifier})");
+            
+            // If data is already loaded, just show it
+            if (_allBOEData != null && _allBOEData.Any())
+            {
+                Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS data already loaded ({_allBOEData.Count} records), displaying immediately");
+                _icumsDataLoaded = true;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+            
+            // If not loaded yet, set flag and load
+            if (!_icumsDataLoaded)
+            {
+                _icumsDataLoaded = true;
+                await InvokeAsync(StateHasChanged); // Update UI immediately to show loading spinner
+                await LoadBOEDetails(); // Load BOE data (shared across all containers for this declaration)
+                await InvokeAsync(StateHasChanged); // Update UI after loading completes
+            }
+            else
+            {
+                // Data is loading, just wait for it
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+    
+    // ✅ SCROLL POSITION TRACKING: Methods for consolidated view
+    private void SaveScrollPosition(int tabIndex)
+    {
+        // Store scroll position - actual implementation would use JS interop to get scrollTop
+        // For now, we'll implement a simple version that works with the scroll event
+        // The scroll position will be captured when user scrolls
+    }
+    
+    private async Task RestoreScrollPosition(int tabIndex)
+    {
+        if (_tabScrollPositions.ContainsKey(tabIndex))
+        {
+            try
+            {
+                // Restore scroll position using JS interop
+                // This will be implemented after render
+                await Task.Delay(50); // Small delay to ensure DOM is ready
+                // TODO: Implement JS interop to restore scroll position
+            }
+            catch { }
+        }
+    }
+    
+    // ✅ SCROLL POSITION TRACKING: Methods for non-consolidated view
+    private void SaveNestedScrollPosition(string container, int tabIndex)
+    {
+        // Store scroll position
+        if (!_nestedTabScrollPositions.ContainsKey(container))
+        {
+            _nestedTabScrollPositions[container] = new Dictionary<int, double>();
+        }
+        // Actual scroll position capture would use JS interop
+    }
+    
+    private async Task RestoreNestedScrollPosition(string container, int tabIndex)
+    {
+        if (_nestedTabScrollPositions.ContainsKey(container) && _nestedTabScrollPositions[container].ContainsKey(tabIndex))
+        {
+            try
+            {
+                // Restore scroll position using JS interop
+                await Task.Delay(50); // Small delay to ensure DOM is ready
+                // TODO: Implement JS interop to restore scroll position
+            }
+            catch { }
+        }
+    }
+
+    private bool _loadingHouseBLs = false;
+    private bool _loadingContainers = false;
+    private bool _loadingBOEDetails = false;
+    private List<HouseBLDetailDto> _houseBLDetails = new();
+    private List<ICUMSDataRecordDto>? _allBOEData = null;
+
+    // House BL row expansion state — track which HBLs the user has clicked
+    // "View" on so we can show their full BOE details inline.
+    private readonly HashSet<string> _expandedHouseBLs = new();
+
+    private void ToggleHouseBLExpansion(string houseBL)
+    {
+        if (_expandedHouseBLs.Contains(houseBL))
+        {
+            _expandedHouseBLs.Remove(houseBL);
+        }
+        else
+        {
+            _expandedHouseBLs.Add(houseBL);
+        }
+        StateHasChanged();
+    }
+
+    // Render the Cargo Info category as a line-item table (mirrors the
+    // Summary tab's goods table). Used by both the House BL expansion
+    // panel and the ICUMS Data tab so the layout is consistent.
+    //
+    // The API emits cargo info records as field/value pairs with the
+    // format "Item {N}: {FieldName}" when there are multiple manifest
+    // items, or just "{FieldName}" with no prefix when there's only one.
+    // Known field names from ContainerDetailsController:
+    //     "HS Code", "Item Description", "Quantity", "Weight",
+    //     "FOB Value", "Duty Paid", "Item Country of Origin", "CPC"
+    // Plus container-level (non-item-prefixed) fields:
+    //     "Goods Description", "Country of Origin", "Container Weight",
+    //     "Container Description", "Total Duty Paid"
+    private RenderFragment RenderCargoInfoTable(List<ICUMSDataRecordDto> records) =>
+        @<MudSimpleTable Dense="true" Hover="true" Bordered="true" Class="mt-1" Style="background:white;">
+            <thead>
+                <tr>
+                    <th style="width:40px;">#</th>
+                    <th>Description</th>
+                    <th style="width:110px;">HS Code</th>
+                    <th style="width:90px;">Quantity</th>
+                    <th style="width:90px;">Weight</th>
+                    <th style="width:110px;">FOB Value</th>
+                    <th style="width:100px;">Duty Paid</th>
+                    <th style="width:80px;">Origin</th>
+                    <th style="width:60px;">CPC</th>
+                </tr>
+            </thead>
+            <tbody>
+                @{
+                    var itemGroups = GroupCargoInfoByItem(records);
+                }
+                @if (itemGroups.Count == 0)
+                {
+                    <tr>
+                        <td colspan="9" style="text-align:center; color:#94a3b8; padding:8px;">
+                            No line item details available
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (var grp in itemGroups)
+                    {
+                        // Look up a field by trying multiple aliases (the API uses different
+                        // names for the same logical column depending on the BOE shape).
+                        string getField(params string[] aliases)
+                        {
+                            foreach (var alias in aliases)
+                            {
+                                var rec = grp.Value.FirstOrDefault(r =>
+                                    string.Equals(r.Field, alias, StringComparison.OrdinalIgnoreCase));
+                                if (rec != null && !string.IsNullOrWhiteSpace(rec.Value))
+                                    return rec.Value;
+                            }
+                            return "-";
+                        }
+                        <tr>
+                            <td style="color:#94a3b8;">@(grp.Key ?? "1")</td>
+                            <td style="font-weight:500;">@getField("Item Description", "Description", "Goods Description", "Container Description")</td>
+                            <td><code style="font-size:11px;">@getField("HS Code", "HSCode")</code></td>
+                            <td>@getField("Quantity", "Qty")</td>
+                            <td>@getField("Weight", "Container Weight")</td>
+                            <td>@getField("FOB Value", "FOB", "FOBValue")</td>
+                            <td>@getField("Duty Paid", "Total Duty Paid", "DutyPaid")</td>
+                            <td>@getField("Item Country of Origin", "Country of Origin", "Origin")</td>
+                            <td>@getField("CPC")</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </MudSimpleTable>;
+
+    // Group raw ICUMS Cargo Info field/value records by their item number.
+    //
+    // The API uses two formats:
+    //   1. "Item {N}: {FieldName}"   when there are multiple manifest items
+    //   2. "{FieldName}"             when there's only one item (no prefix)
+    //
+    // We strip the "Item N: " prefix so the table renderer can look fields up
+    // by their base name. Records WITHOUT a prefix are bucketed under item "1"
+    // so the single-item case still produces one table row.
+    private List<KeyValuePair<string?, List<ICUMSDataRecordDto>>> GroupCargoInfoByItem(List<ICUMSDataRecordDto> records)
+    {
+        var result = new Dictionary<string, List<ICUMSDataRecordDto>>();
+        // "Item 1: Field Name", "Item 1 :Field Name", "Item 1 Field Name" — accept any
+        var itemRegex = new System.Text.RegularExpressions.Regex(
+            @"^Item\s+(\d+)\s*:?\s*(.*)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        foreach (var r in records)
+        {
+            string itemKey;
+            string baseField = (r.Field ?? string.Empty).Trim();
+            var match = itemRegex.Match(baseField);
+            if (match.Success && !string.IsNullOrEmpty(match.Groups[2].Value))
+            {
+                itemKey = match.Groups[1].Value;
+                baseField = match.Groups[2].Value.Trim();
+            }
+            else
+            {
+                // No "Item N:" prefix → single-item BOE, bucket everything under "1"
+                itemKey = "1";
+            }
+
+            if (!result.TryGetValue(itemKey, out var list))
+            {
+                list = new List<ICUMSDataRecordDto>();
+                result[itemKey] = list;
+            }
+            list.Add(new ICUMSDataRecordDto
+            {
+                Field = baseField,
+                Value = r.Value,
+                Category = r.Category,
+                IsRequired = r.IsRequired,
+                HouseBL = r.HouseBL
+            });
+        }
+
+        return result
+            .OrderBy(kv => int.TryParse(kv.Key, out var n) ? n : int.MaxValue)
+            .Select(kv => new KeyValuePair<string?, List<ICUMSDataRecordDto>>(kv.Key, kv.Value))
+            .ToList();
+    }
+
+    // Overall decision tracking
+    private string _overallDecision = "Pending";
+    private int _totalImages = 0;
+    private int _normalCount = 0;
+    private int _abnormalCount = 0;
+    private string? _lastReviewedBy = null;
+    private List<ImageAnalysisDecisionDto> _allDecisions = new(); // Store all decisions to display tags
+
+
+    protected override Task OnInitializedAsync()
+    {
+        Console.WriteLine($"🚀🚀🚀 [ImageAnalysisViewDialog] OnInitializedAsync START");
+        Console.WriteLine($"   GroupIdentifier: {GroupIdentifier}");
+        Console.WriteLine($"   IsConsolidated: {IsConsolidated}");
+        Console.WriteLine($"   ScannerType: {ScannerType}");
+        Console.WriteLine($"   Passed Containers: {(Containers?.Any() == true ? string.Join(", ", Containers) : "None")}");
+        
+        // ✅ FIX #1: Disable standardized view - always use legacy view to prevent tab switching
+        _useStandardizedView = false;
+        _determiningView = false;
+        
+        // ✅ FIX #2: Set up containers without loading heavy data
+        if (IsConsolidated)
+        {
+            Console.WriteLine($"📦 [ImageAnalysisViewDialog] CONSOLIDATED cargo - Container: {GroupIdentifier}");
+            if (Containers == null || !Containers.Any())
+            {
+                Containers = new List<string> { GroupIdentifier };
+            }
+            // ✅ AUTO-PROGRESSION: For consolidated, set current container
+            _currentProcessingContainer = GroupIdentifier;
+        }
+        else
+        {
+            Console.WriteLine($"📦 [ImageAnalysisViewDialog] NON-CONSOLIDATED cargo - BOE: {GroupIdentifier}");
+            // ✅ AUTO-PROGRESSION: Find first undecided container and expand it
+            // This will be handled after containers are loaded
+            // ✅ FIX #2: Only load containers if not provided - do it in background
+            if (Containers == null || !Containers.Any())
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await LoadContainers();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading containers: {ex.Message}");
+                    }
+                });
+            }
+        }
+
+        // ✅ FIX #2: Load overall decision in background (non-blocking)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RefreshOverallDecision();
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading overall decision: {ex.Message}");
+            }
+        });
+        
+        // Preload image analysis context (cargo group + container contexts)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await LoadImageAnalysisContext();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading image analysis context: {ex.Message}");
+            }
+        });
+        
+        // ✅ FIX: Preload ICUMS data in background for non-consolidated cargo (shared across containers)
+        if (!IsConsolidated)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await PreloadICUMSData();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error preloading ICUMS data: {ex.Message}");
+                }
+            });
+        }
+        
+        // Load cargo group for summary (fallback if preloader disabled)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await LoadCargoGroupForSummary();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading cargo group for summary: {ex.Message}");
+            }
+        });
+        
+        // Load wave context in background (non-blocking)
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await LoadWaveContext();
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading wave context: {ex.Message}");
+            }
+        });
+
+        Console.WriteLine($"✅✅✅ [ImageAnalysisViewDialog] OnInitializedAsync COMPLETE - UI ready immediately");
+
+        // Return completed task since all async work is done in background Task.Run calls
+        return Task.CompletedTask;
+    }
+
+    private async Task LoadImageAnalysisContext()
+    {
+        _isLoadingImageAnalysisContext = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            _imageAnalysisContext = await ImageAnalysisPreloader.LoadAsync(
+                GroupIdentifier,
+                IsConsolidated,
+                Containers,
+                forceRefresh: false);
+
+            if (_imageAnalysisContext != null)
+            {
+                // Use preloaded cargo group for summary if available
+                if (_imageAnalysisContext.CargoGroupContext?.Group != null)
+                {
+                    _cargoGroupForSummary = _imageAnalysisContext.CargoGroupContext.Group;
+                    _loadingCargoGroupForSummary = false;
+                }
+
+                // ✅ FIX: Extract preloaded ICUMS data from container contexts
+                if (_imageAnalysisContext.ContainerContexts.Any())
+                {
+                    if (IsConsolidated)
+                    {
+                        // For consolidated, use the consolidated container context
+                        var consolidatedCtx = _imageAnalysisContext.GetConsolidatedContainerContext();
+                        if (consolidatedCtx?.ICUMSData?.Data != null && consolidatedCtx.ICUMSData.Data.Any())
+                        {
+                            _allBOEData = consolidatedCtx.ICUMSData.Data.Select(r => new ICUMSDataRecordDto
+                            {
+                                Field = r.Field,
+                                Value = r.Value,
+                                Category = r.Category,
+                                IsRequired = r.IsRequired,
+                                HouseBL = r.HouseBL
+                            }).ToList();
+                            _icumsDataLoaded = true;
+                            Console.WriteLine($"✅ [ImageAnalysisViewDialog] Extracted {_allBOEData.Count} preloaded ICUMS records from consolidated context");
+                        }
+                    }
+                    else
+                    {
+                        // For non-consolidated, ICUMS data is shared - use first container's ICUMS data
+                        var firstContainerCtx = _imageAnalysisContext.ContainerContexts.Values.FirstOrDefault();
+                        if (firstContainerCtx?.ICUMSData?.Data != null && firstContainerCtx.ICUMSData.Data.Any())
+                        {
+                            _allBOEData = firstContainerCtx.ICUMSData.Data.Select(r => new ICUMSDataRecordDto
+                            {
+                                Field = r.Field,
+                                Value = r.Value,
+                                Category = r.Category,
+                                IsRequired = r.IsRequired,
+                                HouseBL = r.HouseBL
+                            }).ToList();
+                            _icumsDataLoaded = true;
+                            Console.WriteLine($"✅ [ImageAnalysisViewDialog] Extracted {_allBOEData.Count} preloaded ICUMS records from context");
+                        }
+                    }
+                }
+
+                Console.WriteLine($"✅ [ImageAnalysisViewDialog] Loaded image analysis context: {_imageAnalysisContext.ContainerContexts.Count} container(s)");
+                Snackbar.Add($"Loaded data for {_imageAnalysisContext.ContainerContexts.Count} container(s)", Severity.Success);
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Image analysis context preload returned null");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageAnalysisViewDialog] Error loading image analysis context: {ex.Message}");
+            Snackbar.Add("Using fallback data loading", Severity.Info);
+        }
+        finally
+        {
+            _isLoadingImageAnalysisContext = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // ✅ FIX: Preload ICUMS data in background for non-consolidated cargo
+    private async Task PreloadICUMSData()
+    {
+        if (IsConsolidated || string.IsNullOrEmpty(GroupIdentifier))
+            return;
+
+        try
+        {
+            Console.WriteLine($"🔍 [PreloadICUMSData] Preloading ICUMS data for declaration: {GroupIdentifier}");
+            
+            // Load BOE details in background
+            if (Containers?.Any() == true)
+            {
+                var firstContainer = Containers.First();
+                var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
+                    $"/api/containerdetails/icums/{firstContainer}?page=1&pageSize=1000&declarationNumber={Uri.EscapeDataString(GroupIdentifier)}");
+                
+                if (icumsResponse?.Data?.Any() == true)
+                {
+                    _allBOEData = icumsResponse.Data.Select(r => new ICUMSDataRecordDto
+                    {
+                        Field = r.Field,
+                        Value = r.Value,
+                        Category = r.Category,
+                        IsRequired = r.IsRequired,
+                        HouseBL = r.HouseBL
+                    }).ToList();
+                    _icumsDataLoaded = true;
+                    Console.WriteLine($"✅ [PreloadICUMSData] Preloaded {_allBOEData.Count} ICUMS records for declaration {GroupIdentifier}");
+                    await InvokeAsync(StateHasChanged);
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [PreloadICUMSData] No ICUMS data found for declaration {GroupIdentifier}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [PreloadICUMSData] Error preloading ICUMS data: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadCargoGroupForSummary()
+    {
+        var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var identifierResolutionStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var cargoGroupLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] START - GroupIdentifier: {GroupIdentifier}, IsConsolidated: {IsConsolidated}");
+        
+        _loadingCargoGroupForSummary = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            // ✅ FIX: For consolidated cargo, GroupIdentifier is container number, but cargo group service needs Master BL
+            // ✅ FIX: For non-consolidated cargo, GroupIdentifier is declaration number, which is correct
+            // First, try to get the correct group identifier from container number if needed
+            string actualGroupIdentifier = GroupIdentifier;
+            CargoType? actualCargoType = IsConsolidated ? CargoType.Consolidated : CargoType.NonConsolidated;
+            
+            // ✅ FIX: Use same approach as ICUMS data - query BOE documents directly by container number
+            // This works even when BlNumber/DeclarationNumber fields are empty, as long as BOE document exists
+            if (IsConsolidated)
+            {
+                // For consolidated, GroupIdentifier is container number - need to find Master BL from BOE document
+                var containerNumber = GroupIdentifier; // For consolidated, GroupIdentifier = ContainerNumber
+                
+                // ✅ PERFORMANCE FIX #3: Check cache first
+                CachedGroupIdentifier? cachedIdentifier = null;
+                lock (_groupIdentifierCacheLock)
+                {
+                    if (_groupIdentifierCache.TryGetValue(containerNumber, out cachedIdentifier))
+                    {
+                        actualGroupIdentifier = cachedIdentifier.GroupIdentifier;
+                        actualCargoType = cachedIdentifier.Type;
+                        Console.WriteLine($"✅ [LoadCargoGroupForSummary] Using cached group identifier for container {containerNumber}: {actualGroupIdentifier} (Type: {actualCargoType}, cached at {cachedIdentifier.CachedAt:HH:mm:ss})");
+                    }
+                }
+                
+                if (cachedIdentifier == null)
+                {
+                    identifierResolutionStopwatch.Restart();
+                    // Cache miss - resolve group identifier
+                    // ✅ FIX: Try the API endpoint first (requires BlNumber/DeclarationNumber to be populated)
+                    var groupIdentifierInfo = await CargoGroupService.GetGroupIdentifierByContainerAsync(containerNumber);
+                    identifierResolutionStopwatch.Stop();
+                    Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] GetGroupIdentifierByContainerAsync took: {identifierResolutionStopwatch.ElapsedMilliseconds}ms");
+                    
+                    if (groupIdentifierInfo != null)
+                    {
+                        actualGroupIdentifier = groupIdentifierInfo.GroupIdentifier;
+                        actualCargoType = groupIdentifierInfo.Type;
+                        Console.WriteLine($"🔍 [LoadCargoGroupForSummary] Resolved container {containerNumber} to group identifier: {actualGroupIdentifier} (Type: {actualCargoType})");
+                        
+                        // Cache the result
+                        lock (_groupIdentifierCacheLock)
+                        {
+                            if (_groupIdentifierCache.Count >= MaxGroupIdentifierCacheSize)
+                            {
+                                // Remove oldest entries (simple FIFO - remove first 20 entries)
+                                var keysToRemove = _groupIdentifierCache.Keys.Take(20).ToList();
+                                foreach (var key in keysToRemove)
+                                {
+                                    _groupIdentifierCache.Remove(key);
+                                }
+                            }
+                            _groupIdentifierCache[containerNumber] = new CachedGroupIdentifier
+                            {
+                                GroupIdentifier = actualGroupIdentifier,
+                                Type = actualCargoType.Value,
+                                CachedAt = DateTime.UtcNow
+                            };
+                        }
+                    }
+                    else
+                    {
+                        identifierResolutionStopwatch.Restart();
+                        // ✅ FALLBACK: Get full BOE data directly (same approach as ICUMS tab uses)
+                        // This extracts DeclarationNumber/BlNumber from the actual BOE document that has data
+                        Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] GetGroupIdentifierByContainerAsync returned null, trying GetFullBOEDataAsync for container {containerNumber}");
+                        
+                        var fullBOEData = await ContainerDetailsService.GetFullBOEDataAsync(containerNumber);
+                        identifierResolutionStopwatch.Stop();
+                        Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] GetFullBOEDataAsync took: {identifierResolutionStopwatch.ElapsedMilliseconds}ms");
+                        
+                        if (fullBOEData != null)
+                        {
+                            // BOE document exists - extract group identifier from it
+                            if (!string.IsNullOrEmpty(fullBOEData.BlNumber))
+                            {
+                                // Consolidated cargo - use Master BL
+                                actualGroupIdentifier = fullBOEData.BlNumber;
+                                actualCargoType = CargoType.Consolidated;
+                                Console.WriteLine($"✅ [LoadCargoGroupForSummary] Extracted Master BL from BOE data: {actualGroupIdentifier} (Type: {actualCargoType})");
+                            }
+                            else if (!string.IsNullOrEmpty(fullBOEData.DeclarationNumber))
+                            {
+                                // Non-consolidated cargo - use Declaration Number
+                                actualGroupIdentifier = fullBOEData.DeclarationNumber;
+                                actualCargoType = CargoType.NonConsolidated;
+                                Console.WriteLine($"✅ [LoadCargoGroupForSummary] Extracted Declaration Number from BOE data: {actualGroupIdentifier} (Type: {actualCargoType})");
+                            }
+                            else
+                            {
+                                // BOE exists but BlNumber and DeclarationNumber are both NULL/empty
+                                _cargoGroupLoadFailed = true;
+                                Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] BOE document exists for container {containerNumber}, but BlNumber and DeclarationNumber are both NULL/empty");
+                                Console.WriteLine($"   BOE Document ID: {fullBOEData.AllFields?.GetValueOrDefault("BOEDocumentId") ?? "N/A"}");
+                                Console.WriteLine($"   Clearance Type: {fullBOEData.ClearanceType ?? "N/A"}");
+                                Console.WriteLine($"   Issue: Cannot create cargo group without group identifier (Master BL or Declaration Number)");
+                                Console.WriteLine($"   Action Required: BOE document needs to have BlNumber (for consolidated) or DeclarationNumber (for non-consolidated) populated");
+                            }
+                            
+                            // Cache the result if we successfully extracted a group identifier
+                            if (!string.IsNullOrEmpty(actualGroupIdentifier) && actualCargoType.HasValue)
+                            {
+                                lock (_groupIdentifierCacheLock)
+                                {
+                                    if (_groupIdentifierCache.Count >= MaxGroupIdentifierCacheSize)
+                                    {
+                                        var keysToRemove = _groupIdentifierCache.Keys.Take(20).ToList();
+                                        foreach (var key in keysToRemove)
+                                        {
+                                            _groupIdentifierCache.Remove(key);
+                                        }
+                                    }
+                                    _groupIdentifierCache[containerNumber] = new CachedGroupIdentifier
+                                    {
+                                        GroupIdentifier = actualGroupIdentifier,
+                                        Type = actualCargoType.Value,
+                                        CachedAt = DateTime.UtcNow
+                                    };
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // No BOE document found at all
+                            _cargoGroupLoadFailed = true;
+                            Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] No BOE document found for container {containerNumber}");
+                        }
+                    }
+                }
+            }
+            
+            // Only attempt to load cargo group if we have a valid group identifier
+            if (!string.IsNullOrEmpty(actualGroupIdentifier))
+            {
+                identifierResolutionStopwatch.Stop();
+                Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] Group identifier resolution total: {identifierResolutionStopwatch.ElapsedMilliseconds}ms");
+                Console.WriteLine($"🔍 [LoadCargoGroupForSummary] Loading cargo group - GroupIdentifier: {actualGroupIdentifier}, CargoType: {actualCargoType}, IsConsolidated: {IsConsolidated}");
+                
+                cargoGroupLoadStopwatch.Restart();
+                // ✅ PERFORMANCE FIX: Load only ICUMS data for summary tab (saves 15-45 seconds)
+                // Summary tab only displays ICUMS data, so skip loading scanner and image data
+                _cargoGroupForSummary = await CargoGroupService.GetCargoGroupAsync(
+                    actualGroupIdentifier, 
+                    actualCargoType,
+                    loadScannerData: false,  // ✅ Skip scanner data (not needed for summary)
+                    loadImageData: false,    // ✅ Skip image data (not needed for summary)
+                    loadICUMSData: true);    // ✅ Only load ICUMS data (needed for summary)
+                cargoGroupLoadStopwatch.Stop();
+                Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] GetCargoGroupAsync (first attempt) took: {cargoGroupLoadStopwatch.ElapsedMilliseconds}ms");
+                
+                if (_cargoGroupForSummary == null)
+                {
+                    // ✅ Try alternative cargo type if first attempt fails (container might be misclassified)
+                    var alternativeType = actualCargoType == CargoType.Consolidated ? CargoType.NonConsolidated : CargoType.Consolidated;
+                    Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] Cargo group not found for {actualGroupIdentifier} as {actualCargoType}, trying {alternativeType}...");
+                    cargoGroupLoadStopwatch.Restart();
+                    _cargoGroupForSummary = await CargoGroupService.GetCargoGroupAsync(
+                        actualGroupIdentifier, 
+                        alternativeType,
+                        loadScannerData: false,  // ✅ Skip scanner data
+                        loadImageData: false,    // ✅ Skip image data
+                        loadICUMSData: true);    // ✅ Only load ICUMS data
+                    cargoGroupLoadStopwatch.Stop();
+                    Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] GetCargoGroupAsync (alternative type) took: {cargoGroupLoadStopwatch.ElapsedMilliseconds}ms");
+                    
+                    if (_cargoGroupForSummary == null)
+                    {
+                        // ✅ Mark as failed - cargo group cannot be loaded
+                        _cargoGroupLoadFailed = true;
+                        Console.WriteLine($"❌ [LoadCargoGroupForSummary] Cargo group not found for summary: {actualGroupIdentifier} (tried both {actualCargoType} and {alternativeType})");
+                        Console.WriteLine($"   Original GroupIdentifier: {GroupIdentifier}");
+                        Console.WriteLine($"   IsConsolidated: {IsConsolidated}");
+                        Console.WriteLine($"   Possible reasons:");
+                        Console.WriteLine($"   - Cargo group service cannot find matching records for identifier '{actualGroupIdentifier}'");
+                        Console.WriteLine($"   - BOE documents may exist but not be properly grouped");
+                        Console.WriteLine($"   - Data may need to be reprocessed or synchronized");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"✅ [LoadCargoGroupForSummary] Found cargo group as {alternativeType} (was initially classified as {actualCargoType})");
+                        _cargoGroupLoadFailed = false; // Success - clear failure flag
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"✅ [LoadCargoGroupForSummary] Loaded cargo group for summary: {actualGroupIdentifier}");
+                    Console.WriteLine($"   Containers: {_cargoGroupForSummary.ContainerNumbers?.Count ?? 0}");
+                    Console.WriteLine($"   ICUMS Records: {_cargoGroupForSummary.Data?.ICUMSData?.Count ?? 0}");
+                    Console.WriteLine($"   Scanner Records: {_cargoGroupForSummary.Data?.ScannerData?.Count ?? 0}");
+                    _cargoGroupLoadFailed = false; // Success - clear failure flag
+                }
+            }
+            else
+            {
+                // No valid group identifier was determined
+                _cargoGroupLoadFailed = true;
+                Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] Cannot load cargo group - no valid group identifier determined");
+                Console.WriteLine($"   Original GroupIdentifier: {GroupIdentifier}");
+                Console.WriteLine($"   IsConsolidated: {IsConsolidated}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _cargoGroupLoadFailed = true;
+            Console.WriteLine($"❌ [LoadCargoGroupForSummary] Exception loading cargo group for summary: {ex.Message}");
+            Console.WriteLine($"   Exception Type: {ex.GetType().Name}");
+            Console.WriteLine($"   Stack Trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"   Inner Exception: {ex.InnerException.Message}");
+            }
+            Console.WriteLine($"   GroupIdentifier: {GroupIdentifier}");
+            Console.WriteLine($"   IsConsolidated: {IsConsolidated}");
+        }
+        finally
+        {
+            totalStopwatch.Stop();
+            _loadingCargoGroupForSummary = false;
+            await InvokeAsync(StateHasChanged);
+            
+            Console.WriteLine($"⏱️ [LoadCargoGroupForSummary] COMPLETE - Total time: {totalStopwatch.ElapsedMilliseconds}ms ({totalStopwatch.Elapsed.TotalSeconds:F2}s)");
+            Console.WriteLine($"   - Identifier resolution: {identifierResolutionStopwatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"   - Cargo group loading: {cargoGroupLoadStopwatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"   - Success: {_cargoGroupForSummary != null}");
+        }
+    }
+
+    private async Task LoadHouseBLs()
+    {
+        if (_houseBLsLoaded && _houseBLDetails.Any()) return; // Already loaded
+        
+        _loadingHouseBLs = true;
+        _houseBLsLoaded = true;
+        try
+        {
+            Console.WriteLine($"🔍 [LoadHouseBLs] Loading House BLs for container: {GroupIdentifier}");
+            
+            // Load all House BLs for this container from ConsolidatedCargo endpoint
+            _houseBLDetails = await ApiService.GetAsync<List<HouseBLDetailDto>>(
+                $"/api/consolidatedcargo/container/{GroupIdentifier}/housebls") ?? new();
+            
+            Console.WriteLine($"✅ [LoadHouseBLs] Loaded {_houseBLDetails.Count} House BL(s)");
+            
+            if (!_houseBLDetails.Any())
+            {
+                Console.WriteLine($"⚠️ [LoadHouseBLs] No House BLs found for container {GroupIdentifier}");
+                Snackbar.Add("No House BLs found for this container", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [LoadHouseBLs] Error loading House BLs: {ex.Message}");
+            Console.WriteLine($"❌ [LoadHouseBLs] Stack trace: {ex.StackTrace}");
+            Snackbar.Add("Error loading House BL data", Severity.Warning);
+            _houseBLsLoaded = false; // Reset so user can retry
+        }
+        finally
+        {
+            _loadingHouseBLs = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadContainers()
+    {
+        _loadingContainers = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            Console.WriteLine($"🔍 [LoadContainers] Loading containers for declaration: {GroupIdentifier}");
+            Console.WriteLine($"🔍 [LoadContainers] Passed Containers parameter: {(Containers?.Any() == true ? string.Join(", ", Containers) : "None")}");
+            
+            // API returns List<string> - just container numbers
+            var containerList = await ApiService.GetAsync<List<string>>(
+                $"/api/consolidatedcargo/declaration/{GroupIdentifier}/containers") ?? new();
+            
+            Console.WriteLine($"🔍 [LoadContainers] API returned {containerList.Count} container(s)");
+            
+            if (!containerList.Any() && Containers?.Any() == true)
+            {
+                // Use the Containers parameter if API didn't return anything
+                Console.WriteLine($"⚠️ [LoadContainers] API returned empty list, using passed Containers parameter ({Containers.Count} containers)");
+                containerList = Containers;
+            }
+            
+            Containers = containerList;
+            
+            Console.WriteLine($"✅ [LoadContainers] Final container list: {Containers?.Count ?? 0} container(s)");
+
+            // ✅ AUTO-PROGRESSION: Find first undecided container and expand it
+            await FindAndExpandFirstUndecidedContainer();
+
+            // Also load BOE details for this declaration number
+            await LoadBOEDetails();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [LoadContainers] Error loading containers: {ex.Message}");
+            Console.WriteLine($"❌ [LoadContainers] Stack trace: {ex.StackTrace}");
+            
+            // ✅ FIX: If API fails, use the Containers parameter that was passed
+            if (Containers?.Any() == true)
+            {
+                Console.WriteLine($"✅ [LoadContainers] Using passed Containers parameter as fallback ({Containers.Count} containers)");
+                Snackbar.Add($"Using cached container list ({Containers.Count} containers)", Severity.Info);
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [LoadContainers] No containers available from API or parameter");
+                Snackbar.Add($"Error loading container list: {ex.Message}", Severity.Warning);
+            }
+        }
+        finally
+        {
+            _loadingContainers = false;
+        }
+    }
+
+    private async Task LoadBOEDetailsForConsolidated()
+    {
+        _loadingBOEDetails = true;
+        await InvokeAsync(StateHasChanged); // Update UI to show loading spinner
+        try
+        {
+            Console.WriteLine($"🔍 [LoadBOEDetailsForConsolidated] Loading all House BLs for container: {GroupIdentifier}");
+            
+            // For consolidated cargo, GroupIdentifier = Container Number
+            // Query by container to get ALL BOE records (all House BLs)
+            // ✅ FIX: Use shared model ICUMSDataRecord (not local DTO)
+            var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
+                $"/api/containerdetails/icums/{GroupIdentifier}?page=1&pageSize=1000");
+            
+            if (icumsResponse == null)
+            {
+                Console.WriteLine($"❌ [LoadBOEDetailsForConsolidated] API returned null response for container {GroupIdentifier}");
+                Snackbar.Add("Failed to load ICUMS data: API returned null response", Severity.Error);
+                _allBOEData = new List<ICUMSDataRecordDto>();
+            }
+            else if (icumsResponse.Data?.Any() == true)
+            {
+                // Convert to DTO for display
+                _allBOEData = icumsResponse.Data.Select(r => new ICUMSDataRecordDto
+                {
+                    Field = r.Field,
+                    Value = r.Value,
+                    Category = r.Category,
+                    IsRequired = r.IsRequired,
+                    HouseBL = r.HouseBL
+                }).ToList();
+                Console.WriteLine($"✅ [LoadBOEDetailsForConsolidated] Loaded {_allBOEData.Count} BOE record(s) for consolidated container (Total: {icumsResponse.TotalCount})");
+                Snackbar.Add($"Loaded {_allBOEData.Count} ICUMS records", Severity.Success);
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [LoadBOEDetailsForConsolidated] No BOE data found for container {GroupIdentifier} (Response: {icumsResponse?.TotalCount ?? 0} total)");
+                Snackbar.Add("No ICUMS data found for this container", Severity.Warning);
+                _allBOEData = new List<ICUMSDataRecordDto>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [LoadBOEDetailsForConsolidated] Error: {ex.Message}");
+            Console.WriteLine($"❌ [LoadBOEDetailsForConsolidated] Stack trace: {ex.StackTrace}");
+            Snackbar.Add($"Error loading ICUMS data: {ex.Message}", Severity.Error);
+            _allBOEData = new List<ICUMSDataRecordDto>();
+        }
+        finally
+        {
+            _loadingBOEDetails = false;
+            await InvokeAsync(StateHasChanged); // Update UI after loading completes
+        }
+    }
+
+    private async Task LoadBOEDetails()
+    {
+        _loadingBOEDetails = true;
+        await InvokeAsync(StateHasChanged); // Update UI to show loading spinner
+        try
+        {
+            if (IsConsolidated)
+            {
+                // For consolidated cargo, GroupIdentifier = Container Number
+                // Use the existing LoadBOEDetailsForConsolidated method
+                await LoadBOEDetailsForConsolidated();
+                return;
+            }
+
+            // ✅ FIX: For non-consolidated cargo, GroupIdentifier = Declaration Number
+            // Query by declaration number to get ALL BOE fields for this declaration
+            if (!string.IsNullOrEmpty(GroupIdentifier))
+            {
+                Console.WriteLine($"🔍 [LoadBOEDetails] Loading BOE details for declaration: {GroupIdentifier}");
+                
+                // For non-consolidated, query by declaration number using the first container as the route parameter
+                // but pass declarationNumber as query parameter to get ALL BOE documents for this declaration
+                if (Containers?.Any() == true)
+                {
+                    var firstContainer = Containers.First();
+                    Console.WriteLine($"🔍 [LoadBOEDetails] Querying via container {firstContainer} for declaration {GroupIdentifier}");
+                    
+                    // ✅ FIX: Pass declarationNumber as query parameter to get all BOE documents for this declaration
+                    var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
+                        $"/api/containerdetails/icums/{firstContainer}?page=1&pageSize=1000&declarationNumber={Uri.EscapeDataString(GroupIdentifier)}");
+                    
+                    if (icumsResponse == null)
+                    {
+                        Console.WriteLine($"❌ [LoadBOEDetails] API returned null response for declaration {GroupIdentifier}");
+                        Snackbar.Add("Failed to load ICUMS data: API returned null response", Severity.Error);
+                        _allBOEData = new List<ICUMSDataRecordDto>();
+                    }
+                    else if (icumsResponse.Data?.Any() == true)
+                    {
+                        // Convert to DTO for display
+                        _allBOEData = icumsResponse.Data.Select(r => new ICUMSDataRecordDto
+                        {
+                            Field = r.Field,
+                            Value = r.Value,
+                            Category = r.Category,
+                            IsRequired = r.IsRequired,
+                            HouseBL = r.HouseBL
+                        }).ToList();
+                        Console.WriteLine($"✅ [LoadBOEDetails] Loaded {_allBOEData.Count} BOE record(s) for declaration {GroupIdentifier} (Total: {icumsResponse.TotalCount})");
+                        Snackbar.Add($"Loaded {_allBOEData.Count} ICUMS records", Severity.Success);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"⚠️ [LoadBOEDetails] No BOE data found for declaration {GroupIdentifier} via container {firstContainer} (Response: {icumsResponse?.TotalCount ?? 0} total)");
+                        Snackbar.Add("No ICUMS data found for this declaration", Severity.Warning);
+                        _allBOEData = new List<ICUMSDataRecordDto>();
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [LoadBOEDetails] No containers available to load BOE details for declaration {GroupIdentifier}");
+                    Snackbar.Add("No containers available to load ICUMS data", Severity.Warning);
+                    _allBOEData = new List<ICUMSDataRecordDto>();
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [LoadBOEDetails] No GroupIdentifier (declaration number) available");
+                Snackbar.Add("No declaration number available", Severity.Warning);
+                _allBOEData = new List<ICUMSDataRecordDto>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [LoadBOEDetails] Error loading BOE details: {ex.Message}");
+            Console.WriteLine($"❌ [LoadBOEDetails] Stack trace: {ex.StackTrace}");
+            Snackbar.Add($"Error loading ICUMS data: {ex.Message}", Severity.Error);
+            _allBOEData = new List<ICUMSDataRecordDto>();
+        }
+        finally
+        {
+            _loadingBOEDetails = false;
+            await InvokeAsync(StateHasChanged); // Update UI after loading completes
+        }
+    }
+
+    private int GetCategoryOrder(string category)
+    {
+        return category switch
+        {
+            "Container Info" => 1,
+            "Declaration Info" => 2,
+            "CMR Info" => 3,
+            "Manifest Info" => 4,
+            "Party Info" => 5,
+            "Location Info" => 6,
+            "Cargo Info" => 7,
+            "Financial Info" => 8,
+            "Risk Assessment" => 9,
+            "Status" => 10,
+            "Data Info" => 11,
+            "Additional Fields" => 12,
+            _ => 99
+        };
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "Container Info" => Icons.Material.Outlined.Inventory2,
+            "Declaration Info" => Icons.Material.Outlined.Description,
+            "CMR Info" => Icons.Material.Outlined.Sailing,
+            "Manifest Info" => Icons.Material.Outlined.ListAlt,
+            "Party Info" => Icons.Material.Outlined.Business,
+            "Location Info" => Icons.Material.Outlined.LocationOn,
+            "Financial Info" => Icons.Material.Outlined.AttachMoney,
+            "Cargo Info" => Icons.Material.Outlined.Inventory,
+            "Risk Assessment" => Icons.Material.Outlined.Security,
+            "Status" => Icons.Material.Outlined.Info,
+            "Data Info" => Icons.Material.Outlined.Schedule,
+            "Additional Fields" => Icons.Material.Outlined.Info,
+            _ => Icons.Material.Outlined.Description
+        };
+    }
+
+    private async Task RefreshOverallDecision()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<OverallDecisionDto>(
+                $"/api/ImageAnalysisDecision/group/{GroupIdentifier}/overall");
+            
+            if (response != null)
+            {
+                _overallDecision = response.OverallDecision;
+                _totalImages = response.TotalImages;
+                _normalCount = response.NormalCount;
+                _abnormalCount = response.AbnormalCount;
+                _lastReviewedBy = response.LastReviewedBy;
+            }
+
+            // Also load all decisions to get tags
+            if (IsConsolidated)
+            {
+                // For consolidated, GroupIdentifier = Container Number
+                _allDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
+                    $"/api/ImageAnalysisDecision/container/{GroupIdentifier}") ?? new();
+            }
+            else
+            {
+                // For non-consolidated, load decisions for all containers in the group
+                _allDecisions = new List<ImageAnalysisDecisionDto>();
+                if (Containers?.Any() == true)
+                {
+                    foreach (var container in Containers)
+                    {
+                        var containerDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
+                            $"/api/ImageAnalysisDecision/container/{container}") ?? new();
+                        _allDecisions.AddRange(containerDecisions);
+                    }
+                }
+            }
+            
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading overall decision: {ex.Message}");
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Severity GetOverallSeverity() => _overallDecision switch
+    {
+        "Normal" => Severity.Success,
+        "Abnormal" => Severity.Error,
+        _ => Severity.Info
+    };
+
+    private string GetOverallIcon() => _overallDecision switch
+    {
+        "Normal" => Icons.Material.Outlined.CheckCircle,
+        "Abnormal" => Icons.Material.Outlined.Warning,
+        _ => Icons.Material.Outlined.Pending
+    };
+
+    // ✅ CONTAINER DECISION COLOR: Get decision status for a container
+    private string GetContainerDecision(string containerNumber)
+    {
+        if (_allDecisions == null || !_allDecisions.Any())
+            return "Pending";
+        
+        var containerDecisions = _allDecisions
+            .Where(d => d.ContainerNumber == containerNumber && 
+                        d.Decision != "Pending" && 
+                        !string.IsNullOrEmpty(d.Decision))
+            .ToList();
+        
+        // If any decision is Abnormal, return Abnormal (most severe)
+        if (containerDecisions.Any(d => d.Decision == "Abnormal"))
+            return "Abnormal";
+        
+        // If all decisions are Normal, return Normal
+        if (containerDecisions.Any() && containerDecisions.All(d => d.Decision == "Normal"))
+            return "Normal";
+        
+        return "Pending";
+    }
+
+    // ✅ CONTAINER DECISION COLOR: Get color based on decision status
+    private Color GetContainerDecisionColor(string containerNumber)
+    {
+        var decision = GetContainerDecision(containerNumber);
+        return decision switch
+        {
+            "Normal" => Color.Success,    // Green
+            "Abnormal" => Color.Error,    // Red
+            _ => Color.Default            // Default (no decision taken)
+        };
+    }
+
+    private void Close() { }
+
+    // ✅ Close dialog after decision is saved
+    private async Task CloseDialogAfterSave()
+    {
+        Console.WriteLine("✅ [ImageAnalysisViewDialog] Decision saved - closing dialog");
+        await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] CloseDialogAfterSave called");
+        await LogToBrowserConsole($"✅ [ImageAnalysisViewDialog] OnDecisionSaved.HasValue: {OnDecisionSaved.HasValue}");
+        
+        if (OnDecisionSaved.HasValue)
+        {
+            await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Invoking OnDecisionSaved callback to parent");
+            await OnDecisionSaved.Value.InvokeAsync();
+            await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] OnDecisionSaved callback completed - dialog should close");
+        }
+        else
+        {
+            await LogToBrowserConsole("⚠️ [ImageAnalysisViewDialog] OnDecisionSaved has NO delegate - dialog may not close");
+        }
+    }
+
+    // ✅ AUTO-PROGRESSION: Handle next container
+    private async Task HandleNextContainer(string? nextContainerNumber)
+    {
+        if (string.IsNullOrEmpty(nextContainerNumber))
+            return;
+
+        Console.WriteLine($"🔄 [ImageAnalysisViewDialog] Auto-progressing to next container: {nextContainerNumber}");
+
+        if (IsConsolidated)
+            return;
+
+        // Check if nextContainer is in the Containers list.
+        // For cross-record scans, the API may return comma-separated pairs (e.g. "CONT1, CONT2")
+        // that don't match the individual entries in the Containers list.
+        var isInList = Containers?.Contains(nextContainerNumber) == true;
+        if (!isInList && Containers != null)
+        {
+            // Try to find a matching entry (partial match for comma-separated pairs)
+            var match = Containers.FirstOrDefault(c =>
+                nextContainerNumber.Contains(c, StringComparison.OrdinalIgnoreCase) ||
+                c.Contains(nextContainerNumber, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+            {
+                isInList = true;
+            }
+        }
+
+        if (!isInList)
+        {
+            // Not in list at all — still allow opening directly (the API determined this is the next container)
+            Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Container '{nextContainerNumber}' not in UI list — opening directly via fullscreen viewer");
+            Snackbar.Add($"Loading next container: {nextContainerNumber}...", Severity.Info);
+            await DirectOpenFullscreenViewer(nextContainerNumber);
+            return;
+        }
+
+        var nextContainerIndex = Containers!.IndexOf(nextContainerNumber);
+        if (nextContainerIndex < 0)
+        {
+            // Comma-separated pair — find by partial match
+            nextContainerIndex = Containers.FindIndex(c =>
+                nextContainerNumber.Contains(c, StringComparison.OrdinalIgnoreCase));
+        }
+        nextContainerIndex = Math.Max(0, nextContainerIndex) + 1;
+        var totalContainers = Containers.Count;
+        
+        // Collapse current container
+        string? containerToCollapse = _currentProcessingContainer;
+        if (string.IsNullOrEmpty(containerToCollapse) && Containers != null)
+        {
+            containerToCollapse = Containers.FirstOrDefault(c => 
+                _containerPanelsExpanded.ContainsKey(c) && _containerPanelsExpanded[c]);
+        }
+        
+        if (!string.IsNullOrEmpty(containerToCollapse))
+        {
+            Console.WriteLine($"🔄 [ImageAnalysisViewDialog] Collapsing current container: {containerToCollapse}");
+            _containerPanelsExpanded[containerToCollapse] = false;
+            _containerAutoOpen[containerToCollapse] = false;
+            _currentProcessingContainer = null;
+        }
+        
+        // The API already determined the correct next undecided container — trust its response
+        Console.WriteLine($"🔄 [ImageAnalysisViewDialog] Expanding next container: {nextContainerNumber} ({nextContainerIndex}/{totalContainers})");
+
+        if (!_containerPanelsExpanded.ContainsKey(nextContainerNumber))
+            _containerPanelsExpanded[nextContainerNumber] = false;
+        if (!_containerTabIndices.ContainsKey(nextContainerNumber))
+            _containerTabIndices[nextContainerNumber] = 0;
+        if (!_containerImagesLoaded.ContainsKey(nextContainerNumber))
+            _containerImagesLoaded[nextContainerNumber] = false;
+        
+        _containerPanelsExpanded[nextContainerNumber] = true;
+        _containerTabIndices[nextContainerNumber] = 1; // Images tab
+        _containerImagesLoaded[nextContainerNumber] = true;
+        _currentProcessingContainer = nextContainerNumber;
+
+        Console.WriteLine($"🔄 [ImageAnalysisViewDialog] State updated for {nextContainerNumber}: expanded=true, tab=Images");
+
+        Snackbar.Add($"Loading container {nextContainerIndex} of {totalContainers}: {nextContainerNumber}...", Severity.Info);
+
+        // Fire-and-forget transition animation
+        _ = Task.Run(async () => {
+            try { await JSRuntime.InvokeVoidAsync("DecisionTransitions.showNextImageTransition", nextContainerNumber, nextContainerIndex, totalContainers); }
+            catch { }
+        });
+
+        await InvokeAsync(StateHasChanged);
+        await Task.Delay(200);
+
+        // Directly open fullscreen viewer for next container
+        await DirectOpenFullscreenViewer(nextContainerNumber);
+    }
+
+    private async Task BulkDecision(string decision)
+    {
+        if (Containers == null || !Containers.Any()) return;
+        _bulkProcessing = true;
+        int saved = 0, skipped = 0, failed = 0;
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var username = authState.User?.Identity?.Name ?? "Unknown";
+
+            for (int i = 0; i < Containers.Count; i++)
+            {
+                var container = Containers[i];
+                _bulkProgressText = $"Processing {i + 1} of {Containers.Count}: {container}...";
+                StateHasChanged();
+
+                try
+                {
+                    var request = new
+                    {
+                        ContainerNumber = container,
+                        ScannerType = "ASE",
+                        Decision = decision,
+                        Comments = $"Bulk decision: {decision}",
+                        Tags = "",
+                        ReviewedBy = username,
+                        GroupIdentifier,
+                        IsConsolidated
+                    };
+
+                    var response = await ApiService.PostAsync<object, ImageAnalysisViewer.DecisionSaveResponse>(
+                        "/api/ImageAnalysisDecision", request);
+
+                    if (response?.Success == true) saved++;
+                    else skipped++;
+                }
+                catch { failed++; }
+            }
+
+            Snackbar.Add($"Bulk complete: {saved} saved, {skipped} skipped, {failed} failed",
+                failed > 0 ? Severity.Warning : Severity.Success);
+
+            // Fire-and-forget bulk animation
+            _ = Task.Run(async () => {
+                try { await JSRuntime.InvokeVoidAsync("DecisionTransitions.showBulkComplete", saved, decision); }
+                catch { }
+            });
+
+            // Close dialog after successful bulk
+            if (failed == 0)
+            {
+                await Task.Delay(500);
+                await HandleAllContainersDecided();
+            }
+        }
+        finally
+        {
+            _bulkProcessing = false;
+            _bulkProgressText = "";
+            StateHasChanged();
+        }
+    }
+
+    private async Task DirectOpenFullscreenViewer(string containerNumber)
+    {
+        try
+        {
+            var imageUrl = $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image";
+
+            // Resolve scanner type from completeness data (don't hardcode)
+            var scannerType = ScannerType;
+            if (string.IsNullOrEmpty(scannerType))
+                scannerType = "ASE"; // fallback
+
+            IDialogReference? dialogRef = null;
+            var parameters = new DialogParameters
+            {
+                ["ImageUrl"] = imageUrl,
+                ["ContainerNumber"] = containerNumber,
+                ["ScannerType"] = scannerType,
+                ["ScanDate"] = DateTime.Now,
+                ["GroupIdentifier"] = GroupIdentifier,
+                ["IsConsolidated"] = IsConsolidated,
+                ["OnClose"] = EventCallback.Factory.Create(this, () =>
+                {
+                    if (dialogRef != null)
+                        dialogRef.Close(DialogResult.Ok(true));
+                    return Task.CompletedTask;
+                }),
+                ["OnDecisionSaved"] = EventCallback.Factory.Create<ImageAnalysisViewer.DecisionSaveResponse?>(this, async (response) =>
+                {
+                    if (response == null || !response.Success || dialogRef == null)
+                        return;
+
+                    Console.WriteLine($"🔄 [DirectOpen] Decision saved for {containerNumber} - allDecided={response.AllContainersDecided}, next={response.NextContainerNumber ?? "null"}");
+                    dialogRef.Close(DialogResult.Ok(true));
+                    await Task.Delay(300);
+
+                    if (response.AllContainersDecided)
+                    {
+                        await HandleAllContainersDecided();
+                    }
+                    else if (!string.IsNullOrEmpty(response.NextContainerNumber))
+                    {
+                        await HandleNextContainer(response.NextContainerNumber);
+                    }
+                })
+            };
+
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.ExtraExtraLarge,
+                FullWidth = true,
+                FullScreen = true,
+                CloseButton = true,
+                CloseOnEscapeKey = true
+            };
+
+            dialogRef = await DialogService.ShowAsync<ImageAnalysisViewer>(
+                $"Image Analysis — {containerNumber}", parameters, options);
+
+            await dialogRef.Result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error opening fullscreen viewer for {containerNumber}: {ex.Message}");
+        }
+    }
+
+    // ✅ AUTO-PROGRESSION: Handle all containers decided
+    private async Task HandleAllContainersDecided()
+    {
+        Console.WriteLine("✅ [ImageAnalysisViewDialog] All containers in group have been decided");
+        await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] HandleAllContainersDecided called - all containers in group are decided");
+        await LogToBrowserConsole($"✅ [ImageAnalysisViewDialog] Current container: {_currentProcessingContainer ?? "null"}");
+        await LogToBrowserConsole($"✅ [ImageAnalysisViewDialog] Total containers: {Containers?.Count ?? 0}");
+        
+        Snackbar.Add("All containers in this group have been decided. Group moved to audit queue.", Severity.Success);
+        
+        // Notify parent component if callback is provided
+        if (OnAllContainersDecided.HasValue)
+        {
+            Console.WriteLine("🔄 [ImageAnalysisViewDialog] Invoking OnAllContainersDecided callback");
+            await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Invoking OnAllContainersDecided callback to parent");
+            await OnAllContainersDecided.Value.InvokeAsync();
+            await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] OnAllContainersDecided callback completed");
+        }
+        else
+        {
+            await LogToBrowserConsole("⚠️ [ImageAnalysisViewDialog] OnAllContainersDecided has NO delegate");
+        }
+        
+        // Close dialog after a short delay to show the success message
+        await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Waiting 2 seconds before closing dialog");
+        await Task.Delay(2000);
+        await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Calling CloseDialogAfterSave()");
+        await CloseDialogAfterSave();
+        await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] CloseDialogAfterSave completed - dialog should be closed");
+    }
+
+    // ✅ AUTO-PROGRESSION: Find first undecided container and expand it
+    private async Task FindAndExpandFirstUndecidedContainer()
+    {
+        if (IsConsolidated || Containers == null || !Containers.Any())
+        {
+            return;
+        }
+
+        try
+        {
+            // Get all decisions for this group
+            var overallDecision = await ApiService.GetAsync<OverallDecisionResponse>(
+                $"/api/ImageAnalysisDecision/group/{GroupIdentifier}/overall");
+
+            if (overallDecision == null)
+            {
+                // No decisions yet - find first container WITH IMAGES
+                string? firstContainerWithImages = null;
+                foreach (var container in Containers)
+                {
+                    var containerImages = await ContainerDetailsService.GetImageMetadataAsync(container);
+                    if (containerImages != null && containerImages.Any())
+                    {
+                        firstContainerWithImages = container;
+                        break;
+                    }
+                }
+                
+                if (firstContainerWithImages != null)
+                {
+                    _containerPanelsExpanded[firstContainerWithImages] = true;
+                    _containerTabIndices[firstContainerWithImages] = 1; // Switch to Images tab
+                    _containerImagesLoaded[firstContainerWithImages] = true;
+                    _currentProcessingContainer = firstContainerWithImages;
+                    Console.WriteLine($"✅ [ImageAnalysisViewDialog] Auto-expanded first container with images: {firstContainerWithImages}");
+                    await InvokeAsync(StateHasChanged);
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] No containers with images found - all containers will be auto-marked by API");
+                }
+                return;
+            }
+
+            // Get decisions for each container to find undecided ones
+            var decidedContainers = new HashSet<string>();
+            var containersWithImages = new HashSet<string>();
+            
+            foreach (var container in Containers)
+            {
+                // Check if container has images (skip containers without images)
+                var containerImages = await ContainerDetailsService.GetImageMetadataAsync(container);
+                if (containerImages != null && containerImages.Any())
+                {
+                    containersWithImages.Add(container);
+                    Console.WriteLine($"✅ [ImageAnalysisViewDialog] Container {container} has {containerImages.Count} image(s)");
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Container {container} has no images - will be skipped from auto-progression");
+                }
+                
+                // Check if container has decisions
+                var containerDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
+                    $"/api/ImageAnalysisDecision/container/{container}");
+                
+                if (containerDecisions != null && containerDecisions.Any(d => 
+                    d.Decision != "Pending" && !string.IsNullOrEmpty(d.Decision)))
+                {
+                    decidedContainers.Add(container);
+                }
+            }
+
+            // ✅ FIX: Find first undecided container WITH IMAGES (skip containers without images)
+            var undecidedContainersWithImages = containersWithImages
+                .Where(c => !decidedContainers.Contains(c))
+                .ToList();
+            
+            var firstUndecided = undecidedContainersWithImages.FirstOrDefault();
+            if (firstUndecided != null)
+            {
+                _containerPanelsExpanded[firstUndecided] = true;
+                _containerTabIndices[firstUndecided] = 1; // Switch to Images tab
+                _containerImagesLoaded[firstUndecided] = true;
+                _currentProcessingContainer = firstUndecided;
+                Console.WriteLine($"✅ [ImageAnalysisViewDialog] Auto-expanded first undecided container with images: {firstUndecided}");
+                await InvokeAsync(StateHasChanged);
+            }
+            else
+            {
+                var containersWithoutImages = Containers.Where(c => !containersWithImages.Contains(c)).ToList();
+                if (containersWithoutImages.Any())
+                {
+                    Console.WriteLine($"✅ [ImageAnalysisViewDialog] All containers with images have decisions. {containersWithoutImages.Count} container(s) without images will be auto-marked by API.");
+                }
+                else
+                {
+                    Console.WriteLine("✅ [ImageAnalysisViewDialog] All containers already have decisions");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error finding undecided container: {ex.Message}");
+            // Fallback: expand first container
+            var firstContainer = Containers.First();
+            _containerPanelsExpanded[firstContainer] = true;
+            _containerTabIndices[firstContainer] = 1;
+            _containerImagesLoaded[firstContainer] = true;
+            _currentProcessingContainer = firstContainer;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // DTOs for decision responses
+    private class OverallDecisionResponse
+    {
+        public string OverallDecision { get; set; } = "Pending";
+        public int TotalImages { get; set; }
+        public int NormalCount { get; set; }
+        public int AbnormalCount { get; set; }
+        public int ReviewedCount { get; set; }
+    }
+
+    private class ImageAnalysisDecisionDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Decision { get; set; } = string.Empty;
+        public string? Comments { get; set; }
+        public string? Tags { get; set; }
+        public string ReviewedBy { get; set; } = string.Empty;
+        public DateTime ReviewedAt { get; set; }
+    }
+
+    // DTOs - Localized to Image Analysis feature only
+    public class HouseBLDetailDto
+    {
+        public string HouseBL { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public bool IsComplete { get; set; }
+    }
+
+    // ✅ FIX: Removed ICUMSDataDto - API returns PagedResult<ICUMSDataRecord> directly
+    // Using PagedResult<T> from Models namespace instead
+
+    // ✅ FIX: Match API's ICUMSDataRecord structure exactly
+    public class ICUMSDataRecordDto
+    {
+        public string Field { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public bool IsRequired { get; set; } // ✅ Added to match API
+        public string? HouseBL { get; set; } // For grouping consolidated cargo by House BL
+    }
+
+    public class OverallDecisionDto
+    {
+        public string OverallDecision { get; set; } = "Pending";
+        public int TotalImages { get; set; }
+        public int NormalCount { get; set; }
+        public int AbnormalCount { get; set; }
+        public int ReviewedCount { get; set; }
+        public DateTime? LastReviewedAt { get; set; }
+        public string? LastReviewedBy { get; set; }
+    }
+
+    public class WaveContextDto
+    {
+        public bool IsWave { get; set; }
+        public string? ParentGroupIdentifier { get; set; }
+        public int WaveNumber { get; set; }
+        public int TotalWaves { get; set; }
+        public int TotalContainers { get; set; }
+        public int DecidedContainers { get; set; }
+        public int ContainersInWaves { get; set; }
+        public int PendingContainers { get; set; }
+        public string? ParentStatus { get; set; }
+    }
+
+    private async Task LoadWaveContext()
+    {
+        try
+        {
+            // First, look up the group ID from the GroupIdentifier
+            var groupResponse = await ApiService.GetAsync<GroupLookupDto>($"/api/image-analysis/group-by-identifier?identifier={Uri.EscapeDataString(GroupIdentifier)}&scannerType={Uri.EscapeDataString(ScannerType)}");
+            if (groupResponse?.GroupId == null)
+                return;
+
+            _waveContext = await ApiService.GetAsync<WaveContextDto>($"/api/image-analysis/wave-context/{groupResponse.GroupId}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ [Wave] Could not load wave context: {ex.Message}");
+            // Non-critical — silently fail
+        }
+    }
+
+    private class GroupLookupDto
+    {
+        public Guid? GroupId { get; set; }
+    }
+}

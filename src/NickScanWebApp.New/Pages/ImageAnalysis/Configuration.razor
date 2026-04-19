@@ -1,0 +1,1922 @@
+@page "/validation/image-analysis-management"
+@page "/image-analysis/config"
+@attribute [Authorize(Policy = Permissions.PagesImageAnalysisManagement)]
+@implements IDisposable
+@using MudBlazor
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.DualNotificationService DualNotification
+@inject NavigationManager Nav
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+
+<MudPaper Class="pa-4">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+        <MudText Typo="Typo.h5">Image Analysis Management</MudText>
+        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+            <MudChip T="string" Size="Size.Small" Color="@(_serviceEnabled ? Color.Success : Color.Error)">
+                @(_serviceEnabled ? "Service Active" : "Service Disabled")
+            </MudChip>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Queue: @_readyGroups.Count | Assigned: @_activeAssignments.Count | Completed: @_stats.Completed
+            </MudText>
+        </MudStack>
+    </MudStack>
+
+    <MudExpansionPanels MultiExpansion="true" Elevation="2">
+        <!-- PANEL 1: SETTINGS -->
+        <MudExpansionPanel IsInitiallyExpanded="true">
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Settings" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Settings</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@(_serviceEnabled ? Color.Success : Color.Error)">
+                        @(_serviceEnabled ? "Active" : "Disabled")
+                    </MudChip>
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                <MudStack Spacing="4" Class="pa-2">
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Service Control</MudText>
+                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center">
+                            <MudSwitch T="bool" @bind-Value="_serviceEnabled" Color="Color.Primary" Disabled="_busy">Enable Service</MudSwitch>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SyncStages" Disabled="_busy">Sync Stages</MudButton>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="RebuildIntake" Disabled="_busy">Rebuild Intake</MudButton>
+                        </MudStack>
+                    </MudPaper>
+
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Assignment Settings</MudText>
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField @bind-Value="_leaseMinutes" Label="Lease TTL (minutes)" InputType="InputType.Number" Disabled="_busy" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField @bind-Value="_maxConcurrent" Label="Max concurrent per user" InputType="InputType.Number" Disabled="_busy" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSelect T="string" @bind-Value="_assignmentMode" Label="Assignment Mode" Disabled="_busy">
+                                    <MudSelectItem Value="@("Auto")">Auto</MudSelectItem>
+                                    <MudSelectItem Value="@("Manual")">Manual</MudSelectItem>
+                                    <MudSelectItem Value="@("UserClaim")">UserClaim</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                            @if (_assignmentMode == "Auto")
+                            {
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudSelect T="string" @bind-Value="_autoAssignStrategy" Label="Strategy" Disabled="_busy">
+                                        <MudSelectItem Value="@("RoundRobin")">RoundRobin</MudSelectItem>
+                                        <MudSelectItem Value="@("LeastLoaded")">LeastLoaded</MudSelectItem>
+                                    </MudSelect>
+                                </MudItem>
+                            }
+                        </MudGrid>
+
+                        <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Wave Processing (Partial BOL)</MudText>
+                        <MudSwitch T="bool" @bind-Value="_enableWaveProcessing" Label="Enable Wave Processing" Color="Color.Primary" />
+                        @if (_enableWaveProcessing)
+                        {
+                            <MudGrid Spacing="2" Class="mt-2">
+                                <MudItem xs="4"><MudNumericField T="int" @bind-Value="_waveMinBatchSize" Label="Min Batch Size" Min="1" Max="50" /></MudItem>
+                                <MudItem xs="4"><MudNumericField T="int" @bind-Value="_waveTimeoutHours" Label="Timeout (hours)" Min="1" Max="168" /></MudItem>
+                                <MudItem xs="4"><MudNumericField T="int" @bind-Value="_waveAutoCloseDays" Label="Auto-close (days)" Min="1" Max="90" /></MudItem>
+                            </MudGrid>
+                        }
+
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary" OnClick="@OnSaveClicked" Disabled="_busy" Class="mt-4">Save Settings</MudButton>
+                    </MudPaper>
+                </MudStack>
+            </ChildContent>
+        </MudExpansionPanel>
+
+        <!-- PANEL 2: QUEUES & ASSIGNMENTS -->
+        <MudExpansionPanel>
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Queue" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Queues &amp; Assignments</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary">@_readyGroups.Count ready</MudChip>
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@_activeAssignments.Count assigned</MudChip>
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                <MudText Typo="Typo.h6" Class="mb-3">Ready Queue</MudText>
+                <MudGrid>
+                    <MudItem xs="12" sm="4">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Image Analysis</MudText>
+                            <MudText Typo="Typo.h4">@_stats.ImageAnalysis</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="4">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Audit</MudText>
+                            <MudText Typo="Typo.h4">@_stats.Audit</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="4">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Completed</MudText>
+                            <MudText Typo="Typo.h4">@_stats.Completed</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+
+                <MudTabs @bind-ActivePanelIndex="_readyQueueTabIndex" Class="mt-4">
+                    <MudTabPanel Text="@($"Consolidated ({_readyGroupsConsolidated.Count})")">
+                        <MudTextField T="string" @bind-Value="_readyConsolidatedFilter"
+                                      Placeholder="Filter by group or scanner…"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      IconSize="Size.Small"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      Clearable="true"
+                                      Class="mb-2" />
+                        <MudTable Items="@FilterReadyGroups(_readyGroupsConsolidated, _readyConsolidatedFilter)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.ScannerType ?? string.Empty)">Scanner</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.ContainerCount)">Count</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Group">@context.GroupIdentifier</MudTd>
+                                <MudTd DataLabel="Scanner">@context.ScannerType</MudTd>
+                                <MudTd DataLabel="Count">@context.ContainerCount</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Primary" OnClick="() => GetNextForSelf(context.GroupIdentifier)" Disabled="_busy">Get Next</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenManualAssign(context.GroupIdentifier)" Disabled="_busy">Assign…</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                    <MudTabPanel Text="@($"Non-Consolidated ({_readyGroupsNonConsolidated.Count})")">
+                        <MudTextField T="string" @bind-Value="_readyNonConsolidatedFilter"
+                                      Placeholder="Filter by group or scanner…"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      IconSize="Size.Small"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      Clearable="true"
+                                      Class="mb-2" />
+                        <MudTable Items="@FilterReadyGroups(_readyGroupsNonConsolidated, _readyNonConsolidatedFilter)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.ScannerType ?? string.Empty)">Scanner</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ReadyGroup, object>(x => x.ContainerCount)">Count</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Group">@context.GroupIdentifier</MudTd>
+                                <MudTd DataLabel="Scanner">@context.ScannerType</MudTd>
+                                <MudTd DataLabel="Count">@context.ContainerCount</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Primary" OnClick="() => GetNextForSelf(context.GroupIdentifier)" Disabled="_busy">Get Next</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenManualAssign(context.GroupIdentifier)" Disabled="_busy">Assign…</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                </MudTabs>
+
+                <MudText Typo="Typo.h6" Class="mt-4 mb-3">Active Assignments</MudText>
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2">
+                    <MudTextField T="string" @bind-Value="_assignmentsFilter"
+                                  Placeholder="Filter by group or assignee…"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.Search"
+                                  IconSize="Size.Small"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true"
+                                  Style="max-width: 320px;" />
+                    <MudSwitch T="bool" @bind-Value="_showOnlyExpiringSoon" Color="Color.Warning" Label="Expiring &lt; 15 min" />
+                </MudStack>
+                <MudTabs @bind-ActivePanelIndex="_assignmentsTabIndex">
+                    <MudTabPanel Text="@($"Analyst - Consolidated ({_activeAssignmentsConsolidated.Count})")">
+                        <MudTable Items="@FilterAssignments(_activeAssignmentsConsolidated)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.AssignedTo ?? string.Empty)">Analyst</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.LeaseUntilUtc ?? DateTime.MaxValue)">LeaseUntil</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.GroupIdentifier</MudTd>
+                                <MudTd>@context.AssignedTo</MudTd>
+                                <MudTd>@context.LeaseUntilUtc?.ToLocalTime().ToString("g")</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Default" OnClick="() => Release(context.GroupIdentifier)" Disabled="_busy">Release</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenReassign(context.GroupIdentifier)" Disabled="_busy">Reassign…</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Primary" OnClick="() => OpenGroup(context.GroupIdentifier)" Disabled="_busy">Open</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                    <MudTabPanel Text="@($"Analyst - Non-Consolidated ({_activeAssignmentsNonConsolidated.Count})")">
+                        <MudTable Items="@FilterAssignments(_activeAssignmentsNonConsolidated)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.AssignedTo ?? string.Empty)">Analyst</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.LeaseUntilUtc ?? DateTime.MaxValue)">LeaseUntil</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.GroupIdentifier</MudTd>
+                                <MudTd>@context.AssignedTo</MudTd>
+                                <MudTd>@context.LeaseUntilUtc?.ToLocalTime().ToString("g")</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Default" OnClick="() => Release(context.GroupIdentifier)" Disabled="_busy">Release</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenReassign(context.GroupIdentifier)" Disabled="_busy">Reassign…</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Primary" OnClick="() => OpenGroup(context.GroupIdentifier)" Disabled="_busy">Open</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                    <MudTabPanel Text="@($"Audit - Consolidated ({_auditAssignmentsConsolidated.Count})")">
+                        <MudTable Items="@FilterAssignments(_auditAssignmentsConsolidated)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.AssignedTo ?? string.Empty)">Auditor</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.LeaseUntilUtc ?? DateTime.MaxValue)">LeaseUntil</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.GroupIdentifier</MudTd>
+                                <MudTd>@context.AssignedTo</MudTd>
+                                <MudTd>@context.LeaseUntilUtc?.ToLocalTime().ToString("g")</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Default" OnClick="() => Release(context.GroupIdentifier)" Disabled="_busy">Release</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenReassign(context.GroupIdentifier)" Disabled="_busy">Reassign…</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Primary" OnClick="() => OpenGroup(context.GroupIdentifier)" Disabled="_busy">Open</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                    <MudTabPanel Text="@($"Audit - Non-Consolidated ({_auditAssignmentsNonConsolidated.Count})")">
+                        <MudTable Items="@FilterAssignments(_auditAssignmentsNonConsolidated)"
+                                  Dense="true" Hover="true" Bordered="true" Breakpoint="Breakpoint.Sm"
+                                  RowsPerPage="25">
+                            <HeaderContent>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.GroupIdentifier ?? string.Empty)">Group</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.AssignedTo ?? string.Empty)">Auditor</MudTableSortLabel></MudTh>
+                                <MudTh><MudTableSortLabel SortBy="new Func<ActiveAssignment, object>(x => x.LeaseUntilUtc ?? DateTime.MaxValue)">LeaseUntil</MudTableSortLabel></MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.GroupIdentifier</MudTd>
+                                <MudTd>@context.AssignedTo</MudTd>
+                                <MudTd>@context.LeaseUntilUtc?.ToLocalTime().ToString("g")</MudTd>
+                                <MudTd>
+                                    <MudButton Size="Size.Small" Color="Color.Default" OnClick="() => Release(context.GroupIdentifier)" Disabled="_busy">Release</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Secondary" OnClick="() => OpenReassign(context.GroupIdentifier)" Disabled="_busy">Reassign…</MudButton>
+                                    <MudButton Size="Size.Small" Class="ml-2" Color="Color.Primary" OnClick="() => OpenGroup(context.GroupIdentifier)" Disabled="_busy">Open</MudButton>
+                                </MudTd>
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudTabPanel>
+                </MudTabs>
+            </ChildContent>
+        </MudExpansionPanel>
+
+        <!-- PANEL 3: ASSIGNMENT METRICS -->
+        <MudExpansionPanel>
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Assessment" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Assignment Metrics</MudText>
+                    @if (_assignmentMetrics != null)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success">@_assignmentMetrics.TotalAssignments total</MudChip>
+                    }
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                @if (_assignmentMetrics != null)
+                {
+                    <MudGrid Class="mb-4">
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Assignments</MudText>
+                                <MudText Typo="Typo.h5">@_assignmentMetrics.TotalAssignments</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudPaper Class="pa-3" Elevation="2" Style="@GetMetricsCardStyle(_assignmentMetrics.ActiveAssignments > 0, true)">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Active</MudText>
+                                <MudText Typo="Typo.h5">@_assignmentMetrics.ActiveAssignments</MudText>
+                                @if (_assignmentMetrics.ExpiredButActive > 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Warning">
+                                        <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Small" /> @_assignmentMetrics.ExpiredButActive expired but active
+                                    </MudText>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Expired</MudText>
+                                <MudText Typo="Typo.h5">@_assignmentMetrics.ExpiredAssignments</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Released</MudText>
+                                <MudText Typo="Typo.h5">@_assignmentMetrics.ReleasedAssignments</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudGrid Class="mb-4">
+                        <MudItem xs="12" md="6">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.subtitle1" Class="mb-3">By Role</MudText>
+                                <MudProgressLinear Color="Color.Primary" Value="@GetRolePercentage(_assignmentMetrics.ByRole, "Analyst")" Class="mb-2" />
+                                <MudText>Analyst: @(_assignmentMetrics.ByRole?.GetValueOrDefault("Analyst") ?? 0)</MudText>
+                                <MudProgressLinear Color="Color.Secondary" Value="@GetRolePercentage(_assignmentMetrics.ByRole, "Audit")" Class="mb-2" />
+                                <MudText>Audit: @(_assignmentMetrics.ByRole?.GetValueOrDefault("Audit") ?? 0)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.subtitle1" Class="mb-3">Status Indicators</MudText>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                    <MudText>Expiring Soon (&lt;5min)</MudText>
+                                    <MudChip T="string" Size="Size.Small" Color="@(_assignmentMetrics.ExpiringSoon > 0 ? Color.Warning : Color.Success)">@_assignmentMetrics.ExpiringSoon</MudChip>
+                                </MudStack>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                    <MudText>Recently Accessed (30min)</MudText>
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">@_assignmentMetrics.RecentlyAccessed</MudChip>
+                                </MudStack>
+                                @if (_assignmentMetrics.ExpiredButActive > 0)
+                                {
+                                    <MudAlert Severity="Severity.Warning" Dense="true">@_assignmentMetrics.ExpiredButActive assignment(s) expired but still marked Active</MudAlert>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudGrid Class="mb-4">
+                        <MudItem xs="12" md="6">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.subtitle1" Class="mb-3">Last 24 Hours</MudText>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween"><MudText>Created</MudText><MudText Typo="Typo.h6" Color="Color.Success">@_assignmentMetrics.CreatedLast24Hours</MudText></MudStack>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween"><MudText>Expired</MudText><MudText Typo="Typo.h6" Color="Color.Default">@_assignmentMetrics.ExpiredLast24Hours</MudText></MudStack>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudPaper Class="pa-3" Elevation="2">
+                                <MudText Typo="Typo.subtitle1" Class="mb-3">Group Status</MudText>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween"><MudText>Ready</MudText><MudText Typo="Typo.h6">@_assignmentMetrics.GroupsReady</MudText></MudStack>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween"><MudText>Analyst Assigned</MudText><MudText Typo="Typo.h6" Color="Color.Primary">@_assignmentMetrics.GroupsAnalystAssigned</MudText></MudStack>
+                                <MudStack Row="true" Justify="Justify.SpaceBetween"><MudText>Audit Assigned</MudText><MudText Typo="Typo.h6" Color="Color.Secondary">@_assignmentMetrics.GroupsAuditAssigned</MudText></MudStack>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    @if (_assignmentMetrics.ByUser != null && _assignmentMetrics.ByUser.Any())
+                    {
+                        <MudPaper Class="pa-3 mb-4" Elevation="2">
+                            <MudText Typo="Typo.subtitle1" Class="mb-3">Top Users (by Active Assignments)</MudText>
+                            <MudTable Items="_assignmentMetrics.ByUser" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                                <HeaderContent><MudTh>User</MudTh><MudTh>Active Assignments</MudTh></HeaderContent>
+                                <RowTemplate><MudTd>@context.Key</MudTd><MudTd>@context.Value</MudTd></RowTemplate>
+                            </MudTable>
+                        </MudPaper>
+                    }
+
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Last updated: @_assignmentMetrics.Timestamp.ToLocalTime().ToString("g")
+                            @if (_metricsLastUpdated.HasValue)
+                            {
+                                var secondsAgo = GetSecondsSinceLastUpdate();
+                                <text> (@secondsAgo second@(secondsAgo != 1 ? "s" : "") ago)</text>
+                            }
+                        </MudText>
+                        <MudStack Row="true" Spacing="2">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">
+                                <MudIcon Icon="@Icons.Material.Outlined.Circle" Size="Size.Small" Class="mr-1" Style="font-size: 8px;" />
+                                Auto-refreshing every 60s
+                            </MudChip>
+                            <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Primary" OnClick="LoadMetrics" Disabled="_busy || _loadingMetrics">
+                                <MudIcon Icon="@Icons.Material.Outlined.Refresh" Size="Size.Small" Class="mr-1" />
+                                Refresh
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                }
+                else if (_loadingMetrics)
+                {
+                    <MudProgressCircular Indeterminate="true" Class="my-4" />
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Loading metrics...</MudText>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">Metrics will load automatically.</MudAlert>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadMetrics" Disabled="_busy || _loadingMetrics" Class="mt-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Refresh" Class="mr-2" />
+                        Load Metrics
+                    </MudButton>
+                }
+            </ChildContent>
+        </MudExpansionPanel>
+
+        <!-- PANEL: AUTONOMOUS DECISION AGENT -->
+        <MudExpansionPanel>
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.SmartToy" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Autonomous Decision Agent</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@(_agentEnabled ? (_agentShadowMode ? Color.Warning : Color.Success) : Color.Default)">
+                        @(_agentEnabled ? (_agentShadowMode ? "Shadow Mode" : "Active") : "Disabled")
+                    </MudChip>
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                <MudStack Spacing="4" Class="pa-2">
+                    <!-- Master Controls -->
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Agent Controls</MudText>
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSwitch T="bool" @bind-Value="_agentEnabled" Color="Color.Primary" Disabled="_busy">Enable Agent</MudSwitch>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSwitch T="bool" @bind-Value="_agentShadowMode" Color="Color.Warning" Disabled="_busy">Shadow Mode</MudSwitch>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSwitch T="bool" @bind-Value="_agentAllowNormal" Color="Color.Success" Disabled="_busy">Allow Normal Decisions</MudSwitch>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSwitch T="bool" @bind-Value="_agentAllowAbnormal" Color="Color.Error" Disabled="_busy">Allow Abnormal Decisions</MudSwitch>
+                            </MudItem>
+                        </MudGrid>
+                        <MudGrid Class="mt-2">
+                            <MudItem xs="12" sm="4">
+                                <MudNumericField @bind-Value="_agentNormalThreshold" Label="Normal Threshold (<=)" Min="0.0" Max="1.0" Step="0.05" Format="F2" Disabled="_busy" />
+                            </MudItem>
+                            <MudItem xs="12" sm="4">
+                                <MudNumericField @bind-Value="_agentAbnormalThreshold" Label="Abnormal Threshold (>=)" Min="0.0" Max="1.0" Step="0.05" Format="F2" Disabled="_busy" />
+                            </MudItem>
+                            <MudItem xs="12" sm="4">
+                                <MudNumericField @bind-Value="_agentMaxGroupsPerCycle" Label="Max Groups Per Cycle" Min="1" Max="500" Disabled="_busy" />
+                            </MudItem>
+                        </MudGrid>
+                        <!-- Score zone visualization -->
+                        <MudPaper Class="pa-2 mt-3" Elevation="0" Style="background: #f5f5f5; border-radius: 4px;">
+                            <MudStack Row="true" Spacing="0" Style="height: 28px; border-radius: 4px; overflow: hidden;">
+                                <div style="width:@(_agentNormalThreshold * 100)%; background: #4caf50; display:flex; align-items:center; justify-content:center;">
+                                    <MudText Typo="Typo.caption" Style="color:white; font-weight:600;">Normal</MudText>
+                                </div>
+                                <div style="width:@((_agentAbnormalThreshold - _agentNormalThreshold) * 100)%; background: #9e9e9e; display:flex; align-items:center; justify-content:center;">
+                                    <MudText Typo="Typo.caption" Style="color:white; font-weight:600;">Human Review</MudText>
+                                </div>
+                                <div style="width:@((1.0 - _agentAbnormalThreshold) * 100)%; background: #f44336; display:flex; align-items:center; justify-content:center;">
+                                    <MudText Typo="Typo.caption" Style="color:white; font-weight:600;">Abnormal</MudText>
+                                </div>
+                            </MudStack>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">
+                                Score 0.0–@(_agentNormalThreshold.ToString("F2")) = Normal | @(_agentNormalThreshold.ToString("F2"))–@(_agentAbnormalThreshold.ToString("F2")) = Human Review | @(_agentAbnormalThreshold.ToString("F2"))–1.0 = Abnormal
+                            </MudText>
+                        </MudPaper>
+                    </MudPaper>
+
+                    <!-- Processing Depth -->
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Processing Depth</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-2">How far should the agent progress decisions through the pipeline?</MudText>
+                        <MudStack Row="true" Spacing="4">
+                            <MudCheckBox T="bool" Value="true" Disabled="true" Color="Color.Primary">Stage 1: Image Analysis Decision</MudCheckBox>
+                            <MudCheckBox T="bool" @bind-Value="_agentDepthAudit" Color="Color.Primary" Disabled="_busy">Stage 2: Through Audit</MudCheckBox>
+                            <MudCheckBox T="bool" @bind-Value="_agentDepthSubmission" Color="Color.Primary" Disabled="_busy">Stage 3: Through ICUMS Submission</MudCheckBox>
+                        </MudStack>
+                    </MudPaper>
+
+                    <!-- Risk Conditions & Weights -->
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h6">Risk Scoring Conditions</MudText>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Add" OnClick="AddDynamicCondition" Disabled="_busy" Size="Size.Small">Add Condition</MudButton>
+                        </MudStack>
+                        <MudTable Items="_agentConditions" Dense="true" Hover="true" Elevation="0">
+                            <HeaderContent>
+                                <MudTh>Enabled</MudTh>
+                                <MudTh>Name</MudTh>
+                                <MudTh>Type</MudTh>
+                                <MudTh Style="width:200px;">Weight</MudTh>
+                                <MudTh>Description</MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd><MudSwitch T="bool" @bind-Value="context.Enabled" Color="Color.Primary" /></MudTd>
+                                <MudTd><MudText Typo="Typo.body2">@context.Name</MudText></MudTd>
+                                <MudTd>
+                                    <MudChip T="string" Size="Size.Small" Color="@(context.EvaluatorType == "BuiltIn" ? Color.Info : Color.Tertiary)">
+                                        @context.EvaluatorType
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd>
+                                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                        <MudSlider T="double" @bind-Value="context.Weight" Min="0" Max="1" Step="0.01" Style="width:120px;" />
+                                        <MudText Typo="Typo.caption" Style="width:40px;">@context.Weight.ToString("F2")</MudText>
+                                    </MudStack>
+                                </MudTd>
+                                <MudTd><MudText Typo="Typo.caption">@(context.Description?.Length > 60 ? context.Description.Substring(0, 60) + "..." : context.Description)</MudText></MudTd>
+                                <MudTd>
+                                    @if (context.EvaluatorType == "Dynamic")
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Outlined.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteCondition(context))" />
+                                    }
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </MudPaper>
+
+                    <!-- Save Button -->
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAgentSettings" Disabled="_busy" FullWidth="true">
+                        @(_busy ? "Saving..." : "Save Agent Settings")
+                    </MudButton>
+
+                    <!-- Agent Activity / Audit Log -->
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h6">Agent Activity</MudText>
+                            <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadAgentData" Size="Size.Small">Refresh</MudButton>
+                        </MudStack>
+
+                        <!-- Stats chips -->
+                        <MudStack Row="true" Spacing="2" Class="mb-3" Wrap="Wrap.Wrap">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">Total: @_agentStats.totalProcessed</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success">Normal: @_agentStats.normalDecisions</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error">Abnormal: @_agentStats.abnormalDecisions</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">Skipped: @_agentStats.skippedForHuman</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning">Shadow: @_agentStats.shadowModeOnly</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Reversed: @_agentStats.reversed</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Avg Score: @_agentStats.averageScore.ToString("F3")</MudChip>
+                        </MudStack>
+
+                        <!-- Audit log table -->
+                        <MudTable Items="_agentAuditLogs" Dense="true" Hover="true" Elevation="0">
+                            <HeaderContent>
+                                <MudTh>Time</MudTh>
+                                <MudTh>Group</MudTh>
+                                <MudTh>Score</MudTh>
+                                <MudTh>Decision</MudTh>
+                                <MudTh>Shadow</MudTh>
+                                <MudTh>Depth</MudTh>
+                                <MudTh>Containers</MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd><MudText Typo="Typo.caption">@context.CreatedAtUtc.ToLocalTime().ToString("MMM dd HH:mm")</MudText></MudTd>
+                                <MudTd><MudText Typo="Typo.caption">@context.GroupIdentifier</MudText></MudTd>
+                                <MudTd>
+                                    <MudChip T="string" Size="Size.Small"
+                                        Color="@(context.TotalScore <= _agentNormalThreshold ? Color.Success : context.TotalScore >= _agentAbnormalThreshold ? Color.Error : Color.Default)">
+                                        @context.TotalScore.ToString("F3")
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd>
+                                    <MudChip T="string" Size="Size.Small"
+                                        Color="@(context.Decision == "Normal" ? Color.Success : context.Decision == "Abnormal" ? Color.Error : Color.Default)">
+                                        @context.Decision
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd><MudText Typo="Typo.caption">@(context.IsShadowMode ? "Yes" : "No")</MudText></MudTd>
+                                <MudTd><MudText Typo="Typo.caption">@context.ProcessingDepthReached</MudText></MudTd>
+                                <MudTd><MudText Typo="Typo.caption">@context.ContainerCount</MudText></MudTd>
+                                <MudTd>
+                                    @if (context.Decision != "Skipped" && !context.IsShadowMode && context.ReversedAtUtc == null)
+                                    {
+                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Warning"
+                                            OnClick="@(() => ReverseAgentDecision(context.Id))">Reverse</MudButton>
+                                    }
+                                    else if (context.ReversedAtUtc != null)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">Reversed</MudChip>
+                                    }
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </MudPaper>
+                </MudStack>
+            </ChildContent>
+        </MudExpansionPanel>
+
+        <!-- PANEL 3.5: WAVE PROCESSING MONITOR (Wave #3, 1.11.0) -->
+        <MudExpansionPanel>
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Waves" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Wave Processing Monitor</MudText>
+                    @if (_waveMonitor != null)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@(_waveMonitor.WaveProcessingEnabled ? Color.Success : Color.Default)">
+                            @(_waveMonitor.WaveProcessingEnabled ? "Enabled" : "Disabled")
+                        </MudChip>
+                        @if (_waveMonitor.StuckPendingOver24hCount > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Icon="@Icons.Material.Outlined.Warning">
+                                @_waveMonitor.StuckPendingOver24hCount stuck > 24h
+                            </MudChip>
+                        }
+                    }
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                <MudStack Spacing="3" Class="pa-2">
+                    @if (_waveMonitorLoading)
+                    {
+                        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                    }
+                    else if (_waveMonitor == null)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense="true">
+                            No wave monitor data loaded yet.
+                            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="LoadWaveMonitor">Load</MudButton>
+                        </MudAlert>
+                    }
+                    else
+                    {
+                        @* ── Settings summary ── *@
+                        <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                            <MudText Typo="Typo.subtitle2" Class="mb-2">Settings</MudText>
+                            <MudStack Row="true" Spacing="4" Wrap="Wrap.Wrap">
+                                <div>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Enabled</MudText>
+                                    <MudText Typo="Typo.body2"><strong>@_waveMonitor.WaveProcessingEnabled</strong></MudText>
+                                </div>
+                                <div>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Min batch size</MudText>
+                                    <MudText Typo="Typo.body2"><strong>@_waveMonitor.WaveMinBatchSize</strong></MudText>
+                                </div>
+                                <div>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Timeout (hours)</MudText>
+                                    <MudText Typo="Typo.body2"><strong>@_waveMonitor.WaveTimeoutHours</strong></MudText>
+                                </div>
+                                <div>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Auto-close (days)</MudText>
+                                    <MudText Typo="Typo.body2"><strong>@_waveMonitor.WaveAutoCloseDays</strong></MudText>
+                                </div>
+                                <MudSpacer />
+                                <MudButton Size="Size.Small"
+                                           Variant="Variant.Outlined"
+                                           StartIcon="@Icons.Material.Outlined.Refresh"
+                                           OnClick="LoadWaveMonitor">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                        </MudPaper>
+
+                        @* ── Counts row ── *@
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="pa-3" Elevation="1">
+                                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Parent groups by status</MudText>
+                                    @if (_waveMonitor.ParentGroupCounts.Count == 0)
+                                    {
+                                        <MudText Typo="Typo.body2" Class="mt-2" Style="font-style: italic;">No parent groups</MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap" Class="mt-2">
+                                            @foreach (var kv in _waveMonitor.ParentGroupCounts)
+                                            {
+                                                <MudChip T="string" Size="Size.Small"
+                                                         Color="@(kv.Key == "Active" ? Color.Primary : Color.Default)">
+                                                    @kv.Key: @kv.Value
+                                                </MudChip>
+                                            }
+                                        </MudStack>
+                                    }
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="pa-3" Elevation="1">
+                                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">Pending containers by status</MudText>
+                                    @if (_waveMonitor.PendingContainerCounts.Count == 0)
+                                    {
+                                        <MudText Typo="Typo.body2" Class="mt-2" Style="font-style: italic;">Queue is empty</MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap" Class="mt-2">
+                                            @foreach (var kv in _waveMonitor.PendingContainerCounts)
+                                            {
+                                                var color = kv.Key switch
+                                                {
+                                                    "Ready" => Color.Success,
+                                                    "Pending" => Color.Info,
+                                                    "NoImageAvailable" => Color.Warning,
+                                                    _ => Color.Default
+                                                };
+                                                <MudChip T="string" Size="Size.Small" Color="@color">
+                                                    @kv.Key: @kv.Value
+                                                </MudChip>
+                                            }
+                                        </MudStack>
+                                    }
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+
+                        @* ── Stuck containers ── *@
+                        @if (_waveMonitor.OldestPending != null || _waveMonitor.OldestReady != null || _waveMonitor.StuckPendingOver24hCount > 0)
+                        {
+                            <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                                <MudText Typo="Typo.subtitle2" Class="mb-2">Stuck / long-waiting containers</MudText>
+                                @if (_waveMonitor.StuckPendingOver24hCount > 0)
+                                {
+                                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                                        <strong>@_waveMonitor.StuckPendingOver24hCount container(s)</strong> have been in Pending status for over 24 hours (no images ever arrived).
+                                        These will only be auto-closed after the @_waveMonitor.WaveAutoCloseDays-day retention window.
+                                    </MudAlert>
+                                }
+                                <MudSimpleTable Dense="true" Hover="true" Striped="true">
+                                    <thead>
+                                        <tr>
+                                            <th>What</th>
+                                            <th>Container</th>
+                                            <th>Scanner</th>
+                                            <th>Age (hours)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @if (_waveMonitor.OldestPending != null)
+                                        {
+                                            <tr>
+                                                <td>Oldest <strong>Pending</strong> (no images yet)</td>
+                                                <td>@_waveMonitor.OldestPending.ContainerNumber</td>
+                                                <td>@(_waveMonitor.OldestPending.ScannerType ?? "—")</td>
+                                                <td>@_waveMonitor.OldestPending.AgeHours.ToString("F1")</td>
+                                            </tr>
+                                        }
+                                        @if (_waveMonitor.OldestReady != null)
+                                        {
+                                            <tr>
+                                                <td>Oldest <strong>Ready</strong> (waiting on wave timeout / batch size)</td>
+                                                <td>@_waveMonitor.OldestReady.ContainerNumber</td>
+                                                <td>@(_waveMonitor.OldestReady.ScannerType ?? "—")</td>
+                                                <td>@_waveMonitor.OldestReady.AgeHours.ToString("F1")</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudPaper>
+                        }
+
+                        @* ── Recent parent groups ── *@
+                        <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                            <MudText Typo="Typo.subtitle2" Class="mb-2">Recent parent groups (last 20)</MudText>
+                            @if (_waveMonitor.RecentParents.Count == 0)
+                            {
+                                <MudText Typo="Typo.body2" Style="font-style: italic;">No parent groups yet.</MudText>
+                            }
+                            else
+                            {
+                                <MudTable T="WaveMonitorParentDto"
+                                          Items="_waveMonitor.RecentParents"
+                                          Dense="true" Hover="true" Bordered="true"
+                                          Breakpoint="Breakpoint.Sm">
+                                    <HeaderContent>
+                                        <MudTh><MudTableSortLabel SortBy="new Func<WaveMonitorParentDto, object>(x => x.GroupIdentifier)">Group</MudTableSortLabel></MudTh>
+                                        <MudTh>Scanner</MudTh>
+                                        <MudTh><MudTableSortLabel SortBy="new Func<WaveMonitorParentDto, object>(x => x.Status)">Status</MudTableSortLabel></MudTh>
+                                        <MudTh><MudTableSortLabel SortBy="new Func<WaveMonitorParentDto, object>(x => x.TotalExpectedContainers)">Expected</MudTableSortLabel></MudTh>
+                                        <MudTh><MudTableSortLabel SortBy="new Func<WaveMonitorParentDto, object>(x => x.CompletedWaveCount)">Completed waves</MudTableSortLabel></MudTh>
+                                        <MudTh><MudTableSortLabel InitialDirection="SortDirection.Descending" SortBy="new Func<WaveMonitorParentDto, object>(x => x.AgeHours)">Age (h)</MudTableSortLabel></MudTh>
+                                    </HeaderContent>
+                                    <RowTemplate>
+                                        <MudTd DataLabel="Group">@context.GroupIdentifier</MudTd>
+                                        <MudTd DataLabel="Scanner">@(context.ScannerType ?? "—")</MudTd>
+                                        <MudTd DataLabel="Status">
+                                            <MudChip T="string" Size="Size.Small"
+                                                     Color="@(context.Status == "Active" ? Color.Primary : context.Status == "Complete" ? Color.Success : Color.Default)">
+                                                @context.Status
+                                            </MudChip>
+                                        </MudTd>
+                                        <MudTd DataLabel="Expected">@context.TotalExpectedContainers</MudTd>
+                                        <MudTd DataLabel="Completed waves">@context.CompletedWaveCount</MudTd>
+                                        <MudTd DataLabel="Age (h)">@context.AgeHours.ToString("F1")</MudTd>
+                                    </RowTemplate>
+                                </MudTable>
+                            }
+                        </MudPaper>
+
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Generated at @_waveMonitor.GeneratedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                        </MudText>
+                    }
+                </MudStack>
+            </ChildContent>
+        </MudExpansionPanel>
+
+        <!-- PANEL 4: MAINTENANCE -->
+        <MudExpansionPanel>
+            <TitleContent>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Build" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:600;">Maintenance</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default">Actions</MudChip>
+                </MudStack>
+            </TitleContent>
+            <ChildContent>
+                <MudStack Spacing="3" Class="pa-2">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Administrative maintenance actions for the image analysis pipeline.</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SyncStages" Disabled="_busy" StartIcon="@Icons.Material.Outlined.Sync">Sync Stages</MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="RebuildIntake" Disabled="_busy" StartIcon="@Icons.Material.Outlined.Refresh">Rebuild Intake</MudButton>
+                    </MudStack>
+                </MudStack>
+            </ChildContent>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+</MudPaper>
+
+@* Dialogs will be implemented via IDialogService to avoid inline MudDialog issues *@
+
+@code {
+    private bool _busy;
+    private bool _serviceEnabled;
+    private bool _autoAssign;
+    private string _assignmentMode = "Manual"; // Default to Manual, will be updated from API
+    private bool _isSaving = false; // Flag to prevent LoadAll from overwriting during save
+    private bool _isInitialLoad = true; // Track if this is the first load
+    private string _autoAssignStrategy = "RoundRobin";
+    private int _leaseMinutes = 15;
+    private int _maxConcurrent = 1;
+
+    // Wave Processing fields
+    private bool _enableWaveProcessing;
+    private int _waveMinBatchSize = 3;
+    private int _waveTimeoutHours = 24;
+    private int _waveAutoCloseDays = 30;
+
+    private List<ReadyGroup> _readyGroups = new();
+    private List<ActiveAssignment> _activeAssignments = new();
+    private List<ReadyGroup> _readyGroupsConsolidated = new();
+    private List<ReadyGroup> _readyGroupsNonConsolidated = new();
+    private List<ActiveAssignment> _activeAssignmentsConsolidated = new();
+    private List<ActiveAssignment> _activeAssignmentsNonConsolidated = new();
+    private List<ActiveAssignment> _auditAssignmentsConsolidated = new();
+    private List<ActiveAssignment> _auditAssignmentsNonConsolidated = new();
+    private ManagementStats _stats = new();
+    
+    // ✅ PHASE 3: Assignment Metrics
+    private AssignmentMetrics? _assignmentMetrics;
+    private bool _loadingMetrics = false;
+    private System.Threading.Timer? _metricsRefreshTimer;
+    private System.Threading.Timer? _uiUpdateTimer;
+    private DateTime? _metricsLastUpdated;
+    private bool _disposed = false;
+    
+    private int _readyQueueTabIndex = 0;
+    private int _assignmentsTabIndex = 0;
+
+    // Wave #3 (1.11.0): Wave Processing Monitor panel state. The whole panel
+    // is driven by a single /api/image-analysis-management/wave-monitor call;
+    // null means "not yet loaded", the monitor auto-loads on first page open
+    // via OnInitializedAsync below.
+    private WaveMonitorResponse? _waveMonitor;
+    private bool _waveMonitorLoading;
+
+    // Per-tab filter state for Queues & Assignments pagination/filter (deferred plan).
+    // Consolidated and Non-Consolidated Ready Queue tabs each get their own search box;
+    // the four Active Assignments tabs share a single search + an "expiring soon" toggle
+    // because operationally an oncall analyst is searching across all four at once.
+    private string? _readyConsolidatedFilter;
+    private string? _readyNonConsolidatedFilter;
+    private string? _assignmentsFilter;
+    private bool _showOnlyExpiringSoon;
+
+    /// <summary>
+    /// Client-side filter for the Ready Queue tabs. Matches Group identifier or
+    /// Scanner type, case-insensitive substring.
+    /// </summary>
+    private IEnumerable<ReadyGroup> FilterReadyGroups(IEnumerable<ReadyGroup> source, string? needle)
+    {
+        if (string.IsNullOrWhiteSpace(needle)) return source;
+        var n = needle.Trim();
+        return source.Where(g =>
+            (g.GroupIdentifier?.Contains(n, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (g.ScannerType?.Contains(n, StringComparison.OrdinalIgnoreCase) ?? false));
+    }
+
+    /// <summary>
+    /// Client-side filter for the four Active Assignments tabs. Matches Group
+    /// identifier or AssignedTo, plus an optional "expiring within 15 minutes"
+    /// toggle for oncall triage.
+    /// </summary>
+    private IEnumerable<ActiveAssignment> FilterAssignments(IEnumerable<ActiveAssignment> source)
+    {
+        var query = source;
+
+        if (!string.IsNullOrWhiteSpace(_assignmentsFilter))
+        {
+            var n = _assignmentsFilter.Trim();
+            query = query.Where(a =>
+                (a.GroupIdentifier?.Contains(n, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (a.AssignedTo?.Contains(n, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        if (_showOnlyExpiringSoon)
+        {
+            var threshold = DateTime.UtcNow.AddMinutes(15);
+            query = query.Where(a => a.LeaseUntilUtc.HasValue && a.LeaseUntilUtc.Value <= threshold);
+        }
+
+        return query;
+    }
+
+    // Wave #3 (1.11.0): Load the wave processing monitor panel in one API call.
+    // Auto-called from OnInitializedAsync and exposed as a Refresh button in
+    // the panel. Best-effort: a failure logs to console and leaves the panel
+    // empty, but doesn't break the rest of the page.
+    private async Task LoadWaveMonitor()
+    {
+        _waveMonitorLoading = true;
+        StateHasChanged();
+        try
+        {
+            _waveMonitor = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ImageAnalysisManagement] Wave monitor load failed: {ex.Message}");
+            Snackbar.Add($"Wave monitor failed to load: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            _waveMonitorLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    // Wire-format DTOs mirroring the server-side types in
+    // ImageAnalysisManagementController.GetWaveMonitor.
+    public class WaveMonitorResponse
+    {
+        public DateTime GeneratedAtUtc { get; set; }
+        public bool WaveProcessingEnabled { get; set; }
+        public int WaveMinBatchSize { get; set; }
+        public int WaveTimeoutHours { get; set; }
+        public int WaveAutoCloseDays { get; set; }
+
+        public Dictionary<string, int> ParentGroupCounts { get; set; } = new();
+        public Dictionary<string, int> PendingContainerCounts { get; set; } = new();
+
+        public int StuckPendingOver24hCount { get; set; }
+
+        public WaveMonitorStuckContainerDto? OldestPending { get; set; }
+        public WaveMonitorStuckContainerDto? OldestReady { get; set; }
+
+        public List<WaveMonitorParentDto> RecentParents { get; set; } = new();
+    }
+
+    public class WaveMonitorStuckContainerDto
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string? ScannerType { get; set; }
+        public double AgeHours { get; set; }
+        public Guid ParentGroupId { get; set; }
+    }
+
+    public class WaveMonitorParentDto
+    {
+        public Guid Id { get; set; }
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public string? ScannerType { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public int TotalExpectedContainers { get; set; }
+        public int CompletedWaveCount { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+        public DateTime? UpdatedAtUtc { get; set; }
+        public double AgeHours { get; set; }
+    }
+
+    private string? _manualAssignGroup;
+    private string? _manualAssignUser;
+    private List<string> _analysts = new();
+
+    private string? _reassignGroup;
+    private string? _reassignUser;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAll();
+        await LoadWaveMonitor();
+
+        // ✅ PHASE 3: Start auto-refresh timer for metrics (every 60 seconds)
+        _metricsRefreshTimer = new System.Threading.Timer(async _ => await RefreshMetricsTimerCallback(), null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+        
+        // ✅ PHASE 3: Start UI update timer to refresh "seconds ago" indicator (every 5 seconds)
+        _ = Task.Run(async () =>
+        {
+            while (!_disposed)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                if (_metricsLastUpdated.HasValue && !_disposed)
+                {
+                    await InvokeAsync(() => StateHasChanged());
+                }
+            }
+        });
+    }
+
+    private async Task RefreshMetricsTimerCallback()
+    {
+        // Only refresh if metrics are loaded (user has seen them at least once)
+        if (_assignmentMetrics != null && !_loadingMetrics && !_disposed)
+        {
+            await InvokeAsync(async () => await LoadMetrics());
+        }
+    }
+
+    private int GetSecondsSinceLastUpdate()
+    {
+        if (!_metricsLastUpdated.HasValue) return 0;
+        return (int)(DateTime.UtcNow - _metricsLastUpdated.Value).TotalSeconds;
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _metricsRefreshTimer?.Dispose();
+        _uiUpdateTimer?.Dispose();
+    }
+
+    private async Task LoadAll()
+    {
+        _busy = true;
+        try
+        {
+            // ✅ PERFORMANCE FIX: Load all API calls in parallel instead of sequentially
+            // ✅ FIX: Use timeout wrapper to prevent hanging if one API call fails
+            // ✅ FIX: Increased timeouts for potentially slow endpoints
+            // groups/ready can be slow if there are many groups or complex queries
+            var readyGroupsTask = SafeGetWithTimeout<List<ReadyGroup>>("/api/image-analysis-management/groups/ready", TimeSpan.FromSeconds(30));
+            var activeAssignmentsTask = SafeGetWithTimeout<List<ActiveAssignment>>("/api/image-analysis-management/assignments", TimeSpan.FromSeconds(20));
+            var statsTask = SafeGetWithTimeout<ManagementStats>("/api/image-analysis-management/stats", TimeSpan.FromSeconds(10));
+            var serviceStateTask = SafeGetWithTimeout<ServiceState>("/api/image-analysis-management/service-state", TimeSpan.FromSeconds(10));
+            var analystsTask = SafeGetWithTimeout<List<string>>("/api/image-analysis-management/analysts", TimeSpan.FromSeconds(10));
+            
+            // ✅ FIX: Wait for all tasks but don't fail if one times out - use WhenAll with error handling
+            try
+            {
+                await Task.WhenAll(readyGroupsTask, activeAssignmentsTask, statsTask, serviceStateTask, analystsTask);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ One or more API calls failed or timed out: {ex.Message}");
+                // Continue processing - SafeGetWithTimeout already handled the error
+            }
+            
+            // ✅ FIX: Safely await each task individually in case one failed
+            try { _readyGroups = await readyGroupsTask ?? new(); }
+            catch (Exception ex) { Console.WriteLine($"❌ Error getting ready groups: {ex.Message}"); _readyGroups = new(); }
+            
+            try { _activeAssignments = await activeAssignmentsTask ?? new(); }
+            catch (Exception ex) { Console.WriteLine($"❌ Error getting assignments: {ex.Message}"); _activeAssignments = new(); }
+            
+            try { _stats = await statsTask ?? new(); }
+            catch (Exception ex) { Console.WriteLine($"❌ Error getting stats: {ex.Message}"); _stats = new(); }
+            
+            // Split ready groups by consolidated/non-consolidated
+            _readyGroupsConsolidated = _readyGroups.Where(g => g.IsConsolidated).ToList();
+            _readyGroupsNonConsolidated = _readyGroups.Where(g => !g.IsConsolidated).ToList();
+            
+            // Split active assignments by consolidated/non-consolidated and by role
+            _activeAssignmentsConsolidated = _activeAssignments.Where(a => a.IsConsolidated && a.Role == "Analyst").ToList();
+            _activeAssignmentsNonConsolidated = _activeAssignments.Where(a => !a.IsConsolidated && a.Role == "Analyst").ToList();
+            _auditAssignmentsConsolidated = _activeAssignments.Where(a => a.IsConsolidated && a.Role == "Audit").ToList();
+            _auditAssignmentsNonConsolidated = _activeAssignments.Where(a => !a.IsConsolidated && a.Role == "Audit").ToList();
+            
+            ServiceState? serviceState = null;
+            try { serviceState = await serviceStateTask; }
+            catch (Exception ex) { Console.WriteLine($"❌ Error getting service state: {ex.Message}"); }
+            
+            if (serviceState != null)
+            {
+                Console.WriteLine($"📥 Loaded settings: AssignmentMode={serviceState.AssignmentMode}, Enabled={serviceState.Enabled}");
+                _serviceEnabled = serviceState.Enabled;
+                _autoAssign = serviceState.AutoAssign;
+                var newMode = serviceState.AssignmentMode ?? "Manual";
+                var oldMode = _assignmentMode;
+                
+                Console.WriteLine($"🔍 LoadAll: Current _assignmentMode='{oldMode}', API returned='{newMode}', _isSaving={_isSaving}, _isInitialLoad={_isInitialLoad}");
+                
+                // ✅ CRITICAL: Don't overwrite if we're currently saving!
+                if (_isSaving)
+                {
+                    Console.WriteLine($"⚠️ SKIPPING assignment mode update - save in progress! Keeping UI value: '{oldMode}'");
+                }
+                else if (oldMode == null || _isInitialLoad)
+                {
+                    // First load - just set the value from API (no warning)
+                    Console.WriteLine($"✅ Initial load: Setting assignment mode from API: '{newMode}'");
+                    _assignmentMode = newMode;
+                    _isInitialLoad = false;
+                }
+                else if (oldMode != newMode)
+                {
+                    // Actual mismatch after initial load - this could indicate a problem
+                    Console.WriteLine($"⚠️ WARNING: Assignment mode mismatch detected! UI had '{oldMode}' but API returned '{newMode}'");
+                    Console.WriteLine($"   This could mean a save didn't work, or the value was changed elsewhere");
+                    Console.WriteLine($"   Updating UI to match API: {oldMode} → {newMode}");
+                    _assignmentMode = newMode;
+                }
+                else
+                {
+                    Console.WriteLine($"✅ Assignment mode unchanged: {_assignmentMode}");
+                }
+                _autoAssignStrategy = serviceState.AutoAssignStrategy ?? "RoundRobin";
+                _leaseMinutes = serviceState.LeaseMinutes;
+                _maxConcurrent = serviceState.MaxConcurrent;
+                // Wave Processing settings
+                _enableWaveProcessing = serviceState.EnableWaveProcessing;
+                _waveMinBatchSize = serviceState.WaveMinBatchSize > 0 ? serviceState.WaveMinBatchSize : 3;
+                _waveTimeoutHours = serviceState.WaveTimeoutHours > 0 ? serviceState.WaveTimeoutHours : 24;
+                _waveAutoCloseDays = serviceState.WaveAutoCloseDays > 0 ? serviceState.WaveAutoCloseDays : 30;
+            }
+            else
+            {
+                Console.WriteLine("⚠️ No service state returned from API");
+            }
+            
+            try { _analysts = await analystsTask ?? new(); }
+            catch (Exception ex) { Console.WriteLine($"❌ Error getting analysts: {ex.Message}"); _analysts = new(); }
+            
+            // Load Decision Agent data in background
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(200);
+                await InvokeAsync(async () => await LoadAgentData());
+            });
+
+            // ✅ PHASE 3: Auto-load metrics on page load (in background to avoid slowing initial load)
+            _ = Task.Run(async () =>
+            {
+                // Wait a moment for main page data to load first
+                await Task.Delay(500);
+                await InvokeAsync(async () => await LoadMetrics());
+            });
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+
+    // ✅ PHASE 3: Load assignment metrics
+    private async Task LoadMetrics()
+    {
+        _loadingMetrics = true;
+        try
+        {
+            _assignmentMetrics = await SafeGetWithTimeout<AssignmentMetrics>("/api/image-analysis/metrics", TimeSpan.FromSeconds(10));
+            if (_assignmentMetrics == null)
+            {
+                // Only show warning on manual refresh, not auto-refresh
+                if (!_metricsLastUpdated.HasValue)
+                {
+                    Snackbar.Add("Failed to load assignment metrics", Severity.Warning);
+                }
+            }
+            else
+            {
+                _metricsLastUpdated = DateTime.UtcNow;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading metrics: {ex.Message}");
+            // Only show error on manual refresh, not auto-refresh (to avoid spam)
+            if (!_metricsLastUpdated.HasValue)
+            {
+                Snackbar.Add($"Error loading metrics: {ex.Message}", Severity.Error);
+            }
+        }
+        finally
+        {
+            _loadingMetrics = false;
+            StateHasChanged();
+        }
+    }
+
+    // ✅ PHASE 3: Helper methods for metrics display
+    private string GetMetricsCardStyle(bool hasValue, bool isActive = false)
+    {
+        if (hasValue && isActive)
+        {
+            return "border-left: 4px solid var(--mud-palette-primary)";
+        }
+        return "";
+    }
+
+    private double GetRolePercentage(Dictionary<string, int>? byRole, string role)
+    {
+        if (byRole == null || !byRole.ContainsKey(role)) return 0;
+        var analystCount = byRole.GetValueOrDefault("Analyst", 0);
+        var auditCount = byRole.GetValueOrDefault("Audit", 0);
+        var total = analystCount + auditCount;
+        if (total == 0) return 0;
+        return (byRole[role] / (double)total) * 100;
+    }
+
+    private async Task<T?> SafeGet<T>(string endpoint)
+    {
+        try { return await ApiService.GetAsync<T>(endpoint); }
+        catch (Exception ex) { 
+            Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
+            Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error); 
+            return default; 
+        }
+    }
+
+    private async Task<T?> SafeGetWithTimeout<T>(string endpoint, TimeSpan timeout)
+    {
+        try 
+        { 
+            using var cts = new CancellationTokenSource(timeout);
+            var apiTask = ApiService.GetAsync<T>(endpoint);
+            var delayTask = Task.Delay(timeout, cts.Token);
+            
+            var completedTask = await Task.WhenAny(apiTask, delayTask);
+            
+            if (completedTask == apiTask)
+            {
+                // API call completed before timeout
+                cts.Cancel(); // Cancel the delay task
+                return await apiTask;
+            }
+            else
+            {
+                // Timeout occurred
+                Console.WriteLine($"⏱️ Timeout calling {endpoint} after {timeout.TotalSeconds}s");
+                Snackbar.Add($"Timeout loading {endpoint} (>{timeout.TotalSeconds}s)", Severity.Warning);
+                return default;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine($"⏱️ Timeout calling {endpoint}");
+            Snackbar.Add($"Timeout loading {endpoint}", Severity.Warning);
+            return default;
+        }
+        catch (Exception ex) 
+        { 
+            Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
+            Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error); 
+            return default; 
+        }
+    }
+
+    private async Task OnSaveClicked()
+    {
+        Console.WriteLine($"🔵 Save Settings button clicked! Current _assignmentMode: '{_assignmentMode}'");
+        await SaveSettings();
+    }
+
+    private async Task SaveSettings()
+    {
+        // ✅ CRITICAL: Log at the VERY start of the method
+        System.Diagnostics.Debug.WriteLine("💾💾💾 SAVE SETTINGS METHOD CALLED 💾💾💾");
+        Console.WriteLine("💾💾💾 SAVE SETTINGS METHOD CALLED 💾💾💾");
+        Console.Error.WriteLine("💾💾💾 SAVE SETTINGS METHOD CALLED 💾💾💾"); // Write to stderr too
+        
+        // ✅ CRITICAL: Set flag IMMEDIATELY to prevent LoadAll from overwriting
+        _isSaving = true;
+        
+        _busy = true;
+        try
+        {
+            // ✅ CRITICAL: Capture IMMEDIATELY at the start to prevent race conditions
+            var currentMode = _assignmentMode; // Now non-nullable, always has a value
+            var currentEnabled = _serviceEnabled;
+            
+            // ✅ CRITICAL: Log IMMEDIATELY to catch the value before anything else
+            Console.WriteLine($"💾💾💾 SAVE SETTINGS - IMMEDIATE CAPTURE 💾💾💾");
+            Console.WriteLine($"💾 _assignmentMode captured IMMEDIATELY: '{currentMode}'");
+            Console.WriteLine($"💾 Mode type: {currentMode?.GetType().Name ?? "null"}");
+            Console.WriteLine($"💾 Mode length: {currentMode?.Length ?? 0}");
+            Console.WriteLine($"💾 Mode == 'UserClaim': {currentMode == "UserClaim"}");
+            Console.WriteLine($"💾 Mode == 'Manual': {currentMode == "Manual"}");
+            Console.WriteLine($"💾 Mode == 'Auto': {currentMode == "Auto"}");
+            
+            Console.WriteLine($"💾 ========== SAVE SETTINGS STARTED ==========");
+            Console.WriteLine($"💾 Current _assignmentMode value: '{currentMode}'");
+            Console.WriteLine($"💾 Current _serviceEnabled value: {currentEnabled}");
+            Console.WriteLine($"💾 Saving settings: AssignmentMode={currentMode}, Enabled={currentEnabled}");
+            Console.WriteLine($"   LeaseMinutes={_leaseMinutes}, MaxConcurrent={_maxConcurrent}");
+            Console.WriteLine($"   AutoAssignStrategy={_autoAssignStrategy}, AutoAssign={_autoAssign}");
+            
+            // ✅ CRITICAL: Also log to Snackbar for visibility
+            Snackbar.Add($"💾 SaveSettings: mode='{currentMode}'", Severity.Info);
+            
+            // ✅ Verify the mode value before sending
+            if (currentMode != "UserClaim" && currentMode != "Manual" && currentMode != "Auto")
+            {
+                Console.WriteLine($"⚠️ WARNING: Invalid assignment mode value: '{currentMode}'");
+            }
+            
+            var requestBody = new
+            {
+                enabled = currentEnabled,
+                assignmentMode = currentMode,
+                autoAssignStrategy = _autoAssignStrategy,
+                autoAssign = _autoAssign, // Keep for backward compatibility
+                leaseMinutes = _leaseMinutes,
+                maxConcurrent = _maxConcurrent,
+                enableWaveProcessing = _enableWaveProcessing,
+                waveMinBatchSize = _waveMinBatchSize,
+                waveTimeoutHours = _waveTimeoutHours,
+                waveAutoCloseDays = _waveAutoCloseDays
+            };
+            
+            var requestJson = System.Text.Json.JsonSerializer.Serialize(requestBody);
+            Console.WriteLine($"📤 POST /api/image-analysis-management/service-state");
+            Console.WriteLine($"   Request Body: {requestJson}");
+            Console.WriteLine($"   ✅ Verify 'assignmentMode' in JSON is '{currentMode}'");
+            
+            // ✅ CRITICAL: Parse the JSON to verify the property name and value
+            try
+            {
+                var parsedJson = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(requestJson);
+                if (parsedJson.TryGetProperty("assignmentMode", out var modeProp))
+                {
+                    var modeValue = modeProp.GetString();
+                    Console.WriteLine($"✅ VERIFIED: Request JSON contains 'assignmentMode' = '{modeValue}'");
+                    if (modeValue != currentMode)
+                    {
+                        Console.WriteLine($"⚠️ CRITICAL ERROR: Request JSON has '{modeValue}' but we wanted '{currentMode}'!");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"❌ CRITICAL ERROR: Request JSON does NOT contain 'assignmentMode' property!");
+                    Console.WriteLine($"   Available properties: {string.Join(", ", parsedJson.EnumerateObject().Select(p => p.Name))}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Could not parse request JSON: {ex.Message}");
+            }
+            
+            Console.WriteLine($"📡 Sending POST request to API...");
+            
+            // ✅ CRITICAL: Try to catch any exceptions and log them
+            object? response = null;
+            try
+            {
+                response = await ApiService.PostAsync<object, object>("/api/image-analysis-management/service-state", requestBody);
+                Console.WriteLine($"✅ POST request completed successfully");
+            }
+            catch (Exception apiEx)
+            {
+                Console.WriteLine($"❌❌❌ API CALL FAILED: {apiEx.Message}");
+                Console.WriteLine($"❌ Exception type: {apiEx.GetType().Name}");
+                Console.WriteLine($"❌ Stack trace: {apiEx.StackTrace}");
+                
+                // Re-throw to be caught by outer catch block
+                throw;
+            }
+            
+            Console.WriteLine($"✅ Save response received: {response != null}");
+            if (response != null)
+            {
+                var responseJson = System.Text.Json.JsonSerializer.Serialize(response);
+                Console.WriteLine($"✅ Response: {responseJson}");
+                
+                // ✅ Check if response contains the saved settings
+                try
+                {
+                    var responseObj = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(responseJson);
+                    if (responseObj.TryGetProperty("settings", out var settingsObj))
+                    {
+                        if (settingsObj.TryGetProperty("assignmentMode", out var modeElement))
+                        {
+                            var savedMode = modeElement.GetString();
+                            Console.WriteLine($"✅ API returned saved mode: '{savedMode}'");
+                            if (savedMode != currentMode)
+                            {
+                                Console.WriteLine($"⚠️ WARNING: API saved '{savedMode}' instead of '{currentMode}'!");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ Could not parse response: {ex.Message}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ WARNING: Save response is null!");
+            }
+            
+            // ✅ FIX: Check if response contains settings and update immediately
+            if (response != null)
+            {
+                try
+                {
+                    var responseJson = System.Text.Json.JsonSerializer.Serialize(response);
+                    var responseObj = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(responseJson);
+                    if (responseObj.TryGetProperty("settings", out var settingsObj))
+                    {
+                        if (settingsObj.TryGetProperty("assignmentMode", out var modeElement))
+                        {
+                            var savedMode = modeElement.GetString();
+                            Console.WriteLine($"✅ Response contains saved mode: {savedMode}");
+                            var currentModeValue = _assignmentMode ?? "Manual";
+                            if (savedMode != currentModeValue)
+                            {
+                                Console.WriteLine($"⚠️ Mode mismatch: UI={currentModeValue}, Saved={savedMode}");
+                                _assignmentMode = savedMode ?? "Manual";
+                                StateHasChanged();
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex2)
+                {
+                    Console.WriteLine($"⚠️ Could not parse response: {ex2.Message}");
+                }
+            }
+            
+            Snackbar.Add($"Settings saved successfully. Assignment Mode: {_assignmentMode ?? "Manual"}", Severity.Success);
+            
+            // ✅ FIX: Wait a moment for database to update
+            Console.WriteLine($"⏳ Waiting 500ms for database to update...");
+            await Task.Delay(500);
+            
+            // ✅ FIX: Reload settings to verify the change was saved
+            Console.WriteLine($"🔄 Calling LoadAll() to verify settings were saved...");
+            await LoadAll();
+            Console.WriteLine($"✅ LoadAll() completed. Current _assignmentMode: '{_assignmentMode}'");
+            
+            // ✅ FIX: Verify the assignment mode was actually saved
+            var serviceState = await SafeGet<ServiceState>("/api/image-analysis-management/service-state");
+            if (serviceState != null)
+            {
+                Console.WriteLine($"🔍 Verification: Expected={_assignmentMode}, Actual={serviceState.AssignmentMode}");
+                if (serviceState.AssignmentMode != _assignmentMode)
+                {
+                    Snackbar.Add($"⚠️ Warning: Assignment mode mismatch. Expected: {_assignmentMode}, Actual: {serviceState.AssignmentMode}", Severity.Warning);
+                    _assignmentMode = serviceState.AssignmentMode ?? "Manual";
+                    StateHasChanged();
+                }
+                else
+                {
+                    Console.WriteLine($"✅ Assignment mode verified: {_assignmentMode}");
+                    Snackbar.Add($"✅ Assignment mode confirmed: {_assignmentMode}", Severity.Success);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ Could not verify settings after save");
+                Snackbar.Add("Settings saved, but could not verify the change", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            // ✅ Use DualNotification for errors - saves to database AND shows Snackbar
+            Console.WriteLine($"❌❌❌ ERROR IN SaveSettings: {ex.Message}");
+            Console.WriteLine($"❌ Stack trace: {ex.StackTrace}");
+            Console.Error.WriteLine($"❌❌❌ ERROR IN SaveSettings: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"❌❌❌ ERROR IN SaveSettings: {ex.Message}");
+            
+            await DualNotification.ShowErrorAsync($"Error saving settings: {ex.Message}", title: "Settings Error");
+            
+            // Try to get more details about the error
+            if (ex.Message.Contains("401") || ex.Message.Contains("Unauthorized"))
+            {
+                Snackbar.Add("⚠️ Authentication error. Please confirm you are logged in.", Severity.Warning);
+            }
+            else if (ex.Message.Contains("403") || ex.Message.Contains("Forbid"))
+            {
+                Snackbar.Add("⚠️ Permission denied. You need the 'controllers.imageanalysis.management.settings' permission to update these settings.", Severity.Warning);
+            }
+        }
+        finally 
+        { 
+            Console.WriteLine($"✅ SaveSettings finally block - setting _busy = false and _isSaving = false");
+            _busy = false;
+            _isSaving = false; // ✅ CRITICAL: Clear flag after save completes
+        }
+    }
+
+    private async Task SyncStages()
+    {
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>("/api/image-analysis-management/sync-stages", new { }); Snackbar.Add("Stages synced", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error syncing: {ex.Message}", title: "Sync Error"); }
+        finally { _busy = false; }
+    }
+
+    private async Task RebuildIntake()
+    {
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>("/api/image-analysis-management/rebuild-intake", new { }); Snackbar.Add("Intake rebuilt", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error rebuilding intake: {ex.Message}", title: "Rebuild Error"); }
+        finally { _busy = false; }
+    }
+
+    private async Task GetNextForSelf(string groupId)
+    {
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{groupId}/assign", new { }); Snackbar.Add("Assigned to you", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error assigning: {ex.Message}", title: "Assignment Error"); }
+        finally { _busy = false; }
+    }
+
+    private void OpenManualAssign(string groupId)
+    {
+        _manualAssignGroup = groupId;
+        _manualAssignUser = null;
+    }
+
+    private async Task ConfirmManualAssign()
+    {
+        if (string.IsNullOrWhiteSpace(_manualAssignGroup) || string.IsNullOrWhiteSpace(_manualAssignUser)) return;
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{_manualAssignGroup}/assign", new { user = _manualAssignUser }); Snackbar.Add("Assigned", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error assigning: {ex.Message}", title: "Assignment Error"); }
+        finally { _busy = false; }
+    }
+
+    private void OpenReassign(string groupId)
+    {
+        _reassignGroup = groupId;
+        _reassignUser = null;
+    }
+
+    private async Task ConfirmReassign()
+    {
+        if (string.IsNullOrWhiteSpace(_reassignGroup) || string.IsNullOrWhiteSpace(_reassignUser)) return;
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{_reassignGroup}/reassign", new { user = _reassignUser }); Snackbar.Add("Reassigned", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error reassigning: {ex.Message}", title: "Reassignment Error"); }
+        finally { _busy = false; }
+    }
+
+    private async Task Release(string groupId)
+    {
+        _busy = true;
+        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{groupId}/release", new { }); Snackbar.Add("Released", Severity.Success); await LoadAll(); }
+        catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error releasing: {ex.Message}", title: "Release Error"); }
+        finally { _busy = false; }
+    }
+
+    private void OpenGroup(string groupId)
+    {
+        Nav.NavigateTo($"/operations/image-analysis?group={Uri.EscapeDataString(groupId)}");
+    }
+
+    private sealed class ReadyGroup
+    {
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public string? ScannerType { get; set; }
+        public int ContainerCount { get; set; }
+        public bool IsConsolidated { get; set; }
+    }
+
+    private sealed class ActiveAssignment
+    {
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public string AssignedTo { get; set; } = string.Empty;
+        public string Role { get; set; } = "Analyst"; // Analyst | Audit
+        public DateTime? LeaseUntilUtc { get; set; }
+        public bool IsConsolidated { get; set; }
+    }
+
+    private sealed class ManagementStats
+    {
+        public int ImageAnalysis { get; set; }
+        public int Audit { get; set; }
+        public int Completed { get; set; }
+    }
+
+    private void OnAssignmentModeChanged(string? newValue)
+    {
+        var oldValue = _assignmentMode;
+        var updatedValue = newValue ?? "Manual";
+        
+        Console.WriteLine($"🔄 Assignment mode dropdown changed: '{oldValue}' → '{updatedValue}'");
+        Console.WriteLine($"   oldValue == updatedValue: {oldValue == updatedValue}");
+        Console.WriteLine($"   oldValue.Equals(updatedValue): {oldValue?.Equals(updatedValue) ?? false}");
+        
+        // ✅ CRITICAL: Update the value immediately
+        _assignmentMode = updatedValue;
+        
+        Console.WriteLine($"✅ Assignment mode updated in UI: _assignmentMode = '{_assignmentMode}'");
+        Console.WriteLine($"   _assignmentMode == 'UserClaim': {_assignmentMode == "UserClaim"}");
+        Console.WriteLine($"   _assignmentMode == 'Manual': {_assignmentMode == "Manual"}");
+        Console.WriteLine($"   _assignmentMode == 'Auto': {_assignmentMode == "Auto"}");
+        
+        // ✅ CRITICAL: Force UI update and verify the value is actually set
+        StateHasChanged();
+        
+        // ✅ VERIFY: Check again after StateHasChanged
+        Task.Delay(100).ContinueWith(_ => {
+            Console.WriteLine($"🔍 Verification after StateHasChanged: _assignmentMode = '{_assignmentMode}'");
+            if (_assignmentMode != updatedValue)
+            {
+                Console.WriteLine($"⚠️ WARNING: Value changed after StateHasChanged! Expected '{updatedValue}', got '{_assignmentMode}'");
+            }
+        });
+    }
+
+    private sealed class ServiceState
+    {
+        public bool Enabled { get; set; }
+        public string? AssignmentMode { get; set; }
+        public string? AutoAssignStrategy { get; set; }
+        public bool AutoAssign { get; set; }
+        public int LeaseMinutes { get; set; }
+        public int MaxConcurrent { get; set; }
+        // Wave Processing
+        public bool EnableWaveProcessing { get; set; }
+        public int WaveMinBatchSize { get; set; } = 3;
+        public int WaveTimeoutHours { get; set; } = 24;
+        public int WaveAutoCloseDays { get; set; } = 30;
+    }
+
+    // ✅ PHASE 3: Assignment Metrics DTO (matches backend AssignmentMetricsResponse)
+    private sealed class AssignmentMetrics
+    {
+        public DateTime Timestamp { get; set; }
+        public int TotalAssignments { get; set; }
+        public int ActiveAssignments { get; set; }
+        public int ExpiredAssignments { get; set; }
+        public int ReleasedAssignments { get; set; }
+        public Dictionary<string, int>? ByRole { get; set; }
+        public int ExpiringSoon { get; set; }
+        public int ExpiredButActive { get; set; }
+        public int RecentlyAccessed { get; set; }
+        public Dictionary<string, int>? ByUser { get; set; }
+        public int CreatedLast24Hours { get; set; }
+        public int ExpiredLast24Hours { get; set; }
+        public int GroupsReady { get; set; }
+        public int GroupsAnalystAssigned { get; set; }
+        public int GroupsAuditAssigned { get; set; }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // AUTONOMOUS DECISION AGENT
+    // ═══════════════════════════════════════════════════════════════
+
+    // Agent settings fields
+    private bool _agentEnabled;
+    private bool _agentShadowMode = true;
+    private bool _agentAllowNormal = true;
+    private bool _agentAllowAbnormal;
+    private double _agentNormalThreshold = 0.2;
+    private double _agentAbnormalThreshold = 0.7;
+    private bool _agentDepthAudit;
+    private bool _agentDepthSubmission;
+    private int _agentMaxGroupsPerCycle = 50;
+
+    private List<AgentConditionDto> _agentConditions = new();
+    private List<AgentAuditLogDto> _agentAuditLogs = new();
+    private AgentStatsDto _agentStats = new();
+
+    private async Task LoadAgentData()
+    {
+        try
+        {
+            var settingsResult = await SafeGetWithTimeout<AgentSettingsResponse>("/api/image-analysis-management/agent/settings", TimeSpan.FromSeconds(10));
+            if (settingsResult != null)
+            {
+                _agentEnabled = settingsResult.settings?.Enabled ?? false;
+                _agentShadowMode = settingsResult.settings?.ShadowMode ?? true;
+                _agentAllowNormal = settingsResult.settings?.AllowNormalDecisions ?? true;
+                _agentAllowAbnormal = settingsResult.settings?.AllowAbnormalDecisions ?? false;
+                _agentNormalThreshold = settingsResult.settings?.NormalThreshold ?? 0.2;
+                _agentAbnormalThreshold = settingsResult.settings?.AbnormalThreshold ?? 0.7;
+                _agentDepthAudit = settingsResult.settings?.ProcessingDepthAudit ?? false;
+                _agentDepthSubmission = settingsResult.settings?.ProcessingDepthSubmission ?? false;
+                _agentMaxGroupsPerCycle = settingsResult.settings?.MaxGroupsPerCycle ?? 50;
+                _agentConditions = settingsResult.conditions ?? new();
+            }
+
+            var auditResult = await SafeGetWithTimeout<AgentAuditLogResponse>("/api/image-analysis-management/agent/audit-log?pageSize=20", TimeSpan.FromSeconds(10));
+            if (auditResult?.items != null) _agentAuditLogs = auditResult.items;
+
+            _agentStats = await SafeGetWithTimeout<AgentStatsDto>("/api/image-analysis-management/agent/stats", TimeSpan.FromSeconds(10)) ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading agent data: {ex.Message}");
+        }
+        StateHasChanged();
+    }
+
+    private async Task SaveAgentSettings()
+    {
+        if (_agentNormalThreshold >= _agentAbnormalThreshold)
+        {
+            Snackbar.Add("Normal threshold must be less than abnormal threshold", Severity.Error);
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            // Save settings
+            await ApiService.PostAsync<object, object>("/api/image-analysis-management/agent/settings", new
+            {
+                enabled = _agentEnabled,
+                shadowMode = _agentShadowMode,
+                allowNormalDecisions = _agentAllowNormal,
+                allowAbnormalDecisions = _agentAllowAbnormal,
+                normalThreshold = _agentNormalThreshold,
+                abnormalThreshold = _agentAbnormalThreshold,
+                processingDepthAudit = _agentDepthAudit,
+                processingDepthSubmission = _agentDepthSubmission,
+                maxGroupsPerCycle = _agentMaxGroupsPerCycle
+            });
+
+            // Save each condition
+            foreach (var c in _agentConditions)
+            {
+                await ApiService.PostAsync<object, object>("/api/image-analysis-management/agent/conditions", new
+                {
+                    id = c.Id,
+                    name = c.Name,
+                    conditionKey = c.ConditionKey,
+                    weight = c.Weight,
+                    enabled = c.Enabled,
+                    dynamicFieldPath = c.DynamicFieldPath,
+                    dynamicOperator = c.DynamicOperator,
+                    dynamicValue = c.DynamicValue,
+                    description = c.Description
+                });
+            }
+
+            Snackbar.Add("Agent settings saved", Severity.Success);
+            await LoadAgentData();
+        }
+        catch (Exception ex)
+        {
+            await DualNotification.ShowErrorAsync($"Error saving agent settings: {ex.Message}", title: "Agent Settings Error");
+        }
+        finally { _busy = false; }
+    }
+
+    private void AddDynamicCondition()
+    {
+        _agentConditions.Add(new AgentConditionDto
+        {
+            Name = "New Condition",
+            ConditionKey = "dynamic_" + Guid.NewGuid().ToString("N").Substring(0, 8),
+            EvaluatorType = "Dynamic",
+            Weight = 0.1,
+            Enabled = true,
+            DynamicOperator = "Contains"
+        });
+    }
+
+    private async Task DeleteCondition(AgentConditionDto condition)
+    {
+        if (condition.EvaluatorType == "BuiltIn") return;
+
+        if (condition.Id > 0)
+        {
+            try
+            {
+                await ApiService.GetAsync<object>($"/api/image-analysis-management/agent/conditions/{condition.Id}");
+            }
+            catch { /* may not have DELETE via GET - handled by controller */ }
+
+            try
+            {
+                // Use POST to a delete endpoint pattern
+                var response = await ApiService.PostAsync<object, object>($"/api/image-analysis-management/agent/conditions", new
+                {
+                    id = condition.Id,
+                    name = condition.Name,
+                    conditionKey = condition.ConditionKey,
+                    weight = 0,
+                    enabled = false
+                });
+            }
+            catch { }
+        }
+
+        _agentConditions.Remove(condition);
+        StateHasChanged();
+    }
+
+    private async Task ReverseAgentDecision(long auditLogId)
+    {
+        _busy = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/image-analysis-management/agent/reverse/{auditLogId}", new { reason = "Manual reversal from UI" });
+            Snackbar.Add("Decision reversed — group returned to Ready", Severity.Success);
+            await LoadAgentData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error reversing: {ex.Message}", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
+    // Agent DTOs
+    private sealed class AgentSettingsResponse
+    {
+        public AgentSettingsDto? settings { get; set; }
+        public List<AgentConditionDto>? conditions { get; set; }
+    }
+
+    private sealed class AgentSettingsDto
+    {
+        public bool Enabled { get; set; }
+        public bool ShadowMode { get; set; }
+        public bool AllowNormalDecisions { get; set; }
+        public bool AllowAbnormalDecisions { get; set; }
+        public double NormalThreshold { get; set; }
+        public double AbnormalThreshold { get; set; }
+        public bool ProcessingDepthAudit { get; set; }
+        public bool ProcessingDepthSubmission { get; set; }
+        public int MaxGroupsPerCycle { get; set; }
+    }
+
+    private sealed class AgentConditionDto
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string ConditionKey { get; set; } = "";
+        public string EvaluatorType { get; set; } = "Dynamic";
+        public double Weight { get; set; }
+        public bool Enabled { get; set; }
+        public string? DynamicFieldPath { get; set; }
+        public string? DynamicOperator { get; set; }
+        public string? DynamicValue { get; set; }
+        public string? Description { get; set; }
+    }
+
+    private sealed class AgentAuditLogResponse
+    {
+        public int total { get; set; }
+        public List<AgentAuditLogDto>? items { get; set; }
+    }
+
+    private sealed class AgentAuditLogDto
+    {
+        public long Id { get; set; }
+        public string GroupIdentifier { get; set; } = "";
+        public double TotalScore { get; set; }
+        public string Decision { get; set; } = "";
+        public bool IsShadowMode { get; set; }
+        public string ProcessingDepthReached { get; set; } = "";
+        public int ContainerCount { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+        public DateTime? ReversedAtUtc { get; set; }
+    }
+
+    private sealed class AgentStatsDto
+    {
+        public int totalProcessed { get; set; }
+        public int normalDecisions { get; set; }
+        public int abnormalDecisions { get; set; }
+        public int skippedForHuman { get; set; }
+        public int shadowModeOnly { get; set; }
+        public int reversed { get; set; }
+        public double averageScore { get; set; }
+    }
+}
+
+

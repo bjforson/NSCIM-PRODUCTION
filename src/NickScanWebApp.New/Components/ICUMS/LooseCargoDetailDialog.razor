@@ -1,0 +1,397 @@
+@using MudBlazor
+@using NickScanWebApp.New.Services
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressCircular Indeterminate="true" Class="mx-auto my-4" />
+        }
+        else if (_detail == null)
+        {
+            <MudAlert Severity="Severity.Error">Failed to load loose cargo details</MudAlert>
+        }
+        else
+        {
+            var doc = _detail.Document;
+            
+            <!-- Header -->
+            <MudPaper Elevation="2" Class="pa-4 mb-4">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Inventory2" Size="Size.Large" Color="Color.Primary" />
+                    <div>
+                        <MudText Typo="Typo.h6">@doc.DeclarationNumber</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            @doc.ClearanceType - @doc.CrmsLevel
+                        </MudText>
+                    </div>
+                    <MudSpacer />
+                    <MudChip T="string" Size="Size.Small" 
+                            Color="@(doc.ClearanceType == "IM" ? Color.Info : doc.ClearanceType == "EX" ? Color.Warning : Color.Success)">
+                        @doc.ClearanceType
+                    </MudChip>
+                    <MudChip T="string" Size="Size.Small" 
+                            Color="@GetCrmsColor(doc.CrmsLevel)">
+                        @(doc.CrmsLevel ?? "N/A")
+                    </MudChip>
+                </MudStack>
+            </MudPaper>
+
+            <!-- Tabs for Details and Manifest -->
+            <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+                <!-- Document Details Tab -->
+                <MudTabPanel Text="Document Details" Icon="@Icons.Material.Outlined.Description">
+                    <MudGrid>
+                        <MudItem xs="12" md="6">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">Declaration Information</MudText>
+                            <MudSimpleTable Dense="true" Hover="false">
+                                <tbody>
+                                    <tr>
+                                        <td><strong>Declaration Number:</strong></td>
+                                        <td>@doc.DeclarationNumber</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>BL Number:</strong></td>
+                                        <td>@doc.BlNumber</td>
+                                    </tr>
+                                    @if (!string.IsNullOrEmpty(doc.HouseBl))
+                                    {
+                                        <tr>
+                                            <td><strong>House BL:</strong></td>
+                                            <td>@doc.HouseBl</td>
+                                        </tr>
+                                    }
+                                    <tr>
+                                        <td><strong>Rotation Number:</strong></td>
+                                        <td>@doc.RotationNumber</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Declaration Date:</strong></td>
+                                        <td>@doc.DeclarationDate</td>
+                                    </tr>
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">Parties</MudText>
+                            <MudSimpleTable Dense="true" Hover="false">
+                                <tbody>
+                                    @if (!string.IsNullOrEmpty(doc.ConsigneeName))
+                                    {
+                                        <tr>
+                                            <td><strong>Consignee:</strong></td>
+                                            <td>@doc.ConsigneeName</td>
+                                        </tr>
+                                    }
+                                    @if (!string.IsNullOrEmpty(doc.ShipperName))
+                                    {
+                                        <tr>
+                                            <td><strong>Shipper:</strong></td>
+                                            <td>@doc.ShipperName</td>
+                                        </tr>
+                                    }
+                                    @if (!string.IsNullOrEmpty(doc.DeclarantName))
+                                    {
+                                        <tr>
+                                            <td><strong>Declarant:</strong></td>
+                                            <td>@doc.DeclarantName</td>
+                                        </tr>
+                                    }
+                                    @if (!string.IsNullOrEmpty(doc.ImpName))
+                                    {
+                                        <tr>
+                                            <td><strong>Importer:</strong></td>
+                                            <td>@doc.ImpName</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">Goods Information</MudText>
+                            <MudSimpleTable Dense="true" Hover="false">
+                                <tbody>
+                                    @if (!string.IsNullOrEmpty(doc.GoodsDescription))
+                                    {
+                                        <tr>
+                                            <td><strong>Description:</strong></td>
+                                            <td>@doc.GoodsDescription</td>
+                                        </tr>
+                                    }
+                                    @if (!string.IsNullOrEmpty(doc.CountryOfOrigin))
+                                    {
+                                        <tr>
+                                            <td><strong>Country of Origin:</strong></td>
+                                            <td>@doc.CountryOfOrigin</td>
+                                        </tr>
+                                    }
+                                    @if (!string.IsNullOrEmpty(doc.RegimeCode))
+                                    {
+                                        <tr>
+                                            <td><strong>Regime Code:</strong></td>
+                                            <td>@doc.RegimeCode</td>
+                                        </tr>
+                                    }
+                                    @if (doc.TotalDutyPaid.HasValue)
+                                    {
+                                        <tr>
+                                            <td><strong>Total Duty Paid:</strong></td>
+                                            <td>@doc.TotalDutyPaid.Value.ToString("N2")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudText Typo="Typo.subtitle2" Color="Color.Primary">Additional Information</MudText>
+                            <MudSimpleTable Dense="true" Hover="false">
+                                <tbody>
+                                    <tr>
+                                        <td><strong>Created At:</strong></td>
+                                        <td>@doc.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                    </tr>
+                                    @if (_detail.SourceFile != null)
+                                    {
+                                        <tr>
+                                            <td><strong>Source File:</strong></td>
+                                            <td>@_detail.SourceFile.FileName</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Downloaded At:</strong></td>
+                                            <td>@_detail.SourceFile.DownloadedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        </MudItem>
+                    </MudGrid>
+                </MudTabPanel>
+
+                <!-- Manifest Items Tab -->
+                <MudTabPanel Text="Manifest Items" Icon="@Icons.Material.Outlined.List">
+                    @if (_detail.ManifestItems == null || !_detail.ManifestItems.Any())
+                    {
+                        <MudAlert Severity="Severity.Info">No manifest items found for this record</MudAlert>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="mb-3">
+                            <strong>@_detail.ManifestItems.Count</strong> manifest item(s) found
+                        </MudText>
+                        <MudTable T="ManifestItemDto" 
+                                  Items="@_detail.ManifestItems" 
+                                  Dense="true" 
+                                  Hover="true" 
+                                  Striped="true"
+                                  Elevation="1"
+                                  FixedHeader="true"
+                                  Height="400px">
+                            <HeaderContent>
+                                <MudTh>Item #</MudTh>
+                                <MudTh>HS Code</MudTh>
+                                <MudTh>Description</MudTh>
+                                <MudTh>Quantity</MudTh>
+                                <MudTh>Unit</MudTh>
+                                <MudTh>Weight</MudTh>
+                                <MudTh>FOB Value</MudTh>
+                                <MudTh>Duty Paid</MudTh>
+                                <MudTh>Country</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Item #">@context.ItemNo</MudTd>
+                                <MudTd DataLabel="HS Code">
+                                    <MudText Typo="Typo.body2" Style="font-family: monospace;">
+                                        @context.HsCode
+                                    </MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Description">
+                                    <MudText Typo="Typo.body2">
+                                        @context.Description
+                                    </MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Quantity">
+                                    @if (context.Quantity.HasValue)
+                                    {
+                                        <MudText Typo="Typo.body2">@context.Quantity.Value.ToString("N2")</MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">-</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="Unit">@context.Unit</MudTd>
+                                <MudTd DataLabel="Weight">
+                                    @if (context.Weight.HasValue)
+                                    {
+                                        <MudText Typo="Typo.body2">@context.Weight.Value.ToString("N2")</MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">-</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="FOB Value">
+                                    @if (context.ItemFob.HasValue)
+                                    {
+                                        <MudText Typo="Typo.body2">
+                                            @context.ItemFob.Value.ToString("N2") @context.FobCurrency
+                                        </MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">-</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="Duty Paid">
+                                    @if (context.ItemDutyPaid.HasValue)
+                                    {
+                                        <MudText Typo="Typo.body2">@context.ItemDutyPaid.Value.ToString("N2")</MudText>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">-</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="Country">@context.CountryOfOrigin</MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int LooseCargoId { get; set; }
+    [Parameter] public string? DeclarationNumber { get; set; }
+
+    private bool _loading = true;
+    private LooseCargoDetailDto? _detail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDetail();
+    }
+
+    private async Task LoadDetail()
+    {
+        _loading = true;
+        try
+        {
+            string url;
+            if (LooseCargoId > 0)
+            {
+                url = $"/api/LooseCargo/{LooseCargoId}";
+            }
+            else if (!string.IsNullOrEmpty(DeclarationNumber))
+            {
+                url = $"/api/LooseCargo/declaration/{Uri.EscapeDataString(DeclarationNumber)}";
+            }
+            else
+            {
+                Snackbar.Add("Invalid parameters: either LooseCargoId or DeclarationNumber must be provided", Severity.Error);
+                return;
+            }
+
+            var response = await ApiService.GetAsync<ApiResponse<LooseCargoDetailDto>>(url);
+            
+            if (response?.Success == true && response.Data != null)
+            {
+                _detail = response.Data;
+            }
+            else
+            {
+                Snackbar.Add($"Failed to load loose cargo details: {response?.Message ?? "Unknown error"}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading loose cargo details: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private Color GetCrmsColor(string? crmsLevel)
+    {
+        return crmsLevel?.ToLower() switch
+        {
+            "red" => Color.Error,
+            "yellow" => Color.Warning,
+            "green" => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    private void Close()
+    {
+        // Dialog will close automatically via the Close button
+    }
+
+    // DTOs
+    private class ApiResponse<T>
+    {
+        public bool Success { get; set; }
+        public T? Data { get; set; }
+        public string? Message { get; set; }
+    }
+
+    private class LooseCargoDetailDto
+    {
+        public BOEDocumentDto Document { get; set; } = null!;
+        public List<ManifestItemDto> ManifestItems { get; set; } = new();
+        public SourceFileDto? SourceFile { get; set; }
+    }
+
+    private class BOEDocumentDto
+    {
+        public int Id { get; set; }
+        public string? DeclarationNumber { get; set; }
+        public string? ClearanceType { get; set; }
+        public string? BlNumber { get; set; }
+        public string? HouseBl { get; set; }
+        public string? RotationNumber { get; set; }
+        public string? ConsigneeName { get; set; }
+        public string? ShipperName { get; set; }
+        public string? DeclarantName { get; set; }
+        public string? ImpName { get; set; }
+        public string? GoodsDescription { get; set; }
+        public string? CrmsLevel { get; set; }
+        public string? RegimeCode { get; set; }
+        public string? DeclarationDate { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public decimal? TotalDutyPaid { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    private class ManifestItemDto
+    {
+        public int Id { get; set; }
+        public int? ItemNo { get; set; }
+        public string? HsCode { get; set; }
+        public string? Description { get; set; }
+        public decimal? Quantity { get; set; }
+        public string? Unit { get; set; }
+        public decimal? Weight { get; set; }
+        public decimal? ItemFob { get; set; }
+        public decimal? ItemDutyPaid { get; set; }
+        public string? FobCurrency { get; set; }
+        public string? CountryOfOrigin { get; set; }
+    }
+
+    private class SourceFileDto
+    {
+        public int Id { get; set; }
+        public string? FileName { get; set; }
+        public DateTime DownloadedAt { get; set; }
+    }
+}
+

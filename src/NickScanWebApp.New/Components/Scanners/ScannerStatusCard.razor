@@ -1,0 +1,158 @@
+<!-- ScannerStatusCard Component - Shows scanner status and stats -->
+
+<MudCard Elevation="@Elevation" Class="@($"hoverable-card {Class}")">
+    <MudCardHeader Style="@GetHeaderStyle()">
+        <CardHeaderContent>
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <div>
+                    <MudText Typo="Typo.h6" Style="color: white;">@ScannerName</MudText>
+                    <MudText Typo="Typo.caption" Style="color: rgba(255,255,255,0.8);">@ScannerType</MudText>
+                </div>
+                <MudChip T="string" 
+                         Size="Size.Small" 
+                         Color="@GetStatusChipColor()" 
+                         Variant="Variant.Filled">
+                    @Status
+                </MudChip>
+            </MudStack>
+        </CardHeaderContent>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudStack Spacing="3">
+            <!-- Stats Grid -->
+            <MudGrid>
+                <MudItem xs="6">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Today</MudText>
+                        <MudText Typo="Typo.h5">@ScansToday</MudText>
+                    </MudStack>
+                </MudItem>
+                <MudItem xs="6">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">This Month</MudText>
+                        <MudText Typo="Typo.h5">@ScansThisMonth</MudText>
+                    </MudStack>
+                </MudItem>
+            </MudGrid>
+            
+            <!-- Last Scan -->
+            <div>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Last Scan</MudText>
+                <MudText Typo="Typo.body2">
+                    @if (LastScanDate.HasValue)
+                    {
+                        <text>@LastScanDate.Value.ToString("dd MMM yyyy HH:mm")</text>
+                    }
+                    else
+                    {
+                        <text>No scans</text>
+                    }
+                </MudText>
+            </div>
+            
+            <!-- Location -->
+            @if (!string.IsNullOrEmpty(Location))
+            {
+                <div>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Location</MudText>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudIcon Icon="@Icons.Material.Outlined.Place" Size="Size.Small" Color="Color.Default" />
+                        <MudText Typo="Typo.body2">@Location</MudText>
+                    </MudStack>
+                </div>
+            }
+            
+            <!-- Health Indicators -->
+            @if (ShowHealth)
+            {
+                <MudDivider />
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Health</MudText>
+                    <MudProgressLinear Color="@GetHealthColor()" 
+                                      Value="@HealthScore" 
+                                      Min="0" 
+                                      Max="100" 
+                                      Size="Size.Small"
+                                      Rounded="true" />
+                    <MudText Typo="Typo.caption">@HealthScore% Operational</MudText>
+                </MudStack>
+            }
+        </MudStack>
+    </MudCardContent>
+    <MudCardActions>
+        <MudButton Size="Size.Small" 
+                   Color="Color.Primary" 
+                   Variant="Variant.Text"
+                   Href="@($"/scanners/{ScannerType.ToLower()}")">
+            View Details
+        </MudButton>
+        @if (ShowActions)
+        {
+            @if (Status == "Offline")
+            {
+                <MudButton Size="Size.Small" 
+                           Color="Color.Success" 
+                           Variant="Variant.Text"
+                           StartIcon="@Icons.Material.Outlined.PlayArrow">
+                    Start
+                </MudButton>
+            }
+            else
+            {
+                <MudButton Size="Size.Small" 
+                           Color="Color.Error" 
+                           Variant="Variant.Text"
+                           StartIcon="@Icons.Material.Outlined.Stop">
+                    Stop
+                </MudButton>
+            }
+        }
+    </MudCardActions>
+</MudCard>
+
+@code {
+    [Parameter] public string ScannerName { get; set; } = "";
+    [Parameter] public string ScannerType { get; set; } = "";
+    [Parameter] public string Status { get; set; } = "Unknown";
+    [Parameter] public int ScansToday { get; set; }
+    [Parameter] public int ScansThisMonth { get; set; }
+    [Parameter] public DateTime? LastScanDate { get; set; }
+    [Parameter] public string? Location { get; set; }
+    [Parameter] public double HealthScore { get; set; } = 100;
+    [Parameter] public bool ShowHealth { get; set; } = true;
+    [Parameter] public bool ShowActions { get; set; } = false;
+    [Parameter] public int Elevation { get; set; } = 2;
+    [Parameter] public string Class { get; set; } = "";
+    
+    private Color GetStatusChipColor()
+    {
+        return Status?.ToUpper() switch
+        {
+            "ONLINE" or "ACTIVE" or "RUNNING" => Color.Success,
+            "OFFLINE" or "STOPPED" => Color.Error,
+            "IDLE" or "STANDBY" => Color.Warning,
+            "MAINTENANCE" => Color.Info,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetHealthColor()
+    {
+        return HealthScore >= 80 ? Color.Success :
+               HealthScore >= 50 ? Color.Warning : Color.Error;
+    }
+    
+    private string GetHeaderStyle()
+    {
+        var baseGradient = ScannerType?.ToUpper() switch
+        {
+            "FS6000" => "linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)",
+            "ASE" => "linear-gradient(135deg, #4a148c 0%, #6a1b9a 100%)",
+            "HEIMANNSMITH" or "HEIMANN" => "linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%)",
+            _ => "linear-gradient(135deg, #263238 0%, #37474f 100%)"
+        };
+        
+        return $"background: {baseGradient};";
+    }
+}
+

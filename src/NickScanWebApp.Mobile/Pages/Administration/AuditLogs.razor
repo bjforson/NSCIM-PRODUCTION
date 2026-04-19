@@ -1,0 +1,133 @@
+@page "/administration/audit"
+@page "/admin/audit"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminAudit)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Audit Logs - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.History" Class="mr-2" />
+                Audit Logs
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Track user actions and system changes
+            </MudText>
+            <MudButton Variant="Variant.Outlined" 
+                      Color="Color.Default"
+                      Size="Size.Small"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="@LoadAuditLogs">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Audit Logs List -->
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (_auditLogs.Any())
+    {
+        <MudStack Spacing="2">
+            @foreach (var log in _auditLogs.Take(100))
+            {
+                <MudCard Elevation="1" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body1"><strong>@log.Action</strong></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">by @log.UserName</MudText>
+                            </MudStack>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                @log.Timestamp.ToString("dd MMM HH:mm")
+                            </MudText>
+                        </MudStack>
+                        @if (!string.IsNullOrEmpty(log.Details))
+                        {
+                            <MudText Typo="Typo.body2">@log.Details</MudText>
+                        }
+                        <MudChip T="string" Size="Size.Small" Color="@GetActionColor(log.Action)">
+                            @log.EntityType
+                        </MudChip>
+                    </MudStack>
+                </MudCard>
+            }
+            @if (_auditLogs.Count > 100)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                    Showing first 100 of @_auditLogs.Count audit logs
+                </MudText>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">No audit logs found</MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private List<AuditLogDto> _auditLogs = new();
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAuditLogs();
+    }
+    
+    private async Task LoadAuditLogs()
+    {
+        _isLoading = true;
+        try
+        {
+            // TODO: Replace with actual API call
+            // var response = await ApiService.GetAsync<List<AuditLogDto>>("/api/auditlogs?limit=100");
+            // _auditLogs = response ?? new();
+            
+            // Mock data for now
+            _auditLogs = new List<AuditLogDto>
+            {
+                new() { Action = "Created", UserName = "admin", EntityType = "Container", Details = "Container MSDU1234567 created", Timestamp = DateTime.Now.AddMinutes(-30) },
+                new() { Action = "Updated", UserName = "operator", EntityType = "Container", Details = "Container MSDU1234567 status updated", Timestamp = DateTime.Now.AddHours(-1) },
+                new() { Action = "Deleted", UserName = "admin", EntityType = "User", Details = "User account deleted", Timestamp = DateTime.Now.AddHours(-2) }
+            };
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading audit logs: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private Color GetActionColor(string action)
+    {
+        return action switch
+        {
+            "Created" => Color.Success,
+            "Updated" => Color.Info,
+            "Deleted" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    public class AuditLogDto
+    {
+        public string Action { get; set; } = "";
+        public string UserName { get; set; } = "";
+        public string EntityType { get; set; } = "";
+        public string? Details { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+}
+

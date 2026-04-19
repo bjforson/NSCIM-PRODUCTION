@@ -1,0 +1,224 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<DatabasePanel> Logger
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Storage" Class="mr-2" />
+        Database Administration
+    </MudText>
+
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        <MudText><strong>Warning:</strong> Database queries are restricted to SELECT statements only for safety.</MudText>
+    </MudAlert>
+
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+        <!-- Connections Tab -->
+        <MudTabPanel Text="Connections" Icon="@Icons.Material.Outlined.Link">
+            @if (_connections != null)
+            {
+                <MudTable Items="@_connections" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Name</MudTh>
+                        <MudTh>Type</MudTh>
+                        <MudTh>Server</MudTh>
+                        <MudTh>Database</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Last Checked</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Name">@context.Name</MudTd>
+                        <MudTd DataLabel="Type">@context.Type</MudTd>
+                        <MudTd DataLabel="Server">@context.Server</MudTd>
+                        <MudTd DataLabel="Database">@context.Database</MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Color="@(context.Status == "Connected" ? Color.Success : Color.Error)" Size="Size.Small">
+                                @context.Status
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Last Checked">@FormatDateTime(context.LastChecked)</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudTabPanel>
+
+        <!-- Query Tab -->
+        <MudTabPanel Text="Query" Icon="@Icons.Material.Outlined.Code">
+            <MudStack Spacing="3">
+                <MudSelect @bind-Value="@_selectedConnection" Label="Connection" Variant="Variant.Outlined">
+                    <MudSelectItem Value="@("Main")">Main Database</MudSelectItem>
+                    <MudSelectItem Value="@("ASE")">ASE Database</MudSelectItem>
+                </MudSelect>
+                <MudTextField @bind-Value="@_queryText" 
+                             Label="SQL Query (SELECT only)" 
+                             Variant="Variant.Outlined"
+                             Lines="10"
+                             Placeholder="SELECT * FROM Containers WHERE ..." />
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ExecuteQuery">
+                        Execute Query
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" OnClick="ClearQuery">
+                        Clear
+                    </MudButton>
+                </MudStack>
+                @if (_queryResult != null)
+                {
+                    <MudPaper Class="pa-4" Elevation="1">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">
+                            Results (@(_queryResult.RowCount ?? 0) rows, @(_queryResult.ExecutionTimeMs ?? 0)ms)
+                        </MudText>
+                        @if (_queryResult.Columns != null && _queryResult.Columns.Any() && _queryResult.Rows != null)
+                        {
+                            <MudTable Items="@_queryResult.Rows" Hover="true" Dense="true" MaxHeight="500px">
+                                <HeaderContent>
+                                    @foreach (var col in _queryResult.Columns)
+                                    {
+                                        <MudTh>@col</MudTh>
+                                    }
+                                </HeaderContent>
+                                <RowTemplate>
+                                    @{
+                                        var row = (Dictionary<string, object>)context;
+                                    }
+                                    @foreach (var col in _queryResult.Columns)
+                                    {
+                                        <MudTd DataLabel="@col">@(row.ContainsKey(col) ? row[col]?.ToString() ?? "" : "")</MudTd>
+                                    }
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- Tables Tab -->
+        <MudTabPanel Text="Tables" Icon="@Icons.Material.Outlined.TableChart">
+            @if (_tables != null)
+            {
+                <MudTable Items="@_tables" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Table Name</MudTh>
+                        <MudTh>Row Count</MudTh>
+                        <MudTh>Size (MB)</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Table Name">@context.Name</MudTd>
+                        <MudTd DataLabel="Row Count">@((context.RowCount ?? 0).ToString("N0"))</MudTd>
+                        <MudTd DataLabel="Size">@((context.SizeMB ?? 0).ToString("F2")) MB</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudTabPanel>
+    </MudTabs>
+
+    <MudStack Row="true" Justify="Justify.FlexEnd" Class="mt-4">
+        <MudButton Variant="Variant.Filled" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadConnections">
+            Refresh
+        </MudButton>
+    </MudStack>
+</MudContainer>
+
+@code {
+    private int activeTab = 0;
+    private bool _isLoading = false;
+    private List<DatabaseConnectionDto>? _connections;
+    private List<DatabaseTableDto>? _tables;
+    private string _selectedConnection = "Main";
+    private string _queryText = "";
+    private QueryResultDto? _queryResult;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConnections();
+    }
+
+    private async Task LoadConnections()
+    {
+        try
+        {
+            _isLoading = true;
+            _connections = await ApiService.GetAsync<List<DatabaseConnectionDto>>("/api/DatabaseAdmin/connections");
+            
+            // Load tables
+            try
+            {
+                _tables = await ApiService.GetAsync<List<DatabaseTableDto>>("/api/DatabaseAdmin/tables");
+            }
+            catch { _tables = null; }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading database connections");
+            Snackbar.Add($"Error loading connections: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ExecuteQuery()
+    {
+        if (string.IsNullOrWhiteSpace(_queryText))
+        {
+            Snackbar.Add("Please enter a query", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var request = new { Query = _queryText, ConnectionName = _selectedConnection };
+            _queryResult = await ApiService.PostAsync<object, QueryResultDto>("/api/DatabaseAdmin/query", request);
+            Snackbar.Add("Query executed successfully", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error executing query");
+            Snackbar.Add($"Query error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void ClearQuery()
+    {
+        _queryText = "";
+        _queryResult = null;
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    // DTOs
+    public class QueryResultDto
+    {
+        public List<string>? Columns { get; set; }
+        public List<Dictionary<string, object>>? Rows { get; set; }
+        public int? RowCount { get; set; }
+        public double? ExecutionTimeMs { get; set; }
+    }
+
+    public class DatabaseConnectionDto
+    {
+        public string Name { get; set; } = "Unknown";
+        public string Type { get; set; } = "Unknown";
+        public string Server { get; set; } = "N/A";
+        public string Database { get; set; } = "N/A";
+        public string Status { get; set; } = "Unknown";
+        public DateTime? LastChecked { get; set; }
+    }
+
+    public class DatabaseTableDto
+    {
+        public string Name { get; set; } = "Unknown";
+        public long? RowCount { get; set; }
+        public double? SizeMB { get; set; }
+    }
+}
+

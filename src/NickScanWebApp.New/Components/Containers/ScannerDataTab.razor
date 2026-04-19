@@ -1,0 +1,215 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading scanner data...</MudText>
+        </MudStack>
+    }
+    else if (scannerData?.Data?.Any() == true)
+    {
+        <MudStack Spacing="3" Class="pa-2">
+            @foreach (var categoryGroup in GetGroupedData())
+            {
+                <MudPaper Elevation="2" Class="pa-4">
+                    <!-- Category Header -->
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-3">
+                        <MudIcon Icon="@GetCategoryIcon(categoryGroup.Key)" Color="@GetCategoryColor(categoryGroup.Key)" />
+                        <MudText Typo="Typo.h6" Color="@GetCategoryColor(categoryGroup.Key)">@categoryGroup.Key</MudText>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default">@categoryGroup.Value.Count fields</MudChip>
+                    </MudStack>
+                    
+                    <!-- Category Data as Grid -->
+                    <MudGrid Spacing="2">
+                        @foreach (var record in categoryGroup.Value)
+                        {
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            <strong>@record.Field</strong>
+                                        </MudText>
+                                        @if (record.Timestamp.HasValue)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text" Style="height: 18px; font-size: 0.65rem;">
+                                                @record.Timestamp.Value.ToString("HH:mm")
+                                            </MudChip>
+                                        }
+                                    </MudStack>
+                                    <MudText Typo="Typo.body2">@record.Value</MudText>
+                                </MudStack>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                </MudPaper>
+            }
+            
+            <!-- Summary -->
+            <MudAlert Severity="Severity.Success" Variant="Variant.Text" Dense="true">
+                <MudText Typo="Typo.caption">
+                    Total Scanner Fields: @scannerData.TotalCount | Categories: @GetGroupedData().Count | Latest Scan: @GetLatestScanTime()
+                </MudText>
+            </MudAlert>
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Text" Class="ma-4">
+            <MudText Typo="Typo.body1">No scanner data available for this container</MudText>
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public int TotalRecords { get; set; }
+    /// <summary>
+    /// Optional preloaded scanner data for this container. When provided, the tab will render from this
+    /// data instead of issuing its own API call.
+    /// </summary>
+    [Parameter] public NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ScannerDataRecord>? PreloadedData { get; set; }
+
+    private NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ScannerDataRecord>? scannerData;
+    private bool isLoading = false;
+    private bool _hasLoaded = false;
+
+    private string _lastContainerNumber = string.Empty;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // If preloaded data is provided (from ContainerDetailsModal / view context), just bind to it.
+        if (PreloadedData != null)
+        {
+            scannerData = PreloadedData;
+            isLoading = false;
+            _hasLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        // Otherwise, fall back to fetching via the shared service when the container changes.
+        if (!string.IsNullOrEmpty(ContainerNumber) && (ContainerNumber != _lastContainerNumber || !_hasLoaded))
+        {
+            _lastContainerNumber = ContainerNumber;
+            await LoadData();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber))
+        {
+            Console.WriteLine($"⚠️ [ScannerDataTab] ContainerNumber is empty, skipping load");
+            return;
+        }
+
+        isLoading = true;
+        try
+        {
+            Console.WriteLine($"🔍 [ScannerDataTab] Loading ALL scanner data for container: {ContainerNumber}");
+            // Fetch ALL data at once (use large page size to get everything)
+            scannerData = await ContainerDetailsService.GetScannerDataAsync(ContainerNumber, 1, 1000);
+            
+            if (scannerData != null)
+            {
+                Console.WriteLine($"✅ [ScannerDataTab] Loaded {scannerData.Data?.Count ?? 0} scanner records (Total: {scannerData.TotalCount})");
+                Console.WriteLine($"   Categories found: {scannerData.Data?.Select(d => d.Category).Distinct().Count() ?? 0}");
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [ScannerDataTab] No scanner data returned for container: {ContainerNumber}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ScannerDataTab] Error loading scanner data: {ex.Message}");
+            Console.WriteLine($"❌ [ScannerDataTab] Stack trace: {ex.StackTrace}");
+            Snackbar.Add("Could not load scanner data", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Dictionary<string, List<NickScanWebApp.Shared.Models.ScannerDataRecord>> GetGroupedData()
+    {
+        if (scannerData?.Data == null) return new Dictionary<string, List<NickScanWebApp.Shared.Models.ScannerDataRecord>>();
+        
+        return scannerData.Data
+            .GroupBy(d => d.Category)
+            .OrderBy(g => GetCategoryOrder(g.Key))
+            .ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    private int GetCategoryOrder(string category)
+    {
+        return category switch
+        {
+            "Scanner Info" => 1,
+            "Scan Details" => 2,
+            "Container Info" => 3,
+            "Truck Info" => 4,
+            "Location Info" => 5,
+            "Driver Info" => 6,
+            "Inspection Info" => 7,
+            "Detection Results" => 8,
+            "Technical Info" => 9,
+            "Timing Info" => 10,
+            _ => 99
+        };
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "Scanner Info" => Icons.Material.Outlined.Scanner,
+            "Scan Details" => Icons.Material.Outlined.Radar,
+            "Container Info" => Icons.Material.Outlined.Inventory,
+            "Truck Info" => Icons.Material.Outlined.LocalShipping,
+            "Location Info" => Icons.Material.Outlined.LocationOn,
+            "Driver Info" => Icons.Material.Outlined.Person,
+            "Inspection Info" => Icons.Material.Outlined.Search,
+            "Detection Results" => Icons.Material.Outlined.Analytics,
+            "Technical Info" => Icons.Material.Outlined.Settings,
+            "Timing Info" => Icons.Material.Outlined.Schedule,
+            _ => Icons.Material.Outlined.Label
+        };
+    }
+
+    private Color GetCategoryColor(string category)
+    {
+        return category switch
+        {
+            "Scanner Info" => Color.Primary,
+            "Scan Details" => Color.Secondary,
+            "Container Info" => Color.Info,
+            "Truck Info" => Color.Tertiary,
+            "Location Info" => Color.Warning,
+            "Driver Info" => Color.Success,
+            "Inspection Info" => Color.Dark,
+            "Detection Results" => Color.Error,
+            "Technical Info" => Color.Default,
+            "Timing Info" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    private string GetLatestScanTime()
+    {
+        var latest = scannerData?.Data?
+            .Where(d => d.Timestamp.HasValue)
+            .OrderByDescending(d => d.Timestamp)
+            .FirstOrDefault();
+            
+        return latest?.Timestamp?.ToString("MMM dd, yyyy HH:mm") ?? "N/A";
+    }
+}
+

@@ -1,0 +1,22 @@
+@page "/services/diagnostics"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDiagnostics)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Diagnostics Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.MedicalServices" Class="mr-2" />
+            Diagnostics Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Diagnostics service monitoring. Use desktop version for detailed diagnostics.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

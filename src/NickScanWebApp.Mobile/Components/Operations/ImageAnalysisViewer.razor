@@ -1,0 +1,149 @@
+@using MudBlazor
+@using NickScanWebApp.Mobile.Services
+@using NickScanWebApp.Shared.Services
+@inject IJSRuntime JS
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.False">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.ZoomIn" Size="Size.Small" Class="mr-2" />
+            Image Viewer - @ContainerNumber
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudContainer Style="max-height: 85vh; overflow-y: auto;">
+            
+            <!-- Image Display Area - Mobile Optimized -->
+            <MudPaper Elevation="0" Class="pa-2" Style="background-color: #2b2b2b; min-height: 400px;">
+                <div style="position: relative; display: flex; align-items: center; justify-content: center; min-height: 400px;">
+                    @if (!string.IsNullOrEmpty(ImageUrl))
+                    {
+                        <img src="@GetImageUrl()" 
+                             alt="Container Scan" 
+                             style="max-width: 100%; max-height: 70vh; object-fit: contain; cursor: pointer;"
+                             @onerror="@(() => HandleImageError())" />
+                    }
+                    else
+                    {
+                        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                            <MudIcon Icon="@Icons.Material.Filled.BrokenImage" Size="Size.Large" Color="Color.Error" />
+                            <MudText Typo="Typo.body2" Color="Color.Error">Image URL not available</MudText>
+                        </MudStack>
+                    }
+                </div>
+            </MudPaper>
+
+            <!-- Image Info -->
+            <MudPaper Elevation="1" Class="pa-3 mt-3">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.body2" Class="font-weight-bold">Container: @ContainerNumber</MudText>
+                    @if (!string.IsNullOrEmpty(ScannerType))
+                    {
+                        <MudText Typo="Typo.caption">Scanner: @ScannerType</MudText>
+                    }
+                    @if (ScanDate.HasValue)
+                    {
+                        <MudText Typo="Typo.caption">Scan Date: @ScanDate.Value.ToString("g")</MudText>
+                    }
+                </MudStack>
+            </MudPaper>
+
+            <!-- Controls - Mobile Simplified -->
+            <MudPaper Elevation="1" Class="pa-3 mt-3">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6">Image Controls</MudText>
+                    <MudStack Row="true" Spacing="2" Wrap="Wrap.Wrap">
+                        <MudButton Size="Size.Small" 
+                                  Variant="Variant.Outlined" 
+                                  StartIcon="@Icons.Material.Filled.ZoomIn"
+                                  OnClick="ZoomIn">
+                            Zoom In
+                        </MudButton>
+                        <MudButton Size="Size.Small" 
+                                  Variant="Variant.Outlined" 
+                                  StartIcon="@Icons.Material.Filled.ZoomOut"
+                                  OnClick="ZoomOut">
+                            Zoom Out
+                        </MudButton>
+                        <MudButton Size="Size.Small" 
+                                  Variant="Variant.Outlined" 
+                                  StartIcon="@Icons.Material.Filled.RotateRight"
+                                  OnClick="RotateRight">
+                            Rotate
+                        </MudButton>
+                        <MudButton Size="Size.Small" 
+                                  Variant="Variant.Outlined" 
+                                  StartIcon="@Icons.Material.Filled.Refresh"
+                                  OnClick="ResetZoom">
+                            Reset
+                        </MudButton>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close" FullWidth="true">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public string ImageUrl { get; set; } = string.Empty;
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string? ScannerType { get; set; }
+    [Parameter] public DateTime? ScanDate { get; set; }
+    [CascadingParameter] IDialogReference? MudDialog { get; set; }
+
+    private double zoomLevel = 1.0;
+    private double rotation = 0;
+
+    private string GetImageUrl()
+    {
+        if (string.IsNullOrEmpty(ImageUrl))
+            return string.Empty;
+
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+        
+        if (ImageUrl.StartsWith("http://") || ImageUrl.StartsWith("https://"))
+            return ImageUrl;
+        
+        if (ImageUrl.StartsWith("/"))
+            return $"{apiBaseUrl}{ImageUrl}";
+        
+        return $"{apiBaseUrl}/{ImageUrl}";
+    }
+
+    private void ZoomIn()
+    {
+        zoomLevel = Math.Min(zoomLevel + 0.25, 3.0);
+    }
+
+    private void ZoomOut()
+    {
+        zoomLevel = Math.Max(zoomLevel - 0.25, 0.5);
+    }
+
+    private void RotateRight()
+    {
+        rotation = (rotation + 90) % 360;
+    }
+
+    private void ResetZoom()
+    {
+        zoomLevel = 1.0;
+        rotation = 0;
+    }
+
+    private void HandleImageError()
+    {
+        Snackbar.Add("Failed to load image", Severity.Error);
+    }
+
+    private void Close()
+    {
+        MudDialog?.Close();
+    }
+}

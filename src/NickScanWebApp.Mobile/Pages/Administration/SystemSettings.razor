@@ -1,0 +1,32 @@
+@page "/admin/settings"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminSettings)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>System Settings - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Settings" Class="mr-2" />
+            System Settings
+        </MudText>
+    </MudPaper>
+    
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            Settings management interface. Use desktop version for full configuration options.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+}
+

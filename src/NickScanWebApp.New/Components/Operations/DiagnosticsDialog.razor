@@ -1,0 +1,295 @@
+@using System.Text.Json
+@using System.Linq
+@using MudBlazor
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        @if (Diagnostics != null)
+        {
+            <MudText Typo="Typo.h6" Class="mb-4">Assignment Diagnostics</MudText>
+            
+            @* Summary Section *@
+            <MudPaper Class="pa-4 mb-4" Elevation="1">
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Summary</MudText>
+                
+                @if (CanReceiveAssignments)
+                {
+                    <MudAlert Severity="Severity.Success" Class="mb-2">
+                        <strong>✅ You CAN receive assignments</strong>
+                    </MudAlert>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Error" Class="mb-2">
+                        <strong>❌ You CANNOT receive assignments</strong>
+                        @if (PrimaryIssue != null)
+                        {
+                            <div class="mt-2">Primary Issue: @PrimaryIssue</div>
+                        }
+                    </MudAlert>
+                }
+                
+                @if (IssueCount > 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Warning">
+                        @IssueCount issue(s) detected
+                    </MudText>
+                }
+            </MudPaper>
+
+            @* Issues Section *@
+            @if (Issues != null && Issues.Any())
+            {
+                <MudPaper Class="pa-4 mb-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Issues</MudText>
+                    <MudList T="string">
+                        @foreach (var issue in Issues)
+                        {
+                            <MudListItem T="string">
+                                <MudIcon Icon="@Icons.Material.Outlined.Error" Color="Color.Error" Size="Size.Small" Class="mr-2" />
+                                @issue
+                            </MudListItem>
+                        }
+                    </MudList>
+                </MudPaper>
+            }
+
+            @* Readiness Status *@
+            @if (ReadinessStatus != null)
+            {
+                <MudPaper Class="pa-4 mb-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Readiness Status</MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td><strong>Is Ready:</strong></td>
+                                <td>
+                                    @if (IsReady)
+                                    {
+                                        <MudChip T="string" Color="Color.Success" Size="Size.Small">Yes</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Color="Color.Error" Size="Size.Small">No</MudChip>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Last Heartbeat:</strong></td>
+                                <td>@LastHeartbeat</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Heartbeat Valid:</strong></td>
+                                <td>
+                                    @if (IsHeartbeatValid)
+                                    {
+                                        <MudChip T="string" Color="Color.Success" Size="Size.Small">Yes</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Color="Color.Error" Size="Size.Small">No</MudChip>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Time Since Heartbeat:</strong></td>
+                                <td>@TimeSinceHeartbeat</td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+            }
+
+            @* Assignment Settings *@
+            @if (AssignmentSettings != null)
+            {
+                <MudPaper Class="pa-4 mb-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Assignment Settings</MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td><strong>Enabled:</strong></td>
+                                <td>
+                                    @if (SettingsEnabled)
+                                    {
+                                        <MudChip T="string" Color="Color.Success" Size="Size.Small">Yes</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Color="Color.Error" Size="Size.Small">No</MudChip>
+                                    }
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Assignment Mode:</strong></td>
+                                <td>@AssignmentMode</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Max Concurrent:</strong></td>
+                                <td>@MaxConcurrent</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Lease Minutes:</strong></td>
+                                <td>@LeaseMinutes</td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+            }
+
+            @* Ready Groups *@
+            @if (ReadyGroupsCount.HasValue)
+            {
+                <MudPaper Class="pa-4 mb-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Ready Groups</MudText>
+                    <MudText Typo="Typo.body1">
+                        Expected Status: <strong>@ExpectedStatus</strong>
+                    </MudText>
+                    <MudText Typo="Typo.body1">
+                        Available Count: <strong>@ReadyGroupsCount</strong>
+                    </MudText>
+                </MudPaper>
+            }
+
+            @* Active Assignments *@
+            @if (ActiveAssignmentsCount.HasValue)
+            {
+                <MudPaper Class="pa-4 mb-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Active Assignments</MudText>
+                    <MudText Typo="Typo.body1">
+                        Count: <strong>@ActiveAssignmentsCount</strong> / 
+                        Max: <strong>@ActiveAssignmentsMax</strong>
+                    </MudText>
+                    @if (IsAtCapacity)
+                    {
+                        <MudAlert Severity="Severity.Warning" Class="mt-2">
+                            You are at capacity and cannot receive more assignments
+                        </MudAlert>
+                    }
+                </MudPaper>
+            }
+
+            @* Other Info *@
+            <MudPaper Class="pa-4 mb-4" Elevation="1">
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Other Information</MudText>
+                <MudSimpleTable Dense="true">
+                    <tbody>
+                        <tr>
+                            <td><strong>Role:</strong></td>
+                            <td>@Role</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Username:</strong></td>
+                            <td>@Username</td>
+                        </tr>
+                        <tr>
+                            <td><strong>User Has Role:</strong></td>
+                            <td>
+                                @if (UserHasRole)
+                                {
+                                    <MudChip T="string" Color="Color.Success" Size="Size.Small">Yes</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Color="Color.Error" Size="Size.Small">No</MudChip>
+                                }
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>Ready Users Count:</strong></td>
+                            <td>@ReadyUsersCount</td>
+                        </tr>
+                    </tbody>
+                </MudSimpleTable>
+            </MudPaper>
+
+            @* Raw JSON for debugging *@
+            <MudExpansionPanels>
+                <MudExpansionPanel Text="Raw JSON (for debugging)">
+                    <MudPaper Class="pa-3" Style="background-color: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: 0.85rem; max-height: 400px; overflow: auto;">
+                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word;">@JsonSerializer.Serialize(Diagnostics, new JsonSerializerOptions { WriteIndented = true })</pre>
+                    </MudPaper>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Error">Failed to load diagnostics</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="CloseDialog">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public object? Diagnostics { get; set; }
+
+    private bool CanReceiveAssignments => GetPropertyValue(GetPropertyValue(Diagnostics, "Summary"), "CanReceiveAssignments")?.ToString() == "True";
+    private string? PrimaryIssue => GetPropertyValue(GetPropertyValue(Diagnostics, "Summary"), "PrimaryIssue")?.ToString();
+    private int IssueCount => Convert.ToInt32(GetPropertyValue(GetPropertyValue(Diagnostics, "Summary"), "IssueCount") ?? 0);
+    
+    private List<string> Issues
+    {
+        get
+        {
+            var issues = GetPropertyValue(Diagnostics, "Issues");
+            if (issues is System.Collections.IEnumerable issueList)
+            {
+                return issueList.Cast<object>().Select(i => i?.ToString() ?? "").Where(s => !string.IsNullOrEmpty(s)).ToList();
+            }
+            return new List<string>();
+        }
+    }
+
+    private object? ReadinessStatus => GetPropertyValue(Diagnostics, "ReadinessStatus");
+    private bool IsReady => GetPropertyValue(ReadinessStatus, "IsReady")?.ToString() == "True";
+    private string? LastHeartbeat => GetPropertyValue(ReadinessStatus, "LastHeartbeat")?.ToString();
+    private bool IsHeartbeatValid => GetPropertyValue(ReadinessStatus, "IsHeartbeatValid")?.ToString() == "True";
+    private string? TimeSinceHeartbeat => GetPropertyValue(ReadinessStatus, "TimeSinceHeartbeat")?.ToString();
+
+    private object? AssignmentSettings => GetPropertyValue(Diagnostics, "AssignmentSettings");
+    private bool SettingsEnabled => GetPropertyValue(AssignmentSettings, "Enabled")?.ToString() == "True";
+    private string? AssignmentMode => GetPropertyValue(AssignmentSettings, "AssignmentMode")?.ToString();
+    private string? MaxConcurrent => GetPropertyValue(AssignmentSettings, "MaxConcurrentPerUser")?.ToString();
+    private string? LeaseMinutes => GetPropertyValue(AssignmentSettings, "LeaseMinutes")?.ToString();
+
+    private object? ReadyGroups => GetPropertyValue(Diagnostics, "ReadyGroups");
+    private string? ExpectedStatus => GetPropertyValue(ReadyGroups, "ExpectedStatus")?.ToString();
+    private int? ReadyGroupsCount
+    {
+        get
+        {
+            var count = GetPropertyValue(ReadyGroups, "Count");
+            return count != null ? Convert.ToInt32(count) : null;
+        }
+    }
+
+    private object? ActiveAssignments => GetPropertyValue(Diagnostics, "ActiveAssignments");
+    private int? ActiveAssignmentsCount
+    {
+        get
+        {
+            var count = GetPropertyValue(ActiveAssignments, "Count");
+            return count != null ? Convert.ToInt32(count) : null;
+        }
+    }
+    private string? ActiveAssignmentsMax => GetPropertyValue(ActiveAssignments, "MaxConcurrent")?.ToString();
+    private bool IsAtCapacity => GetPropertyValue(ActiveAssignments, "IsAtCapacity")?.ToString() == "True";
+
+    private string? Role => GetPropertyValue(Diagnostics, "Role")?.ToString();
+    private string? Username => GetPropertyValue(Diagnostics, "Username")?.ToString();
+    private bool UserHasRole => GetPropertyValue(Diagnostics, "UserHasRole")?.ToString() == "True";
+    private string? ReadyUsersCount => GetPropertyValue(Diagnostics, "ReadyUsersCount")?.ToString();
+
+    private Task CloseDialog() => Task.CompletedTask;
+
+    private object? GetPropertyValue(object? obj, string propertyName)
+    {
+        if (obj == null) return null;
+        
+        var property = obj.GetType().GetProperty(propertyName);
+        return property?.GetValue(obj);
+    }
+}

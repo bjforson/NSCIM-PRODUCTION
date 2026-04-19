@@ -1,0 +1,75 @@
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Small" ContentClass="overflow-y-auto" Style="max-height: 90vh;">
+    <TitleContent>
+        <MudText Typo="Typo.h6">Advanced search</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_filters.ContainerNumber" Label="Container number" Variant="Variant.Outlined" Dense="true" />
+            <MudDatePicker @bind-Date="_filters.FromDate" Label="From date" Variant="Variant.Outlined" Dense="true" />
+            <MudDatePicker @bind-Date="_filters.ToDate" Label="To date" Variant="Variant.Outlined" Dense="true" />
+            <MudSelect T="string" @bind-Value="_filters.ScannerType" Label="Scanner type" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("FS6000")">FS6000</MudSelectItem>
+                <MudSelectItem Value="@("ASE")">ASE</MudSelectItem>
+                <MudSelectItem Value="@("Heimann")">Heimann</MudSelectItem>
+            </MudSelect>
+            <MudSelect T="string" @bind-Value="_filters.ICUMSStatus" Label="ICUMS status" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("All")">All</MudSelectItem>
+                <MudSelectItem Value="@("Available")">Available</MudSelectItem>
+                <MudSelectItem Value="@("Missing")">Missing</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="_filters.Origin" Label="Origin" Variant="Variant.Outlined" Dense="true" />
+            <MudTextField @bind-Value="_filters.Destination" Label="Destination" Variant="Variant.Outlined" Dense="true" />
+            <MudSelect T="string" @bind-Value="_filters.Validation" Label="Validation" Variant="Variant.Outlined" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                <MudSelectItem Value="@("All")">All</MudSelectItem>
+                <MudSelectItem Value="@("Valid")">Valid</MudSelectItem>
+                <MudSelectItem Value="@("Invalid")">Invalid</MudSelectItem>
+            </MudSelect>
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Clear" FullWidth="true">Clear</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Search" FullWidth="true">Search</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public EventCallback<SearchFilters> OnSearch { get; set; }
+
+    private SearchFilters _filters = CreateDefault();
+
+    private static SearchFilters CreateDefault() => new()
+    {
+        ContainerNumber = "",
+        FromDate = null,
+        ToDate = null,
+        ScannerType = "FS6000",
+        ICUMSStatus = "All",
+        Origin = "",
+        Destination = "",
+        Validation = "All"
+    };
+
+    private async Task Search()
+    {
+        await OnSearch.InvokeAsync(_filters);
+        MudDialog.Close(DialogResult.Ok(_filters));
+    }
+
+    private void Clear()
+    {
+        _filters = CreateDefault();
+    }
+
+    public class SearchFilters
+    {
+        public string ContainerNumber { get; set; } = "";
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+        public string ScannerType { get; set; } = "FS6000";
+        public string ICUMSStatus { get; set; } = "All";
+        public string Origin { get; set; } = "";
+        public string Destination { get; set; } = "";
+        public string Validation { get; set; } = "All";
+    }
+}

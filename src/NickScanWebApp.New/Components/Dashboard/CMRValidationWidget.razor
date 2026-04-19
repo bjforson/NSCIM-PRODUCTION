@@ -1,0 +1,215 @@
+@using NickScanWebApp.New.Services
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ILogger<CMRValidationWidget> Logger
+@implements IDisposable
+
+@if (_statistics == null && !_isLoading && _error == null)
+{
+    @* API endpoint not available - hide widget *@
+}
+else
+{
+<MudPaper Class="pa-4" Elevation="3">
+    <MudText Typo="Typo.h6" Color="Color.Primary" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Class="mr-2" />
+        CMR Data Quality
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText Typo="Typo.body2" Align="Align.Center">Loading CMR statistics...</MudText>
+    }
+    else if (_error != null)
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-4">@_error</MudAlert>
+    }
+    else if (_statistics != null)
+    {
+        <MudGrid Spacing="2">
+            <!-- Total CMR Records -->
+            <MudItem xs="6" md="3">
+                <MudCard Class="pa-3">
+                    <MudText Typo="Typo.body2" Class="text-center mb-2" Color="Color.Secondary">
+                        Total CMR
+                    </MudText>
+                    <MudText Typo="Typo.h5" Class="text-center" Color="Color.Primary">
+                        @_statistics.TotalCMRRecords.ToString("N0")
+                    </MudText>
+                </MudCard>
+            </MudItem>
+
+            <!-- Valid Records -->
+            <MudItem xs="6" md="3">
+                <MudCard Class="pa-3">
+                    <MudText Typo="Typo.body2" Class="text-center mb-2" Color="Color.Secondary">
+                        Valid
+                    </MudText>
+                    <MudText Typo="Typo.h5" Class="text-center" Color="Color.Success">
+                        @_statistics.ValidCMRRecords.ToString("N0")
+                    </MudText>
+                </MudCard>
+            </MudItem>
+
+            <!-- Invalid Records -->
+            <MudItem xs="6" md="3">
+                <MudCard Class="pa-3">
+                    <MudText Typo="Typo.body2" Class="text-center mb-2" Color="Color.Secondary">
+                        Invalid
+                    </MudText>
+                    <MudText Typo="Typo.h5" Class="text-center" Color="@(_statistics.InvalidCMRRecords > 0 ? Color.Error : Color.Success)">
+                        @_statistics.InvalidCMRRecords.ToString("N0")
+                    </MudText>
+                </MudCard>
+            </MudItem>
+
+            <!-- Success Rate -->
+            <MudItem xs="6" md="3">
+                <MudCard Class="pa-3">
+                    <MudText Typo="Typo.body2" Class="text-center mb-2" Color="Color.Secondary">
+                        Success Rate
+                    </MudText>
+                    <MudText Typo="Typo.h5" Class="text-center" Color="@GetSuccessRateColor(_statistics.ValidationSuccessRate)">
+                        @_statistics.ValidationSuccessRate.ToString("F2")%
+                    </MudText>
+                </MudCard>
+            </MudItem>
+
+            <!-- Progress Bar -->
+            <MudItem xs="12">
+                <MudProgressLinear Color="@GetSuccessRateColor(_statistics.ValidationSuccessRate)" 
+                                 Value="@_statistics.ValidationSuccessRate" 
+                                 Size="Size.Medium"
+                                 Class="mb-2">
+                    <MudText Typo="Typo.body2" Color="Color.Surface">
+                        @_statistics.ValidCMRRecords / @_statistics.TotalCMRRecords Valid
+                    </MudText>
+                </MudProgressLinear>
+            </MudItem>
+
+            <!-- Field-Specific Issues -->
+            @if (_statistics.InvalidCMRRecords > 0)
+            {
+                <MudItem xs="12">
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+                        <MudText Typo="Typo.body2">
+                            <strong>Missing Fields:</strong>
+                            BL: @_statistics.MissingBlNumber,
+                            Rotation: @_statistics.MissingRotationNumber,
+                            Both: @_statistics.MissingBothFields
+                        </MudText>
+                    </MudAlert>
+                </MudItem>
+            }
+
+            <!-- Last Validation -->
+            <MudItem xs="12">
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="text-center">
+                    Last validated: @_statistics.LastValidationRun.ToString("MMM dd, yyyy HH:mm:ss")
+                </MudText>
+            </MudItem>
+
+            <!-- Action Buttons -->
+            <MudItem xs="12" Class="d-flex justify-center gap-2 mt-2">
+                <MudButton Variant="Variant.Outlined" 
+                         Color="Color.Primary" 
+                         Size="Size.Small"
+                         StartIcon="@Icons.Material.Outlined.Refresh"
+                         OnClick="RefreshStatistics">
+                    Refresh
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" 
+                         Color="Color.Info" 
+                         Size="Size.Small"
+                         StartIcon="@Icons.Material.Outlined.List"
+                         Href="/cmr-validation">
+                    View Details
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    }
+</MudPaper>
+}
+
+@code {
+    private CMRValidationStatistics? _statistics;
+    private bool _isLoading = true;
+    private string? _error;
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStatistics();
+
+        // Set up auto-refresh every 2 minutes (reduced from 30s to lower API load; statistics change slowly)
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadStatistics();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(120));
+    }
+
+    private async Task LoadStatistics()
+    {
+        _isLoading = true;
+        _error = null;
+
+        try
+        {
+            _statistics = await ApiService.GetAsync<CMRValidationStatistics>("/api/CMRValidation/statistics");
+            if (_statistics != null)
+            {
+                Logger.LogInformation("CMR validation statistics loaded successfully");
+            }
+        }
+        catch (HttpRequestException ex) when (ex.Message.Contains("404"))
+        {
+            _statistics = null;
+            Logger.LogDebug("CMR validation endpoint not available (404)");
+        }
+        catch (Exception ex)
+        {
+            _error = "Error loading statistics";
+            Logger.LogError(ex, "Error loading CMR validation statistics");
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task RefreshStatistics()
+    {
+        await LoadStatistics();
+    }
+
+    private Color GetSuccessRateColor(double rate)
+    {
+        if (rate >= 99.0) return Color.Success;
+        if (rate >= 95.0) return Color.Info;
+        if (rate >= 90.0) return Color.Warning;
+        return Color.Error;
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTO class matching the API response
+    public class CMRValidationStatistics
+    {
+        public int TotalCMRRecords { get; set; }
+        public int ValidCMRRecords { get; set; }
+        public int InvalidCMRRecords { get; set; }
+        public int MissingBlNumber { get; set; }
+        public int MissingRotationNumber { get; set; }
+        public int MissingBothFields { get; set; }
+        public double ValidationSuccessRate { get; set; }
+        public DateTime LastValidationRun { get; set; }
+    }
+}
+

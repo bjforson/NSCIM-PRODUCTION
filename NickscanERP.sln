@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "platform", "platform", "{4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickERP.Platform.Core", "platform\NickERP.Platform.Core\NickERP.Platform.Core.csproj", "{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickERP.Platform.Web.Shared", "platform\NickERP.Platform.Web.Shared\NickERP.Platform.Web.Shared.csproj", "{CF443847-21F4-417F-B230-C030117B8EE9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "services", "services", "{68A43316-4B38-4A26-B973-3534FB344B69}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickComms.Gateway", "services\NickComms.Gateway\NickComms.Gateway.csproj", "{0EF8803D-9DBF-496E-BB10-507D750CDCDD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickERP.Platform.Tenancy", "platform\NickERP.Platform.Tenancy\NickERP.Platform.Tenancy.csproj", "{0C2363AC-A5E1-450F-BEA4-C496AA499A79}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickERP.Platform.Tenancy.Database", "platform\NickERP.Platform.Tenancy.Database\NickERP.Platform.Tenancy.Database.csproj", "{4BFF88A8-3B38-4F28-9F27-DD8D60865634}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CF443847-21F4-417F-B230-C030117B8EE9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CF443847-21F4-417F-B230-C030117B8EE9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CF443847-21F4-417F-B230-C030117B8EE9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CF443847-21F4-417F-B230-C030117B8EE9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0EF8803D-9DBF-496E-BB10-507D750CDCDD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0EF8803D-9DBF-496E-BB10-507D750CDCDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0EF8803D-9DBF-496E-BB10-507D750CDCDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0EF8803D-9DBF-496E-BB10-507D750CDCDD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0C2363AC-A5E1-450F-BEA4-C496AA499A79}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0C2363AC-A5E1-450F-BEA4-C496AA499A79}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0C2363AC-A5E1-450F-BEA4-C496AA499A79}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0C2363AC-A5E1-450F-BEA4-C496AA499A79}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4BFF88A8-3B38-4F28-9F27-DD8D60865634}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4BFF88A8-3B38-4F28-9F27-DD8D60865634}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4BFF88A8-3B38-4F28-9F27-DD8D60865634}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4BFF88A8-3B38-4F28-9F27-DD8D60865634}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{1CFFA3DB-5A95-4FFA-9A4D-F3F6691148E5} = {4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}
+		{CF443847-21F4-417F-B230-C030117B8EE9} = {4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}
+		{0EF8803D-9DBF-496E-BB10-507D750CDCDD} = {68A43316-4B38-4A26-B973-3534FB344B69}
+		{0C2363AC-A5E1-450F-BEA4-C496AA499A79} = {4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}
+		{4BFF88A8-3B38-4F28-9F27-DD8D60865634} = {4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}
+	EndGlobalSection
+EndGlobal

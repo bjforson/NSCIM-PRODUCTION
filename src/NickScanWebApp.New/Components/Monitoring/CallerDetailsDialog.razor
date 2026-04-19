@@ -1,0 +1,76 @@
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Models
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.People" Class="mr-2" />
+            Callers for: @Endpoint
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-height: 70vh; overflow-y: auto;">
+            @if (_callers == null || !_callers.Any())
+            {
+                <MudAlert Severity="Severity.Info">No callers found for this endpoint</MudAlert>
+            }
+            else
+            {
+                <MudTable Items="@_callers" Hover="true" Dense="true" Striped="true">
+                    <HeaderContent>
+                        <MudTh>IP Address</MudTh>
+                        <MudTh>User Agent</MudTh>
+                        <MudTh>Call Count</MudTh>
+                        <MudTh>First Call</MudTh>
+                        <MudTh>Last Call</MudTh>
+                        <MudTh>Type</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>@context.IpAddress</MudTd>
+                        <MudTd>
+                            <MudText Typo="Typo.body2" Style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" Title="@context.UserAgent">
+                                @(context.UserAgent ?? "Unknown")
+                            </MudText>
+                        </MudTd>
+                        <MudTd>@context.CallCount.ToString("N0")</MudTd>
+                        <MudTd>@(context.FirstCall?.ToString("yyyy-MM-dd HH:mm") ?? "N/A")</MudTd>
+                        <MudTd>@(context.LastCall?.ToString("yyyy-MM-dd HH:mm") ?? "N/A")</MudTd>
+                        <MudTd>
+                            @if (context.IsInternal)
+                            {
+                                <MudChip T="string" Color="Color.Success" Size="Size.Small">Internal</MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Color="Color.Warning" Size="Size.Small">External</MudChip>
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+                
+                <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-3">
+                    Total: @_callers.Count caller(s), @_callers.Sum(c => c.CallCount).ToString("N0") total calls
+                </MudText>
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public string Endpoint { get; set; } = string.Empty;
+    [Parameter] public List<EndpointCaller> Callers { get; set; } = new();
+    
+    private List<EndpointCaller> _callers = new();
+    
+    protected override void OnParametersSet()
+    {
+        base.OnParametersSet();
+        _callers = Callers ?? new List<EndpointCaller>();
+    }
+    
+    private Task Close() => Task.CompletedTask;
+}
+

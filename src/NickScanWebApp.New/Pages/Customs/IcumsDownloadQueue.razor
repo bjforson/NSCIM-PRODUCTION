@@ -1,0 +1,737 @@
+@page "/icums/download-queue"
+@page "/customs/icums/downloads/queue"
+@page "/customs/icums/downloads"
+@page "/icums/batch-download"
+@page "/customs/icums/downloads/batch"
+@page "/icums/individual-download"
+@page "/customs/icums/downloads/individual"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsDownloadQueue)]
+@implements IDisposable
+@using NickScanWebApp.New.Components.ICUMS
+@using NickScanWebApp.New.Components.Customs
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IConfiguration Configuration
+@inject NavigationManager NavManager
+
+<PageTitle>ICUMS Downloads</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Queue" Icon="@Icons.Material.Filled.Queue">
+
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.CloudDownload" Class="mr-2" />
+                    ICUMS Download Queue
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Manage BOE data download requests from ICUMS
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.Add"
+                          Href="/icums/boe-request">
+                    Manual Request
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Default"
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="@RefreshQueue">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Stats -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="High Priority"
+                     Value="@highPriorityCount.ToString()"
+                     Icon="@Icons.Material.Outlined.PriorityHigh"
+                     Color="@Color.Error"
+                     Trend="Urgent" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Normal Priority"
+                     Value="@normalPriorityCount.ToString()"
+                     Icon="@Icons.Material.Outlined.List"
+                     Color="@Color.Warning"
+                     Trend="Queued" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Completed Today"
+                     Value="@completedToday.ToString()"
+                     Icon="@Icons.Material.Outlined.CheckCircle"
+                     Color="@Color.Success"
+                     Trend="@GetCompletedTrendText()"
+                     TrendDirection="@GetCompletedTrendDirection()" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Failed Today"
+                     Value="@failedToday.ToString()"
+                     Icon="@Icons.Material.Outlined.Error"
+                     Color="@(failedToday > 0 ? Color.Error : Color.Success)"
+                     Trend="@(failedToday > 0 ? "Needs attention" : "All good")" />
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Filter Tabs -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary">
+            
+            <!-- All Queue Items -->
+            <MudTabPanel Text="All" Icon="@Icons.Material.Outlined.List" BadgeData="@queueItems.Count">
+                <QueueTable Items="@queueItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedItems"
+                            OnBulkDelete="@BulkDeleteItems"
+                            OnBulkPriorityChange="@BulkChangePriority" />
+            </MudTabPanel>
+            
+            <!-- Pending Only -->
+            <MudTabPanel Text="Pending" Icon="@Icons.Material.Outlined.PendingActions" BadgeData="@pendingItems.Count" BadgeColor="Color.Warning">
+                @if (pendingItems.Any())
+                {
+                    <MudStack Row="true" Spacing="2" Class="mb-4">
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.Replay"
+                                  OnClick="@ShowRequeuePendingDialog"
+                                  Size="Size.Small">
+                            Requeue All Pending (@pendingItems.Count)
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Warning"
+                                  StartIcon="@Icons.Material.Outlined.PriorityHigh"
+                                  OnClick="@(() => RequeueHighPriorityPending())"
+                                  Size="Size.Small"
+                                  Disabled="@(!pendingItems.Any(x => x.Priority >= 2))">
+                            Requeue High Priority (@pendingItems.Count(x => x.Priority >= 2))
+                        </MudButton>
+                    </MudStack>
+                }
+                <QueueTable Items="@pendingItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedPending"
+                            OnBulkDelete="@BulkDeleteItems"
+                            OnBulkPriorityChange="@BulkChangePriority" />
+            </MudTabPanel>
+            
+            <!-- Processing -->
+            <MudTabPanel Text="Processing" Icon="@Icons.Material.Outlined.Downloading" BadgeData="@processingItems.Count" BadgeColor="Color.Info">
+                <QueueTable Items="@processingItems" OnRetry="@RetryDownload" OnDelete="@DeleteDownload" />
+            </MudTabPanel>
+            
+            <!-- Completed -->
+            <MudTabPanel Text="Completed" Icon="@Icons.Material.Outlined.CheckCircle" BadgeData="@completedItems.Count" BadgeColor="Color.Success">
+                <QueueTable Items="@completedItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedCompleted"
+                            OnBulkDelete="@BulkDeleteItems" />
+            </MudTabPanel>
+            
+            <!-- Failed -->
+            <MudTabPanel Text="Failed" Icon="@Icons.Material.Outlined.Error" BadgeData="@failedItems.Count" BadgeColor="Color.Error">
+                <MudAlert Severity="Severity.Warning" Class="mb-4" Dense="true">
+                    @failedItems.Count failed download(s). Click "Retry All" to attempt again.
+                </MudAlert>
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@(_isRetryingAll ? Icons.Material.Outlined.HourglassTop : Icons.Material.Outlined.Replay)"
+                          OnClick="@(async () => await RetryAllFailed())"
+                          Class="mb-4"
+                          Disabled="@(!failedItems.Any() || _isRetryingAll)">
+                    @if (_isRetryingAll)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        @:Retrying...
+                    }
+                    else
+                    {
+                        @:Retry All Failed (@failedItems.Count)
+                    }
+                </MudButton>
+                <QueueTable Items="@failedItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload" 
+                            ShowError="true"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedFailed"
+                            OnBulkDelete="@BulkDeleteItems" />
+            </MudTabPanel>
+            
+            <!-- Archive -->
+            <MudTabPanel Text="Archive" Icon="@Icons.Material.Outlined.Archive" BadgeData="@_archiveCount" BadgeColor="Color.Secondary">
+                <MudPaper Elevation="0" Class="mb-4 pa-4" Style="background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%);">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.h6">📦 Archived Items</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                @_archiveCount items archived (@_archivedFailed failed, @_archivedCompleted completed)
+                            </MudText>
+                        </div>
+                        <MudStack Row="true" Spacing="2">
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary"
+                                      StartIcon="@Icons.Material.Outlined.Replay"
+                                      OnClick="@ShowRequeueDialog"
+                                      Disabled="@(_archiveCount == 0)">
+                                Requeue from Archive
+                            </MudButton>
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Info"
+                                      StartIcon="@Icons.Material.Outlined.Refresh"
+                                      OnClick="@LoadArchiveStats">
+                                Refresh Stats
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+                
+                <MudAlert Severity="Severity.Info" Class="mb-4">
+                    <MudText Typo="Typo.body2">
+                        <strong>Archive Information:</strong><br/>
+                        • Failed items: Containers that exceeded max retry attempts<br/>
+                        • Completed items: Old downloads archived for cleanup<br/>
+                        • Use "Requeue from Archive" to retry failed containers<br/>
+                        • Archive is stored in <code>ICUMSDownloadQueueArchive</code> table
+                    </MudText>
+                </MudAlert>
+                
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-4">
+                            <MudText Typo="Typo.h6" Color="Color.Error" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Error" /> Failed Downloads
+                            </MudText>
+                            <MudText Typo="Typo.h4">@_archivedFailed</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Containers that could not be downloaded from ICUMS
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-4">
+                            <MudText Typo="Typo.h6" Color="Color.Success" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" /> Old Completed
+                            </MudText>
+                            <MudText Typo="Typo.h4">@_archivedCompleted</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Successfully completed downloads (archived for cleanup)
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+                
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-4" Align="Align.Center">
+                    Archive created: @DateTime.Now.ToString("MMMM dd, yyyy") | Total archived: @_archiveCount records
+                </MudText>
+            </MudTabPanel>
+        </MudTabs>
+    </MudPaper>
+    </MudTabPanel>
+
+    <MudTabPanel Text="Batch Download" Icon="@Icons.Material.Filled.CloudDownload">
+        <IcumsBatchDownloadPanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Individual Download" Icon="@Icons.Material.Filled.Download">
+        <IcumsIndividualDownloadPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // Top-level hub tab: 0 = Queue, 1 = Batch, 2 = Individual
+    private int _activeHubTab = 0;
+
+    private List<BreadcrumbItem> breadcrumbs = new();
+    
+    private int highPriorityCount = 3;
+    private int normalPriorityCount = 8;
+    private int completedToday = 156;
+    private int completedYesterday = 0;
+    private int failedToday = 2;
+    
+    private List<DownloadQueueItem> queueItems = new();
+    private List<DownloadQueueItem> pendingItems => queueItems.Where(x => x.Status == "Pending").ToList();
+    private List<DownloadQueueItem> processingItems => queueItems.Where(x => x.Status == "Processing").ToList();
+    private List<DownloadQueueItem> completedItems => queueItems.Where(x => x.Status == "Completed").ToList();
+    private List<DownloadQueueItem> failedItems => queueItems.Where(x => x.Status == "Failed").ToList();
+    
+    // Archive properties
+    private int _archiveCount = 0;
+    private int _archivedFailed = 0;
+    private int _archivedCompleted = 0;
+    
+    // Auto-refresh timer
+    private System.Threading.Timer? _refreshTimer;
+    
+    private bool _isRetryingAll = false;
+    
+    // Bulk selection
+    private HashSet<DownloadQueueItem> _selectedItems = new();
+    private HashSet<DownloadQueueItem> _selectedPending = new();
+    private HashSet<DownloadQueueItem> _selectedCompleted = new();
+    private HashSet<DownloadQueueItem> _selectedFailed = new();
+    
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        _activeHubTab = path switch
+        {
+            "/icums/batch-download" or "/customs/icums/downloads/batch"           => 1,
+            "/icums/individual-download" or "/customs/icums/downloads/individual" => 2,
+            _                                                                      => 0
+        };
+
+        breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("ICUMS", href: "/icums", icon: Icons.Material.Outlined.Cloud),
+            new BreadcrumbItem("Downloads", href: null, disabled: true)
+        };
+
+        await LoadQueueData();
+        await LoadStatistics();
+        await LoadArchiveStats();
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadQueueData();
+                await LoadStatistics();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadQueueData()
+    {
+        try
+        {
+            var items = await ApiService.GetAsync<List<DownloadQueueItem>>("/api/ICUMSDownloadQueue?limit=100");
+            queueItems = items ?? new List<DownloadQueueItem>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading queue data: {ex.Message}", Severity.Error);
+            queueItems = new List<DownloadQueueItem>();
+        }
+    }
+
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            var stats = await ApiService.GetAsync<QueueStats>("/api/ICUMSDownloadQueue/stats");
+            if (stats != null)
+            {
+                highPriorityCount = stats.HighPriority;
+                normalPriorityCount = stats.NormalPriority;
+                completedToday = stats.Completed;
+                failedToday = stats.Failed;
+            }
+            
+            // Calculate yesterday's completed count
+            var yesterday = DateTime.Today.AddDays(-1);
+            var yesterdayStart = yesterday;
+            var yesterdayEnd = yesterday.AddDays(1);
+            
+            try
+            {
+                // Get completed items from yesterday
+                var yesterdayItems = await ApiService.GetAsync<List<DownloadQueueItem>>($"/api/ICUMSDownloadQueue?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}&status=Completed");
+                completedYesterday = yesterdayItems?.Count ?? 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Could not calculate yesterday's completed count: {ex.Message}");
+                completedYesterday = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private string GetCompletedTrendText()
+    {
+        if (completedYesterday == 0)
+        {
+            return completedToday > 0 ? "New today" : "No data yesterday";
+        }
+        
+        var change = completedToday - completedYesterday;
+        var changeSymbol = change >= 0 ? "+" : "";
+        return $"{changeSymbol}{change} from yesterday";
+    }
+    
+    private string? GetCompletedTrendDirection()
+    {
+        if (completedYesterday == 0) return null;
+        return completedToday >= completedYesterday ? "up" : "down";
+    }
+    
+    private async Task RefreshQueue()
+    {
+        await LoadQueueData();
+        await LoadStatistics();
+        Snackbar.Add("Queue refreshed", Severity.Success);
+    }
+    
+    private async Task RetryDownload(int id)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{id}", new { });
+            await LoadQueueData();
+            Snackbar.Add("Retry initiated", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error retrying download: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task DeleteDownload(int id)
+    {
+        try
+        {
+            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+            await LoadQueueData();
+            Snackbar.Add("Item removed from queue", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error deleting item: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RetryAllFailed()
+    {
+        var itemsToRetry = failedItems.ToList();
+        if (!itemsToRetry.Any()) return;
+
+        _isRetryingAll = true;
+        StateHasChanged();
+
+        int successCount = 0;
+        int failCount = 0;
+
+        foreach (var item in itemsToRetry)
+        {
+            try
+            {
+                await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{item.Id}", new { });
+                successCount++;
+            }
+            catch
+            {
+                failCount++;
+            }
+        }
+
+        _isRetryingAll = false;
+
+        if (failCount == 0)
+        {
+            Snackbar.Add($"Successfully retried all {successCount} failed download(s)", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add($"Retried {successCount} of {itemsToRetry.Count} downloads ({failCount} failed)", Severity.Warning);
+        }
+
+        await LoadQueueData();
+        await LoadStatistics();
+    }
+    
+    private async Task LoadArchiveStats()
+    {
+        try
+        {
+            var stats = await ApiService.GetAsync<ArchiveStatsDto>("/api/ICUMSDownloadQueue/archive/stats");
+            if (stats != null)
+            {
+                _archiveCount = stats.TotalArchived;
+                _archivedFailed = stats.Failed;
+                _archivedCompleted = stats.Completed;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading archive stats: {ex.Message}");
+            // Archive is optional, don't show error to user
+        }
+    }
+    
+    private async Task ShowRequeueDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["ArchiveCount"] = _archiveCount,
+            ["ArchivedFailed"] = _archivedFailed,
+            ["OnRequeue"] = EventCallback.Factory.Create<RequeueDialogResult>(this, ProcessRequeue)
+        };
+        
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.Medium,
+            FullWidth = true,
+            CloseButton = true 
+        };
+        
+        await DialogService.ShowAsync<RequeueFromArchiveDialog>("Requeue from Archive", parameters, options);
+    }
+    
+    private async Task ProcessRequeue(RequeueDialogResult result)
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                ContainerNumbers = result.ContainerNumbers,
+                Priority = result.Priority,
+                RequestedBy = "Admin"
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeueResponse>("/api/ICUMSDownloadQueue/requeue", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"✅ Successfully requeued {response.RequeuedCount} of {response.Total} containers", Severity.Success);
+                await LoadQueueData();
+                await LoadArchiveStats();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error requeuing items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task ShowRequeuePendingDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["PendingCount"] = pendingItems.Count,
+            ["OnRequeue"] = EventCallback.Factory.Create<NickScanWebApp.New.Components.ICUMS.RequeuePendingDialog.RequeuePendingDialogResult>(this, ProcessRequeuePending)
+        };
+        
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.Medium,
+            FullWidth = true,
+            CloseButton = true 
+        };
+        
+        await DialogService.ShowAsync<RequeuePendingDialog>("Requeue Pending Containers", parameters, options);
+    }
+    
+    private async Task ProcessRequeuePending(NickScanWebApp.New.Components.ICUMS.RequeuePendingDialog.RequeuePendingDialogResult result)
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                RequeueAll = result.RequeueAll,
+                RequeueHighPriority = result.RequeueHighPriority,
+                ContainerNumbers = result.ContainerNumbers,
+                ResetRetryCount = result.ResetRetryCount,
+                NewPriority = result.NewPriority,
+                ResetTimestamps = result.ResetTimestamps
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeuePendingResponse>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"✅ Successfully requeued {response.RequeuedCount} pending containers", Severity.Success);
+                await LoadQueueData();
+                await LoadStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error requeuing pending items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RequeueHighPriorityPending()
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                RequeueAll = false,
+                RequeueHighPriority = true,
+                ResetRetryCount = true,
+                ResetTimestamps = true
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeuePendingResponse>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"✅ Requeued {response.RequeuedCount} high priority containers", Severity.Success);
+                await LoadQueueData();
+                await LoadStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error requeuing: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task BulkDeleteItems(List<int> ids)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Confirm Bulk Delete",
+            $"Are you sure you want to delete {ids.Count} item(s) from the queue? This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel", 
+            options: new DialogOptions() { FullWidth = true });
+        
+        if (confirmed != true)
+            return;
+        
+        try
+        {
+            int deletedCount = 0;
+            foreach (var id in ids)
+            {
+                await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+                deletedCount++;
+            }
+            
+            Snackbar.Add($"✅ Successfully deleted {deletedCount} item(s)", Severity.Success);
+            await LoadQueueData();
+            await LoadStatistics();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error deleting items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task BulkChangePriority(List<int> ids, int newPriority)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ItemCount"] = ids.Count,
+            ["OnPrioritySelected"] = EventCallback.Factory.Create<int>(this, async (priority) => 
+            {
+                await ExecuteBulkPriorityChange(ids, priority);
+            })
+        };
+        
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.Small,
+            FullWidth = true 
+        };
+        
+        await DialogService.ShowAsync<BulkPriorityDialog>("Change Priority", parameters, options);
+    }
+    
+    private async Task ExecuteBulkPriorityChange(List<int> ids, int newPriority)
+    {
+        try
+        {
+            int updatedCount = 0;
+            foreach (var id in ids)
+            {
+                var item = queueItems.FirstOrDefault(x => x.Id == id);
+                if (item != null)
+                {
+                    await ApiService.PutAsync<object, object>($"/api/ICUMSDownloadQueue/priority", new 
+                    { 
+                        ContainerNumber = item.ContainerNumber, 
+                        Priority = newPriority 
+                    });
+                    updatedCount++;
+                }
+            }
+            
+            Snackbar.Add($"✅ Successfully updated priority for {updatedCount} item(s)", Severity.Success);
+            await LoadQueueData();
+            await LoadStatistics();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error changing priority: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    public class QueueStats
+    {
+        public int Pending { get; set; }
+        public int Processing { get; set; }
+        public int Completed { get; set; }
+        public int Failed { get; set; }
+        public int HighPriority { get; set; }
+        public int NormalPriority { get; set; }
+        public int LowPriority { get; set; }
+    }
+    
+    public class ArchiveStatsDto
+    {
+        public int TotalArchived { get; set; }
+        public int Failed { get; set; }
+        public int Completed { get; set; }
+        public string? Message { get; set; }
+    }
+    
+    public class RequeueResponse
+    {
+        public string Message { get; set; } = string.Empty;
+        public int RequeuedCount { get; set; }
+        public int Total { get; set; }
+    }
+    
+    public class RequeueDialogResult
+    {
+        public List<string> ContainerNumbers { get; set; } = new();
+        public int Priority { get; set; } = 1;
+    }
+    
+    public class RequeuePendingResponse
+    {
+        public string Message { get; set; } = string.Empty;
+        public int RequeuedCount { get; set; }
+        public int Total { get; set; }
+        public bool ResetRetryCount { get; set; }
+        public int? NewPriority { get; set; }
+        public bool ResetTimestamps { get; set; }
+    }
+}
+

@@ -1,0 +1,62 @@
+﻿========================================
+Database Sync Todo List
+Generated: 2025-12-31 06:23:44
+========================================
+
+SUMMARY
+========================================
+Total Tables Requiring Transfer: 21
+Total Tables Complete: 38
+Total Tables with Errors: 0
+
+TABLES REQUIRING TRANSFER
+========================================
+
+DATABASE: ICUMS (3 tables)
+============================================================
+
+Empty (2 tables):
+------------------------------------------------------------
+  - [dbo].[IcumBatchLogs] (Source: 121, Target: 0)
+  - [dbo].[IcumContainerData] (Source: 50099, Target: 0)
+
+Missing (1 tables):
+------------------------------------------------------------
+  - [dbo].[IcumManifestItems] (Source: 5555863, Target: N/A)
+
+
+DATABASE: ICUMS_Downloads (8 tables)
+============================================================
+
+Empty (6 tables):
+------------------------------------------------------------
+  - [dbo].[BOEDocuments] (Source: 219989, Target: 0)
+  - [dbo].[CMRValidationMetrics] (Source: 1859, Target: 0)
+  - [dbo].[DownloadedFiles] (Source: 49016, Target: 0)
+  - [dbo].[ICUMSDownloadQueue] (Source: 279, Target: 0)
+  - [dbo].[ManifestItems] (Source: 10261511, Target: 0)
+  - [dbo].[VehicleImports] (Source: 8895, Target: 0)
+
+Missing (2 tables):
+------------------------------------------------------------
+  - [dbo].[ICUMSDownloadAudit] (Source: 115003, Target: N/A)
+  - [dbo].[ICUMSDownloadQueueArchive] (Source: 10688, Target: N/A)
+
+
+DATABASE: NS_CIS (10 tables)
+============================================================
+
+Missing (10 tables):
+------------------------------------------------------------
+  - [dbo].[ApplicationLogs] (Source: 0, Target: N/A)
+  - [dbo].[ContainerReferences] (Source: 0, Target: N/A)
+  - [dbo].[ErrorInvestigations] (Source: 0, Target: N/A)
+  - [dbo].[FileSystemCaches] (Source: 0, Target: N/A)
+  - [dbo].[FixAuditLogs] (Source: 0, Target: N/A)
+  - [dbo].[FixProposals] (Source: 0, Target: N/A)
+  - [dbo].[ImageAnalysisDecisions_Backup_20251029] (Source: 14, Target: N/A)
+  - [dbo].[ServiceConfigurations] (Source: 0, Target: N/A)
+  - [dbo].[SystemStates] (Source: 0, Target: N/A)
+  - [dbo].[UserReadiness] (Source: 5, Target: N/A)
+
+

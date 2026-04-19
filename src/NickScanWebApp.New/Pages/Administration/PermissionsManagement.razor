@@ -1,0 +1,300 @@
+@page "/admin/permissions"
+@attribute [Authorize(Policy = Permissions.PagesAdminPermissions)]
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@using NickScanCentralImagingPortal.Core.Constants
+
+<PageTitle>NICKSCAN ERP — NSCIS — Permissions</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+        <MudStack Spacing="1">
+            <MudText Typo="Typo.h4">Permissions Management</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Manage system permissions and access control
+            </MudText>
+        </MudStack>
+        <MudStack Row="true" Spacing="2">
+            <MudButton Variant="Variant.Outlined" 
+                       StartIcon="@Icons.Material.Outlined.Refresh" 
+                       OnClick="LoadPermissions"
+                       Disabled="@_isLoading">
+                Refresh
+            </MudButton>
+            <MudButton Variant="Variant.Filled" 
+                       Color="Color.Primary" 
+                       StartIcon="@Icons.Material.Outlined.Add" 
+                       OnClick="CreatePermission"
+                       Disabled="@_isLoading">
+                Create Permission
+            </MudButton>
+        </MudStack>
+    </MudStack>
+
+    <!-- Stats Summary -->
+    @if (!_isLoading && _permissionsByCategory.Count > 0)
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Permissions</MudText>
+                        <MudText Typo="Typo.h4">@_totalPermissions</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Categories</MudText>
+                        <MudText Typo="Typo.h4">@_permissionsByCategory.Count</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Active</MudText>
+                        <MudText Typo="Typo.h4" Color="Color.Success">@_activePermissions</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Most Populated</MudText>
+                        <MudText Typo="Typo.h6">@_largestCategory</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+
+    <!-- Loading State -->
+    @if (_isLoading)
+    {
+        <MudPaper Class="pa-8 text-center">
+            <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+            <MudText Typo="Typo.h6" Class="mt-4">Loading permissions...</MudText>
+        </MudPaper>
+    }
+    else if (_errorMessage != null)
+    {
+        <!-- Error State -->
+        <MudAlert Severity="Severity.Error" Class="mb-4">
+            <MudText Typo="Typo.body1">@_errorMessage</MudText>
+            <MudButton Variant="Variant.Text" Color="Color.Error" OnClick="LoadPermissions" Class="mt-2">
+                Try Again
+            </MudButton>
+        </MudAlert>
+    }
+    else if (_permissionsByCategory.Count == 0)
+    {
+        <!-- Empty State -->
+        <MudPaper Class="pa-8 text-center">
+            <MudIcon Icon="@Icons.Material.Outlined.SecurityUpdate" Size="Size.Large" Color="Color.Secondary" Style="font-size: 5rem;" />
+            <MudText Typo="Typo.h5" Class="mt-4">No Permissions Found</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-2">
+                There are no permissions configured in the system.
+            </MudText>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="CreatePermission" Class="mt-4">
+                Create First Permission
+            </MudButton>
+        </MudPaper>
+    }
+    else
+    {
+        <!-- Permission Categories (Accordion) -->
+        <MudExpansionPanels MultiExpansion="true">
+            @foreach (var category in _permissionsByCategory.OrderBy(c => c.Key))
+            {
+                var categoryIcon = GetCategoryIcon(category.Key);
+                var permissionList = category.Value;
+                
+                <MudExpansionPanel>
+                    <TitleContent>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-grow-1">
+                            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                <MudIcon Icon="@categoryIcon" Color="Color.Primary" />
+                                <MudText Typo="Typo.h6">@category.Key</MudText>
+                            </MudStack>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">@permissionList.Count permissions</MudChip>
+                        </MudStack>
+                    </TitleContent>
+                    <ChildContent>
+                        <MudTable Items="@permissionList" Hover="true" Dense="true" Striped="true">
+                            <HeaderContent>
+                                <MudTh>Name</MudTh>
+                                <MudTh>Display Name</MudTh>
+                                <MudTh>Description</MudTh>
+                                <MudTh>Status</MudTh>
+                                <MudTh Style="width: 120px;">Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Name">
+                                    <MudText Typo="Typo.body2" Style="font-family: monospace; font-weight: 500;">@context.Name</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Display Name">@context.DisplayName</MudTd>
+                                <MudTd DataLabel="Description">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Description</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Status">
+                                    @if (context.IsActive)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success">Active</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Default">Inactive</MudChip>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="Actions">
+                                    <MudIconButton Icon="@Icons.Material.Outlined.Edit" 
+                                                   Size="Size.Small" 
+                                                   Color="Color.Primary" 
+                                                   OnClick="@(() => EditPermission(context))" />
+                                    <MudIconButton Icon="@Icons.Material.Outlined.Delete" 
+                                                   Size="Size.Small" 
+                                                   Color="Color.Error" 
+                                                   OnClick="@(() => DeletePermission(context))" />
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </ChildContent>
+                </MudExpansionPanel>
+            }
+        </MudExpansionPanels>
+    }
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private Dictionary<string, List<PermissionDto>> _permissionsByCategory = new();
+    private bool _isLoading = false;
+    private string? _errorMessage = null;
+    private int _totalPermissions = 0;
+    private int _activePermissions = 0;
+    private string _largestCategory = "N/A";
+
+    protected override void OnInitialized()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Administration", href: "#", icon: Icons.Material.Outlined.AdminPanelSettings),
+            new BreadcrumbItem("Permissions", href: null, disabled: true)
+        };
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPermissions();
+    }
+
+    private async Task LoadPermissions()
+    {
+        _isLoading = true;
+        _errorMessage = null;
+
+        try
+        {
+            Console.WriteLine("🔍 [Permissions] Loading permissions from API...");
+            
+            // ✅ CONNECTED TO BACKEND API - Fetch permissions grouped by category
+            var result = await ApiService.GetAsync<Dictionary<string, List<PermissionDto>>>("/api/Permissions/by-category");
+            
+            if (result != null)
+            {
+                _permissionsByCategory = result;
+                
+                // Calculate statistics
+                _totalPermissions = _permissionsByCategory.Values.Sum(list => list.Count);
+                _activePermissions = _permissionsByCategory.Values.SelectMany(list => list).Count(p => p.IsActive);
+                
+                if (_permissionsByCategory.Any())
+                {
+                    _largestCategory = _permissionsByCategory
+                        .OrderByDescending(kvp => kvp.Value.Count)
+                        .First()
+                        .Key;
+                }
+                
+                Console.WriteLine($"✅ [Permissions] Loaded {_totalPermissions} permissions across {_permissionsByCategory.Count} categories");
+                Snackbar.Add($"Loaded {_totalPermissions} permissions successfully", Severity.Success);
+            }
+            else
+            {
+                _errorMessage = "No permissions data returned from API";
+                Console.WriteLine("⚠️ [Permissions] API returned null");
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error loading permissions: {ex.Message}";
+            Console.WriteLine($"❌ [Permissions] Error: {ex.Message}");
+            Snackbar.Add("Failed to load permissions", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "User Management" => Icons.Material.Outlined.People,
+            "Role Management" => Icons.Material.Outlined.Security,
+            "Permission Management" => Icons.Material.Outlined.Lock,
+            "Containers" => Icons.Material.Outlined.Inventory,
+            "Scanners" => Icons.Material.Outlined.Scanner,
+            "ICUMS" => Icons.Material.Outlined.Cloud,
+            "Images" => Icons.Material.Outlined.Image,
+            "Vehicles" => Icons.Material.Outlined.DirectionsCar,
+            "Reports" => Icons.Material.Outlined.Assessment,
+            "Analytics" => Icons.Material.Outlined.Analytics,
+            "Database" => Icons.Material.Outlined.Storage,
+            "System" => Icons.Material.Outlined.Settings,
+            "Dashboard" => Icons.Material.Outlined.Dashboard,
+            "API" => Icons.Material.Outlined.Api,
+            "Diagnostics" => Icons.Material.Outlined.BugReport,
+            "Performance" => Icons.Material.Outlined.Speed,
+            "Audit" => Icons.Material.Outlined.History,
+            _ => Icons.Material.Outlined.Security
+        };
+    }
+
+    private void CreatePermission()
+    {
+        Snackbar.Add("Create permission dialog coming soon", Severity.Info);
+        // TODO: Open modal dialog for creating new permission
+    }
+
+    private void EditPermission(PermissionDto permission)
+    {
+        Snackbar.Add($"Edit permission '{permission.Name}' coming soon", Severity.Info);
+        // TODO: Open modal dialog for editing permission
+    }
+
+    private void DeletePermission(PermissionDto permission)
+    {
+        Snackbar.Add($"Delete permission '{permission.Name}' coming soon", Severity.Warning);
+        // TODO: Confirm and delete permission via API
+    }
+
+    // DTO matching backend API response
+    public class PermissionDto
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string? Description { get; set; }
+        public string? Category { get; set; }
+        public bool IsActive { get; set; }
+    }
+}
+

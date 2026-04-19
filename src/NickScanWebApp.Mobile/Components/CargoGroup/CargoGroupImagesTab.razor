@@ -1,0 +1,168 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using MudBlazor
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject NavigationManager NavigationManager
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (CargoGroup?.Data?.ImageData?.Any() == true)
+    {
+        @foreach (var imageGroup in CargoGroup.Data.ImageData)
+        {
+            <MudPaper Elevation="1" Class="pa-3 mb-3">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Wrap="Wrap.Wrap">
+                        <MudIcon Icon="@Icons.Material.Filled.Image" Color="Color.Secondary" Size="Size.Small" />
+                        <MudText Typo="Typo.h6">
+                            Container: <strong>@imageGroup.ContainerNumber</strong>
+                        </MudText>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary">
+                            @imageGroup.ImageCount image(s)
+                        </MudChip>
+                    </MudStack>
+
+                    @if (imageGroup.Images.Any())
+                    {
+                        <MudGrid Spacing="2">
+                            @foreach (var image in imageGroup.Images)
+                            {
+                                var imageKey = $"{imageGroup.ContainerNumber}_{image.Id}";
+                                var hasError = imageLoadError.ContainsKey(imageKey) && imageLoadError[imageKey];
+                                
+                                <MudItem xs="6" sm="4">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            @if (hasError)
+                                            {
+                                                <div style="width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #f5f5f5; border: 1px dashed #ccc;">
+                                                    <MudStack AlignItems="AlignItems.Center" Spacing="1" Style="text-align: center; padding: 8px;">
+                                                        <MudIcon Icon="@Icons.Material.Filled.BrokenImage" Color="Color.Error" Size="Size.Small" />
+                                                        <MudText Typo="Typo.caption" Color="Color.Error">Failed</MudText>
+                                                        <MudButton Size="Size.Small" 
+                                                                  Variant="Variant.Text" 
+                                                                  Color="Color.Primary" 
+                                                                  StartIcon="@Icons.Material.Filled.Refresh" 
+                                                                  OnClick="@(() => RetryImageLoad(image, imageGroup.ContainerNumber, imageKey))">
+                                                            Retry
+                                                        </MudButton>
+                                                    </MudStack>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <img src="@image.ThumbnailUrl" 
+                                                     alt="@image.FileName"
+                                                     style="width: 100%; height: 150px; object-fit: contain; cursor: pointer;"
+                                                     @onclick="@(() => OpenImage(image, imageGroup.ContainerNumber))"
+                                                     @onerror="@(() => HandleImageError(imageKey, image.ThumbnailUrl))" />
+                                            }
+                                            <MudText Typo="Typo.caption" Class="mt-2" Style="word-break: break-all; font-size: 0.7rem;">
+                                                @image.FileName
+                                            </MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-size: 0.65rem;">
+                                                @image.ImageType • @image.CreatedAt.ToString("g")
+                                            </MudText>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    }
+                </MudStack>
+            </MudPaper>
+        }
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No images available for this cargo group.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public CargoGroupDto? CargoGroup { get; set; }
+
+    private Dictionary<string, bool> imageLoadError = new();
+    private Dictionary<string, int> imageRetryCount = new();
+    private Dictionary<string, string> imageErrorMessages = new();
+
+    protected override void OnParametersSet()
+    {
+        if (CargoGroup?.Data?.ImageData != null)
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+            foreach (var imageGroup in CargoGroup.Data.ImageData)
+            {
+                foreach (var image in imageGroup.Images)
+                {
+                    image.ThumbnailUrl = NormalizeImageUrl(image.ThumbnailUrl, apiBaseUrl);
+                    image.FullImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+    }
+
+    private async Task OpenImage(ImageMetadataDto image, string containerNumber)
+    {
+        if (string.IsNullOrEmpty(containerNumber))
+        {
+            Snackbar.Add("Container number not available", Severity.Warning);
+            return;
+        }
+
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+        var normalizedImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+
+        // For mobile, navigate to image viewer page instead of dialog
+        NavigationManager.NavigateTo($"/images/viewer/{containerNumber}?imageUrl={Uri.EscapeDataString(normalizedImageUrl)}");
+    }
+
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private void HandleImageError(string imageKey, string imageUrl)
+    {
+        imageLoadError[imageKey] = true;
+        imageErrorMessages[imageKey] = $"Failed to load image from {imageUrl}";
+        StateHasChanged();
+    }
+
+    private async Task RetryImageLoad(ImageMetadataDto image, string containerNumber, string imageKey)
+    {
+        if (!imageRetryCount.ContainsKey(imageKey))
+            imageRetryCount[imageKey] = 0;
+        imageRetryCount[imageKey]++;
+
+        imageLoadError[imageKey] = false;
+        imageErrorMessages.Remove(imageKey);
+
+        var cacheBuster = $"?retry={imageRetryCount[imageKey]}&t={DateTime.UtcNow.Ticks}";
+        if (!image.ThumbnailUrl.Contains("?"))
+        {
+            image.ThumbnailUrl += cacheBuster;
+            image.FullImageUrl += cacheBuster;
+        }
+        else
+        {
+            image.ThumbnailUrl = image.ThumbnailUrl.Split('?')[0] + cacheBuster;
+            image.FullImageUrl = image.FullImageUrl.Split('?')[0] + cacheBuster;
+        }
+
+        Snackbar.Add($"Retrying image load (attempt {imageRetryCount[imageKey]})...", Severity.Info);
+        StateHasChanged();
+        await Task.Delay(100);
+    }
+}

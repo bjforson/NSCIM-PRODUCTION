@@ -1,0 +1,209 @@
+@* Queue table component for displaying ICUMS download queue items - Mobile Optimized *@
+@using NickScanWebApp.Mobile.Models.ICUMS
+@if (EnableBulkActions && SelectedItems != null && SelectedItems.Any())
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudText Typo="Typo.body2"><strong>@SelectedItems.Count</strong> item(s) selected</MudText>
+            <MudStack Row="true" Spacing="1">
+                <MudButton Size="Size.Small" 
+                          Variant="Variant.Filled" 
+                          Color="Color.Error"
+                          StartIcon="@Icons.Material.Filled.Delete"
+                          OnClick="@OnBulkDeleteClick"
+                          Disabled="@(OnBulkDelete == null)">
+                    Delete
+                </MudButton>
+                <MudButton Size="Size.Small" 
+                          Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Filled.PriorityHigh"
+                          OnClick="@OnBulkPriorityClick"
+                          Disabled="@(OnBulkPriorityChange == null)">
+                    Priority
+                </MudButton>
+                <MudIconButton Icon="@Icons.Material.Filled.Close" 
+                              Size="Size.Small" 
+                              OnClick="@ClearSelection" />
+            </MudStack>
+        </MudStack>
+    </MudAlert>
+}
+
+<!-- Mobile: Card view instead of table -->
+@if (Items.Any())
+{
+    <MudStack Spacing="2">
+        @foreach (var item in Items)
+        {
+            <MudCard Elevation="2" Class="pa-3">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                        <MudText Typo="Typo.body2" Style="font-weight: 600; font-family: monospace;">@item.ContainerNumber</MudText>
+                        @if (EnableBulkActions)
+                        {
+                            <MudCheckBox Value="@GetItemSelected(item)" 
+                                        ValueChanged="@((bool value) => SetItemSelected(item, value))"
+                                        TValue="bool"
+                                        Size="Size.Small" />
+                        }
+                    </MudStack>
+                    
+                    <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                        <MudChip T="string" 
+                                 Size="Size.Small" 
+                                 Color="@GetStatusColor(item.Status)"
+                                 Variant="Variant.Filled">
+                            @item.Status
+                        </MudChip>
+                        <MudChip T="string" 
+                                 Size="Size.Small" 
+                                 Color="@GetPriorityColor(item.Priority)"
+                                 Variant="Variant.Outlined">
+                            @GetPriorityLabel(item.Priority)
+                        </MudChip>
+                    </MudStack>
+                    
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        <strong>Source:</strong> @(item.RequestSource ?? item.Source ?? "Unknown")
+                    </MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        <strong>Queued:</strong> @item.QueuedAt.ToString("MM/dd HH:mm")
+                    </MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        <strong>Attempts:</strong> @item.RetryCount / @item.MaxRetries
+                    </MudText>
+                    
+                    @if (ShowError && !string.IsNullOrEmpty(item.LastErrorMessage))
+                    {
+                        <MudAlert Severity="Severity.Error" Dense="true" Class="mt-1">
+                            <MudText Typo="Typo.caption">@item.LastErrorMessage</MudText>
+                        </MudAlert>
+                    }
+                    
+                    <MudStack Row="true" Spacing="1" Class="mt-2">
+                        @if (OnRetry != null && item.Status == "Failed")
+                        {
+                            <MudButton Size="Size.Small" 
+                                      Variant="Variant.Text" 
+                                      Color="Color.Primary"
+                                      StartIcon="@Icons.Material.Filled.Replay"
+                                      OnClick="@(() => OnRetry(item.Id))">
+                                Retry
+                            </MudButton>
+                        }
+                        @if (OnDelete != null && (item.Status == "Failed" || item.Status == "Completed"))
+                        {
+                            <MudButton Size="Size.Small" 
+                                      Variant="Variant.Text" 
+                                      Color="Color.Error"
+                                      StartIcon="@Icons.Material.Filled.Delete"
+                                      OnClick="@(() => OnDelete(item.Id))">
+                                Delete
+                            </MudButton>
+                        }
+                    </MudStack>
+                </MudStack>
+            </MudCard>
+        }
+    </MudStack>
+}
+else if (!Loading)
+{
+    <MudText Typo="Typo.body2" Align="Align.Center" Class="pa-4">
+        No queue items found
+    </MudText>
+}
+
+@if (Loading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mt-2" />
+}
+
+@code {
+    [Parameter] public IEnumerable<DownloadQueueItem> Items { get; set; } = Array.Empty<DownloadQueueItem>();
+    [Parameter] public Func<int, Task>? OnRetry { get; set; }
+    [Parameter] public Func<int, Task>? OnDelete { get; set; }
+    [Parameter] public bool ShowError { get; set; } = false;
+    [Parameter] public bool Dense { get; set; } = false;
+    [Parameter] public bool Loading { get; set; } = false;
+    
+    // Bulk action parameters
+    [Parameter] public bool EnableBulkActions { get; set; } = false;
+    [Parameter] public HashSet<DownloadQueueItem> SelectedItems { get; set; } = new();
+    [Parameter] public EventCallback<HashSet<DownloadQueueItem>> SelectedItemsChanged { get; set; }
+    [Parameter] public Func<List<int>, Task>? OnBulkDelete { get; set; }
+    [Parameter] public Func<List<int>, int, Task>? OnBulkPriorityChange { get; set; }
+
+    private static Color GetStatusColor(string? status) => status?.ToLower() switch
+    {
+        "pending" => Color.Warning,
+        "processing" => Color.Info,
+        "completed" => Color.Success,
+        "failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    private static Color GetPriorityColor(int priority) => priority switch
+    {
+        0 => Color.Default,
+        1 => Color.Primary,
+        2 => Color.Warning,
+        3 => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string GetPriorityLabel(int priority) => priority switch
+    {
+        0 => "Normal",
+        1 => "High",
+        2 => "Urgent",
+        3 => "Critical",
+        _ => "Unknown"
+    };
+
+    private bool GetItemSelected(DownloadQueueItem item)
+    {
+        return SelectedItems.Contains(item);
+    }
+
+    private async Task SetItemSelected(DownloadQueueItem item, bool selected)
+    {
+        if (selected)
+        {
+            SelectedItems.Add(item);
+        }
+        else
+        {
+            SelectedItems.Remove(item);
+        }
+        await SelectedItemsChanged.InvokeAsync(SelectedItems);
+    }
+
+    private async Task OnBulkDeleteClick()
+    {
+        if (OnBulkDelete != null && SelectedItems.Any())
+        {
+            var ids = SelectedItems.Select(item => item.Id).ToList();
+            await OnBulkDelete(ids);
+            SelectedItems = new HashSet<DownloadQueueItem>();
+            await SelectedItemsChanged.InvokeAsync(SelectedItems);
+        }
+    }
+
+    private async Task OnBulkPriorityClick()
+    {
+        if (OnBulkPriorityChange != null && SelectedItems.Any())
+        {
+            var ids = SelectedItems.Select(item => item.Id).ToList();
+            await OnBulkPriorityChange(ids, 0);
+        }
+    }
+
+    private async Task ClearSelection()
+    {
+        SelectedItems = new HashSet<DownloadQueueItem>();
+        await SelectedItemsChanged.InvokeAsync(SelectedItems);
+    }
+}
+

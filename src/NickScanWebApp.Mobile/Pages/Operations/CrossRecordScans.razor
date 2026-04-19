@@ -1,0 +1,29 @@
+@page "/operations/cross-record-scans"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesCrossRecordScans)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Cross-Record Multi-Container Scans</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Class="mr-2" />
+                Cross-Record Multi-Container Scan Monitor
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Scans containing containers from different records
+            </MudText>
+        </MudStack>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Warning">
+        Cross-record scan monitoring. Use desktop version for detailed analysis and resolution.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

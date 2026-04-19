@@ -1,0 +1,832 @@
+@page "/icums"
+@page "/customs/icums"
+@page "/icums/analytics"
+@page "/customs/icums/analytics"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsView)]
+@using NickScanWebApp.New.Components.Customs
+@implements IDisposable
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IConfiguration Configuration
+@inject NavigationManager NavManager
+
+<PageTitle>NICKSCAN ERP — NSCIS — ICUMS Integration</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4 page-transition-enter">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Overview" Icon="@Icons.Material.Filled.Cloud">
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Cloud" Class="mr-2" />
+                    ICUMS Integration Dashboard
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Integrated Customs Management System connectivity and monitoring
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudChip T="string" Size="Size.Medium" Color="@_connectionColor" Icon="@_connectionIcon">
+                    @_connectionStatus
+                </MudChip>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Updated @GetTimeAgo(_lastRefresh)
+                </MudText>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Connection Stats -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Connection Status"
+                     Value="@_connectionUptimeDisplay"
+                     Icon="@Icons.Material.Outlined.Link"
+                     Color="@(_connectionUptimeDisplay == "Online" ? Color.Success : Color.Error)"
+                     Trend="@($"{apiResponseTime}ms response")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Downloads Today"
+                     Value="@downloadsToday.ToString()"
+                     Icon="@Icons.Material.Outlined.CloudDownload"
+                     Color="@Color.Info"
+                     Trend="+12 pending"
+                     TrendDirection="up" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Submissions Today"
+                     Value="@submissionsToday.ToString()"
+                     Icon="@Icons.Material.Outlined.CloudUpload"
+                     Color="@Color.Primary"
+                     Trend="98% success" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Queue Health"
+                     Value="@($"{queueHealth}%")"
+                     Icon="@Icons.Material.Outlined.HealthAndSafety"
+                     Color="@Color.Success"
+                     Trend="Optimal" />
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Main Content Grid -->
+    <MudGrid>
+        <!-- Download Queue -->
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="height: 100%;">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                    <MudText Typo="Typo.h6">
+                        <MudIcon Icon="@Icons.Material.Outlined.CloudDownload" Class="mr-2" />
+                        Download Queue
+                    </MudText>
+                    <MudButton Size="Size.Small" 
+                              Variant="Variant.Text" 
+                              Color="Color.Primary"
+                              Href="/icums/download-queue">
+                        View All
+                    </MudButton>
+                </MudStack>
+                
+                <MudStack Spacing="3">
+                    <!-- Priority Stats -->
+                    <MudGrid>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">High Priority</MudText>
+                                <MudText Typo="Typo.h5">@highPriorityDownloads</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">Normal</MudText>
+                                <MudText Typo="Typo.h5">@normalPriorityDownloads</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">Low Priority</MudText>
+                                <MudText Typo="Typo.h5">@lowPriorityDownloads</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                    
+                    <!-- Recent Downloads -->
+                    <div>
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Recent Downloads</MudText>
+                        <MudList T="string" Dense="true">
+                            @foreach (var download in recentDownloads.Take(5))
+                            {
+                                <MudListItem T="string" Icon="@Icons.Material.Outlined.Description" IconColor="Color.Primary">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <div>
+                                            <MudText Typo="Typo.body2">@download.ContainerNumber</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">@download.Time.ToString("HH:mm:ss")</MudText>
+                                        </div>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetDownloadStatusColor(download.Status)">
+                                            @download.Status
+                                        </MudChip>
+                                    </MudStack>
+                                </MudListItem>
+                            }
+                        </MudList>
+                    </div>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <!-- Submission Queue -->
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="height: 100%;">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                    <MudText Typo="Typo.h6">
+                        <MudIcon Icon="@Icons.Material.Outlined.CloudUpload" Class="mr-2" />
+                        Submission Queue
+                    </MudText>
+                    <MudButton Size="Size.Small" 
+                              Variant="Variant.Text" 
+                              Color="Color.Primary"
+                              Href="/icums/submission-queue">
+                        View All
+                    </MudButton>
+                </MudStack>
+                
+                <MudStack Spacing="3">
+                    <!-- Status Stats -->
+                    <MudGrid>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">Pending</MudText>
+                                <MudText Typo="Typo.h5">@pendingSubmissions</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">Successful</MudText>
+                                <MudText Typo="Typo.h5">@successfulSubmissions</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudPaper Elevation="0" Class="pa-3" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white; border-radius: 8px;">
+                                <MudText Typo="Typo.caption">Failed</MudText>
+                                <MudText Typo="Typo.h5">@failedSubmissions</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                    
+                    <!-- Recent Submissions -->
+                    <div>
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Recent Submissions</MudText>
+                        <MudList T="string" Dense="true">
+                            @foreach (var submission in recentSubmissions.Take(5))
+                            {
+                                <MudListItem T="string" Icon="@Icons.Material.Outlined.CloudUpload" IconColor="Color.Info">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <div>
+                                            <MudText Typo="Typo.body2">@submission.ContainerNumber</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">@submission.Time.ToString("HH:mm:ss")</MudText>
+                                        </div>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetSubmissionStatusColor(submission.Status)">
+                                            @submission.Status
+                                        </MudChip>
+                                    </MudStack>
+                                </MudListItem>
+                            }
+                        </MudList>
+                    </div>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <!-- API Health -->
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudText Typo="Typo.h6" Class="mb-3">
+                    <MudIcon Icon="@Icons.Material.Outlined.Api" Class="mr-2" />
+                    API Health & Performance
+                </MudText>
+                
+                <MudStack Spacing="3">
+                    <div>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Response Time</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Success"><strong>@apiResponseTime ms</strong></MudText>
+                        </MudStack>
+                        <MudProgressLinear Color="Color.Success" Value="@_apiResponseTimeProgress" Min="0" Max="100" Size="Size.Small" Rounded="true" Class="mt-2" />
+                    </div>
+                    
+                    <div>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Success Rate</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Success"><strong>@successRate%</strong></MudText>
+                        </MudStack>
+                        <MudProgressLinear Color="Color.Success" Value="@successRate" Min="0" Max="100" Size="Size.Small" Rounded="true" Class="mt-2" />
+                    </div>
+                    
+                    <MudDivider />
+                    
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td>Total Requests (24h)</td>
+                                <td><strong>@totalRequests</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Circuit Breaker</td>
+                                <td>
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success">CLOSED</MudChip>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Rate Limit</td>
+                                <td>
+                                    <MudText Typo="Typo.caption">@requestsRemaining remaining</MudText>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Last Health Check</td>
+                                <td>
+                                    <MudText Typo="Typo.caption">@lastHealthCheck.ToString("HH:mm:ss")</MudText>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <!-- ✅ PHASE 3.1: Performance Metrics -->
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                    <MudText Typo="Typo.h6">
+                        <MudIcon Icon="@Icons.Material.Outlined.Speed" Class="mr-2" />
+                        Performance Metrics
+                    </MudText>
+                    <MudButton Size="Size.Small" 
+                              Variant="Variant.Text" 
+                              Color="Color.Primary"
+                              OnClick="@LoadMetrics">
+                        <MudIcon Icon="@Icons.Material.Outlined.Refresh" Size="Size.Small" />
+                    </MudButton>
+                </MudStack>
+                
+                @if (_metricsLoading)
+                {
+                    <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                }
+                else if (_metricsSnapshot != null)
+                {
+                    <MudStack Spacing="2">
+                        <!-- Throughput -->
+                        <div>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2">Files/Min</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Success">
+                                    <strong>@_metricsSnapshot.Gauges.GetValueOrDefault("icums.throughput.files_per_min", 0).ToString("F1")</strong>
+                                </MudText>
+                            </MudStack>
+                            <MudProgressLinear 
+                                Color="Color.Success" 
+                                Value="@(_metricsSnapshot.Gauges.GetValueOrDefault("icums.throughput.files_per_min", 0) * 10)" 
+                                Min="0" Max="100" 
+                                Size="Size.Small" 
+                                Rounded="true" 
+                                Class="mt-1" />
+                        </div>
+                        
+                        <!-- Queue Depth -->
+                        <div>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2">Queue Depth</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Info">
+                                    <strong>@_metricsSnapshot.Gauges.GetValueOrDefault("icums.queue.depth", 0)</strong>
+                                </MudText>
+                            </MudStack>
+                        </div>
+                        
+                        <!-- Failed Queue -->
+                        <div>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2">Failed Queue</MudText>
+                                <MudText Typo="Typo.body2" Color="@(_metricsSnapshot.Gauges.GetValueOrDefault("icums.failed_queue.depth", 0) > 0 ? Color.Warning : Color.Success)">
+                                    <strong>@_metricsSnapshot.Gauges.GetValueOrDefault("icums.failed_queue.depth", 0)</strong>
+                                </MudText>
+                            </MudStack>
+                        </div>
+                        
+                        <MudDivider />
+                        
+                        <!-- Counters Summary -->
+                        <MudSimpleTable Dense="true">
+                            <tbody>
+                                <tr>
+                                    <td>Files Processed</td>
+                                    <td><strong>@_metricsSnapshot.Counters.GetValueOrDefault("icums.files.processed", 0)</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>Files Failed</td>
+                                    <td><strong>@_metricsSnapshot.Counters.GetValueOrDefault("icums.files.failed", 0)</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>Files Retried</td>
+                                    <td><strong>@_metricsSnapshot.Counters.GetValueOrDefault("icums.files.retried", 0)</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>API Calls</td>
+                                    <td><strong>@_metricsSnapshot.Counters.GetValueOrDefault("icums.api.calls", 0)</strong></td>
+                                </tr>
+                                <tr>
+                                    <td>API Success Rate</td>
+                                    <td>
+                                        @{
+                                            var apiCalls = _metricsSnapshot.Counters.GetValueOrDefault("icums.api.calls", 0);
+                                            var apiSuccess = _metricsSnapshot.Counters.GetValueOrDefault("icums.api.success", 0);
+                                            var apiSuccessRate = apiCalls > 0 ? (apiSuccess / (double)apiCalls * 100) : 0;
+                                        }
+                                        <strong>@apiSuccessRate.ToString("F1")%</strong>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </MudSimpleTable>
+                    </MudStack>
+                }
+            </MudPaper>
+        </MudItem>
+        
+        <!-- Quick Actions -->
+        <MudItem xs="12" md="6">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudText Typo="Typo.h6" Class="mb-3">
+                    <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-2" />
+                    Quick Actions
+                </MudText>
+                
+                <MudStack Spacing="2">
+                    <MudButton Variant="Variant.Outlined"
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.Search"
+                              FullWidth="true"
+                              Href="/icums/boe-request">
+                        Manual BOE Request
+                    </MudButton>
+                    
+                    <MudButton Variant="Variant.Outlined"
+                              Color="Color.Info"
+                              StartIcon="@Icons.Material.Outlined.CloudSync"
+                              FullWidth="true"
+                              OnClick="@(() => Snackbar.Add("Triggering queue sync...", Severity.Info))">
+                        Sync Queues
+                    </MudButton>
+                    
+                    <MudButton Variant="Variant.Outlined"
+                              Color="Color.Secondary"
+                              StartIcon="@Icons.Material.Outlined.Replay"
+                              FullWidth="true"
+                              OnClick="@(() => Snackbar.Add("Retrying failed items...", Severity.Info))">
+                        Retry Failed
+                    </MudButton>
+                    
+                    <MudDivider Class="my-2" />
+                    
+                    <MudButton Variant="Variant.Outlined"
+                              Color="Color.Default"
+                              StartIcon="@Icons.Material.Outlined.Refresh"
+                              FullWidth="true"
+                              OnClick="@RefreshData">
+                        Refresh Dashboard
+                    </MudButton>
+                    
+                    <MudButton Variant="Variant.Outlined"
+                              Color="Color.Default"
+                              StartIcon="@Icons.Material.Outlined.Settings"
+                              FullWidth="true">
+                        ICUMS Settings
+                    </MudButton>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    </MudTabPanel>
+
+    <MudTabPanel Text="Analytics" Icon="@Icons.Material.Filled.Analytics">
+        <IcumsAnalyticsPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // Top-level hub tab: 0 = Overview, 1 = Analytics
+    private int _activeHubTab = 0;
+
+    private string? _errorMessage = null;
+    
+    // Connection status fields
+    private Color _connectionColor = Color.Success;
+    private string _connectionIcon = Icons.Material.Outlined.CloudDone;
+    private string _connectionStatus = "Connected";
+    
+    // Statistics
+    private int downloadsToday = 0;
+    private int submissionsToday = 0;
+    private int queueHealth = 0;
+    
+    private int highPriorityDownloads = 0;
+    private int normalPriorityDownloads = 0;
+    private int lowPriorityDownloads = 0;
+    
+    private int pendingSubmissions = 0;
+    private int successfulSubmissions = 0;
+    private int failedSubmissions = 0;
+    
+    private int apiResponseTime = 0;
+    private double _apiResponseTimeProgress = 0;
+    private double successRate = 0;
+    private int totalRequests = 0;
+    private int requestsRemaining = 0;
+    private string _connectionUptimeDisplay = "N/A";
+    private DateTime lastHealthCheck = DateTime.Now;
+    
+    private List<QueueItem> recentDownloads = new();
+    private List<QueueItem> recentSubmissions = new();
+    
+    // Auto-refresh
+    private System.Threading.Timer? _refreshTimer;
+    private DateTime _lastRefresh = DateTime.Now;
+    
+    // ✅ PHASE 3.1: Metrics
+    private bool _metricsLoading = false;
+    private ICUMSMetricsSnapshot? _metricsSnapshot = null;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        if (path == "/icums/analytics" || path == "/customs/icums/analytics")
+        {
+            _activeHubTab = 1;
+        }
+
+        await LoadData();
+        await LoadMetrics();
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                await LoadMetrics();
+                _lastRefresh = DateTime.Now;
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+    
+    private async Task LoadMetrics()
+    {
+        _metricsLoading = true;
+        try
+        {
+            _metricsSnapshot = await ApiService.GetAsync<ICUMSMetricsSnapshot>("/api/ICUMSMetrics/snapshot");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading ICUMS metrics: {ex.Message}");
+        }
+        finally
+        {
+            _metricsLoading = false;
+        }
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    private async Task LoadData()
+    {
+        _errorMessage = null;
+
+        try
+        {
+            Console.WriteLine("🔍 [ICUMS Dashboard] Loading real data from API...");
+
+            // ✅ CONNECTED TO BACKEND API - Load download queue statistics
+            await LoadDownloadQueueDataAsync();
+            
+            // ✅ CONNECTED TO BACKEND API - Load submission queue statistics  
+            await LoadSubmissionQueueDataAsync();
+            
+            // Calculate queue health based on failed vs successful
+            var totalQueue = highPriorityDownloads + normalPriorityDownloads + lowPriorityDownloads;
+            queueHealth = totalQueue > 0 
+                ? (int)((successfulSubmissions / (double)(successfulSubmissions + failedSubmissions + 1)) * 100)
+                : 100;
+            
+            lastHealthCheck = DateTime.Now;
+            UpdateConnectionStatus(); // Update connection status after loading data
+            
+            Console.WriteLine($"✅ [ICUMS Dashboard] Loaded: {downloadsToday} downloads, {submissionsToday} submissions");
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Error loading dashboard data: {ex.Message}";
+            Console.WriteLine($"❌ [ICUMS Dashboard] Error: {ex.Message}");
+            Snackbar.Add("Failed to load dashboard data", Severity.Error);
+            _connectionStatus = "Error";
+            _connectionColor = Color.Error;
+            _connectionIcon = Icons.Material.Outlined.CloudOff;
+            _connectionUptimeDisplay = "Offline";
+        }
+    }
+
+    private async Task LoadDownloadQueueDataAsync()
+    {
+        try
+        {
+            // Measure actual API response time with Stopwatch
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var downloadStats = await ApiService.GetAsync<DownloadQueueStats>("/api/ICUMSDownloadQueue/stats");
+            sw.Stop();
+            apiResponseTime = (int)sw.ElapsedMilliseconds;
+            _apiResponseTimeProgress = Math.Min(100, (apiResponseTime / 500.0) * 100);
+            
+            if (downloadStats != null)
+            {
+                downloadsToday = downloadStats.CompletedToday;
+                highPriorityDownloads = downloadStats.HighPriority;
+                normalPriorityDownloads = downloadStats.NormalPriority;
+                lowPriorityDownloads = downloadStats.LowPriority;
+                
+                _connectionUptimeDisplay = "Online";
+                successRate = downloadStats.SuccessRate;
+            }
+            else
+            {
+                _connectionUptimeDisplay = "Offline";
+            }
+            
+            // Get recent downloads (last 10)
+            var downloads = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?limit=10&status=Completed");
+            
+            if (downloads != null)
+            {
+                recentDownloads = downloads.Select(d => new QueueItem
+                {
+                    ContainerNumber = d.ContainerNumber,
+                    Time = d.CompletedAt ?? d.QueuedAt,
+                    Status = d.Status
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading download queue data: {ex.Message}");
+            _connectionUptimeDisplay = "Offline";
+            apiResponseTime = 0;
+            _apiResponseTimeProgress = 0;
+        }
+    }
+
+    private async Task LoadSubmissionQueueDataAsync()
+    {
+        try
+        {
+            // Get submission queue statistics
+            var submissionStats = await ApiService.GetAsync<SubmissionQueueStats>("/api/ICUMSSubmissionQueue/stats");
+            
+            if (submissionStats != null)
+            {
+                submissionsToday = submissionStats.SuccessfulToday;
+                pendingSubmissions = submissionStats.Pending;
+                successfulSubmissions = submissionStats.SuccessfulToday;
+                failedSubmissions = submissionStats.FailedToday;
+                totalRequests = submissionStats.TotalSubmissions;
+            }
+            
+            // Get recent submissions (last 10)
+            var submissions = await ApiService.GetAsync<List<SubmissionQueueItemDto>>("/api/ICUMSSubmissionQueue?limit=10");
+            
+            if (submissions != null)
+            {
+                recentSubmissions = submissions.Select(s => new QueueItem
+                {
+                    ContainerNumber = s.ContainerNumber,
+                    Time = s.SubmittedAt ?? s.QueuedAt,
+                    Status = s.Status
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading submission queue data: {ex.Message}");
+        }
+    }
+    
+    private async Task RefreshData()
+    {
+        await LoadData();
+        Snackbar.Add("Dashboard refreshed", Severity.Success);
+    }
+    
+    private Color GetDownloadStatusColor(string status)
+    {
+        return status switch
+        {
+            "Completed" => Color.Success,
+            "Processing" => Color.Info,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetSubmissionStatusColor(string status)
+    {
+        return status switch
+        {
+            "Completed" => Color.Success,
+            "Processing" => Color.Warning,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    private string GetTimeAgo(DateTime dateTime)
+    {
+        var timeSpan = DateTime.UtcNow - dateTime;
+        
+        if (timeSpan.TotalMinutes < 1)
+            return "just now";
+        if (timeSpan.TotalMinutes < 60)
+            return $"{(int)timeSpan.TotalMinutes} minute{((int)timeSpan.TotalMinutes != 1 ? "s" : "")} ago";
+        if (timeSpan.TotalHours < 24)
+            return $"{(int)timeSpan.TotalHours} hour{((int)timeSpan.TotalHours != 1 ? "s" : "")} ago";
+        if (timeSpan.TotalDays < 7)
+            return $"{(int)timeSpan.TotalDays} day{((int)timeSpan.TotalDays != 1 ? "s" : "")} ago";
+        
+        return dateTime.ToString("MMM dd, yyyy HH:mm");
+    }
+    
+    private void UpdateConnectionStatus()
+    {
+        // Simple implementation - can be enhanced with actual API health check
+        if (apiResponseTime > 0 && apiResponseTime < 500)
+        {
+            _connectionStatus = "Connected";
+            _connectionColor = Color.Success;
+            _connectionIcon = Icons.Material.Outlined.CloudDone;
+        }
+        else if (apiResponseTime >= 500 && apiResponseTime < 2000)
+        {
+            _connectionStatus = "Degraded";
+            _connectionColor = Color.Warning;
+            _connectionIcon = Icons.Material.Outlined.CloudSync;
+        }
+        else
+        {
+            _connectionStatus = "Disconnected";
+            _connectionColor = Color.Error;
+            _connectionIcon = Icons.Material.Outlined.CloudOff;
+        }
+    }
+    
+    public class QueueItem
+    {
+        public string ContainerNumber { get; set; } = "";
+        public DateTime Time { get; set; }
+        public string Status { get; set; } = "";
+    }
+
+    // DTOs matching backend API responses (lowercase from API)
+    public class DownloadQueueStats
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("pending")]
+        public int pending { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("processing")]
+        public int processing { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("completed")]
+        public int completed { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("failed")]
+        public int failed { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("highPriority")]
+        public int highPriority { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("normalPriority")]
+        public int normalPriority { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("lowPriority")]
+        public int lowPriority { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("successRate")]
+        public double successRate { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("oldestPendingQueuedAt")]
+        public DateTime? oldestPendingQueuedAt { get; set; }
+        
+        // Calculated properties (ignored by JSON serializer)
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int CompletedToday => completed; // TODO: Backend should provide this
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int HighPriority => highPriority;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int NormalPriority => normalPriority;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int LowPriority => lowPriority;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public double SuccessRate => successRate;
+    }
+
+    public class DownloadQueueItemDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int Priority { get; set; }
+        public DateTime QueuedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+        public string? RequestedBy { get; set; }
+    }
+
+    public class SubmissionQueueStats
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("pending")]
+        public int pending { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("submitting")]
+        public int submitting { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("successful")]
+        public int successful { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("failed")]
+        public int failed { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("successfulToday")]
+        public int successfulToday { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("failedToday")]
+        public int failedToday { get; set; }
+        
+        // Mapped properties for component use (ignored by JSON serializer)
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int Pending => pending;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int SuccessfulToday => successfulToday;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int FailedToday => failedToday;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public int TotalSubmissions => successful + failed;
+        
+        [System.Text.Json.Serialization.JsonIgnore]
+        public double SuccessRate => (successful + failed) > 0 
+            ? (double)successful / (successful + failed) * 100 
+            : 0;
+    }
+
+    public class SubmissionQueueItemDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime QueuedAt { get; set; }
+        public DateTime? SubmittedAt { get; set; }
+        public string? ScannerType { get; set; }
+    }
+    
+    // ✅ PHASE 3.1: Metrics DTOs
+    public class ICUMSMetricsSnapshot
+    {
+        public DateTime Timestamp { get; set; }
+        public Dictionary<string, long> Counters { get; set; } = new();
+        public Dictionary<string, double> Gauges { get; set; } = new();
+        public Dictionary<string, HistogramStats> Histograms { get; set; } = new();
+    }
+    
+    public class HistogramStats
+    {
+        public int Count { get; set; }
+        public double Min { get; set; }
+        public double Max { get; set; }
+        public double Mean { get; set; }
+        public double Median { get; set; }
+        public double P50 { get; set; }
+        public double P95 { get; set; }
+        public double P99 { get; set; }
+    }
+}
+

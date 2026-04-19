@@ -1,0 +1,177 @@
+@page "/scanners/fs6000"
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Mobile.Services
+@attribute [Authorize(Policy = Permissions.PagesScannersFs6000)]
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>FS6000 Scanner - NickScan Mobile</PageTitle>
+
+@if (!_initialized)
+{
+    <MudContainer Class="d-flex flex-column align-center justify-center" Style="height: 100vh;">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" Class="mb-4" />
+        <MudText Typo="Typo.h6" Align="Align.Center">
+            Loading FS6000 scanner data&hellip;
+        </MudText>
+    </MudContainer>
+}
+else
+{
+    <MudContainer MaxWidth="MaxWidth.False" Class="pt-2 pb-8 px-2">
+        <MudStack Spacing="1">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h6">FS6000 X-Ray Scanner</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Today: @_todayScans • Total: @_totalScans
+                </MudText>
+            </MudStack>
+
+            <MudPaper Class="pa-2" Elevation="1">
+                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Files processed</MudText>
+                        <MudText Typo="Typo.body1">@_filesProcessed</MudText>
+                    </MudStack>
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Cached containers</MudText>
+                        <MudText Typo="Typo.body1">@_cachedContainers</MudText>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+
+            <MudDivider Class="my-2" />
+
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Recent scans</MudText>
+
+            @if (_recentScans.Count == 0)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    No recent scans found.
+                </MudText>
+            }
+            else
+            {
+                <MudStack Spacing="1">
+                    @foreach (var scan in _recentScans)
+                    {
+                        <MudPaper Class="pa-2" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                    <MudText Typo="Typo.subtitle2">@scan.ContainerNumber</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @scan.ScanDate.ToString("dd MMM HH:mm")
+                                    </MudText>
+                                </MudStack>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @scan.Origin → @scan.Destination
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    }
+                </MudStack>
+            }
+        </MudStack>
+    </MudContainer>
+}
+
+@code {
+    private bool _initialized;
+    private bool _isLoading;
+
+    private int _todayScans;
+    private int _totalScans;
+    private int _filesProcessed;
+    private int _cachedContainers;
+
+    private readonly List<Fs6000ScanRecord> _recentScans = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated != true)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        await LoadData();
+        _initialized = true;
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+        try
+        {
+            var stats = await ApiService.GetAsync<FS6000Statistics>("/api/FS6000/statistics");
+            if (stats?.Scans != null)
+            {
+                _totalScans = stats.Scans.Total;
+                _filesProcessed = stats.FileProcessing?.Total ?? 0;
+                _todayScans = stats.Scans.Today;
+                _cachedContainers = _totalScans;
+            }
+
+            var scans = await ApiService.GetAsync<List<FS6000ScanDto>>("/api/FS6000/scans?pageSize=20");
+            _recentScans.Clear();
+            if (scans != null)
+            {
+                _recentScans.AddRange(scans.Select(s => new Fs6000ScanRecord
+                {
+                    ContainerNumber = s.ContainerNumber ?? "Unknown",
+                    ScanDate = s.ScanTime,
+                    Origin = s.Origin ?? "N/A",
+                    Destination = s.Destination ?? "N/A"
+                }));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading FS6000 data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    public class Fs6000ScanRecord
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public DateTime ScanDate { get; set; }
+        public string Origin { get; set; } = string.Empty;
+        public string Destination { get; set; } = string.Empty;
+    }
+
+    public class FS6000ScanDto
+    {
+        public Guid Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public DateTime ScanTime { get; set; }
+        public string? Origin { get; set; }
+        public string? Destination { get; set; }
+    }
+
+    public class FS6000Statistics
+    {
+        public FS6000ScanStats? Scans { get; set; }
+        public FS6000FileProcessingStats? FileProcessing { get; set; }
+    }
+
+    public class FS6000ScanStats
+    {
+        public int Total { get; set; }
+        public int Today { get; set; }
+    }
+
+    public class FS6000FileProcessingStats
+    {
+        public int Total { get; set; }
+    }
+}
+
+

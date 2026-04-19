@@ -1,0 +1,178 @@
+@page "/services/fs6000-completeness"
+@page "/monitoring/fs6000-completeness"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesFs6000Completeness)]
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<Fs6000Completeness> Logger
+
+<PageTitle>NICKSCAN ERP — NSCIS — FS6000 Image Completeness</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Class="mr-2" />
+        FS6000 Image Completeness Tracking
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading completeness data...</MudText>
+    }
+    else
+    {
+        <!-- Statistics Cards -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Scans</MudText>
+                        <MudText Typo="Typo.h5">@(_stats?.TotalScans?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">With Images</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Success">@(_stats?.ScansWithImages?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Without Images</MudText>
+                        <MudText Typo="Typo.h5" Color="Color.Warning">@(_stats?.ScansWithoutImages?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Completeness Rate</MudText>
+                        <MudText Typo="Typo.h5">@(_stats?.CompletenessPercentage?.ToString("F1") ?? "0")%</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Missing Images Table -->
+        @if (_missingImages != null && _missingImages.Any())
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">Missing Images</MudText>
+                <MudTable Items="@_missingImages" Hover="true" Dense="true" Context="item">
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Pic Number</MudTh>
+                        <MudTh>Scan Time</MudTh>
+                        <MudTh>Image Count</MudTh>
+                        <MudTh>Status</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container Number">@item.ContainerNumber</MudTd>
+                        <MudTd DataLabel="Pic Number">@(item.PicNumber ?? "N/A")</MudTd>
+                        <MudTd DataLabel="Scan Time">@FormatDateTime(item.ScanTime)</MudTd>
+                        <MudTd DataLabel="Image Count">@item.ImageCount</MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Color="Color.Warning" Size="Size.Small">
+                                @(item.ImageValidationError ?? "Missing")
+                            </MudChip>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+        else if (_missingImages != null && !_missingImages.Any())
+        {
+            <MudAlert Severity="Severity.Success">All FS6000 scans have complete image data!</MudAlert>
+        }
+
+        <MudStack Row="true" Justify="Justify.FlexEnd" Class="mt-4">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadData">
+                Refresh
+            </MudButton>
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private FS6000CompletenessStatsDto? _stats;
+    private List<FS6000MissingImageItem>? _missingImages;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            _isLoading = true;
+            _stats = await ApiService.GetAsync<FS6000CompletenessStatsDto>("api/fs6000imagecompleteness/stats");
+            
+            // Use correct endpoint - scans-without-images instead of missing
+            try
+            {
+                var missingResponse = await ApiService.GetAsync<FS6000MissingImagesResponse>("api/fs6000imagecompleteness/scans-without-images?limit=100");
+                _missingImages = missingResponse?.Scans ?? new List<FS6000MissingImageItem>();
+            }
+            catch
+            {
+                _missingImages = new List<FS6000MissingImageItem>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading FS6000 completeness data");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    // DTOs
+    public class FS6000CompletenessStatsDto
+    {
+        public int? TotalScans { get; set; }
+        public int? ScansWithImages { get; set; }
+        public int? ScansWithoutImages { get; set; }
+        public int? TotalImages { get; set; }
+        public double? CompletenessPercentage { get; set; }
+        public DateTime? OldestScanWithoutImage { get; set; }
+        public DateTime? NewestScanWithoutImage { get; set; }
+    }
+    
+    public class FS6000MissingImagesResponse
+    {
+        public int Count { get; set; }
+        public int Limit { get; set; }
+        public List<FS6000MissingImageItem>? Scans { get; set; }
+    }
+    
+    public class FS6000MissingImageItem
+    {
+        public Guid Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public DateTime? ScanTime { get; set; }
+        public string? PicNumber { get; set; }
+        public bool HasImage { get; set; }
+        public int ImageCount { get; set; }
+        public string? ImageValidationError { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+    }
+}
+

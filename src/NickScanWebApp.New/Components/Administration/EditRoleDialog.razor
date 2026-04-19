@@ -1,0 +1,118 @@
+@using NickScanWebApp.New.Services
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject RoleLookupService RoleLookup
+@inject ISnackbar Snackbar
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form" @bind-IsValid="@_formValid">
+            <MudStack Spacing="3">
+                <MudAlert Severity="Severity.Info" Dense="true">
+                    Editing custom role: <b>@RoleName</b>
+                </MudAlert>
+
+                <MudTextField @bind-Value="_displayName" 
+                              Label="Display Name" 
+                              Required="true" 
+                              Variant="Variant.Outlined"
+                              HelperText="User-friendly name shown in the UI" />
+
+                <MudTextField @bind-Value="_description" 
+                              Label="Description" 
+                              Required="true" 
+                              Variant="Variant.Outlined" 
+                              Lines="3"
+                              HelperText="Describe the purpose and responsibilities of this role" />
+            </MudStack>
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" 
+                   Variant="Variant.Filled" 
+                   OnClick="Submit" 
+                   Disabled="@(!_formValid || _isSubmitting)">
+            @if (_isSubmitting)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Updating...</span>
+            }
+            else
+            {
+                <span>Update Role</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int RoleId { get; set; }
+    [Parameter] public string RoleName { get; set; } = "";
+    [Parameter] public string DisplayName { get; set; } = "";
+    [Parameter] public string Description { get; set; } = "";
+    [Parameter] public string CurrentUsername { get; set; } = "admin";
+    [Parameter] public EventCallback OnRoleUpdated { get; set; }
+
+    private MudForm? _form;
+    private bool _formValid = false;
+    private bool _isSubmitting = false;
+
+    private string _displayName = "";
+    private string _description = "";
+
+    protected override void OnInitialized()
+    {
+        _displayName = DisplayName;
+        _description = Description;
+    }
+
+    private void Cancel()
+    {
+        // Dialog will close via the Cancel button
+    }
+
+    private async Task Submit()
+    {
+        if (_form != null)
+        {
+            await _form.Validate();
+            if (!_form.IsValid)
+            {
+                Snackbar.Add("⚠️ Please fill in all required fields", Severity.Warning);
+                return;
+            }
+        }
+
+        _isSubmitting = true;
+        try
+        {
+            var request = new
+            {
+                DisplayName = _displayName,
+                Description = _description,
+                UpdatedBy = CurrentUsername
+            };
+
+            Console.WriteLine($"Updating role {RoleId}: {_displayName}");
+            await ApiService.PutAsync<object, object>($"/api/Roles/{RoleId}", request);
+            RoleLookup.ClearCache();
+            await RoleLookup.GetRolesAsync(forceRefresh: true);
+            
+            Snackbar.Add($"✅ Role '{_displayName}' updated successfully! Close this dialog to see changes.", Severity.Success);
+            
+            // Notify parent to reload
+            await OnRoleUpdated.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error updating role: {ex.Message}");
+            Snackbar.Add($"❌ Error updating role: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+}
+

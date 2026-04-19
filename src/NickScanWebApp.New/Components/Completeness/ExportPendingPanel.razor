@@ -1,0 +1,493 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.New.Components.Containers
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject IDialogService DialogService
+@implements IDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4" />
+
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4 pa-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h4" Color="Color.Warning">
+                    <MudIcon Icon="@Icons.Material.Outlined.HourglassBottom" Class="mr-2" />
+                    Export Pending Containers
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Containers detected as export cargo held pending ICUMS export data availability
+                </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    <MudIcon Icon="@Icons.Material.Outlined.Update" Size="Size.Small" Class="mr-1" />
+                    Last updated: @_lastRefresh.ToString("HH:mm:ss")
+                </MudText>
+            </MudStack>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudSwitch T="bool" @bind-Value="_autoRefresh" Color="Color.Primary" Label="Auto-refresh" />
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="LoadDataAsync"
+                           Disabled="@_loading">
+                    @if (_loading)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    }
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Stats Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Export Pending</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Warning">@_totalCount</MudText>
+                        </MudStack>
+                        <MudAvatar Color="Color.Warning" Size="Size.Large">
+                            <MudIcon Icon="@Icons.Material.Outlined.HourglassBottom" />
+                        </MudAvatar>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">FS6000 (Takoradi)</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Primary">@_fs6000Count</MudText>
+                        </MudStack>
+                        <MudAvatar Color="Color.Primary" Size="Size.Large">
+                            <MudIcon Icon="@Icons.Material.Outlined.Scanner" />
+                        </MudAvatar>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">ASE (Tema)</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Secondary">@_aseCount</MudText>
+                        </MudStack>
+                        <MudAvatar Color="Color.Secondary" Size="Size.Large">
+                            <MudIcon Icon="@Icons.Material.Outlined.Scanner" />
+                        </MudAvatar>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">With Images</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Success">@_withImagesCount</MudText>
+                        </MudStack>
+                        <MudAvatar Color="Color.Success" Size="Size.Large">
+                            <MudIcon Icon="@Icons.Material.Outlined.Image" />
+                        </MudAvatar>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Filters -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string"
+                              Label="Search Container"
+                              Value="@_search"
+                              ValueChanged="OnSearchChanged"
+                              Variant="Variant.Outlined"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              Placeholder="Container number..."
+                              Immediate="true"
+                              DebounceInterval="500" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string"
+                           Label="Scanner Type"
+                           @bind-Value="_scannerFilter"
+                           Variant="Variant.Outlined"
+                           Clearable="true">
+                    <MudSelectItem T="string" Value="@("All")">All Scanners</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("FS6000")">FS6000 (Takoradi)</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("ASE")">ASE (Tema)</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="5">
+                <MudStack Row="true" Spacing="2" Justify="Justify.FlexEnd" Class="mt-1">
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Outlined.FilterList"
+                               OnClick="ApplyFilters">
+                        Apply
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Secondary"
+                               StartIcon="@Icons.Material.Outlined.Clear"
+                               OnClick="ClearFilters">
+                        Clear
+                    </MudButton>
+                </MudStack>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Data Table -->
+    <MudPaper Elevation="2" Class="pa-4">
+        <MudTable T="ExportPendingItem"
+                  Items="@_items"
+                  Loading="@_loading"
+                  Hover="true"
+                  Striped="true"
+                  Dense="true"
+                  FixedHeader="true"
+                  Height="600px">
+            <HeaderContent>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.ContainerNumber">Container</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.ScannerType">Scanner</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.ScanDate" InitialDirection="SortDirection.Descending">Scan Date</MudTableSortLabel></MudTh>
+                <MudTh>Scanner Data</MudTh>
+                <MudTh>ICUMS Data</MudTh>
+                <MudTh>Images</MudTh>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.OverallCompleteness">Completeness</MudTableSortLabel></MudTh>
+                <MudTh>Workflow</MudTh>
+                <MudTh>Reason</MudTh>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.CreatedAt">Created</MudTableSortLabel></MudTh>
+                <MudTh><MudTableSortLabel T="ExportPendingItem" SortBy="x => x.LastCheckedAt">Last Checked</MudTableSortLabel></MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Container">
+                    <MudText Typo="Typo.body2"><strong>@context.ContainerNumber</strong></MudText>
+                </MudTd>
+                <MudTd DataLabel="Scanner">
+                    <MudChip T="string"
+                             Size="Size.Small"
+                             Color="@(context.ScannerType == "FS6000" ? Color.Primary : Color.Secondary)"
+                             Variant="Variant.Filled">
+                        @context.ScannerType
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Scan Date">
+                    <MudText Typo="Typo.caption">@context.ScanDate.ToString("MMM dd, yyyy HH:mm")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Scanner Data">
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(context.HasScannerData ? Color.Success : Color.Error)"
+                             Variant="Variant.Filled">
+                        @(context.HasScannerData ? $"{context.ScannerDataCompleteness}%" : "No")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="ICUMS Data">
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(context.HasICUMSData ? Color.Success : Color.Default)"
+                             Variant="Variant.Filled">
+                        @(context.HasICUMSData ? $"{context.ICUMSDataCompleteness}%" : "Awaiting")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Images">
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(context.HasImageData ? Color.Success : Color.Error)"
+                             Variant="Variant.Filled">
+                        @(context.HasImageData ? "Yes" : "No")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Completeness">
+                    <MudStack Spacing="1">
+                        <MudProgressLinear Color="@GetCompletenessColor(context.OverallCompleteness)"
+                                           Value="@context.OverallCompleteness"
+                                           Min="0" Max="100" Size="Size.Small" />
+                        <MudText Typo="Typo.caption" Align="Align.Center">@context.OverallCompleteness%</MudText>
+                    </MudStack>
+                </MudTd>
+                <MudTd DataLabel="Workflow">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">
+                        @context.WorkflowStage
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Reason">
+                    <MudTooltip Text="@(context.ErrorMessage ?? "N/A")">
+                        <MudText Typo="Typo.caption" Style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                            @(TruncateText(context.ErrorMessage, 40))
+                        </MudText>
+                    </MudTooltip>
+                </MudTd>
+                <MudTd DataLabel="Created">
+                    <MudText Typo="Typo.caption">@context.CreatedAt.ToString("MMM dd")</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.CreatedAt.ToString("HH:mm")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Last Checked">
+                    @if (context.LastCheckedAt.HasValue)
+                    {
+                        <MudText Typo="Typo.caption">@context.LastCheckedAt.Value.ToString("MMM dd HH:mm")</MudText>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Never</MudText>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Actions">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                   Size="Size.Small"
+                                   Color="Color.Info"
+                                   OnClick="@(() => ViewContainer(context.ContainerNumber))" />
+                </MudTd>
+            </RowTemplate>
+            <PagerContent>
+                <MudText Typo="Typo.caption" Class="px-4 py-2">
+                    @GetPagerSummary()
+                </MudText>
+            </PagerContent>
+            <NoRecordsContent>
+                <MudAlert Severity="Severity.Success" Class="my-4">
+                    <MudText>No export-pending containers found. All clear!</MudText>
+                </MudAlert>
+            </NoRecordsContent>
+        </MudTable>
+
+        <!-- Pagination -->
+        @if (_totalPages > 1)
+        {
+            <MudStack Row="true" Justify="Justify.Center" Class="mt-4">
+                <MudPagination Count="@_totalPages"
+                               Selected="@_page"
+                               SelectedChanged="OnPageChanged"
+                               BoundaryCount="2"
+                               MiddleCount="3"
+                               Color="Color.Primary" />
+            </MudStack>
+        }
+    </MudPaper>
+
+    <!-- Info Panel -->
+    <MudAlert Severity="Severity.Info" Class="mt-4" Variant="Variant.Outlined">
+        <MudText Typo="Typo.body2">
+            <strong>What is Export Pending?</strong> These containers were scanned by FS6000 (Takoradi) and identified as
+            export cargo based on the FycoPresent field. They are held here because ICUMS export data is not yet available
+            in the system. Once export data integration is enabled, these containers will be automatically re-evaluated and
+            matched with their corresponding BOE documents.
+        </MudText>
+    </MudAlert>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private List<ExportPendingItem> _items = new();
+    private bool _loading;
+    private bool _autoRefresh = true;
+    private DateTime _lastRefresh = DateTime.Now;
+    private System.Threading.Timer? _timer;
+
+    private string _search = "";
+    private string _scannerFilter = "All";
+    private int _page = 1;
+    private int _pageSize = 50;
+    private int _totalCount;
+    private int _totalPages;
+
+    private int _fs6000Count;
+    private int _aseCount;
+    private int _withImagesCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new("Operations", href: "#", icon: Icons.Material.Outlined.Settings),
+            new("Export Pending", href: null, disabled: true)
+        };
+
+        await LoadDataAsync();
+
+        _timer = new System.Threading.Timer(async _ =>
+        {
+            if (!_autoRefresh) return;
+            await InvokeAsync(async () =>
+            {
+                await LoadDataAsync();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    public void Dispose() => _timer?.Dispose();
+
+    private async Task LoadDataAsync()
+    {
+        _loading = true;
+        try
+        {
+            var qp = new List<string> { $"page={_page}", $"pageSize={_pageSize}" };
+            if (!string.IsNullOrWhiteSpace(_search))
+                qp.Add($"search={Uri.EscapeDataString(_search.Trim())}");
+            if (!string.IsNullOrWhiteSpace(_scannerFilter) && _scannerFilter != "All")
+                qp.Add($"scannerType={Uri.EscapeDataString(_scannerFilter)}");
+
+            var url = $"/api/image-analysis/dashboard/export-pending?{string.Join("&", qp)}";
+            var response = await ApiService.GetAsync<ExportPendingResponse>(url);
+
+            if (response != null)
+            {
+                _items = response.Data ?? new();
+                _totalCount = response.TotalCount;
+                _totalPages = response.TotalPages;
+
+                _fs6000Count = _items.Count(i => i.ScannerType == "FS6000");
+                _aseCount = _items.Count(i => i.ScannerType == "ASE");
+                _withImagesCount = _items.Count(i => i.HasImageData);
+
+                if (_totalCount > _pageSize)
+                {
+                    try
+                    {
+                        var allFs = await ApiService.GetAsync<ExportPendingResponse>("/api/image-analysis/dashboard/export-pending?scannerType=FS6000&pageSize=1");
+                        var allAse = await ApiService.GetAsync<ExportPendingResponse>("/api/image-analysis/dashboard/export-pending?scannerType=ASE&pageSize=1");
+                        _fs6000Count = allFs?.TotalCount ?? _fs6000Count;
+                        _aseCount = allAse?.TotalCount ?? _aseCount;
+                    }
+                    catch { /* keep page-level counts */ }
+                }
+            }
+            _lastRefresh = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading export-pending data: {ex.Message}", Severity.Error);
+            _items = new();
+            _totalCount = 0;
+            _totalPages = 0;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ApplyFilters()
+    {
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async Task ClearFilters()
+    {
+        _search = "";
+        _scannerFilter = "All";
+        _page = 1;
+        await LoadDataAsync();
+    }
+
+    private async void OnSearchChanged(string value)
+    {
+        _search = value;
+        _page = 1;
+        await LoadDataAsync();
+        StateHasChanged();
+    }
+
+    private async void OnPageChanged(int page)
+    {
+        _page = page;
+        await LoadDataAsync();
+        StateHasChanged();
+    }
+
+    private async Task ViewContainer(string containerNumber)
+    {
+        try
+        {
+            var parameters = new DialogParameters<ContainerDetailsModal>
+            {
+                { x => x.ContainerNumber, containerNumber }
+            };
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.ExtraExtraLarge,
+                FullWidth = true,
+                CloseButton = true,
+                BackdropClick = true
+            };
+            await DialogService.ShowAsync<ContainerDetailsModal>(
+                $"Container Details: {containerNumber}", parameters, options);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not open details: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string GetPagerSummary()
+    {
+        if (_totalCount == 0) return "No items to display";
+        var start = ((_page - 1) * _pageSize) + 1;
+        var end = Math.Min(_page * _pageSize, _totalCount);
+        return $"Showing {start}-{end} of {_totalCount} export-pending containers";
+    }
+
+    private static string TruncateText(string? text, int maxLen)
+    {
+        if (string.IsNullOrEmpty(text)) return "N/A";
+        return text.Length <= maxLen ? text : text[..maxLen] + "...";
+    }
+
+    private static Color GetCompletenessColor(int pct) => pct switch
+    {
+        >= 90 => Color.Success,
+        >= 70 => Color.Warning,
+        _ => Color.Error
+    };
+
+    // DTOs
+    private class ExportPendingResponse
+    {
+        public List<ExportPendingItem>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+
+    private class ExportPendingItem
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public string? InspectionId { get; set; }
+        public bool HasICUMSData { get; set; }
+        public bool HasScannerData { get; set; }
+        public bool HasImageData { get; set; }
+        public int ScannerDataCompleteness { get; set; }
+        public int ICUMSDataCompleteness { get; set; }
+        public int ImageDataCompleteness { get; set; }
+        public int OverallCompleteness { get; set; }
+        public string WorkflowStage { get; set; } = "";
+        public string? ErrorMessage { get; set; }
+        public int RetryCount { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public DateTime? LastCheckedAt { get; set; }
+    }
+}

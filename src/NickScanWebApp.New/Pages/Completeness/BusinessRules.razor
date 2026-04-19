@@ -1,0 +1,575 @@
+@page "/validation/rules"
+@page "/completeness/rules"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationRules)]
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.New.Components.Validation
+
+<PageTitle>NICKSCAN ERP — NSCIS — Business Rules</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Rule" Class="mr-2" />
+                    Business Rules & Validation Logic
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Configure automated validation rules and business logic for container processing
+                </MudText>
+            </div>
+            <MudButton Variant="Variant.Filled" 
+                       Color="Color.Primary" 
+                       StartIcon="@Icons.Material.Outlined.Add"
+                       OnClick="ShowCreateRuleDialog"
+                       Disabled="@_isLoading">
+                Create New Rule
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Summary Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <div>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Rules</MudText>
+                        <MudText Typo="Typo.h4">@_rules.Count</MudText>
+                    </div>
+                    <MudIcon Icon="@Icons.Material.Outlined.Rule" Color="Color.Primary" Size="Size.Large" />
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <div>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Active Rules</MudText>
+                        <MudText Typo="Typo.h4" Color="Color.Success">@_rules.Count(r => r.IsActive)</MudText>
+                    </div>
+                    <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Success" Size="Size.Large" />
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <div>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Inactive Rules</MudText>
+                        <MudText Typo="Typo.h4" Color="Color.Warning">@_rules.Count(r => !r.IsActive)</MudText>
+                    </div>
+                    <MudIcon Icon="@Icons.Material.Outlined.PauseCircle" Color="Color.Warning" Size="Size.Large" />
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <div>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Rule Categories</MudText>
+                        <MudText Typo="Typo.h4">@_rules.Select(r => r.Category).Distinct().Count()</MudText>
+                    </div>
+                    <MudIcon Icon="@Icons.Material.Outlined.Category" Color="Color.Info" Size="Size.Large" />
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Filters -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudTextField @bind-Value="_searchText" 
+                              Label="Search Rules" 
+                              Variant="Variant.Outlined"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              DebounceInterval="300"
+                              OnDebounceIntervalElapsed="ApplyFilters"
+                              Immediate="false" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect Value="_filterCategory" 
+                           Label="Category" 
+                           Variant="Variant.Outlined"
+                           T="string"
+                           ValueChanged="@((string val) => { _filterCategory = val; ApplyFilters(); })">
+                    <MudSelectItem Value="@("All")">All Categories</MudSelectItem>
+                    <MudSelectItem Value="@("Container Validation")">Container Validation</MudSelectItem>
+                    <MudSelectItem Value="@("Document Validation")">Document Validation</MudSelectItem>
+                    <MudSelectItem Value="@("Image Analysis")">Image Analysis</MudSelectItem>
+                    <MudSelectItem Value="@("Data Completeness")">Data Completeness</MudSelectItem>
+                    <MudSelectItem Value="@("ICUMS Integration")">ICUMS Integration</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect Value="_filterStatus" 
+                           Label="Status" 
+                           Variant="Variant.Outlined"
+                           T="string"
+                           ValueChanged="@((string val) => { _filterStatus = val; ApplyFilters(); })">
+                    <MudSelectItem Value="@("All")">All Status</MudSelectItem>
+                    <MudSelectItem Value="@("Active")">Active</MudSelectItem>
+                    <MudSelectItem Value="@("Inactive")">Inactive</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudButton Variant="Variant.Text" 
+                           Color="Color.Secondary"
+                           FullWidth="true"
+                           OnClick="ClearFilters">
+                    Clear Filters
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Rules List -->
+    @if (_isLoading)
+    {
+        <MudPaper Elevation="2" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Loading business rules...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (!_filteredRules.Any())
+    {
+        <MudPaper Elevation="2" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.Rule" Size="Size.Large" Color="Color.Secondary" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">No rules found</MudText>
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="Variant.Filled" 
+                               Color="Color.Primary" 
+                               StartIcon="@Icons.Material.Outlined.Add"
+                               OnClick="ShowCreateRuleDialog">
+                        Create Your First Rule
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                               Color="Color.Secondary" 
+                               StartIcon="@Icons.Material.Outlined.AutoFixHigh"
+                               OnClick="SeedDefaultRules"
+                               Disabled="@_isSeeding">
+                        @(_isSeeding ? "Seeding..." : "Seed Default Rules")
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    }
+    else
+    {
+        <MudDataGrid T="BusinessRuleItem" 
+                     Items="@_filteredRules" 
+                     Hover="true" 
+                     Dense="true"
+                     Striped="true"
+                     RowsPerPage="25">
+            <Columns>
+                <TemplateColumn Title="Status" Sortable="false">
+                    <CellTemplate>
+                        <MudSwitch T="bool" 
+                                   Value="@context.Item.IsActive" 
+                                   ValueChanged="@((bool val) => ToggleRuleStatus(context.Item, val))"
+                                   Color="Color.Success" />
+                    </CellTemplate>
+                </TemplateColumn>
+                
+                <PropertyColumn Property="x => x.Name" Title="Rule Name" />
+                
+                <TemplateColumn Title="Category">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info">
+                            @context.Item.Category
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                
+                <PropertyColumn Property="x => x.Description" Title="Description" />
+                
+                <TemplateColumn Title="Priority">
+                    <CellTemplate>
+                        <MudChip T="string" 
+                                 Size="Size.Small" 
+                                 Color="@GetPriorityColor(context.Item.Priority)">
+                            @context.Item.Priority
+                        </MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                
+                <TemplateColumn Title="Condition">
+                    <CellTemplate>
+                        <MudText Typo="Typo.caption" Style="font-family: monospace; background: #f5f5f5; padding: 4px 8px; border-radius: 4px;">
+                            @context.Item.ConditionExpression
+                        </MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                
+                <TemplateColumn Title="Action">
+                    <CellTemplate>
+                        <MudText Typo="Typo.caption" Style="font-family: monospace; background: #f5f5f5; padding: 4px 8px; border-radius: 4px;">
+                            @context.Item.ActionType
+                        </MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                
+                <TemplateColumn Title="Actions" Sortable="false">
+                    <CellTemplate>
+                        <MudStack Row="true" Spacing="1">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Edit" 
+                                           Size="Size.Small" 
+                                           Color="Color.Primary"
+                                           OnClick="@(() => ShowEditRuleDialog(context.Item))" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.Delete" 
+                                           Size="Size.Small" 
+                                           Color="Color.Error"
+                                           OnClick="@(() => DeleteRule(context.Item))" />
+                        </MudStack>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <PagerContent>
+                <MudDataGridPager T="BusinessRuleItem" />
+            </PagerContent>
+        </MudDataGrid>
+    }
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private List<BusinessRuleItem> _rules = new();
+    private List<BusinessRuleItem> _filteredRules = new();
+    private bool _isLoading = false;
+    private bool _isSeeding = false;
+    
+    // Filters
+    private string _searchText = "";
+    private string _filterCategory = "All";
+    private string _filterStatus = "All";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Validation", href: "#", icon: Icons.Material.Outlined.FactCheck),
+            new BreadcrumbItem("Business Rules", href: null, disabled: true)
+        };
+        
+        await LoadRules();
+    }
+
+    private async Task LoadRules()
+    {
+        _isLoading = true;
+        try
+        {
+            var result = await ApiService.GetAsync<List<BusinessRuleItem>>("/api/BusinessRules");
+            _rules = result ?? new List<BusinessRuleItem>();
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            _rules = new List<BusinessRuleItem>();
+            ApplyFilters();
+            Snackbar.Add($"Failed to load business rules: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SeedDefaultRules()
+    {
+        _isSeeding = true;
+        try
+        {
+            var response = await ApiService.PostAsync<object, SeedResponse>("/api/BusinessRules/seed", new { });
+            Snackbar.Add(response?.Message ?? "Default rules seeded successfully", Severity.Success);
+            await LoadRules();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to seed rules: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSeeding = false;
+        }
+    }
+
+    private class SeedResponse
+    {
+        public string Message { get; set; } = "";
+        public int Seeded { get; set; }
+    }
+
+    private void ApplyFilters()
+    {
+        _filteredRules = _rules.Where(r =>
+        {
+            // Search filter
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                var search = _searchText.ToLower();
+                if (!r.Name.ToLower().Contains(search) && 
+                    !r.Description.ToLower().Contains(search) &&
+                    !r.ConditionExpression.ToLower().Contains(search))
+                    return false;
+            }
+
+            // Category filter
+            if (_filterCategory != "All" && r.Category != _filterCategory)
+                return false;
+
+            // Status filter
+            if (_filterStatus == "Active" && !r.IsActive)
+                return false;
+            if (_filterStatus == "Inactive" && r.IsActive)
+                return false;
+
+            return true;
+        }).OrderBy(r => r.ExecutionOrder).ToList();
+        
+        StateHasChanged();
+    }
+
+    private void ClearFilters()
+    {
+        _searchText = "";
+        _filterCategory = "All";
+        _filterStatus = "All";
+        ApplyFilters();
+    }
+
+    private async Task ToggleRuleStatus(BusinessRuleItem rule, bool newStatus)
+    {
+        try
+        {
+            Console.WriteLine($"🔄 Toggling rule {rule.Name} to {(newStatus ? "Active" : "Inactive")}");
+            
+            await ApiService.PutAsync<object, object>($"/api/BusinessRules/{rule.Id}/status", new { IsActive = newStatus });
+            
+            rule.IsActive = newStatus;
+            await LoadRules(); // Reload to get updated data
+            Snackbar.Add($"Rule {(newStatus ? "activated" : "deactivated")}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error toggling rule status: {ex.Message}");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowCreateRuleDialog()
+    {
+        try
+        {
+            var newRule = new BusinessRuleItem
+            {
+                Name = "",
+                Description = "",
+                Category = "",
+                Priority = "Medium",
+                ConditionExpression = "",
+                ActionType = "",
+                ActionMessage = "",
+                IsActive = true,
+                ExecutionOrder = 0
+            };
+
+            var parameters = new DialogParameters
+            {
+                ["Rule"] = newRule,
+                ["IsEdit"] = false
+            };
+
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.Medium,
+                FullWidth = true,
+                CloseButton = true
+            };
+
+            var dialog = await DialogService.ShowAsync<BusinessRuleDialog>("Create Business Rule", parameters, options);
+            var result = await dialog.Result;
+
+            if (result != null && !result.Canceled && result.Data is BusinessRuleItem createdRule)
+            {
+                try
+                {
+                    Console.WriteLine($"🔄 Creating rule: {createdRule.Name}");
+                    
+                    var request = new
+                    {
+                        Name = createdRule.Name,
+                        Description = createdRule.Description,
+                        Category = createdRule.Category,
+                        Priority = createdRule.Priority,
+                        ConditionExpression = createdRule.ConditionExpression,
+                        ActionType = createdRule.ActionType,
+                        ActionMessage = createdRule.ActionMessage,
+                        IsActive = createdRule.IsActive,
+                        ExecutionOrder = createdRule.ExecutionOrder
+                    };
+
+                    await ApiService.PostAsync<object, BusinessRuleItem>("/api/BusinessRules", request);
+                    await LoadRules(); // Reload to get the new rule
+                    Snackbar.Add($"Rule '{createdRule.Name}' created successfully", Severity.Success);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Error creating rule: {ex.Message}");
+                    Snackbar.Add($"Error creating rule: {ex.Message}", Severity.Error);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error showing create dialog: {ex.Message}");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowEditRuleDialog(BusinessRuleItem rule)
+    {
+        try
+        {
+            // Create a copy for editing
+            var ruleCopy = new BusinessRuleItem
+            {
+                Id = rule.Id,
+                Name = rule.Name,
+                Description = rule.Description,
+                Category = rule.Category,
+                Priority = rule.Priority,
+                ConditionExpression = rule.ConditionExpression,
+                ActionType = rule.ActionType,
+                ActionMessage = rule.ActionMessage,
+                IsActive = rule.IsActive,
+                ExecutionOrder = rule.ExecutionOrder,
+                CreatedAt = rule.CreatedAt,
+                CreatedBy = rule.CreatedBy,
+                UpdatedAt = rule.UpdatedAt,
+                UpdatedBy = rule.UpdatedBy
+            };
+
+            var parameters = new DialogParameters
+            {
+                ["Rule"] = ruleCopy,
+                ["IsEdit"] = true
+            };
+
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.Medium,
+                FullWidth = true,
+                CloseButton = true
+            };
+
+            var dialog = await DialogService.ShowAsync<BusinessRuleDialog>("Edit Business Rule", parameters, options);
+            var result = await dialog.Result;
+
+            if (result != null && !result.Canceled && result.Data is BusinessRuleItem updatedRule)
+            {
+                try
+                {
+                    Console.WriteLine($"🔄 Updating rule: {updatedRule.Name}");
+                    
+                    var request = new
+                    {
+                        Name = updatedRule.Name,
+                        Description = updatedRule.Description,
+                        Category = updatedRule.Category,
+                        Priority = updatedRule.Priority,
+                        ConditionExpression = updatedRule.ConditionExpression,
+                        ActionType = updatedRule.ActionType,
+                        ActionMessage = updatedRule.ActionMessage,
+                        IsActive = updatedRule.IsActive,
+                        ExecutionOrder = updatedRule.ExecutionOrder
+                    };
+
+                    await ApiService.PutAsync<object, BusinessRuleItem>($"/api/BusinessRules/{updatedRule.Id}", request);
+                    await LoadRules(); // Reload to get updated data
+                    Snackbar.Add($"Rule '{updatedRule.Name}' updated successfully", Severity.Success);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ Error updating rule: {ex.Message}");
+                    Snackbar.Add($"Error updating rule: {ex.Message}", Severity.Error);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error showing edit dialog: {ex.Message}");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteRule(BusinessRuleItem rule)
+    {
+        var confirmed = await DialogService.ShowMessageBox(
+            "Confirm Delete",
+            $"Are you sure you want to delete the rule '{rule.Name}'?",
+            yesText: "Delete", 
+            cancelText: "Cancel");
+        
+        if (confirmed == true)
+        {
+            try
+            {
+                Console.WriteLine($"🗑️ Deleting rule: {rule.Name}");
+                await ApiService.DeleteAsync($"/api/BusinessRules/{rule.Id}");
+                
+                await LoadRules(); // Reload to reflect deletion
+                Snackbar.Add($"Rule '{rule.Name}' deleted", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error deleting rule: {ex.Message}");
+                Snackbar.Add($"Error deleting rule: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private Color GetPriorityColor(string priority)
+    {
+        return priority switch
+        {
+            "Critical" => Color.Error,
+            "High" => Color.Warning,
+            "Medium" => Color.Info,
+            "Low" => Color.Default,
+            _ => Color.Default
+        };
+    }
+
+    // Models
+    public class BusinessRuleItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string Priority { get; set; } = "Medium"; // Critical, High, Medium, Low
+        public string ConditionExpression { get; set; } = string.Empty;
+        public string ActionType { get; set; } = string.Empty; // Block, Reject, Warn, Flag, Notify
+        public string ActionMessage { get; set; } = string.Empty;
+        public bool IsActive { get; set; } = true;
+        public int ExecutionOrder { get; set; } = 0;
+        public DateTime CreatedAt { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+}
+

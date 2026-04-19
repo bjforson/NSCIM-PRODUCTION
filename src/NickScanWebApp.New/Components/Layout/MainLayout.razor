@@ -1,0 +1,174 @@
+@inherits LayoutComponentBase
+@using NickScanWebApp.New.Components.Authentication
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.New.Services.ThemeService ThemeService
+@inject IJSRuntime JS
+@implements IDisposable
+
+<MudThemeProvider Theme="@_theme" IsDarkMode="@ThemeService.IsDarkMode" />
+@* MudBlazor providers removed - they're in App.razor to prevent duplicates *@
+
+@* Inactivity monitor for auto-logout *@
+<InactivityMonitor />
+
+<MudLayout>
+    @* No MudAppBar — toolbar is integrated into the breadcrumb row (Option B) *@
+
+    <!-- Navigation Drawer (Side Menu) - Domiex: Dark sidebar -->
+    <MudDrawer @bind-Open="_drawerOpen"
+               Elevation="0"
+               ClipMode="DrawerClipMode.Never"
+               Variant="@DrawerVariant.Responsive"
+               Breakpoint="Breakpoint.Md">
+        <NavMenu />
+    </MudDrawer>
+
+    <!-- Main Content Area -->
+    <MudMainContent>
+        @* Breadcrumb + Toolbar Row (replaces MudAppBar) *@
+        <MudPaper Elevation="0" Class="px-4 py-2 glass-toolbar" Style="position: sticky; top: 0; z-index: 50;">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                @* Mobile hamburger *@
+                <MudHidden Breakpoint="Breakpoint.MdAndUp">
+                    <MudIconButton Icon="@Icons.Material.Outlined.Menu"
+                                   Color="Color.Default"
+                                   Size="Size.Small"
+                                   OnClick="@ToggleDrawer" />
+                </MudHidden>
+
+                @* Page title + breadcrumb *@
+                <div style="min-width: 0;">
+                    <MudText Typo="Typo.subtitle1" Style="font-weight: 700; font-size: 15px; line-height: 1.2;">
+                        @GetPageTitle()
+                    </MudText>
+                    <MudBreadcrumbs Items="@_breadcrumbs" Style="padding: 0; font-size: 12px;" Separator="/">
+                        <ItemTemplate Context="item">
+                            <MudLink Href="@item.Href" Typo="Typo.caption" Color="Color.Secondary" Style="font-size: 11px;">@item.Text</MudLink>
+                        </ItemTemplate>
+                    </MudBreadcrumbs>
+                </div>
+
+                <MudSpacer />
+
+                @* TopBar actions (search, dark mode, notifications, user pill) *@
+                <TopBar />
+            </MudStack>
+        </MudPaper>
+
+        @* Page content *@
+        <div class="pa-4">
+            @Body
+        </div>
+    </MudMainContent>
+
+    <!-- Bottom Navigation for Mobile -->
+    <BottomNavigation />
+
+    <!-- Version footer -->
+    <MudText Typo="Typo.caption" Style="position: fixed; bottom: 4px; left: 12px; opacity: 0.45; z-index: 1; pointer-events: none;">
+        v@(NickScanWebApp.New.DeploymentInfo.Version)
+    </MudText>
+</MudLayout>
+
+<RbacDebugOverlay />
+
+@code {
+    private ICUMSTheme _theme = new ICUMSTheme();
+    private bool _drawerOpen = true;
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var width = await JS.InvokeAsync<int>("eval", "window.innerWidth");
+                if (width < 960) // Breakpoint.Md = 960px
+                {
+                    _drawerOpen = false;
+                    StateHasChanged();
+                }
+            }
+            catch { /* JS not available during prerender */ }
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Initialize theme from localStorage
+        await ThemeService.InitializeAsync();
+        
+        // Subscribe to theme changes
+        ThemeService.OnThemeChanged += OnThemeChanged;
+        
+        UpdateBreadcrumbs();
+        NavigationManager.LocationChanged += OnLocationChanged;
+    }
+    
+    private void OnThemeChanged()
+    {
+        StateHasChanged();
+    }
+    
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        UpdateBreadcrumbs();
+        StateHasChanged();
+    }
+    
+    private void UpdateBreadcrumbs()
+    {
+        var uri = new Uri(NavigationManager.Uri);
+        var path = uri.LocalPath;
+        
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home)
+        };
+        
+        // Add breadcrumbs based on current path
+        if (!string.IsNullOrEmpty(path) && path != "/")
+        {
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var currentPath = "";
+            
+            foreach (var segment in segments)
+            {
+                currentPath += $"/{segment}";
+                var displayName = FormatBreadcrumbText(segment);
+                _breadcrumbs.Add(new BreadcrumbItem(displayName, href: currentPath));
+            }
+        }
+    }
+    
+    private string GetPageTitle()
+    {
+        if (_breadcrumbs.Count <= 1) return "Dashboard";
+        return _breadcrumbs.Last().Text ?? "Dashboard";
+    }
+
+    private string FormatBreadcrumbText(string segment)
+    {
+        // Convert URL segment to readable text
+        if (string.IsNullOrEmpty(segment)) return string.Empty;
+        
+        var formatted = segment.Replace("-", " ").Replace("_", " ");
+        if (formatted.Length == 0) return string.Empty;
+        if (formatted.Length == 1) return formatted.ToUpper();
+        
+        return char.ToUpper(formatted[0]) + formatted.Substring(1).ToLower();
+    }
+    
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+    
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= OnLocationChanged;
+        ThemeService.OnThemeChanged -= OnThemeChanged;
+    }
+}
+

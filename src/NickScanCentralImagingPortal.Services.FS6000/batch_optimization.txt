@@ -1,0 +1,14 @@
+﻿                // OPTIMIZED: Batch query to get all existing containers at once
+                var existingContainers = await dbContext.FS6000Scans
+                    .Where(s => containerNumbers.Contains(s.ContainerNumber))
+                    .Select(s => s.ContainerNumber)
+                    .ToListAsync();
+
+                var newContainers = containerNumbers.Except(existingContainers).ToList();
+                
+                if (existingContainers.Any())
+                {
+                    _logger.LogDebug("FS6000 scans already exist for {Count} containers", existingContainers.Count);
+                }
+
+                foreach (var containerNumber in newContainers)

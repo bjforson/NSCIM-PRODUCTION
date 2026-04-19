@@ -1,0 +1,649 @@
+@page "/cmr-validation"
+@page "/completeness/cmr-validation"
+@using Microsoft.AspNetCore.Authorization
+@using NickScanWebApp.Shared.Services
+@attribute [Authorize(Policy = Permissions.PagesCmrValidation)]
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ILogger<CmrValidation> Logger
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>CMR Validation & Re-download Queue</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="my-8">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Class="mr-2" />
+        CMR Data Quality Management
+    </MudText>
+
+    <MudTabs Elevation="2" Rounded="true" PanelClass="pa-6" @bind-ActivePanelIndex="_activeTab">
+        <!-- Tab 1: Statistics Overview -->
+        <MudTabPanel Text="Statistics" Icon="@Icons.Material.Outlined.Analytics">
+            @if (_loadingStatistics)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            }
+            else if (_statistics != null)
+            {
+                <MudGrid Spacing="4">
+                    <!-- Overview Cards -->
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Secondary">Total CMR Records</MudText>
+                                <MudText Typo="Typo.h3" Color="Color.Primary">@_statistics.TotalCMRRecords.ToString("N0")</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Secondary">Valid Records</MudText>
+                                <MudText Typo="Typo.h3" Color="Color.Success">@_statistics.ValidCMRRecords.ToString("N0")</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Secondary">Invalid Records</MudText>
+                                <MudText Typo="Typo.h3" Color="@(_statistics.InvalidCMRRecords > 0 ? Color.Error : Color.Success)">
+                                    @_statistics.InvalidCMRRecords.ToString("N0")
+                                </MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Secondary">Success Rate</MudText>
+                                <MudText Typo="Typo.h3" Color="@GetSuccessRateColor(_statistics.ValidationSuccessRate)">
+                                    @_statistics.ValidationSuccessRate.ToString("F2")%
+                                </MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <!-- Detailed Breakdown -->
+                    <MudItem xs="12">
+                        <MudCard Elevation="3">
+                            <MudCardHeader>
+                                <CardHeaderContent>
+                                    <MudText Typo="Typo.h6">Validation Details</MudText>
+                                </CardHeaderContent>
+                            </MudCardHeader>
+                            <MudCardContent>
+                                <MudGrid Spacing="2">
+                                    <MudItem xs="12" md="4">
+                                        <MudText Typo="Typo.body1"><strong>Missing BL Number:</strong> @_statistics.MissingBlNumber</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" md="4">
+                                        <MudText Typo="Typo.body1"><strong>Missing Rotation Number:</strong> @_statistics.MissingRotationNumber</MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" md="4">
+                                        <MudText Typo="Typo.body1"><strong>Missing Both Fields:</strong> @_statistics.MissingBothFields</MudText>
+                                    </MudItem>
+                                </MudGrid>
+                                <MudDivider Class="my-4" />
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    Last validated: @_statistics.LastValidationRun.ToString("MMMM dd, yyyy HH:mm:ss")
+                                </MudText>
+                            </MudCardContent>
+                            <MudCardActions>
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadStatistics">
+                                    Refresh Statistics
+                                </MudButton>
+                            </MudCardActions>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+            }
+        </MudTabPanel>
+
+        <!-- Tab 2: Problematic Records -->
+        <MudTabPanel Text="Problematic Records" Icon="@Icons.Material.Outlined.Warning">
+            @if (_loadingProblematic)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            }
+            else if (_problematicRecords != null)
+            {
+                <MudTable Items="@filteredProblematicRecords" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true" Elevation="3">
+                    <ToolBarContent>
+                        <MudText Typo="Typo.h6">Problematic CMR Records (@filteredProblematicRecords.Count of @_problematicRecords.Count)</MudText>
+                        <MudSpacer />
+                        <MudTextField @bind-Value="_problemSearchTerm" Placeholder="Search by container number..." Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" IconSize="Size.Medium" Class="mt-0 mr-4" Immediate="true" Style="max-width: 300px;" />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Outlined.FileDownload" Class="mr-2" OnClick="ExportProblematicRecordsCSV" Disabled="@(!filteredProblematicRecords.Any())">
+                            Export CSV
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadProblematicRecords">
+                            Refresh
+                        </MudButton>
+                        @if (_problematicRecords.Any())
+                        {
+                            <MudButton Variant="Variant.Filled" Color="Color.Info" StartIcon="@Icons.Material.Outlined.Download" Class="ml-2" OnClick="QueueAllForRedownload">
+                                Queue All for Re-download
+                            </MudButton>
+                        }
+                    </ToolBarContent>
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Declaration Number</MudTh>
+                        <MudTh>Clearance Type</MudTh>
+                        <MudTh>Missing Fields</MudTh>
+                        <MudTh>Created At</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container">@context.ContainerNumber</MudTd>
+                        <MudTd DataLabel="Declaration">@context.DeclarationNumber</MudTd>
+                        <MudTd DataLabel="Type">@context.ClearanceType</MudTd>
+                        <MudTd DataLabel="Missing">
+                            @foreach (var field in context.MissingFields)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error">@field</MudChip>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Created">@context.CreatedAt.ToString("MMM dd, yyyy")</MudTd>
+                        <MudTd>
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Info" OnClick="() => QueueForRedownload(context.ContainerNumber)">
+                                Queue for Re-download
+                            </MudButton>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudAlert Severity="Severity.Success" Class="ma-4">
+                            ✅ No problematic CMR records found! All records have valid composite keys.
+                        </MudAlert>
+                    </NoRecordsContent>
+                </MudTable>
+            }
+        </MudTabPanel>
+
+        <!-- Tab 3: Re-download Queue -->
+        <MudTabPanel Text="Re-download Queue" Icon="@Icons.Material.Outlined.Queue">
+            @if (_loadingQueue)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            }
+            else if (_queueStatus != null)
+            {
+                <MudGrid Spacing="4" Class="mb-4">
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="2">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Warning">Pending</MudText>
+                                <MudText Typo="Typo.h4">@_queueStatus.PendingItems</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="2">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Info">Processing</MudText>
+                                <MudText Typo="Typo.h4">@_queueStatus.ProcessingItems</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="2">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Success">Completed</MudText>
+                                <MudText Typo="Typo.h4">@_queueStatus.CompletedItems</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudCard Elevation="2">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Color="Color.Error">Failed</MudText>
+                                <MudText Typo="Typo.h4">@_queueStatus.FailedItems</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+
+                <MudCard Elevation="3">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">Recent Queue Items</MudText>
+                        </CardHeaderContent>
+                        <CardHeaderActions>
+                            <MudButton Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadQueueStatus">
+                                Refresh
+                            </MudButton>
+                            <MudButton Variant="Variant.Text" Color="Color.Info" StartIcon="@Icons.Material.Outlined.PlayArrow" OnClick="ProcessQueueManually">
+                                Process Now
+                            </MudButton>
+                            <MudButton Variant="Variant.Text" Color="Color.Secondary" StartIcon="@Icons.Material.Outlined.CleaningServices" OnClick="ClearCompleted">
+                                Clear Completed
+                            </MudButton>
+                        </CardHeaderActions>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        @if (_queueStatus.RecentItems != null && _queueStatus.RecentItems.Any())
+                        {
+                            <MudTable Items="@_queueStatus.RecentItems" Hover="true" Dense="true">
+                                <HeaderContent>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Reason</MudTh>
+                                    <MudTh>Status</MudTh>
+                                    <MudTh>Queued At</MudTh>
+                                    <MudTh>Processed At</MudTh>
+                                    <MudTh>Retries</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.ContainerNumber</MudTd>
+                                    <MudTd>@context.Reason</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.Status)">
+                                            @context.Status
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd>@context.QueuedAt.ToString("MMM dd, HH:mm")</MudTd>
+                                    <MudTd>@(context.ProcessedAt?.ToString("MMM dd, HH:mm") ?? "-")</MudTd>
+                                    <MudTd>@context.RetryCount / @context.MaxRetries</MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info">No queue items found.</MudAlert>
+                        }
+                    </MudCardContent>
+                </MudCard>
+            }
+        </MudTabPanel>
+
+        <!-- Tab 4: Queue Statistics -->
+        <MudTabPanel Text="Queue Statistics" Icon="@Icons.Material.Outlined.BarChart">
+            @if (_loadingQueueStats)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+            }
+            else if (_queueStats != null)
+            {
+                <MudGrid Spacing="4">
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Class="mb-4">Overall Queue Performance</MudText>
+                                <MudGrid Spacing="2">
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Queued</MudText>
+                                        <MudText Typo="Typo.h5">@_queueStats.TotalQueued</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Processed</MudText>
+                                        <MudText Typo="Typo.h5">@_queueStats.TotalProcessed</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Successful</MudText>
+                                        <MudText Typo="Typo.h5" Color="Color.Success">@_queueStats.TotalSuccessful</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Failed</MudText>
+                                        <MudText Typo="Typo.h5" Color="Color.Error">@_queueStats.TotalFailed</MudText>
+                                    </MudItem>
+                                </MudGrid>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="3">
+                            <MudCardContent>
+                                <MudText Typo="Typo.h6" Class="mb-4">Success Rate</MudText>
+                                <MudProgressCircular Size="Size.Large" Value="@_queueStats.SuccessRate" Color="@GetSuccessRateColor(_queueStats.SuccessRate)">
+                                    <MudText Typo="Typo.h4">@_queueStats.SuccessRate.ToString("F1")%</MudText>
+                                </MudProgressCircular>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-4">
+                                    Average Processing Time: @_queueStats.AverageProcessingTimeMinutes.ToString("F2") minutes
+                                </MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    Last processed: @_queueStats.LastProcessed.ToString("MMM dd, yyyy HH:mm:ss")
+                                </MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+            }
+        </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    private int _activeTab = 0;
+    private CMRValidationStatistics? _statistics;
+    private List<ProblematicCMRRecord>? _problematicRecords;
+    private CMRRedownloadQueueStatus? _queueStatus;
+    private CMRRedownloadStatistics? _queueStats;
+
+    private bool _loadingStatistics = true;
+    private bool _loadingProblematic = false;
+    private bool _loadingQueue = false;
+    private bool _loadingQueueStats = false;
+    private string _problemSearchTerm = string.Empty;
+
+    private List<ProblematicCMRRecord> filteredProblematicRecords =>
+        string.IsNullOrWhiteSpace(_problemSearchTerm)
+            ? _problematicRecords ?? new List<ProblematicCMRRecord>()
+            : (_problematicRecords ?? new List<ProblematicCMRRecord>())
+                .Where(r => r.ContainerNumber.Contains(_problemSearchTerm, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+    private System.Threading.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStatistics();
+        await LoadProblematicRecords();
+        await LoadQueueStatus();
+        await LoadQueueStatistics();
+
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadStatistics();
+                await LoadQueueStatus();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+    }
+
+    private async Task LoadStatistics()
+    {
+        _loadingStatistics = true;
+        try
+        {
+            _statistics = await ApiService.GetAsync<CMRValidationStatistics>("/api/CMRValidation/statistics");
+            if (_statistics == null)
+            {
+                Snackbar.Add("No statistics data available", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading statistics");
+            Snackbar.Add($"Error loading statistics: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loadingStatistics = false;
+        }
+    }
+
+    private async Task LoadProblematicRecords()
+    {
+        _loadingProblematic = true;
+        try
+        {
+            _problematicRecords = await ApiService.GetAsync<List<ProblematicCMRRecord>>("/api/CMRValidation/problematic-records");
+            if (_problematicRecords == null)
+            {
+                _problematicRecords = new List<ProblematicCMRRecord>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading problematic records");
+            Snackbar.Add($"Error loading problematic records: {ex.Message}", Severity.Error);
+            _problematicRecords = new List<ProblematicCMRRecord>();
+        }
+        finally
+        {
+            _loadingProblematic = false;
+        }
+    }
+
+    private async Task LoadQueueStatus()
+    {
+        _loadingQueue = true;
+        try
+        {
+            _queueStatus = await ApiService.GetAsync<CMRRedownloadQueueStatus>("/api/CMRValidation/queue-status");
+            if (_queueStatus == null)
+            {
+                Snackbar.Add("No queue status data available", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading queue status");
+            Snackbar.Add($"Error loading queue status: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loadingQueue = false;
+        }
+    }
+
+    private async Task LoadQueueStatistics()
+    {
+        _loadingQueueStats = true;
+        try
+        {
+            _queueStats = await ApiService.GetAsync<CMRRedownloadStatistics>("/api/CMRValidation/queue-statistics");
+            if (_queueStats == null)
+            {
+                Snackbar.Add("No queue statistics data available", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading queue statistics");
+            Snackbar.Add($"Error loading queue statistics: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loadingQueueStats = false;
+        }
+    }
+
+    private async Task QueueForRedownload(string containerNumber)
+    {
+        try
+        {
+            var request = new { ContainerNumber = containerNumber, Reason = "Manual queue from admin UI" };
+            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/queue-redownload", request);
+            
+            if (result != null)
+            {
+                Snackbar.Add($"✅ Container {containerNumber} queued for re-download", Severity.Success);
+                await LoadQueueStatus();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error queuing container for re-download");
+            Snackbar.Add($"Error queuing container: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task QueueAllForRedownload()
+    {
+        if (_problematicRecords == null || !_problematicRecords.Any())
+            return;
+
+        try
+        {
+            var containerNumbers = _problematicRecords.Select(r => r.ContainerNumber).ToList();
+            var request = new { ContainerNumbers = containerNumbers, Reason = "Batch queue from admin UI" };
+            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/queue-batch-redownload", request);
+            
+            if (result != null)
+            {
+                Snackbar.Add($"✅ {containerNumbers.Count} containers queued for re-download", Severity.Success);
+                await LoadQueueStatus();
+                await LoadProblematicRecords();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error queuing containers for re-download");
+            Snackbar.Add($"Error queuing containers: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ProcessQueueManually()
+    {
+        try
+        {
+            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/process-queue", new { });
+            
+            if (result != null)
+            {
+                Snackbar.Add("✅ Queue processing started", Severity.Info);
+                await Task.Delay(2000); // Wait for processing
+                await LoadQueueStatus();
+                await LoadQueueStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error processing queue");
+            Snackbar.Add($"Error processing queue: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ClearCompleted()
+    {
+        try
+        {
+            var result = await ApiService.PostAsync<object, ClearCompletedResult>("/api/CMRValidation/clear-completed", new { });
+            
+            if (result != null)
+            {
+                Snackbar.Add($"✅ Cleared {result.ClearedCount} completed items", Severity.Success);
+                await LoadQueueStatus();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error clearing completed items");
+            Snackbar.Add($"Error clearing completed items: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ExportProblematicRecordsCSV()
+    {
+        var records = filteredProblematicRecords;
+        if (!records.Any()) return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Container Number,Declaration Number,Clearance Type,Missing Fields,Created At");
+
+        foreach (var r in records)
+        {
+            var missingFields = string.Join("; ", r.MissingFields);
+            sb.AppendLine($"\"{r.ContainerNumber}\",\"{r.DeclarationNumber}\",\"{r.ClearanceType}\",\"{missingFields}\",\"{r.CreatedAt:yyyy-MM-dd HH:mm:ss}\"");
+        }
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+        var base64 = Convert.ToBase64String(bytes);
+        await JS.InvokeVoidAsync("eval", $"{{var a=document.createElement('a');a.href='data:text/csv;base64,{base64}';a.download='cmr-problematic-records.csv';a.click()}}");
+
+        Snackbar.Add($"Exported {records.Count} records to CSV", Severity.Success);
+    }
+
+    private Color GetSuccessRateColor(double rate)
+    {
+        if (rate >= 99.0) return Color.Success;
+        if (rate >= 95.0) return Color.Info;
+        if (rate >= 90.0) return Color.Warning;
+        return Color.Error;
+    }
+
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Pending" => Color.Warning,
+            "Processing" => Color.Info,
+            "Completed" => Color.Success,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    public class CMRValidationStatistics
+    {
+        public int TotalCMRRecords { get; set; }
+        public int ValidCMRRecords { get; set; }
+        public int InvalidCMRRecords { get; set; }
+        public int MissingBlNumber { get; set; }
+        public int MissingRotationNumber { get; set; }
+        public int MissingBothFields { get; set; }
+        public double ValidationSuccessRate { get; set; }
+        public DateTime LastValidationRun { get; set; }
+    }
+
+    public class ProblematicCMRRecord
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public string? BlNumber { get; set; }
+        public string? RotationNumber { get; set; }
+        public List<string> MissingFields { get; set; } = new();
+        public DateTime CreatedAt { get; set; }
+        public DateTime LastUpdatedAt { get; set; }
+        public bool NeedsRedownload { get; set; }
+    }
+
+    public class CMRRedownloadQueueStatus
+    {
+        public int PendingItems { get; set; }
+        public int ProcessingItems { get; set; }
+        public int CompletedItems { get; set; }
+        public int FailedItems { get; set; }
+        public DateTime LastProcessed { get; set; }
+        public bool IsProcessing { get; set; }
+        public List<CMRRedownloadQueueItem> RecentItems { get; set; } = new();
+    }
+
+    public class CMRRedownloadQueueItem
+    {
+        public string Id { get; set; } = string.Empty;
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public DateTime QueuedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public string? ErrorMessage { get; set; }
+        public int RetryCount { get; set; }
+        public int MaxRetries { get; set; } = 3;
+    }
+
+    public class CMRRedownloadStatistics
+    {
+        public int TotalQueued { get; set; }
+        public int TotalProcessed { get; set; }
+        public int TotalSuccessful { get; set; }
+        public int TotalFailed { get; set; }
+        public double SuccessRate { get; set; }
+        public double AverageProcessingTimeMinutes { get; set; }
+        public DateTime LastProcessed { get; set; }
+        public int CurrentlyProcessing { get; set; }
+        public int PendingProcessing { get; set; }
+    }
+
+    public class ClearCompletedResult
+    {
+        public int ClearedCount { get; set; }
+    }
+}
+

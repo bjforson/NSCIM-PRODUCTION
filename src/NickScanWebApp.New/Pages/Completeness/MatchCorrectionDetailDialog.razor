@@ -1,0 +1,301 @@
+@using MudBlazor
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<MatchCorrectionDetailDialog> Logger
+
+@*
+    Side-by-side detail dialog for one container's match state. Shows:
+    - Completeness row (current matched BOE id + status)
+    - Active ContainerBOERelations
+    - All MatchQualityFlags for the container (open + resolved)
+    - The matched BOE's manifest summary
+
+    Action buttons mutate via /api/admin/match-corrections endpoints. Each
+    successful action closes the dialog with Result.OK so the parent list
+    can refresh.
+*@
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressCircular Indeterminate="true" />
+            <MudText Class="ml-2">Loading…</MudText>
+        }
+        else if (_detail == null)
+        {
+            <MudAlert Severity="Severity.Warning">No data found for this container.</MudAlert>
+        }
+        else
+        {
+            <MudGrid>
+                @* ── Completeness state ─────────────────────────────── *@
+                <MudItem xs="12" md="6">
+                    <MudPaper Outlined="true" Class="pa-3">
+                        <MudText Typo="Typo.h6" Class="mb-2">Completeness state</MudText>
+                        @if (_detail.Status == null)
+                        {
+                            <MudText>(no row)</MudText>
+                        }
+                        else
+                        {
+                            <MudSimpleTable Dense="true" Style="background: transparent;">
+                                <tbody>
+                                    <tr><td><strong>Container</strong></td><td>@_detail.Status.ContainerNumber</td></tr>
+                                    <tr><td><strong>Scanner</strong></td><td>@_detail.Status.ScannerType</td></tr>
+                                    <tr><td><strong>Status</strong></td><td>@_detail.Status.Status</td></tr>
+                                    <tr><td><strong>Workflow</strong></td><td>@_detail.Status.WorkflowStage</td></tr>
+                                    <tr><td><strong>BOEDocumentId</strong></td><td>@(_detail.Status.BOEDocumentId?.ToString() ?? "—")</td></tr>
+                                    <tr><td><strong>ClearanceType</strong></td><td>@(_detail.Status.ClearanceType ?? "—")</td></tr>
+                                    <tr><td><strong>Has ICUMS</strong></td><td>@_detail.Status.HasICUMSData</td></tr>
+                                    <tr><td><strong>Updated</strong></td><td>@_detail.Status.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td></tr>
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                @* ── Matched BOE summary ────────────────────────────── *@
+                <MudItem xs="12" md="6">
+                    <MudPaper Outlined="true" Class="pa-3">
+                        <MudText Typo="Typo.h6" Class="mb-2">Matched BOE</MudText>
+                        @if (_detail.MatchedBoe == null)
+                        {
+                            <MudText>(no BOE matched)</MudText>
+                        }
+                        else
+                        {
+                            <MudSimpleTable Dense="true" Style="background: transparent;">
+                                <tbody>
+                                    <tr><td><strong>BOE id</strong></td><td>@_detail.MatchedBoe.Id</td></tr>
+                                    <tr><td><strong>Container on BOE</strong></td><td>@(_detail.MatchedBoe.ContainerNumber ?? "—")</td></tr>
+                                    <tr><td><strong>Declaration</strong></td><td>@(_detail.MatchedBoe.DeclarationNumber ?? "—")</td></tr>
+                                    <tr><td><strong>Clearance</strong></td><td>@(_detail.MatchedBoe.ClearanceType ?? "—")</td></tr>
+                                    <tr><td><strong>Delivery place</strong></td><td>@(_detail.MatchedBoe.DeliveryPlace ?? "—")</td></tr>
+                                    <tr><td><strong>Country of origin</strong></td><td>@(_detail.MatchedBoe.CountryOfOrigin ?? "—")</td></tr>
+                                    <tr><td><strong>Importer</strong></td><td>@(_detail.MatchedBoe.ImporterName ?? "—")</td></tr>
+                                    <tr><td><strong>Consignee</strong></td><td>@(_detail.MatchedBoe.ConsigneeName ?? "—")</td></tr>
+                                    <tr><td><strong>Goods</strong></td><td>@(_detail.MatchedBoe.GoodsDescription ?? "—")</td></tr>
+                                    <tr><td><strong>CRMS</strong></td><td>@(_detail.MatchedBoe.CrmsLevel ?? "—")</td></tr>
+                                    <tr><td><strong>Master BL</strong></td><td>@(_detail.MatchedBoe.MasterBlNumber ?? "—")</td></tr>
+                                    <tr><td><strong>House BL</strong></td><td>@(_detail.MatchedBoe.HouseBl ?? "—")</td></tr>
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                @* ── Flags ──────────────────────────────────────────── *@
+                <MudItem xs="12">
+                    <MudPaper Outlined="true" Class="pa-3">
+                        <MudText Typo="Typo.h6" Class="mb-2">Flags (@_detail.Flags.Count)</MudText>
+                        @if (!_detail.Flags.Any())
+                        {
+                            <MudText>(none)</MudText>
+                        }
+                        else
+                        {
+                            <MudSimpleTable Dense="true">
+                                <thead>
+                                    <tr>
+                                        <th>Severity</th>
+                                        <th>Type</th>
+                                        <th>Description</th>
+                                        <th>Created</th>
+                                        <th>Status</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var f in _detail.Flags)
+                                    {
+                                        <tr>
+                                            <td>
+                                                <MudChip T="string" Size="Size.Small"
+                                                         Color="@(f.Severity == "Critical" ? Color.Error : Color.Warning)">
+                                                    @f.Severity
+                                                </MudChip>
+                                            </td>
+                                            <td>@f.FlagType</td>
+                                            <td style="max-width: 360px; white-space: normal;">@f.Description</td>
+                                            <td>@f.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                                            <td>
+                                                @if (f.IsResolved)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">@f.Resolution</MudChip>
+                                                }
+                                                else
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Open</MudChip>
+                                                }
+                                            </td>
+                                            <td>
+                                                @if (!f.IsResolved)
+                                                {
+                                                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success"
+                                                               OnClick="@(() => ConfirmFlagAsync(f.Id))">
+                                                        Confirm
+                                                    </MudButton>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+        @if (_detail?.Status?.BOEDocumentId != null)
+        {
+            <MudButton Color="Color.Warning" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Outlined.LinkOff"
+                       OnClick="OpenUnmatchAsync">
+                Unmatch…
+            </MudButton>
+        }
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Outlined.SwapHoriz"
+                   OnClick="OpenRematchAsync">
+            Rematch…
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+
+    private bool _loading;
+    private ContainerMatchDetailDto? _detail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var url = $"/api/admin/match-corrections/{Uri.EscapeDataString(ContainerNumber)}/detail";
+            _detail = await ApiService.GetAsync<ContainerMatchDetailDto>(url);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load detail for {Container}", ContainerNumber);
+            Snackbar.Add($"Failed to load detail: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ConfirmFlagAsync(int flagId)
+    {
+        try
+        {
+            var body = new { Resolution = "Confirmed", Notes = "Confirmed via match-corrections detail dialog" };
+            await ApiService.PostAsync<object, object>($"/api/admin/match-corrections/{flagId}/resolve", body);
+            Snackbar.Add("Flag confirmed", Severity.Success);
+            await ReloadAsync();
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to confirm: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OpenUnmatchAsync()
+    {
+        var dialog = await DialogService.ShowAsync<MatchCorrectionUnmatchDialog>(
+            $"Unmatch {ContainerNumber}",
+            new DialogParameters<MatchCorrectionUnmatchDialog>
+            {
+                { x => x.ContainerNumber, ContainerNumber },
+            });
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+    }
+
+    private async Task OpenRematchAsync()
+    {
+        var dialog = await DialogService.ShowAsync<MatchCorrectionRematchDialog>(
+            $"Rematch {ContainerNumber}",
+            new DialogParameters<MatchCorrectionRematchDialog>
+            {
+                { x => x.ContainerNumber, ContainerNumber },
+                { x => x.CurrentScannerType, _detail?.Status?.ScannerType },
+            });
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+        {
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+    }
+
+    private void Close() => MudDialog.Cancel();
+
+    [Inject] private IDialogService DialogService { get; set; } = default!;
+
+    public class ContainerMatchDetailDto
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public CompletenessStatusDto? Status { get; set; }
+        public List<RelationDto> Relations { get; set; } = new();
+        public List<MatchCorrections.MatchFlagDto> Flags { get; set; } = new();
+        public BoeSummaryDto? MatchedBoe { get; set; }
+    }
+
+    public class CompletenessStatusDto
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string WorkflowStage { get; set; } = string.Empty;
+        public int? BOEDocumentId { get; set; }
+        public string? ClearanceType { get; set; }
+        public bool HasICUMSData { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
+    public class RelationDto
+    {
+        public int Id { get; set; }
+        public string? RelationType { get; set; }
+        public bool IsActive { get; set; }
+        public int ICUMSBOEId { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime LastValidatedAt { get; set; }
+        public string? Notes { get; set; }
+    }
+
+    public class BoeSummaryDto
+    {
+        public int Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public string? DeclarationNumber { get; set; }
+        public string? ClearanceType { get; set; }
+        public string? DeliveryPlace { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public string? GoodsDescription { get; set; }
+        public string? ConsigneeName { get; set; }
+        public string? ImporterName { get; set; }
+        public string? MasterBlNumber { get; set; }
+        public string? HouseBl { get; set; }
+        public string? RotationNumber { get; set; }
+        public string? CrmsLevel { get; set; }
+        public string? DeclarationDate { get; set; }
+    }
+}

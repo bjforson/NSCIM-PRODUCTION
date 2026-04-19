@@ -1,0 +1,54 @@
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Enter container numbers below, one per line. Empty lines will be skipped.
+        </MudText>
+        <MudTextField @bind-Value="@_containerText" 
+                      Label="Container Numbers" 
+                      Variant="Variant.Outlined"
+                      Lines="10"
+                      Placeholder="MSCU1234567&#10;TCLU7654321&#10;CAAU1122334" />
+        @if (_parsedCount > 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Info" Class="mt-2">
+                @_parsedCount container(s) detected
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" 
+                  Variant="Variant.Filled"
+                  OnClick="Submit" 
+                  Disabled="@(_parsedCount == 0)">
+            Enqueue @_parsedCount Container(s)
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    
+    private string _containerText = "";
+    
+    private int _parsedCount => string.IsNullOrWhiteSpace(_containerText) 
+        ? 0 
+        : _containerText.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Count(l => !string.IsNullOrWhiteSpace(l));
+    
+    private void Cancel() => MudDialog.Cancel();
+    
+    private void Submit()
+    {
+        var containers = _containerText
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim())
+            .Where(l => !string.IsNullOrWhiteSpace(l))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        
+        MudDialog.Close(DialogResult.Ok(containers));
+    }
+}

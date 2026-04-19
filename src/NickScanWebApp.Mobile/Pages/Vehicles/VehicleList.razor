@@ -1,0 +1,31 @@
+@page "/vehicles"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesVehiclesView)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Vehicles - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.DirectionsCar" Class="mr-2" />
+                Vehicles
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                View all imported vehicles
+            </MudText>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Redirect to operations/vehicles for consistency -->
+    @code {
+        protected override void OnInitialized()
+        {
+            NavigationManager.NavigateTo("/operations/vehicles");
+        }
+    }
+</MudContainer>
+

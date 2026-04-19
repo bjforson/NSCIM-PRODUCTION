@@ -1,0 +1,410 @@
+@page "/admin/comms-gateway"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminSettings)]
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanCentralImagingPortal.Core.Constants
+@inject NickScanWebApp.Shared.Services.SettingsService SettingsService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<CommsGatewaySettings> Logger
+
+<PageTitle>Comms Gateway - NSCIS</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Send" Class="mr-2" />
+        NickComms Gateway
+    </MudText>
+
+    <MudText Typo="Typo.body2" Class="mb-4" Style="color: var(--mud-palette-text-secondary);">
+        Single sending authority for all NSCIS email and SMS. NickHR uses the same gateway.
+        Configure the connection here, send test messages, and review recent history.
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <div class="d-flex justify-center pa-8">
+            <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+        </div>
+    }
+    else
+    {
+        <MudGrid>
+            <!-- Connection Settings -->
+            <MudItem xs="12" md="6">
+                <MudCard Elevation="2">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">
+                                <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-1" />
+                                Connection
+                            </MudText>
+                        </CardHeaderContent>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        <MudTextField @bind-Value="_baseUrl" Label="Gateway Base URL"
+                                      Variant="Variant.Outlined" Class="mb-3"
+                                      Placeholder="http://localhost:5220" />
+
+                        <MudTextField @bind-Value="_apiKey" Label="API Key"
+                                      Variant="Variant.Outlined" Class="mb-3"
+                                      InputType="@(_showApiKey ? InputType.Text : InputType.Password)"
+                                      Adornment="Adornment.End"
+                                      AdornmentIcon="@(_showApiKey ? Icons.Material.Filled.VisibilityOff : Icons.Material.Filled.Visibility)"
+                                      OnAdornmentClick="@(() => _showApiKey = !_showApiKey)" />
+
+                        <MudNumericField @bind-Value="_timeoutSeconds" Label="Timeout (seconds)"
+                                         Variant="Variant.Outlined" Class="mb-3"
+                                         Min="1" Max="120" />
+
+                        <MudSwitch T="bool" @bind-Value="_enabled" Color="Color.Success" Class="mb-3">
+                            Enabled
+                        </MudSwitch>
+                    </MudCardContent>
+                    <MudCardActions>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Outlined.Save"
+                                   OnClick="SaveSettings" Disabled="@_isSaving">
+                            @if (_isSaving) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                            Save
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Outlined.NetworkCheck"
+                                   OnClick="TestConnection" Disabled="@_isTesting">
+                            @if (_isTesting) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                            Test Connection
+                        </MudButton>
+                    </MudCardActions>
+                </MudCard>
+            </MudItem>
+
+            <!-- Test Send -->
+            <MudItem xs="12" md="6">
+                <MudCard Elevation="2">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">
+                                <MudIcon Icon="@Icons.Material.Outlined.Outbox" Class="mr-1" />
+                                Test Send
+                            </MudText>
+                        </CardHeaderContent>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Email</MudText>
+                        <MudTextField @bind-Value="_testEmailTo" Label="Recipient" Variant="Variant.Outlined" Class="mb-2" />
+                        <MudTextField @bind-Value="_testEmailSubject" Label="Subject" Variant="Variant.Outlined" Class="mb-2" />
+                        <MudTextField @bind-Value="_testEmailBody" Label="Body (HTML allowed)" Variant="Variant.Outlined"
+                                      Lines="3" Class="mb-2" />
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Outlined.Email" Class="mb-4"
+                                   OnClick="SendTestEmail" Disabled="@_isSendingEmail" FullWidth="true">
+                            @if (_isSendingEmail) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                            Send Test Email
+                        </MudButton>
+
+                        <MudDivider Class="my-3" />
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">SMS</MudText>
+                        <MudTextField @bind-Value="_testSmsPhone" Label="Phone Number" Variant="Variant.Outlined" Class="mb-2" />
+                        <MudTextField @bind-Value="_testSmsMessage" Label="Message" Variant="Variant.Outlined" Lines="2" Class="mb-2" />
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Outlined.Sms"
+                                   OnClick="SendTestSms" Disabled="@_isSendingSms" FullWidth="true">
+                            @if (_isSendingSms) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
+                            Send Test SMS
+                        </MudButton>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+
+            <!-- Message History -->
+            <MudItem xs="12">
+                <MudCard Elevation="2">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">
+                                <MudIcon Icon="@Icons.Material.Outlined.History" Class="mr-1" />
+                                Recent Messages
+                            </MudText>
+                        </CardHeaderContent>
+                        <CardHeaderActions>
+                            <MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="LoadHistory" />
+                        </CardHeaderActions>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        @if (_history.Items.Count == 0)
+                        {
+                            <MudAlert Severity="Severity.Info" Dense="true">No messages yet.</MudAlert>
+                        }
+                        else
+                        {
+                            <MudTable Items="@_history.Items" Dense="true" Hover="true" Striped="true">
+                                <HeaderContent>
+                                    <MudTh>Channel</MudTh>
+                                    <MudTh>Recipient</MudTh>
+                                    <MudTh>Subject / Content</MudTh>
+                                    <MudTh>Status</MudTh>
+                                    <MudTh>Client</MudTh>
+                                    <MudTh>Created</MudTh>
+                                    <MudTh>Sent</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small"
+                                                 Color="@(context.Channel == "email" ? Color.Info : Color.Secondary)">
+                                            @context.Channel
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd>@context.Recipient</MudTd>
+                                    <MudTd>@Truncate(context.Content, 60)</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.Status)">@context.Status</MudChip>
+                                    </MudTd>
+                                    <MudTd>@context.ClientApp</MudTd>
+                                    <MudTd>@context.CreatedAt.ToLocalTime().ToString("dd MMM HH:mm")</MudTd>
+                                    <MudTd>@(context.SentAt?.ToLocalTime().ToString("dd MMM HH:mm") ?? "—")</MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        </MudGrid>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private bool _isSaving;
+    private bool _isTesting;
+    private bool _isSendingEmail;
+    private bool _isSendingSms;
+    private bool _showApiKey;
+
+    // Connection settings
+    private string _baseUrl = "http://localhost:5220";
+    private string _apiKey = string.Empty;
+    private int _timeoutSeconds = 15;
+    private bool _enabled = true;
+
+    // Test send fields
+    private string _testEmailTo = "";
+    private string _testEmailSubject = "NSCIS Comms Gateway test";
+    private string _testEmailBody = "<p>This is a test email sent from NSCIS via the NickComms.Gateway.</p>";
+    private string _testSmsPhone = "";
+    private string _testSmsMessage = "NSCIS Comms Gateway test SMS.";
+
+    // History
+    private NickCommsHistoryDto _history = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSettings();
+        await LoadHistory();
+        _isLoading = false;
+    }
+
+    private async Task LoadSettings()
+    {
+        try
+        {
+            var category = await SettingsService.GetCategorySettingsAsync("NickComms");
+            if (category?.Settings != null)
+            {
+                _baseUrl = category.Settings.FirstOrDefault(s => s.SettingKey == "BaseUrl")?.SettingValue ?? _baseUrl;
+                _apiKey = category.Settings.FirstOrDefault(s => s.SettingKey == "ApiKey")?.SettingValue ?? "";
+                if (int.TryParse(category.Settings.FirstOrDefault(s => s.SettingKey == "TimeoutSeconds")?.SettingValue, out var t))
+                    _timeoutSeconds = t;
+                if (bool.TryParse(category.Settings.FirstOrDefault(s => s.SettingKey == "Enabled")?.SettingValue, out var e))
+                    _enabled = e;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load NickComms settings");
+            Snackbar.Add($"Failed to load settings: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task SaveSettings()
+    {
+        _isSaving = true;
+        try
+        {
+            await SettingsService.UpdateSettingAsync(new NickScanWebApp.Shared.Models.UpdateSettingDto
+            {
+                Category = "NickComms", SettingKey = "BaseUrl", SettingValue = _baseUrl
+            });
+            await SettingsService.UpdateSettingAsync(new NickScanWebApp.Shared.Models.UpdateSettingDto
+            {
+                Category = "NickComms", SettingKey = "ApiKey", SettingValue = _apiKey
+            });
+            await SettingsService.UpdateSettingAsync(new NickScanWebApp.Shared.Models.UpdateSettingDto
+            {
+                Category = "NickComms", SettingKey = "TimeoutSeconds", SettingValue = _timeoutSeconds.ToString()
+            });
+            await SettingsService.UpdateSettingAsync(new NickScanWebApp.Shared.Models.UpdateSettingDto
+            {
+                Category = "NickComms", SettingKey = "Enabled", SettingValue = _enabled.ToString().ToLower()
+            });
+            Snackbar.Add("Settings saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task TestConnection()
+    {
+        _isTesting = true;
+        try
+        {
+            var result = await ApiService.GetAsync<PingResultDto>("/api/CommsGateway/ping");
+            if (result?.Ok == true)
+                Snackbar.Add($"Connected to {result.BaseUrl}", Severity.Success);
+            else
+                Snackbar.Add("Gateway did not respond.", Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Ping failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isTesting = false;
+        }
+    }
+
+    private async Task SendTestEmail()
+    {
+        if (string.IsNullOrWhiteSpace(_testEmailTo))
+        {
+            Snackbar.Add("Recipient required.", Severity.Warning);
+            return;
+        }
+        _isSendingEmail = true;
+        try
+        {
+            var result = await ApiService.PostAsync<TestEmailDto, TestSendResultDto>(
+                "/api/CommsGateway/test-email",
+                new TestEmailDto { To = _testEmailTo, Subject = _testEmailSubject, Body = _testEmailBody });
+            if (result?.Success == true)
+                Snackbar.Add($"Email queued ({result.MessageId}).", Severity.Success);
+            else
+                Snackbar.Add($"Send failed: {result?.Error ?? "unknown error"}", Severity.Error);
+            await LoadHistory();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Send failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSendingEmail = false;
+        }
+    }
+
+    private async Task SendTestSms()
+    {
+        if (string.IsNullOrWhiteSpace(_testSmsPhone))
+        {
+            Snackbar.Add("Phone number required.", Severity.Warning);
+            return;
+        }
+        _isSendingSms = true;
+        try
+        {
+            var result = await ApiService.PostAsync<TestSmsDto, TestSendResultDto>(
+                "/api/CommsGateway/test-sms",
+                new TestSmsDto { PhoneNumber = _testSmsPhone, Message = _testSmsMessage });
+            if (result?.Success == true)
+                Snackbar.Add($"SMS queued ({result.MessageId}).", Severity.Success);
+            else
+                Snackbar.Add($"Send failed: {result?.Error ?? "unknown error"}", Severity.Error);
+            await LoadHistory();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Send failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSendingSms = false;
+        }
+    }
+
+    private async Task LoadHistory()
+    {
+        try
+        {
+            _history = await ApiService.GetAsync<NickCommsHistoryDto>("/api/CommsGateway/history?page=1&pageSize=25")
+                       ?? new NickCommsHistoryDto();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load history");
+        }
+    }
+
+    private static string Truncate(string s, int max)
+        => string.IsNullOrEmpty(s) ? string.Empty : (s.Length <= max ? s : s.Substring(0, max) + "…");
+
+    private static Color StatusColor(string status) => status?.ToLowerInvariant() switch
+    {
+        "sent" => Color.Success,
+        "queued" => Color.Info,
+        "failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    // === Local DTOs that match the controller responses ===
+    public class PingResultDto
+    {
+        public bool Ok { get; set; }
+        public string? BaseUrl { get; set; }
+    }
+
+    public class TestEmailDto
+    {
+        public string To { get; set; } = "";
+        public string? Subject { get; set; }
+        public string? Body { get; set; }
+    }
+
+    public class TestSmsDto
+    {
+        public string PhoneNumber { get; set; } = "";
+        public string? Message { get; set; }
+    }
+
+    public class TestSendResultDto
+    {
+        public bool Success { get; set; }
+        public string? MessageId { get; set; }
+        public string? Error { get; set; }
+    }
+
+    public class NickCommsHistoryDto
+    {
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalCount { get; set; }
+        public List<NickCommsHistoryItemDto> Items { get; set; } = new();
+    }
+
+    public class NickCommsHistoryItemDto
+    {
+        public Guid Id { get; set; }
+        public string Channel { get; set; } = "";
+        public string Recipient { get; set; } = "";
+        public string Content { get; set; } = "";
+        public string Status { get; set; } = "";
+        public string ClientApp { get; set; } = "";
+        public DateTime CreatedAt { get; set; }
+        public DateTime? SentAt { get; set; }
+    }
+}

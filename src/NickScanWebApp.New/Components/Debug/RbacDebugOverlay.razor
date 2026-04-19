@@ -1,0 +1,192 @@
+@using System.Globalization
+@using Microsoft.AspNetCore.Components
+@using NickScanWebApp.New.Services.Permissions
+@inject NickScanWebApp.New.Services.Permissions.AuthBootstrapper Bootstrapper
+@inject NickScanWebApp.New.Services.Permissions.PermissionCatalogClient CatalogClient
+@inject NickScanWebApp.New.Services.Permissions.PermissionGuard Guard
+@inject IConfiguration Configuration
+@inject IWebHostEnvironment HostEnvironment
+
+@implements IDisposable
+
+@if (_enabled)
+{
+    <div class="rbac-overlay-container">
+        <MudPaper Elevation="8" Class="pa-3 rbac-overlay">
+            <MudStack Spacing="1">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                    <MudText Typo="Typo.subtitle1">RBAC Snapshot</MudText>
+                    <MudSpacer />
+                    <MudIconButton Icon="@(_open ? Icons.Material.Outlined.Close : Icons.Material.Outlined.BugReport)"
+                                   Color="Color.Secondary"
+                                   Size="Size.Small"
+                                   OnClick="@Toggle" />
+                </MudStack>
+
+                @if (_open)
+                {
+                    <MudDivider Class="my-1" />
+
+                    <MudStack Spacing="1" Class="rbac-summary">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">User</MudText>
+                            <MudText Typo="Typo.caption">@(_profile?.Username ?? "unknown")</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Role</MudText>
+                            <MudText Typo="Typo.caption">@(_profile?.PrimaryRole ?? "unknown")</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Permissions</MudText>
+                            <MudText Typo="Typo.caption">@(_profile?.Permissions.Count ?? 0)</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Catalog Version</MudText>
+                            <MudText Typo="Typo.caption">@(_catalogVersion ?? "n/a")</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Last Refresh (UTC)</MudText>
+                            <MudText Typo="Typo.caption">@_lastProfileRefresh</MudText>
+                        </MudStack>
+                    </MudStack>
+
+                    <MudDivider Class="my-1" />
+
+                    <MudText Typo="Typo.subtitle2">Recent Permission Denials</MudText>
+                    @if (_deniedEvents.Count == 0)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">None recorded.</MudText>
+                    }
+                    else
+                    {
+                        <MudStack Spacing="1">
+                            @foreach (var entry in _deniedEvents)
+                            {
+                                <MudPaper Elevation="0" Class="pa-1 rbac-denied-row">
+                                    <MudText Typo="Typo.caption">@entry.Permission.Value (@(entry.Context ?? "unknown"))</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@entry.TimestampUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture)</MudText>
+                                </MudPaper>
+                            }
+                        </MudStack>
+                        <MudButton Variant="Variant.Text" Color="Color.Secondary" Size="Size.Small" OnClick="@ClearDeniedEvents">Clear</MudButton>
+                    }
+
+                    <MudDivider Class="my-1" />
+
+                    <MudStack Row="true" Spacing="1">
+                        <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small" OnClick="@RefreshNow">
+                            Refresh Now
+                        </MudButton>
+                        <MudButton Variant="Variant.Text" Color="Color.Secondary" Size="Size.Small" OnClick="@Toggle">
+                            Collapse
+                        </MudButton>
+                    </MudStack>
+                }
+            </MudStack>
+        </MudPaper>
+    </div>
+}
+
+@code {
+    private bool _open;
+    private bool _enabled;
+    private string? _catalogVersion;
+    private string _lastProfileRefresh = "n/a";
+    private NickScanCentralImagingPortal.Core.Models.UserProfileDto? _profile;
+    private readonly List<DeniedPermissionEvent> _deniedEvents = new();
+
+    protected override void OnInitialized()
+    {
+        _enabled = ShouldEnableOverlay();
+        if (!_enabled)
+        {
+            return;
+        }
+
+        _open = false;
+        Bootstrapper.ProfileUpdated += OnProfileUpdated;
+        Guard.PermissionDenied += OnPermissionDenied;
+        _profile = Bootstrapper.Profile;
+        _catalogVersion = CatalogClient.Version;
+        _deniedEvents.AddRange(Guard.GetDeniedEvents());
+        _lastProfileRefresh = _profile?.IssuedAtUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture) ?? "n/a";
+    }
+
+    private bool ShouldEnableOverlay()
+    {
+        if (HostEnvironment.IsDevelopment())
+        {
+            return true;
+        }
+
+        return bool.TryParse(Configuration["Diagnostics:EnableRbacOverlay"], out var enabled) && enabled;
+    }
+
+    private void OnProfileUpdated(NickScanCentralImagingPortal.Core.Models.UserProfileDto? profile)
+    {
+        _profile = profile;
+        _catalogVersion = CatalogClient.Version;
+        _lastProfileRefresh = profile?.IssuedAtUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture) ?? "n/a";
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OnPermissionDenied(DeniedPermissionEvent entry)
+    {
+        _deniedEvents.Add(entry);
+        while (_deniedEvents.Count > 20)
+        {
+            _deniedEvents.RemoveAt(0);
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshNow()
+    {
+        await Bootstrapper.RefreshAsync();
+        _catalogVersion = CatalogClient.Version;
+    }
+
+    private void Toggle()
+    {
+        _open = !_open;
+    }
+
+    private void ClearDeniedEvents()
+    {
+        Guard.ClearDeniedEvents();
+        _deniedEvents.Clear();
+    }
+
+    public void Dispose()
+    {
+        if (_enabled)
+        {
+            Bootstrapper.ProfileUpdated -= OnProfileUpdated;
+            Guard.PermissionDenied -= OnPermissionDenied;
+        }
+    }
+}
+
+<style>
+    .rbac-overlay-container {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 1000;
+        max-width: 360px;
+    }
+
+    .rbac-overlay {
+        width: 100%;
+        background-color: rgba(33, 33, 33, 0.95);
+        color: #fff;
+    }
+
+    .rbac-denied-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 8px;
+    }
+</style>
+

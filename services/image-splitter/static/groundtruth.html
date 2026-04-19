@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Splitter Ground Truth</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e6e6e6; }
+
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: #16213e; border-bottom: 1px solid #0f3460; }
+  .header h1 { font-size: 18px; color: #00bcd4; }
+  .header .sub { font-size: 12px; color: #999; }
+
+  .nav { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
+  .nav button { padding: 6px 14px; border: 1px solid #0f3460; background: #1a1a2e; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .nav button:hover { background: #0f3460; }
+  .nav button:disabled { opacity: 0.3; cursor: default; }
+  .nav .save-btn { background: #1b5e20; border-color: #2e7d32; color: #a5d6a7; font-weight: bold; }
+  .nav .save-btn:hover { background: #2e7d32; }
+  .nav .clear-btn { background: #4a148c; border-color: #6a1b9a; color: #ce93d8; }
+  .nav .counter { font-size: 14px; color: #aaa; margin-left: auto; }
+  .nav .container-names { font-size: 14px; font-weight: bold; color: #53cfff; font-family: monospace; }
+
+  .meta-bar { display: flex; flex-wrap: wrap; gap: 16px; padding: 6px 20px; font-size: 13px; color: #ccc; background: #141a26; }
+  .meta-bar .label { color: #888; }
+  .meta-bar .val { font-family: monospace; font-weight: bold; }
+  .meta-bar .steel { color: #00bcd4; }
+  .meta-bar .vision { color: #ffeb3b; }
+  .meta-bar .corner { color: #ff9800; }
+  .meta-bar .density { color: #9c27b0; }
+  .meta-bar .truth { color: #4caf50; }
+
+  .legend { padding: 6px 20px; font-size: 11px; color: #888; background: #141a26; border-bottom: 1px solid #222; }
+  .legend span { margin-right: 14px; }
+
+  .canvas-wrap { margin: 10px 20px; background: #000; border: 1px solid #333; position: relative; overflow: auto; }
+  .canvas-wrap canvas { display: block; cursor: crosshair; max-width: 100%; height: auto; }
+  .canvas-wrap .hint { position: absolute; top: 6px; right: 12px; background: rgba(0,0,0,0.7); padding: 4px 8px; font-size: 11px; color: #4caf50; border-radius: 3px; pointer-events: none; }
+
+  .shortcuts { padding: 10px 20px; font-size: 12px; color: #666; text-align: center; background: #0f1117; border-top: 1px solid #222; }
+  .shortcuts kbd { padding: 2px 6px; border: 1px solid #555; border-radius: 3px; background: #222; color: #ccc; font-family: monospace; margin: 0 2px; }
+  .shortcuts .status { color: #00e676; margin-left: 16px; }
+  .shortcuts .warn { color: #ff9800; }
+
+  .progress { display: inline-block; padding: 2px 8px; background: #1a237e; color: #90caf9; border-radius: 3px; font-size: 11px; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Splitter Ground Truth</h1>
+    <div class="sub">Click on the image to mark the TRUE split between the two containers. The strategies' guesses are overlaid for comparison.</div>
+  </div>
+  <div>
+    <span class="progress" id="progressChip">0 / 0 annotated</span>
+  </div>
+</div>
+
+<div class="nav">
+  <button id="btnPrev" onclick="navigate(-1)">&larr; Prev</button>
+  <button id="btnNext" onclick="navigate(1)">Next &rarr;</button>
+  <button class="save-btn" onclick="saveGroundTruth()">Save &amp; Next</button>
+  <button class="clear-btn" onclick="clearClick()">Clear Click</button>
+  <button id="btnReveal" onclick="toggleReveal()" style="background:#263238;border-color:#37474f;color:#b0bec5">Reveal strategies</button>
+  <div class="container-names" id="containerNames">---</div>
+  <div class="counter" id="counter">-</div>
+</div>
+
+<div class="meta-bar">
+  <span><span class="label">Image:</span> <span class="val" id="imgDims">-</span></span>
+  <span><span class="label">Best:</span> <span class="val" id="bestVal">hidden until reveal</span></span>
+  <span><span class="label steel">steel_wall_midpoint:</span> <span class="val steel" id="swVal">--</span></span>
+  <span><span class="label vision">claude_vision:</span> <span class="val vision" id="cvVal">--</span></span>
+  <span><span class="label corner">corner_fitting:</span> <span class="val corner" id="cfVal">--</span></span>
+  <span><span class="label density">density_profile:</span> <span class="val density" id="dpVal">--</span></span>
+  <span><span class="label truth">GROUND TRUTH:</span> <span class="val truth" id="gtVal">(click to set)</span></span>
+</div>
+
+<div class="legend">
+  <strong style="color:#ff6b6b">Blind annotation mode:</strong>
+  strategy lines and values are HIDDEN until you press
+  <kbd style="padding:1px 5px;border:1px solid #555;background:#222;color:#ccc;font-family:monospace;">R</kbd>
+  or click Reveal. Click the image based ONLY on what you see — do not guess where the algorithms would land.
+</div>
+
+<div class="canvas-wrap">
+  <canvas id="mainCanvas"></canvas>
+  <div class="hint" id="hint">Click to set split</div>
+</div>
+
+<div class="shortcuts">
+  <kbd>&larr;</kbd> Prev &nbsp;
+  <kbd>&rarr;</kbd> Next &nbsp;
+  <kbd>S</kbd> Save &amp; Next &nbsp;
+  <kbd>C</kbd> Clear click &nbsp;
+  <kbd>X</kbd> Skip (mark unusable) &nbsp;
+  <span class="status" id="statusMsg"></span>
+</div>
+
+<script>
+let jobs = [];
+let currentIdx = 0;
+let currentImg = null;
+let clickX = null;         // image-space x coordinate of the user's click
+let revealStrategies = false;  // anti-bias: strategy lines hidden until operator reveals
+
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+
+// Prompt once for operator name (stored in localStorage)
+function getOperator() {
+  let op = localStorage.getItem('gt_operator');
+  if (!op) {
+    op = prompt('Your name (for audit trail):') || 'anonymous';
+    localStorage.setItem('gt_operator', op);
+  }
+  return op;
+}
+
+async function load() {
+  document.getElementById('statusMsg').textContent = 'Loading...';
+  const res = await fetch('/api/split/jobs/groundtruth-bundle?limit=20');
+  jobs = await res.json();
+  currentIdx = 0;
+  updateProgress();
+  showCurrent();
+  document.getElementById('statusMsg').textContent = '';
+}
+
+function updateProgress() {
+  const done = jobs.filter(j => j.ground_truth_split_x != null).length;
+  document.getElementById('progressChip').textContent = `${done} / ${jobs.length} annotated`;
+}
+
+function strategySplitX(job, name) {
+  if (!job.strategies) return null;
+  const s = job.strategies.find(s => s.strategy_name === name);
+  return s ? s.split_x : null;
+}
+
+function updateMetaBar() {
+  const job = jobs[currentIdx];
+  if (!job) return;
+  const hide = !revealStrategies;
+  document.getElementById('bestVal').textContent = hide
+    ? 'hidden'
+    : (job.best_split_x != null ? `${job.best_split_x} (${job.best_strategy || '-'})` : '-');
+  document.getElementById('swVal').textContent = hide ? '--' : (strategySplitX(job, 'steel_wall_midpoint') ?? '-');
+  document.getElementById('cvVal').textContent = hide ? '--' : (strategySplitX(job, 'claude_vision') ?? '-');
+  document.getElementById('cfVal').textContent = hide ? '--' : (strategySplitX(job, 'corner_fitting') ?? '-');
+  document.getElementById('dpVal').textContent = hide ? '--' : (strategySplitX(job, 'density_profile') ?? '-');
+}
+
+function updateRevealButton() {
+  const btn = document.getElementById('btnReveal');
+  if (!btn) return;
+  btn.textContent = revealStrategies ? 'Hide strategies' : 'Reveal strategies';
+  btn.style.background = revealStrategies ? '#b71c1c' : '#263238';
+  btn.style.borderColor = revealStrategies ? '#c62828' : '#37474f';
+  btn.style.color = revealStrategies ? '#ef9a9a' : '#b0bec5';
+}
+
+function toggleReveal() {
+  revealStrategies = !revealStrategies;
+  updateRevealButton();
+  updateMetaBar();
+  drawOverlay();
+}
+
+function navigate(delta) {
+  currentIdx = Math.max(0, Math.min(jobs.length - 1, currentIdx + delta));
+  clickX = null;
+  showCurrent();
+}
+
+function clearClick() {
+  clickX = null;
+  drawOverlay();
+  document.getElementById('gtVal').textContent = jobs[currentIdx].ground_truth_split_x != null
+    ? jobs[currentIdx].ground_truth_split_x + ' (saved)'
+    : '(click to set)';
+}
+
+function showCurrent() {
+  if (!jobs.length) return;
+  const job = jobs[currentIdx];
+  // Reset reveal state when moving to a new image — forces fresh blind click
+  revealStrategies = false;
+  updateRevealButton();
+
+  document.getElementById('counter').textContent = `${currentIdx + 1} of ${jobs.length}`;
+  document.getElementById('containerNames').textContent = job.container_numbers;
+  document.getElementById('imgDims').textContent = `${job.image_width} x ${job.image_height}`;
+  // Meta-bar strategy values are hidden until reveal so the numbers don't leak
+  // into the operator's eye before they click. updateMetaBar() handles both
+  // the hidden and revealed states; it's called again from toggleReveal().
+  updateMetaBar();
+  document.getElementById('gtVal').textContent = job.ground_truth_split_x != null
+    ? `${job.ground_truth_split_x} (saved)`
+    : '(click to set)';
+
+  document.getElementById('btnPrev').disabled = currentIdx === 0;
+  document.getElementById('btnNext').disabled = currentIdx >= jobs.length - 1;
+
+  const img = new Image();
+  img.onload = () => {
+    currentImg = img;
+    canvas.width = img.width;
+    canvas.height = img.height;
+    drawOverlay();
+  };
+  img.src = `/api/split/${job.id}/original?t=${Date.now()}`;
+  document.getElementById('statusMsg').textContent = '';
+}
+
+function drawOverlay() {
+  if (!currentImg) return;
+  ctx.drawImage(currentImg, 0, 0);
+
+  const job = jobs[currentIdx];
+
+  // ANTI-BIAS: strategy overlays are HIDDEN until the operator has clicked
+  // (or until they explicitly reveal them via the "Reveal strategies" button).
+  // The ground-truth data is only useful if the operator's eye is placing the
+  // split based on the actual image, not unconsciously anchoring to whichever
+  // line they can see on screen. Bias was discovered on 2026-04-08 when the
+  // "pixel-perfect" ground truth on 19 images turned out to be "clicks
+  // anchored to strategy overlays"; on a fresh image where the operator
+  // could not see the guide lines, claude_vision and steel_wall_midpoint
+  // were both ~150 px wrong while corner_fitting and density_profile were
+  // correct — the opposite of what the biased dataset said.
+  const lines = [
+    { name: 'steel_wall_midpoint', color: '#00bcd4', label: 'SW', x: strategySplitX(job, 'steel_wall_midpoint'), y: 14 },
+    { name: 'claude_vision',       color: '#ffeb3b', label: 'CV', x: strategySplitX(job, 'claude_vision'),       y: 32 },
+    { name: 'corner_fitting',      color: '#ff9800', label: 'CF', x: strategySplitX(job, 'corner_fitting'),      y: 50 },
+    { name: 'density_profile',     color: '#9c27b0', label: 'DP', x: strategySplitX(job, 'density_profile'),     y: 68 },
+  ];
+
+  if (revealStrategies) {
+    for (const L of lines) {
+      if (L.x == null) continue;
+      ctx.strokeStyle = L.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(L.x, 0);
+      ctx.lineTo(L.x, canvas.height);
+      ctx.stroke();
+      ctx.fillStyle = L.color;
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText(`${L.label} ${L.x}`, L.x + 4, L.y);
+    }
+  }
+
+  // Draw ground truth click in thick green (if set via click OR already-saved)
+  const gtFromClick = clickX;
+  const gtFromSave = job.ground_truth_split_x;
+  if (gtFromClick != null) {
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(gtFromClick, 0);
+    ctx.lineTo(gtFromClick, canvas.height);
+    ctx.stroke();
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText(`GT ${gtFromClick}`, gtFromClick + 6, canvas.height - 10);
+  } else if (gtFromSave != null) {
+    // Dotted saved line so it's visually distinct from a fresh click
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(gtFromSave, 0);
+    ctx.lineTo(gtFromSave, canvas.height);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#4caf50';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText(`GT ${gtFromSave} (saved)`, gtFromSave + 6, canvas.height - 10);
+  }
+}
+
+canvas.addEventListener('click', (e) => {
+  if (!currentImg) return;
+  // Convert CSS click coordinates to canvas (image) pixel coordinates.
+  // The canvas element may be visually scaled (max-width:100%) so its
+  // offsetX is in CSS pixels, not image pixels — scale by canvas/display ratio.
+  const rect = canvas.getBoundingClientRect();
+  const cssX = e.clientX - rect.left;
+  const scale = canvas.width / rect.width;
+  clickX = Math.round(cssX * scale);
+  clickX = Math.max(0, Math.min(canvas.width - 1, clickX));
+  document.getElementById('gtVal').textContent = clickX + ' (unsaved click)';
+  drawOverlay();
+});
+
+async function saveGroundTruth() {
+  if (!jobs.length) return;
+  if (clickX == null) {
+    document.getElementById('statusMsg').textContent = 'No click recorded — click the image first';
+    return;
+  }
+  const job = jobs[currentIdx];
+  const operator = getOperator();
+
+  try {
+    const res = await fetch(`/api/split/${job.id}/ground-truth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ground_truth_split_x: clickX,
+        set_by: operator,
+      }),
+    });
+    if (!res.ok) {
+      document.getElementById('statusMsg').textContent = `Save failed: HTTP ${res.status}`;
+      return;
+    }
+    const body = await res.json();
+    job.ground_truth_split_x = body.ground_truth_split_x;
+    job.ground_truth_set_by = body.set_by;
+    updateProgress();
+    document.getElementById('statusMsg').textContent = `Saved ${clickX}px as ${operator}`;
+    clickX = null;
+
+    setTimeout(() => {
+      if (currentIdx < jobs.length - 1) navigate(1);
+      else showCurrent();
+    }, 250);
+  } catch (err) {
+    document.getElementById('statusMsg').textContent = `Error: ${err.message}`;
+  }
+}
+
+async function markUnusable() {
+  if (!jobs.length) return;
+  const job = jobs[currentIdx];
+  const operator = getOperator();
+  // Store a sentinel value -1 with a note so the analysis scripts can skip it
+  try {
+    await fetch(`/api/split/${job.id}/ground-truth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ground_truth_split_x: -1,
+        set_by: operator,
+        notes: 'Unusable / cannot eyeball',
+      }),
+    });
+    job.ground_truth_split_x = -1;
+    updateProgress();
+    document.getElementById('statusMsg').textContent = 'Marked unusable';
+    setTimeout(() => { if (currentIdx < jobs.length - 1) navigate(1); }, 200);
+  } catch (err) {
+    document.getElementById('statusMsg').textContent = `Error: ${err.message}`;
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  // Only act if not typing in an input
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); navigate(-1); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); navigate(1); }
+  else if (e.key === 's' || e.key === 'S') { e.preventDefault(); saveGroundTruth(); }
+  else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); clearClick(); }
+  else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); markUnusable(); }
+  else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleReveal(); }
+});
+
+load();
+</script>
+</body>
+</html>

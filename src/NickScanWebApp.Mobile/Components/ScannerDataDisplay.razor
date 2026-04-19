@@ -1,0 +1,125 @@
+@using System.Text.Json
+@inject NickScanWebApp.Mobile.Services.ApiService ApiService
+
+<MudPaper Elevation="@Elevation" Class="@($"pa-2 {Class}")">
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" />
+    }
+    else if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <MudAlert Severity="Severity.Error" Dense="true" Class="ma-0">@_error</MudAlert>
+    }
+    else if (_data == null)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">No data.</MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.subtitle2" Class="mb-2">Scanner data</MudText>
+        <MudSimpleTable Dense="true" Style="font-size: 13px;">
+            <tbody>
+                <tr>
+                    <td style="width: 40%; color: var(--mud-palette-text-secondary);">Container</td>
+                    <td>@_data.ContainerNumber</td>
+                </tr>
+                <tr>
+                    <td style="color: var(--mud-palette-text-secondary);">Detected scanner</td>
+                    <td>@(_data.DetectedScanner ?? "—")</td>
+                </tr>
+                <tr>
+                    <td style="color: var(--mud-palette-text-secondary);">Scan date</td>
+                    <td>@_data.ScanDate.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                </tr>
+            </tbody>
+        </MudSimpleTable>
+
+        @if (_data.ScannerData is { Count: > 0 })
+        {
+            <MudDivider Class="my-2" />
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-1">Additional fields</MudText>
+            <MudStack Spacing="1">
+                @foreach (var kv in _data.ScannerData.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+                {
+                    <MudPaper Elevation="0" Class="pa-2" Style="background: var(--mud-palette-background-grey);">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@kv.Key</MudText>
+                        <MudText Typo="Typo.body2" Style="word-break: break-word;">@FormatValue(kv.Value)</MudText>
+                    </MudPaper>
+                }
+            </MudStack>
+        }
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public int Elevation { get; set; } = 1;
+    [Parameter] public string Class { get; set; } = "";
+
+    private bool _loading;
+    private string? _error;
+    private ContainerCompleteData? _data;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ContainerNumber))
+        {
+            _data = null;
+            _error = null;
+            return;
+        }
+
+        _loading = true;
+        _error = null;
+        _data = null;
+        try
+        {
+            var encoded = Uri.EscapeDataString(ContainerNumber.Trim());
+            _data = await ApiService.GetAsync<ContainerCompleteData>($"/api/ContainerDetails/{encoded}/complete");
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string FormatValue(object? value) => value switch
+    {
+        null => "—",
+        JsonElement je => je.ValueKind switch
+        {
+            JsonValueKind.String => je.GetString() ?? "",
+            JsonValueKind.Number => je.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null => "—",
+            _ => je.ToString()
+        },
+        _ => value.ToString() ?? "—"
+    };
+
+    public class ContainerCompleteData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string? DetectedScanner { get; set; }
+        public DateTime ScanDate { get; set; }
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, object>? ScannerData { get; set; }
+    }
+}

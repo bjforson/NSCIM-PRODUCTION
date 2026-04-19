@@ -1,0 +1,414 @@
+@page "/admin/roles"
+@attribute [Authorize(Policy = Permissions.PagesAdminRoles)]
+@using NickScanWebApp.New.Services
+@using NickScanCentralImagingPortal.Core.Constants
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthStateProvider
+@inject RoleLookupService RoleLookup
+@using NickScanWebApp.New.Components.Administration
+@using NickScanCentralImagingPortal.Core.Models
+@* Force rebuild - updated *@
+
+<PageTitle>NICKSCAN ERP — NSCIS — Role Management</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+            <MudText Typo="Typo.h4">Role Management</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Manage system roles and permissions</MudText>
+            </div>
+            <MudButton Variant="Variant.Filled" 
+                       Color="Color.Primary" 
+                       StartIcon="@Icons.Material.Outlined.Add" 
+                       OnClick="ShowCreateDialog"
+                       Disabled="@_isLoading">
+                Create Custom Role
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+
+    @if (_isLoading)
+    {
+        <MudPaper Elevation="2" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Loading roles...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else
+    {
+    <!-- Roles Grid -->
+    <MudGrid>
+        @foreach (var role in _roles)
+        {
+            <MudItem xs="12" md="6" lg="4">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Spacing="3">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.h6">@role.DisplayName</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@RolePresentation.GetChipColor(role.Name)">
+                                    @role.UserCount @(role.UserCount == 1 ? "user" : "users")
+                            </MudChip>
+                        </MudStack>
+                            
+                            @if (role.IsSystemRole)
+                            {
+                                <MudAlert Severity="Severity.Info" Dense="true" NoIcon="true" Class="py-1">
+                                    <MudText Typo="Typo.caption">System Role</MudText>
+                                </MudAlert>
+                            }
+                            
+                            <MudText Typo="Typo.body2" Color="Color.Secondary" Style="min-height: 40px;">
+                                @(string.IsNullOrEmpty(role.Description) ? "No description provided" : role.Description)
+                            </MudText>
+                            
+                        <MudDivider />
+                            
+                        <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    <b>@role.PermissionCount</b> @(role.PermissionCount == 1 ? "Permission" : "Permissions")
+                                </MudText>
+                                @if (role.SamplePermissions.Length > 0)
+                                {
+                            <MudChipSet T="string">
+                                @foreach (var perm in role.SamplePermissions)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@perm</MudChip>
+                                }
+                                @if (role.PermissionCount > 3)
+                                {
+                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Info">
+                                                +@(role.PermissionCount - 3) more
+                                            </MudChip>
+                                }
+                            </MudChipSet>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-style: italic;">
+                                        No permissions assigned
+                                    </MudText>
+                                }
+                        </MudStack>
+                            
+                        <MudStack Row="true" Spacing="2" Class="mt-2">
+                                <MudButton Variant="Variant.Outlined" 
+                                           Size="Size.Small" 
+                                           StartIcon="@Icons.Material.Outlined.Security" 
+                                           OnClick="@(() => ManagePermissions(role))"
+                                           FullWidth="true">
+                                    Manage Permissions
+                                </MudButton>
+                                
+                                @if (!role.IsSystemRole)
+                                {
+                                    <MudButton Variant="Variant.Outlined" 
+                                               Size="Size.Small" 
+                                               StartIcon="@Icons.Material.Outlined.Edit" 
+                                               OnClick="@(() => ShowEditDialog(role))">
+                                Edit
+                            </MudButton>
+                                    <MudButton Variant="Variant.Outlined" 
+                                               Size="Size.Small" 
+                                               Color="Color.Error" 
+                                               StartIcon="@Icons.Material.Outlined.Delete" 
+                                               OnClick="@(() => DeleteRole(role))">
+                                        Delete
+                            </MudButton>
+                                }
+                        </MudStack>
+                            
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                                Created @role.CreatedAt.ToString("MMM dd, yyyy") by @role.CreatedBy
+                            </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+    }
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private List<RoleItem> _roles = new();
+    private bool _isLoading = false;
+    private string _currentUsername = "admin";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Administration", href: "#", icon: Icons.Material.Outlined.AdminPanelSettings),
+            new BreadcrumbItem("Roles", href: null, disabled: true)
+        };
+        
+        // Get current username for audit trail
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        if (user.Identity?.IsAuthenticated == true)
+        {
+            _currentUsername = user.Identity.Name ?? "admin";
+        }
+        
+        await LoadRoles();
+    }
+
+    private async Task LoadRoles()
+    {
+        _isLoading = true;
+        try
+        {
+            Console.WriteLine("🔄 Loading roles from API...");
+            var rolesFromApi = await ApiService.GetAsync<List<RoleDto>>("/api/Roles");
+            
+            if (rolesFromApi != null && rolesFromApi.Any())
+            {
+                _roles = new List<RoleItem>();
+                
+                // Load all roles data in parallel for better performance
+                var roleTasks = rolesFromApi.Select(async role =>
+                {
+                    List<string>? permissions = null;
+                    List<UserDtoSimple>? users = null;
+                    
+                    try
+                    {
+                        permissions = await ApiService.GetAsync<List<string>>($"/api/Roles/{role.Id}/permissions");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️ Could not load permissions for role {role.Name}: {ex.Message}");
+                    }
+                    
+                    try
+                    {
+                        users = await ApiService.GetAsync<List<UserDtoSimple>>($"/api/Roles/{role.Id}/users");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️ Could not load users for role {role.Name}: {ex.Message}");
+                    }
+                    
+                    return new RoleItem
+                    {
+                        Id = role.Id,
+                        Name = role.Name ?? "",
+                        DisplayName = role.DisplayName ?? role.Name ?? "",
+                        Description = role.Description ?? "",
+                        IsSystemRole = role.IsSystemRole,
+                        PermissionCount = permissions?.Count ?? 0,
+                        UserCount = users?.Count ?? 0,
+                        SamplePermissions = permissions?.Take(3).ToArray() ?? Array.Empty<string>(),
+                        AllPermissions = permissions ?? new List<string>(),
+                        CreatedAt = role.CreatedAt,
+                        CreatedBy = role.CreatedBy ?? "System"
+                    };
+                });
+                
+                _roles = (await Task.WhenAll(roleTasks)).ToList();
+                Console.WriteLine($"✅ Loaded {_roles.Count} roles");
+                Snackbar.Add($"✅ Loaded {_roles.Count} roles", Severity.Success);
+            }
+            else
+            {
+                _roles = new List<RoleItem>();
+                Snackbar.Add("⚠️ No roles found", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading roles: {ex.Message}");
+            Snackbar.Add($"❌ Error loading roles: {ex.Message}", Severity.Error);
+            _roles = new List<RoleItem>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ShowCreateDialog()
+    {
+        Console.WriteLine("🔵 ShowCreateDialog clicked!");
+        try
+        {
+        IDialogReference? dialogRef = null;
+        var parameters = new DialogParameters
+        {
+            ["CurrentUsername"] = _currentUsername,
+            ["OnRoleCreated"] = EventCallback.Factory.Create(this, async () =>
+            {
+                await LoadRoles();
+                dialogRef?.Close(DialogResult.Ok(true));
+            })
+        };
+        
+        var options = new DialogOptions 
+            { 
+                MaxWidth = MaxWidth.Medium, 
+                FullWidth = true,
+                CloseButton = true,
+                CloseOnEscapeKey = true
+            };
+            
+            Console.WriteLine("🔵 Opening CreateRoleDialog...");
+        dialogRef = await DialogService.ShowAsync<CreateRoleDialog>("Create New Role", parameters, options);
+        await dialogRef.Result;
+            Console.WriteLine("✅ CreateRoleDialog opened");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error opening CreateRoleDialog: {ex.Message}");
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowEditDialog(RoleItem role)
+    {
+        Console.WriteLine($"🔵 ShowEditDialog clicked for role: {role.Name}");
+        try
+        {
+            var parameters = new DialogParameters
+            {
+                ["RoleId"] = role.Id,
+                ["RoleName"] = role.Name,
+                ["DisplayName"] = role.DisplayName,
+                ["Description"] = role.Description,
+                ["CurrentUsername"] = _currentUsername,
+                ["OnRoleUpdated"] = EventCallback.Factory.Create(this, LoadRoles)
+            };
+            
+            var options = new DialogOptions 
+            { 
+                MaxWidth = MaxWidth.Medium, 
+                FullWidth = true,
+                CloseButton = true,
+                CloseOnEscapeKey = true
+            };
+            
+            Console.WriteLine("🔵 Opening EditRoleDialog...");
+            await DialogService.ShowAsync<EditRoleDialog>($"Edit Role: {role.DisplayName}", parameters, options);
+            Console.WriteLine("✅ EditRoleDialog opened");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error opening EditRoleDialog: {ex.Message}");
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ManagePermissions(RoleItem role)
+    {
+        Console.WriteLine($"🔵 ManagePermissions clicked for role: {role.Name}");
+        try
+        {
+            var parameters = new DialogParameters
+            {
+                ["RoleId"] = role.Id,
+                ["RoleName"] = role.DisplayName,
+                ["CurrentPermissions"] = role.AllPermissions,
+                ["CurrentUsername"] = _currentUsername,
+                ["OnPermissionsUpdated"] = EventCallback.Factory.Create(this, LoadRoles)
+            };
+            
+            var options = new DialogOptions 
+            { 
+                MaxWidth = MaxWidth.Large, 
+                FullWidth = true,
+                CloseButton = true,
+                CloseOnEscapeKey = true
+            };
+            
+            Console.WriteLine("🔵 Opening ManagePermissionsDialog...");
+            await DialogService.ShowAsync<ManagePermissionsDialog>($"Manage Permissions: {role.DisplayName}", parameters, options);
+            Console.WriteLine("✅ ManagePermissionsDialog opened");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error opening ManagePermissionsDialog: {ex.Message}");
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteRole(RoleItem role)
+    {
+        if (role.UserCount > 0)
+        {
+            Snackbar.Add($"❌ Cannot delete role '{role.DisplayName}' - {role.UserCount} users are assigned to this role", Severity.Error);
+            return;
+        }
+
+        var confirmed = await DialogService.ShowMessageBox(
+            "Delete Role",
+            $"Are you sure you want to delete the role '{role.DisplayName}'? This action cannot be undone.",
+            yesText: "Delete", 
+            cancelText: "Cancel");
+        
+        if (confirmed == true)
+        {
+            try
+            {
+                await ApiService.DeleteAsync($"/api/Roles/{role.Id}?deletedBy={Uri.EscapeDataString(_currentUsername)}");
+                RoleLookup.ClearCache();
+                await RoleLookup.GetRolesAsync(forceRefresh: true);
+                Snackbar.Add($"✅ Role '{role.DisplayName}' deleted successfully!", Severity.Success);
+                await LoadRoles();
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"❌ Error deleting role: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    // View Models
+    public class RoleItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string Description { get; set; } = "";
+        public bool IsSystemRole { get; set; }
+        public int PermissionCount { get; set; }
+        public int UserCount { get; set; }
+        public string[] SamplePermissions { get; set; } = Array.Empty<string>();
+        public List<string> AllPermissions { get; set; } = new();
+        public DateTime CreatedAt { get; set; }
+        public string CreatedBy { get; set; } = "";
+    }
+
+    // DTOs
+    public class RoleDto
+    {
+        public int Id { get; set; }
+        public string? Name { get; set; }
+        public string? DisplayName { get; set; }
+        public string? Description { get; set; }
+        public string? BaseRole { get; set; }
+        public bool IsSystemRole { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? CreatedBy { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+
+    public class UserDtoSimple
+    {
+        public int Id { get; set; }
+        public string? Username { get; set; }
+        public string? Email { get; set; }
+        // Using object to handle any format (int, string, or enum)
+        public object? Role { get; set; }
+        public bool IsActive { get; set; }
+    }
+}

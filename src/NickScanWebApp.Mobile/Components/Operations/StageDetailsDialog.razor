@@ -1,0 +1,143 @@
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Models
+
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Small">
+    <TitleContent>
+        <MudText Typo="Typo.h6">@StageName - Details</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (StageData != null)
+        {
+            <MudStack Spacing="2">
+                <!-- Key Metrics -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudText Typo="Typo.h6" Class="mb-2">Key Metrics</MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td>Current Count:</td>
+                                <td><strong>@StageData.Count</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Status:</td>
+                                <td>
+                                    <MudChip T="string" Color="@GetStatusColor(StageData.Status)" Size="Size.Small">@StageData.Status</MudChip>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Average Age:</td>
+                                <td>@FormatTimeSpan(StageData.AverageAge)</td>
+                            </tr>
+                            <tr>
+                                <td>Oldest Item:</td>
+                                <td>@FormatTimeSpan(StageData.OldestAge)</td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+
+                <!-- Flow Metrics -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudText Typo="Typo.h6" Class="mb-2">Flow Metrics</MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td>Incoming Rate:</td>
+                                <td><strong>@StageData.IncomingRate.ToString("F1")/hr</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Outgoing Rate:</td>
+                                <td><strong>@StageData.OutgoingRate.ToString("F1")/hr</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Net Change:</td>
+                                <td>
+                                    <MudText Typo="Typo.body2" Color="@GetNetChangeColor(StageData.NetChange)">
+                                        @(StageData.NetChange >= 0 ? "+" : "")@StageData.NetChange.ToString("F1")/hr
+                                    </MudText>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+
+                <!-- Status Alert -->
+                <MudAlert Severity="@GetStatusSeverity(StageData.Status)">
+                    @GetStatusMessage(StageData.Status, StageData.Count, StageData.OldestAge)
+                </MudAlert>
+            </MudStack>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Error">No data available for this stage.</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Close" FullWidth="true">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public string StageName { get; set; } = string.Empty;
+    [Parameter] public StageMetrics? StageData { get; set; }
+    [CascadingParameter] IDialogReference? MudDialog { get; set; }
+
+    private void Close()
+    {
+        MudDialog?.Close();
+    }
+
+    private Color GetStatusColor(string? status)
+    {
+        return status switch
+        {
+            "Normal" => Color.Success,
+            "Warning" => Color.Warning,
+            "Critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Severity GetStatusSeverity(string? status)
+    {
+        return status switch
+        {
+            "Normal" => Severity.Success,
+            "Warning" => Severity.Warning,
+            "Critical" => Severity.Error,
+            _ => Severity.Info
+        };
+    }
+
+    private Color GetNetChangeColor(double netChange)
+    {
+        return netChange switch
+        {
+            > 0 => Color.Success,
+            < 0 => Color.Warning,
+            _ => Color.Default
+        };
+    }
+
+    private string FormatTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan.TotalDays >= 1)
+            return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h";
+        if (timeSpan.TotalHours >= 1)
+            return $"{(int)timeSpan.TotalHours}h {timeSpan.Minutes}m";
+        if (timeSpan.TotalMinutes >= 1)
+            return $"{(int)timeSpan.TotalMinutes}m";
+        return $"{timeSpan.Seconds}s";
+    }
+
+    private string GetStatusMessage(string? status, int count, TimeSpan oldestAge)
+    {
+        return status switch
+        {
+            "Normal" => $"Stage is operating normally with {count} items. Oldest item is {FormatTimeSpan(oldestAge)} old.",
+            "Warning" => $"⚠️ Stage has {count} items. Oldest item is {FormatTimeSpan(oldestAge)} old - may need attention.",
+            "Critical" => $"🚨 Stage has {count} items. Oldest item is {FormatTimeSpan(oldestAge)} old - requires immediate attention!",
+            _ => $"Stage has {count} items."
+        };
+    }
+}

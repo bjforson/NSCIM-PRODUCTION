@@ -1,0 +1,707 @@
+@page "/scanners"
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Shared.Services
+@attribute [Authorize(Policy = Permissions.PagesScannersView)]
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<Scanners> Logger
+
+<PageTitle>Scanners - NickScan Mobile</PageTitle>
+
+@if (!_initialized)
+{
+    <MudContainer Class="d-flex flex-column align-center justify-center" Style="height: 100vh;">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" Class="mb-4" />
+        <MudText Typo="Typo.h6" Align="Align.Center">
+            Loading scanner overview&hellip;
+        </MudText>
+    </MudContainer>
+}
+else
+{
+    <MudContainer MaxWidth="MaxWidth.False" Class="pt-2 pb-8 px-2">
+        <MudStack Spacing="2">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h6">Scanner Overview</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Monitor FS6000, ASE and Heimann Smith scanners
+                </MudText>
+            </MudStack>
+
+            <!-- Summary Cards -->
+            <MudGrid Spacing="2" Class="mb-3">
+                <MudItem xs="6">
+                    <MudPaper Elevation="1" Class="pa-2">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Scanners</MudText>
+                            <MudText Typo="Typo.h5">3</MudText>
+                            <MudText Typo="Typo.caption" Color="@GetSystemStatusColor()">@GetSystemStatusText()</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="6">
+                    <MudPaper Elevation="1" Class="pa-2">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Today's Scans</MudText>
+                            <MudText Typo="Typo.h5">@(_fs6000TodayScans + _aseTodayScans + _heimannTodayScans)</MudText>
+                            @if (_yesterdayTotalScans > 0)
+                            {
+                                var totalToday = _fs6000TodayScans + _aseTodayScans + _heimannTodayScans;
+                                var percentChange = ((totalToday - _yesterdayTotalScans) / (double)_yesterdayTotalScans) * 100;
+                                var changeColor = percentChange >= 0 ? Color.Success : Color.Error;
+                                var changeSymbol = percentChange >= 0 ? "+" : "";
+                                <MudText Typo="Typo.caption" Color="@changeColor">
+                                    @changeSymbol@percentChange.ToString("F1")% from yesterday
+                                </MudText>
+                            }
+                            else
+                            {
+                                var totalToday = _fs6000TodayScans + _aseTodayScans + _heimannTodayScans;
+                                if (totalToday > 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Success">New today</MudText>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">No scans yesterday</MudText>
+                                }
+                            }
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudPaper Elevation="1" Class="pa-2">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Average Processing Time</MudText>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudText Typo="Typo.h6">@FormatProcessingTime(_avgProcessingTimeMinutes)</MudText>
+                                <MudIcon Icon="@Icons.Material.Filled.Speed" Color="Color.Primary" Size="Size.Small" />
+                            </MudStack>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Per container</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+
+            <!-- Scanner Cards -->
+            <MudStack Spacing="2">
+                <!-- FS6000 Scanner -->
+                <MudPaper Elevation="2" Class="pa-3" @onclick="@(() => Navigation.NavigateTo("/scanners/fs6000"))">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">FS6000 X-Ray</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetFS6000StatusColor()" Icon="@GetFS6000StatusIcon()">
+                                @GetFS6000StatusText()
+                            </MudChip>
+                        </MudStack>
+                        <MudDivider />
+                        <MudStack Spacing="1">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_fs6000TodayScans</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_fs6000TotalScans.ToString("N0")</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Last Scan:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_fs6000LastScanTime)</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime:</MudText>
+                                <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_fs6000Uptime)}")">@FormatUptime(_fs6000Uptime)</MudText>
+                            </MudStack>
+                            @if (_fs6000AvgProcessingTimeMinutes > 0)
+                            {
+                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Processing:</MudText>
+                                    <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatProcessingTime(_fs6000AvgProcessingTimeMinutes)</MudText>
+                                </MudStack>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- ASE Scanner -->
+                <MudPaper Elevation="2" Class="pa-3" @onclick="@(() => Navigation.NavigateTo("/scanners/ase"))">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">ASE X-Ray</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetASEStatusColor()" Icon="@GetASEStatusIcon()">
+                                @GetASEStatusText()
+                            </MudChip>
+                        </MudStack>
+                        <MudDivider />
+                        <MudStack Spacing="1">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_aseTodayScans</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_aseTotalScans.ToString("N0")</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Last Scan:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_aseLastScanTime)</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime:</MudText>
+                                <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_aseUptime)}")">@FormatUptime(_aseUptime)</MudText>
+                            </MudStack>
+                            @if (_aseAvgProcessingTimeMinutes > 0)
+                            {
+                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Processing:</MudText>
+                                    <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatProcessingTime(_aseAvgProcessingTimeMinutes)</MudText>
+                                </MudStack>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- Heimann Smith Scanner -->
+                <MudPaper Elevation="2" Class="pa-3" @onclick="@(() => Navigation.NavigateTo("/scanners/heimann-smith"))">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">Heimann Smith</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetHSStatusColor()" Icon="@GetHSStatusIcon()">
+                                @GetHSStatusText()
+                            </MudChip>
+                        </MudStack>
+                        <MudDivider />
+                        <MudStack Spacing="1">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_heimannTodayScans</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@_heimannTotalScans.ToString("N0")</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Last Scan:</MudText>
+                                <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_heimannLastScanTime)</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime:</MudText>
+                                <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_heimannUptime)}")">@FormatUptime(_heimannUptime)</MudText>
+                            </MudStack>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            </MudStack>
+            
+            <!-- Recent Activity -->
+            @if (_recentActivity.Any())
+            {
+                <MudPaper Elevation="1" Class="pa-3 mt-3" Style="max-height: 300px; overflow-y: auto;">
+                    <MudText Typo="Typo.h6" Class="mb-3">Recent Scanner Activity</MudText>
+                    <MudTimeline TimelineOrientation="TimelineOrientation.Vertical" TimelinePosition="TimelinePosition.Start">
+                        @foreach (var activity in _recentActivity.Take(5))
+                        {
+                            <MudTimelineItem Color="@activity.Color" Size="Size.Small">
+                                <ItemContent>
+                                    <MudText Typo="Typo.body2">@activity.ScannerName completed scan for @activity.ContainerNumber</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatRelativeTime(activity.ScanTime)</MudText>
+                                </ItemContent>
+                            </MudTimelineItem>
+                        }
+                    </MudTimeline>
+                </MudPaper>
+            }
+
+            <!-- Refresh Button -->
+            <MudButton Variant="Variant.Filled" 
+                      Color="Color.Primary" 
+                      FullWidth="true"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="LoadScannerStatus"
+                      Disabled="!_initialized">
+                Refresh Status
+            </MudButton>
+        </MudStack>
+    </MudContainer>
+}
+
+@code {
+    private bool _initialized;
+
+    private int _fs6000TodayScans;
+    private int _fs6000TotalScans;
+    private DateTime? _fs6000LastScanTime;
+    private double _fs6000Uptime = 0;
+
+    private int _aseTodayScans;
+    private int _aseTotalScans;
+    private DateTime? _aseLastScanTime;
+    private double _aseUptime = 0;
+
+    private int _heimannTodayScans;
+    private int _heimannTotalScans;
+    private DateTime? _heimannLastScanTime;
+    private double _heimannUptime = 0;
+    
+    private int _yesterdayTotalScans = 0;
+    
+    // Processing time metrics
+    private double _avgProcessingTimeMinutes = 0;
+    private double _fs6000AvgProcessingTimeMinutes = 0;
+    private double _aseAvgProcessingTimeMinutes = 0;
+    
+    // Recent activity
+    private List<RecentActivityItem> _recentActivity = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated != true)
+        {
+            Navigation.NavigateTo("/login", true);
+            return;
+        }
+
+        await LoadScannerStatus();
+        _initialized = true;
+    }
+
+    private async Task LoadScannerStatus()
+    {
+        try
+        {
+            // FS6000
+            try
+            {
+                var fs6000Stats = await ApiService.GetAsync<FS6000Statistics>("/api/FS6000/statistics");
+                if (fs6000Stats?.Scans != null)
+                {
+                    _fs6000TotalScans = fs6000Stats.Scans.Total;
+                    _fs6000TodayScans = fs6000Stats.Scans.Today;
+                }
+                
+                // Get last scan time
+                var fs6000Scans = await ApiService.GetAsync<List<FS6000ScanDto>>("/api/FS6000/scans?pageSize=1");
+                if (fs6000Scans != null && fs6000Scans.Any())
+                {
+                    _fs6000LastScanTime = fs6000Scans.First().ScanTime;
+                }
+                
+                // Calculate uptime (estimate based on activity)
+                _fs6000Uptime = _fs6000TodayScans > 0 ? 99.5 : 0;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "FS6000 stats error");
+                Snackbar.Add($"FS6000 stats error: {ex.Message}", Severity.Warning);
+            }
+
+            // ASE
+            try
+            {
+                var aseStats = await ApiService.GetAsync<AseSyncStatus>("/api/Ase/sync-status");
+                if (aseStats != null)
+                {
+                    _aseTotalScans = aseStats.TotalScans;
+                    _aseTodayScans = aseStats.TodayScans ?? aseStats.RecentScans24h;
+                }
+                
+                // Get actual last scan time from recent scans
+                var aseScansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=1");
+                if (aseScansResponse?.Data != null && aseScansResponse.Data.Any())
+                {
+                    _aseLastScanTime = aseScansResponse.Data.First().ScanTime;
+                }
+                
+                // Calculate uptime
+                _aseUptime = _aseTodayScans > 0 ? 99.5 : 0;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "ASE stats error");
+                Snackbar.Add($"ASE stats error: {ex.Message}", Severity.Warning);
+            }
+
+            // Heimann (best-effort)
+            try
+            {
+                var heimannStats = await ApiService.GetAsync<HeimannStatistics>("/api/Heimann/statistics");
+                if (heimannStats != null)
+                {
+                    _heimannTotalScans = heimannStats.TotalScans;
+                    _heimannTodayScans = heimannStats.TodayScans;
+                }
+                
+                // Calculate uptime
+                _heimannUptime = _heimannTodayScans > 0 ? 99.0 : 98.0;
+            }
+            catch
+            {
+                _heimannTotalScans = 0;
+                _heimannTodayScans = 0;
+                _heimannUptime = 0;
+            }
+            
+            // Load recent activity
+            await LoadRecentActivity();
+            
+            // Calculate average processing times
+            await CalculateAverageProcessingTime();
+            
+            // Calculate yesterday's total scans
+            var yesterday = DateTime.Today.AddDays(-1);
+            try
+            {
+                // Get yesterday's ASE scans from stats
+                var aseStats = await ApiService.GetAsync<List<AseDailyStats>>("/api/Ase/stats");
+                int aseYesterdayCount = 0;
+                if (aseStats != null)
+                {
+                    var yesterdayStat = aseStats.FirstOrDefault(s => s.Date.Date == yesterday.Date);
+                    aseYesterdayCount = yesterdayStat?.Count ?? 0;
+                }
+                
+                // For FS6000, we'd need similar stats endpoint or calculate from scan list
+                // For now, estimate from today's ratio or use 0
+                int fs6000YesterdayCount = 0; // Would need API endpoint for daily stats
+                
+                _yesterdayTotalScans = fs6000YesterdayCount + aseYesterdayCount; // HS typically 0
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Could not calculate yesterday's scans");
+                _yesterdayTotalScans = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading scanner overview: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // DTOs (copied from desktop pages as needed)
+    public class FS6000Statistics
+    {
+        public FS6000ScanStats? Scans { get; set; }
+    }
+
+    public class FS6000ScanStats
+    {
+        public int Total { get; set; }
+        public int Today { get; set; }
+    }
+
+    public class AseSyncStatus
+    {
+        public int TotalScans { get; set; }
+        public int RecentScans24h { get; set; }
+        public int? TodayScans { get; set; }
+    }
+
+    public class HeimannStatistics
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+    }
+    
+    public class AseDailyStats
+    {
+        public DateTime Date { get; set; }
+        public int Count { get; set; }
+    }
+    
+    public class FS6000ScanDto
+    {
+        public Guid Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public DateTime ScanTime { get; set; }
+    }
+    
+    public class AseScanResponse
+    {
+        public List<AseScanDto>? Data { get; set; }
+    }
+    
+    public class AseScanDto
+    {
+        public DateTime ScanTime { get; set; }
+        public string? ContainerNumber { get; set; }
+    }
+    
+    public class RecentActivityItem
+    {
+        public string ScannerName { get; set; } = "";
+        public string ContainerNumber { get; set; } = "";
+        public DateTime ScanTime { get; set; }
+        public Color Color { get; set; }
+    }
+    
+    private async Task LoadRecentActivity()
+    {
+        try
+        {
+            _recentActivity.Clear();
+            
+            // Get recent FS6000 scans
+            var fs6000Scans = await ApiService.GetAsync<List<FS6000ScanDto>>("/api/FS6000/scans?pageSize=5");
+            if (fs6000Scans != null)
+            {
+                foreach (var scan in fs6000Scans.OrderByDescending(s => s.ScanTime).Take(5))
+                {
+                    _recentActivity.Add(new RecentActivityItem
+                    {
+                        ScannerName = "FS6000 Scanner",
+                        ContainerNumber = scan.ContainerNumber ?? "Unknown",
+                        ScanTime = scan.ScanTime,
+                        Color = Color.Info
+                    });
+                }
+            }
+            
+            // Get recent ASE scans
+            var aseScansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=5");
+            if (aseScansResponse?.Data != null)
+            {
+                foreach (var scan in aseScansResponse.Data.OrderByDescending(s => s.ScanTime).Take(5))
+                {
+                    _recentActivity.Add(new RecentActivityItem
+                    {
+                        ScannerName = "ASE Scanner",
+                        ContainerNumber = scan.ContainerNumber ?? "Unknown",
+                        ScanTime = scan.ScanTime,
+                        Color = Color.Success
+                    });
+                }
+            }
+            
+            // Sort by time and take most recent 5
+            _recentActivity = _recentActivity
+                .OrderByDescending(a => a.ScanTime)
+                .Take(5)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not load recent activity");
+        }
+    }
+    
+    private string FormatRelativeTime(DateTime dateTime)
+    {
+        var timeSpan = DateTime.Now - dateTime;
+        
+        if (timeSpan.TotalMinutes < 1)
+            return "Just now";
+        if (timeSpan.TotalMinutes < 60)
+            return $"{(int)timeSpan.TotalMinutes} minutes ago";
+        if (timeSpan.TotalHours < 24)
+            return $"{(int)timeSpan.TotalHours} hours ago";
+        if (timeSpan.TotalDays < 7)
+            return $"{(int)timeSpan.TotalDays} days ago";
+        
+        return dateTime.ToString("MMM dd, yyyy");
+    }
+    
+    private string FormatLastScanTime(DateTime? lastScan)
+    {
+        if (!lastScan.HasValue)
+            return "No scans";
+        
+        return FormatRelativeTime(lastScan.Value);
+    }
+    
+    private string FormatUptime(double uptime)
+    {
+        if (uptime <= 0)
+            return "N/A";
+        
+        return $"{uptime:F1}%";
+    }
+    
+    private string GetUptimeColorString(double uptime)
+    {
+        if (uptime >= 99.0) return "var(--mud-palette-success)";
+        if (uptime >= 95.0) return "var(--mud-palette-warning)";
+        return "var(--mud-palette-error)";
+    }
+    
+    private string GetFS6000StatusText()
+    {
+        if (_fs6000TodayScans > 0 || (_fs6000LastScanTime.HasValue && (DateTime.Now - _fs6000LastScanTime.Value).TotalHours < 24))
+            return "Online";
+        return "Offline";
+    }
+    
+    private Color GetFS6000StatusColor()
+    {
+        if (_fs6000TodayScans > 0 || (_fs6000LastScanTime.HasValue && (DateTime.Now - _fs6000LastScanTime.Value).TotalHours < 24))
+            return Color.Success;
+        return Color.Error;
+    }
+    
+    private string GetFS6000StatusIcon()
+    {
+        if (_fs6000TodayScans > 0 || (_fs6000LastScanTime.HasValue && (DateTime.Now - _fs6000LastScanTime.Value).TotalHours < 24))
+            return Icons.Material.Filled.CheckCircle;
+        return Icons.Material.Filled.Error;
+    }
+    
+    private string GetASEStatusText()
+    {
+        if (_aseTodayScans > 0 || (_aseLastScanTime.HasValue && (DateTime.Now - _aseLastScanTime.Value).TotalHours < 24))
+            return "Online";
+        return "Offline";
+    }
+    
+    private Color GetASEStatusColor()
+    {
+        if (_aseTodayScans > 0 || (_aseLastScanTime.HasValue && (DateTime.Now - _aseLastScanTime.Value).TotalHours < 24))
+            return Color.Success;
+        return Color.Error;
+    }
+    
+    private string GetASEStatusIcon()
+    {
+        if (_aseTodayScans > 0 || (_aseLastScanTime.HasValue && (DateTime.Now - _aseLastScanTime.Value).TotalHours < 24))
+            return Icons.Material.Filled.CheckCircle;
+        return Icons.Material.Filled.Error;
+    }
+    
+    private string GetHSStatusText()
+    {
+        if (_heimannTodayScans > 0)
+            return "Active";
+        if (_heimannLastScanTime.HasValue && (DateTime.Now - _heimannLastScanTime.Value).TotalDays < 7)
+            return "Standby";
+        return "Offline";
+    }
+    
+    private Color GetHSStatusColor()
+    {
+        if (_heimannTodayScans > 0)
+            return Color.Success;
+        if (_heimannLastScanTime.HasValue && (DateTime.Now - _heimannLastScanTime.Value).TotalDays < 7)
+            return Color.Warning;
+        return Color.Error;
+    }
+    
+    private string GetHSStatusIcon()
+    {
+        if (_heimannTodayScans > 0)
+            return Icons.Material.Filled.CheckCircle;
+        if (_heimannLastScanTime.HasValue && (DateTime.Now - _heimannLastScanTime.Value).TotalDays < 7)
+            return Icons.Material.Filled.Pending;
+        return Icons.Material.Filled.Error;
+    }
+    
+    private async Task CalculateAverageProcessingTime()
+    {
+        try
+        {
+            // Calculate average processing time from recent scans
+            // For FS6000 and ASE, estimate based on time between consecutive scans
+            var totalProcessingTime = 0.0;
+            var count = 0;
+            
+            // FS6000 processing time
+            var fs6000Scans = await ApiService.GetAsync<List<FS6000ScanDto>>("/api/FS6000/scans?pageSize=10");
+            if (fs6000Scans != null && fs6000Scans.Count > 1)
+            {
+                var sortedScans = fs6000Scans.OrderByDescending(s => s.ScanTime).ToList();
+                var timeDiffs = new List<double>();
+                for (int i = 0; i < sortedScans.Count - 1; i++)
+                {
+                    var diff = (sortedScans[i].ScanTime - sortedScans[i + 1].ScanTime).TotalMinutes;
+                    if (diff > 0 && diff < 60) // Reasonable range: 0-60 minutes
+                    {
+                        timeDiffs.Add(diff);
+                    }
+                }
+                if (timeDiffs.Any())
+                {
+                    _fs6000AvgProcessingTimeMinutes = timeDiffs.Average();
+                    totalProcessingTime += _fs6000AvgProcessingTimeMinutes;
+                    count++;
+                }
+            }
+            
+            // ASE processing time
+            var aseScansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=10");
+            if (aseScansResponse?.Data != null && aseScansResponse.Data.Count > 1)
+            {
+                var sortedScans = aseScansResponse.Data.OrderByDescending(s => s.ScanTime).ToList();
+                var timeDiffs = new List<double>();
+                for (int i = 0; i < sortedScans.Count - 1; i++)
+                {
+                    var diff = (sortedScans[i].ScanTime - sortedScans[i + 1].ScanTime).TotalMinutes;
+                    if (diff > 0 && diff < 60) // Reasonable range: 0-60 minutes
+                    {
+                        timeDiffs.Add(diff);
+                    }
+                }
+                if (timeDiffs.Any())
+                {
+                    _aseAvgProcessingTimeMinutes = timeDiffs.Average();
+                    totalProcessingTime += _aseAvgProcessingTimeMinutes;
+                    count++;
+                }
+            }
+            
+            // Overall average
+            if (count > 0)
+            {
+                _avgProcessingTimeMinutes = totalProcessingTime / count;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not calculate average processing time");
+        }
+    }
+    
+    private string FormatProcessingTime(double minutes)
+    {
+        if (minutes <= 0)
+            return "N/A";
+        
+        if (minutes < 1)
+            return $"{minutes * 60:F0}s";
+        if (minutes < 60)
+            return $"{minutes:F1}m";
+        
+        var hours = (int)(minutes / 60);
+        var mins = (int)(minutes % 60);
+        return $"{hours}h {mins}m";
+    }
+    
+    private Color GetSystemStatusColor()
+    {
+        var onlineCount = 0;
+        if (_fs6000TodayScans > 0 || (_fs6000LastScanTime.HasValue && (DateTime.Now - _fs6000LastScanTime.Value).TotalHours < 24))
+            onlineCount++;
+        if (_aseTodayScans > 0 || (_aseLastScanTime.HasValue && (DateTime.Now - _aseLastScanTime.Value).TotalHours < 24))
+            onlineCount++;
+        if (_heimannTodayScans > 0 || (_heimannLastScanTime.HasValue && (DateTime.Now - _heimannLastScanTime.Value).TotalDays < 7))
+            onlineCount++;
+        
+        return onlineCount == 3 ? Color.Success : (onlineCount > 0 ? Color.Warning : Color.Error);
+    }
+    
+    private string GetSystemStatusText()
+    {
+        var onlineCount = 0;
+        if (_fs6000TodayScans > 0 || (_fs6000LastScanTime.HasValue && (DateTime.Now - _fs6000LastScanTime.Value).TotalHours < 24))
+            onlineCount++;
+        if (_aseTodayScans > 0 || (_aseLastScanTime.HasValue && (DateTime.Now - _aseLastScanTime.Value).TotalHours < 24))
+            onlineCount++;
+        if (_heimannTodayScans > 0 || (_heimannLastScanTime.HasValue && (DateTime.Now - _heimannLastScanTime.Value).TotalDays < 7))
+            onlineCount++;
+        
+        return onlineCount == 3 ? "All Systems Operational" : $"{onlineCount}/3 Online";
+    }
+}
+
+

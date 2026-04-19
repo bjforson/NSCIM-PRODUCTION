@@ -1,0 +1,161 @@
+@page "/operations/vehicles"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesVehiclesView)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Vehicles - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.DirectionsCar" Class="mr-2" />
+                Vehicle Imports
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                View and manage all imported vehicles (VIN records)
+            </MudText>
+            <MudTextField @bind-Value="_searchText"
+                         Placeholder="Search by VIN, container..."
+                         Adornment="Adornment.Start"
+                         AdornmentIcon="@Icons.Material.Filled.Search"
+                         Variant="Variant.Outlined"
+                         Size="Size.Small" />
+            <MudButton Variant="Variant.Outlined" 
+                      Color="Color.Default"
+                      Size="Size.Small"
+                      StartIcon="@Icons.Material.Filled.Refresh"
+                      OnClick="@LoadVehicles">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudPaper>
+    
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (_vehicles.Any())
+    {
+        <MudStack Spacing="2">
+            @foreach (var vehicle in _vehicles.Take(100))
+            {
+                <MudCard Elevation="1" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@vehicle.VIN</strong></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@vehicle.Make @vehicle.Model (@vehicle.Year)</MudText>
+                            </MudStack>
+                            <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(vehicle.Status)">
+                                @vehicle.Status
+                            </MudChip>
+                        </MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Container: @vehicle.ContainerNumber | Scanned: @vehicle.ScanDate.ToString("dd MMM yyyy")
+                        </MudText>
+                    </MudStack>
+                </MudCard>
+            }
+            @if (_vehicles.Count > 100)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Align="Align.Center">
+                    Showing first 100 of @_vehicles.Count vehicles
+                </MudText>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">No vehicles found</MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private string _searchText = "";
+    private List<VehicleViewModel> _vehicles = new();
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadVehicles();
+    }
+    
+    private async Task LoadVehicles()
+    {
+        _isLoading = true;
+        try
+        {
+            var queryParams = $"page=1&pageSize=200";
+            if (!string.IsNullOrWhiteSpace(_searchText))
+                queryParams += $"&search={Uri.EscapeDataString(_searchText)}";
+                
+            var response = await ApiService.GetAsync<PagedResult<VehicleImportDto>>($"/api/vehicleimport/search?{queryParams}");
+            
+            if (response?.Data != null)
+            {
+                _vehicles = response.Data.Select(v => new VehicleViewModel
+                {
+                    VIN = v.VIN ?? "",
+                    ContainerNumber = v.ContainerNumber ?? "",
+                    Make = v.Make ?? "Unknown",
+                    Model = v.Model ?? "",
+                    Year = int.TryParse(v.VehicleYear, out var year) ? year : 0,
+                    ScanDate = v.CreatedAt,
+                    Status = v.ProcessingStatus ?? "Pending"
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading vehicles: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Processed" => Color.Success,
+            "Processing" => Color.Info,
+            "Pending" => Color.Warning,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    public class VehicleViewModel
+    {
+        public string VIN { get; set; } = "";
+        public string ContainerNumber { get; set; } = "";
+        public string Make { get; set; } = "";
+        public string Model { get; set; } = "";
+        public int Year { get; set; }
+        public DateTime ScanDate { get; set; }
+        public string Status { get; set; } = "";
+    }
+    
+    public class PagedResult<T>
+    {
+        public List<T> Data { get; set; } = new();
+        public int TotalCount { get; set; }
+    }
+    
+    public class VehicleImportDto
+    {
+        public string? VIN { get; set; }
+        public string? ContainerNumber { get; set; }
+        public string? Make { get; set; }
+        public string? Model { get; set; }
+        public string? VehicleYear { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? ProcessingStatus { get; set; }
+    }
+}
+

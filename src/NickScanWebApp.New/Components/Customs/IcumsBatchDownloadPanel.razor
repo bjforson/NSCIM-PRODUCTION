@@ -1,0 +1,1235 @@
+@using MudBlazor
+@implements IDisposable
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Navigation
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.CloudDownload" Class="mr-2" />
+                    ICUMS Batch Download Management
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Comprehensive control, monitoring, and viewing of batch downloaded ICUMS data
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Default"
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="@RefreshAll"
+                          Disabled="@_isLoading">
+                    Refresh
+                </MudButton>
+                <MudButton Variant="Variant.Filled" 
+                          Color="@(_serviceEnabled ? Color.Error : Color.Success)"
+                          StartIcon="@(_serviceEnabled ? Icons.Material.Outlined.Stop : Icons.Material.Outlined.PlayArrow)"
+                          OnClick="@ToggleService"
+                          Disabled="@_isLoading">
+                    @(_serviceEnabled ? "Stop Service" : "Start Service")
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Service Status Card -->
+    <MudPaper Elevation="2" Class="mb-4 pa-4 rounded-lg">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-2" />
+                Service Status & Configuration
+            </MudText>
+            <MudChip T="string" 
+                    Size="Size.Medium" 
+                    Color="@(_serviceEnabled ? Color.Success : Color.Error)"
+                    Icon="@(_serviceEnabled ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                @(_serviceEnabled ? "Running" : "Stopped")
+            </MudChip>
+        </MudStack>
+        
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField @bind-Value="@_batchIntervalMinutes" 
+                              Label="Batch Interval (Minutes)" 
+                              Variant="Variant.Outlined"
+                              InputType="InputType.Number"
+                              HelperText="Time between batch downloads"
+                              Class="mb-2" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField @bind-Value="@_lastFetchTime" 
+                              Label="Last Fetch Time" 
+                              Variant="Variant.Outlined"
+                              ReadOnly="true"
+                              HelperText="Last successful batch fetch"
+                              Class="mb-2" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField @bind-Value="@_nextScheduledTime" 
+                              Label="Next Scheduled" 
+                              Variant="Variant.Outlined"
+                              ReadOnly="true"
+                              HelperText="Next batch download time"
+                              Class="mb-2" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.End" Style="height: 100%;">
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.Save"
+                              OnClick="@SaveConfiguration"
+                              Disabled="@_isLoading"
+                              Size="Size.Small">
+                        Save Config
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Info"
+                              StartIcon="@Icons.Material.Outlined.PlayArrow"
+                              OnClick="@TriggerManualBatch"
+                              Disabled="@(_isLoading || !_serviceEnabled)"
+                              Size="Size.Small">
+                        Run Now
+                    </MudButton>
+                </MudStack>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+    
+    <!-- Statistics Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Total Files Downloaded"
+                     Value="@_stats.TotalFiles.ToString()"
+                     Icon="@Icons.Material.Outlined.CloudDownload"
+                     Color="@Color.Info"
+                     Trend="@($"Last 24h: {_stats.FilesLast24h}")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Containers Downloaded"
+                     Value="@_stats.TotalContainers.ToString()"
+                     Icon="@Icons.Material.Outlined.Inventory"
+                     Color="@Color.Primary"
+                     Trend="@($"Last 24h: {_stats.ContainersLast24h}")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Pending Processing"
+                     Value="@_stats.PendingFiles.ToString()"
+                     Icon="@Icons.Material.Outlined.PendingActions"
+                     Color="@(_stats.PendingFiles > 0 ? Color.Warning : Color.Success)"
+                     Trend="@(_stats.PendingFiles > 0 ? "Needs attention" : "All processed")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Failed Downloads"
+                     Value="@_stats.FailedFiles.ToString()"
+                     Icon="@Icons.Material.Outlined.Error"
+                     Color="@(_stats.FailedFiles > 0 ? Color.Error : Color.Success)"
+                     Trend="@(_stats.FailedFiles > 0 ? "Review required" : "All successful")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Archived Files"
+                     Value="@_stats.ArchivedFiles.ToString()"
+                     Icon="@Icons.Material.Outlined.Archive"
+                     Color="@Color.Secondary"
+                     Trend="@("Processed and archived")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Consolidated Containers"
+                     Value="@_stats.ConsolidatedContainers.ToString()"
+                     Icon="@Icons.Material.Outlined.AllInbox"
+                     Color="@Color.Primary"
+                     Trend="@($"Total: {_stats.ConsolidatedContainers}")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Non-Consolidated Containers"
+                     Value="@_stats.NonConsolidatedContainers.ToString()"
+                     Icon="@Icons.Material.Outlined.Inbox"
+                     Color="@Color.Secondary"
+                     Trend="@($"Total: {_stats.NonConsolidatedContainers}")" />
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Main Content Tabs -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="@_activeTab">
+            
+            <!-- Downloaded Files Tab -->
+            <MudTabPanel Text="Downloaded Files" Icon="@Icons.Material.Outlined.Folder" BadgeData="@_downloadedFiles.Count">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                    <MudText Typo="Typo.h6">Downloaded Files</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudSelect @bind-Value="@_fileStatusFilter" 
+                                  Label="Status Filter" 
+                                  Variant="Variant.Outlined"
+                                  Dense="true"
+                                  Style="width: 150px;"
+                                  OnSelectionChanged="@(async (string? s) => await LoadDownloadedFiles())">
+                            <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
+                            <MudSelectItem Value="@("Pending")">Pending</MudSelectItem>
+                            <MudSelectItem Value="@("Processing")">Processing</MudSelectItem>
+                            <MudSelectItem Value="@("Completed")">Completed</MudSelectItem>
+                            <MudSelectItem Value="@("Failed")">Failed</MudSelectItem>
+                            <MudSelectItem Value="@("Archived")">Archived</MudSelectItem>
+                        </MudSelect>
+                        <MudDatePicker Date="@_fileDateFrom" 
+                                      Label="From Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _fileDateFrom = d; await LoadDownloadedFiles(); })" />
+                        <MudDatePicker Date="@_fileDateTo" 
+                                      Label="To Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _fileDateTo = d; await LoadDownloadedFiles(); })" />
+                        <MudTextField @bind-Value="@_fileSearchText" 
+                                      Placeholder="Search files..." 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.End"
+                                      AdornmentIcon="@Icons.Material.Outlined.Search"
+                                      Immediate="true"
+                                      OnInput="@(async (ChangeEventArgs e) => await LoadDownloadedFiles())"
+                                      Style="width: 200px;" />
+                    </MudStack>
+                </MudStack>
+                
+                <MudTable Items="@_filteredFiles" 
+                          Hover="true" 
+                          Striped="true"
+                          Loading="@_isLoading"
+                          LoadingProgressColor="Color.Info"
+                          SortMode="SortMode.Multiple"
+                          Filter="new Func<DownloadedFileDto, bool>(FilterFiles)">
+                    <ToolBarContent>
+                        <MudText Typo="Typo.h6">Files (@_filteredFiles.Count)</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.FileDownload"
+                                  OnClick="@ExportFilesList"
+                                  Size="Size.Small">
+                            Export
+                        </MudButton>
+                    </ToolBarContent>
+                    <HeaderContent>
+                        <MudTh>File Name</MudTh>
+                        <MudTh>Download Date</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Record Count</MudTh>
+                        <MudTh>Ingestion Accuracy</MudTh>
+                        <MudTh>File Size</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="File Name">
+                            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                <MudIcon Icon="@Icons.Material.Outlined.InsertDriveFile" Size="Size.Small" />
+                                <MudText>@context.FileName</MudText>
+                            </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Download Date">
+                            <MudText>@context.DownloadDate.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" 
+                                    Size="Size.Small" 
+                                    Color="@GetStatusColor(context.ProcessingStatus)"
+                                    Variant="Variant.Filled">
+                                @context.ProcessingStatus
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Record Count">
+                            <MudText>
+                                @GetRecordCountDisplay(context)
+                            </MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Ingestion Accuracy">
+                            @if (context.AverageAccuracyPercent.HasValue)
+                            {
+                                <MudChip T="string" Size="Size.Small"
+                                         Color="@GetAccuracyColor(context.AverageAccuracyPercent.Value)"
+                                         Variant="Variant.Filled">
+                                    @($"{context.AverageAccuracyPercent:F1}%")
+                                </MudChip>
+                                @if (context.VerifiedDocumentCount.HasValue && context.PerfectDocumentCount.HasValue)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @context.PerfectDocumentCount/@context.VerifiedDocumentCount perfect
+                                    </MudText>
+                                }
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">—</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="File Size">
+                            <MudText>@FormatFileSize(context.FileSizeBytes)</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Outlined.Visibility" 
+                                             Size="Size.Small"
+                                             Color="Color.Info"
+                                             OnClick="@(() => ViewFileDetails(context))" />
+                                <MudIconButton Icon="@Icons.Material.Outlined.Refresh" 
+                                             Size="Size.Small"
+                                             Disabled="@(context.ProcessingStatus == "Processing")"
+                                             Color="Color.Warning"
+                                             OnClick="@(() => RetryFile(context))" />
+                                <MudIconButton Icon="@Icons.Material.Outlined.Delete" 
+                                             Size="Size.Small"
+                                             Color="Color.Error"
+                                             OnClick="@(() => DeleteFile(context))" />
+                            </MudStack>
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                    </PagerContent>
+                </MudTable>
+            </MudTabPanel>
+            
+            <!-- Containers Tab -->
+            <MudTabPanel Text="Downloaded Containers" Icon="@Icons.Material.Outlined.Inventory" BadgeData="@_downloadedContainers.Count">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                    <MudText Typo="Typo.h6">Downloaded Containers</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudTextField @bind-Value="@_containerSearchText" 
+                                      Placeholder="Search containers..." 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.End"
+                                      AdornmentIcon="@Icons.Material.Outlined.Search"
+                                      Immediate="true"
+                                      OnInput="@(async (ChangeEventArgs e) => await LoadDownloadedContainers())"
+                                      Style="width: 250px;" />
+                        <MudDatePicker Date="@_containerDateFrom" 
+                                      Label="From Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _containerDateFrom = d; await LoadDownloadedContainers(); })" />
+                        <MudDatePicker Date="@_containerDateTo" 
+                                      Label="To Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _containerDateTo = d; await LoadDownloadedContainers(); })" />
+                    </MudStack>
+                </MudStack>
+                
+                <MudTable Items="@_filteredContainers" 
+                          Hover="true" 
+                          Striped="true"
+                          Loading="@_isLoading"
+                          LoadingProgressColor="Color.Info"
+                          SortMode="SortMode.Multiple">
+                    <ToolBarContent>
+                        <MudText Typo="Typo.h6">Containers (@_filteredContainers.Count)</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.FileDownload"
+                                  OnClick="@ExportContainersList"
+                                  Size="Size.Small">
+                            Export
+                        </MudButton>
+                    </ToolBarContent>
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Declaration Number</MudTh>
+                        <MudTh>BL Number</MudTh>
+                        <MudTh>Download Date</MudTh>
+                        <MudTh>Clearance Type</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container Number">
+                            <MudText Typo="Typo.body1" Style="font-weight: 600;">@context.ContainerNumber</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Declaration Number">
+                            <MudText>@(context.DeclarationNumber ?? "N/A")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="BL Number">
+                            <MudText>@(context.BlNumber ?? "N/A")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Download Date">
+                            <MudText>@context.DownloadDate.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Clearance Type">
+                            <MudChip T="string" 
+                                    Size="Size.Small" 
+                                    Color="@GetClearanceTypeColor(context.ClearanceType)"
+                                    Variant="Variant.Filled">
+                                @(context.ClearanceType ?? "N/A")
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Visibility" 
+                                         Size="Size.Small"
+                                         Color="Color.Info"
+                                         OnClick="@(() => ViewContainerDetails(context))" />
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                    </PagerContent>
+                </MudTable>
+            </MudTabPanel>
+            
+            <!-- Activity Log Tab -->
+            <!-- Data Transfer Tab -->
+            <MudTabPanel Text="Data Transfer" Icon="@Icons.Material.Outlined.SwapHoriz">
+                <MudStack Spacing="3">
+                    <!-- Transfer Service Status -->
+                    <MudPaper Elevation="1" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h6">
+                                <MudIcon Icon="@Icons.Material.Outlined.SwapHoriz" Class="mr-2" />
+                                Transfer Service Status
+                            </MudText>
+                            <MudChip T="string" 
+                                    Size="Size.Medium" 
+                                    Color="@(_transferStatus.IsEnabled ? Color.Success : Color.Error)"
+                                    Icon="@(_transferStatus.IsEnabled ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                                @(_transferStatus.IsEnabled ? "Running" : "Stopped")
+                            </MudChip>
+                        </MudStack>
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@_transferStatus.TransferIntervalMinutes.ToString()" 
+                                            Label="Transfer Interval (Minutes)" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true"
+                                            HelperText="Time between transfer cycles" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@(_transferStatus.LastTransferTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never")" 
+                                            Label="Last Transfer Time" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@(_transferStatus.NextScheduledTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A")" 
+                                            Label="Next Scheduled" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.PlayArrow"
+                                          OnClick="@TriggerManualTransfer"
+                                          Disabled="@(_isLoading || !_transferStatus.IsEnabled)"
+                                          Size="Size.Small"
+                                          FullWidth="true">
+                                    Trigger Transfer
+                                </MudButton>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+
+                    <!-- Transfer Statistics Cards -->
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Pending Transfers"
+                                     Value="@_transferStats.PendingTransfers.ToString()"
+                                     Icon="@Icons.Material.Outlined.PendingActions"
+                                     Color="@(_transferStats.PendingTransfers > 0 ? Color.Warning : Color.Success)"
+                                     Trend="@(_transferStats.PendingTransfers > 0 ? "Ready to transfer" : "All transferred")" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Total Transferred"
+                                     Value="@_transferStats.TotalTransferred.ToString()"
+                                     Icon="@Icons.Material.Outlined.CheckCircle"
+                                     Color="@Color.Success"
+                                     Trend="@($"Last 24h: {_transferStats.TransferredLast24h}")" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Transfer Rate"
+                                     Value="@_transferStats.TransferRatePerHour.ToString("F1")"
+                                     Icon="@Icons.Material.Outlined.Speed"
+                                     Color="@Color.Info"
+                                     Trend="@("per hour")" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Failed Transfers"
+                                     Value="@_transferStats.FailedTransfers.ToString()"
+                                     Icon="@Icons.Material.Outlined.Error"
+                                     Color="@(_transferStats.FailedTransfers > 0 ? Color.Error : Color.Success)"
+                                     Trend="@(_transferStats.FailedTransfers > 0 ? "Review required" : "All successful")" />
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- Transfer History Table -->
+                    <MudPaper Elevation="1" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                            <MudText Typo="Typo.h6">Transfer History</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudDatePicker Date="@_transferDateFrom" 
+                                              Label="From Date" 
+                                              Variant="Variant.Outlined"
+                                              Dense="true"
+                                              Style="width: 150px;"
+                                              DateChanged="@(async (DateTime? d) => { _transferDateFrom = d; await LoadTransferHistory(); })" />
+                                <MudDatePicker Date="@_transferDateTo" 
+                                              Label="To Date" 
+                                              Variant="Variant.Outlined"
+                                              Dense="true"
+                                              Style="width: 150px;"
+                                              DateChanged="@(async (DateTime? d) => { _transferDateTo = d; await LoadTransferHistory(); })" />
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="@LoadTransferHistory"
+                                          Disabled="@_isLoading"
+                                          Size="Size.Small">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                        <MudTable Items="@_transferHistory" 
+                                  Hover="true" 
+                                  Striped="true"
+                                  Loading="@_isLoading"
+                                  LoadingProgressColor="Color.Info">
+                            <HeaderContent>
+                                <MudTh>Container</MudTh>
+                                <MudTh>Declaration</MudTh>
+                                <MudTh>Status</MudTh>
+                                <MudTh>Transferred At</MudTh>
+                                <MudTh>Clearance Type</MudTh>
+                                <MudTh>Type</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Container">@context.ContainerNumber</MudTd>
+                                <MudTd DataLabel="Declaration">@context.DeclarationNumber</MudTd>
+                                <MudTd DataLabel="Status">
+                                    <MudChip T="string" 
+                                            Size="Size.Small" 
+                                            Color="@(context.Status == "Transferred" ? Color.Success : Color.Error)"
+                                            Variant="Variant.Filled">
+                                        @context.Status
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Transferred At">@context.TransferredAt.ToString("yyyy-MM-dd HH:mm:ss")</MudTd>
+                                <MudTd DataLabel="Clearance Type">@context.ClearanceType</MudTd>
+                                <MudTd DataLabel="Type">
+                                    <MudChip T="string" 
+                                            Size="Size.Small" 
+                                            Color="@(context.IsConsolidated ? Color.Primary : Color.Secondary)"
+                                            Variant="Variant.Outlined">
+                                        @(context.IsConsolidated ? "Consolidated" : "Non-Consolidated")
+                                    </MudChip>
+                                </MudTd>
+                                @if (!string.IsNullOrEmpty(context.ErrorMessage))
+                                {
+                                    <MudTd ColSpan="6">
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            <MudText Typo="Typo.caption">Error: @context.ErrorMessage</MudText>
+                                        </MudAlert>
+                                    </MudTd>
+                                }
+                            </RowTemplate>
+                        </MudTable>
+                    </MudPaper>
+                </MudStack>
+            </MudTabPanel>
+            
+            <MudTabPanel Text="Activity Log" Icon="@Icons.Material.Outlined.History">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                    <MudText Typo="Typo.h6">Batch Download Activity Log</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudSelect @bind-Value="@_logLevelFilter" 
+                                  Label="Log Level" 
+                                  Variant="Variant.Outlined"
+                                  Dense="true"
+                                  Style="width: 150px;"
+                                  OnSelectionChanged="@(async (string? s) => await LoadActivityLogs())">
+                            <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
+                            <MudSelectItem Value="@("Info")">Info</MudSelectItem>
+                            <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                            <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                        </MudSelect>
+                        <MudDatePicker Date="@_logDateFrom" 
+                                      Label="From Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _logDateFrom = d; await LoadActivityLogs(); })" />
+                        <MudDatePicker Date="@_logDateTo" 
+                                      Label="To Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _logDateTo = d; await LoadActivityLogs(); })" />
+                    </MudStack>
+                </MudStack>
+                
+                <MudTable Items="@_activityLogs" 
+                          Hover="true" 
+                          Striped="true"
+                          Loading="@_isLoading"
+                          LoadingProgressColor="Color.Info"
+                          SortMode="SortMode.Multiple">
+                    <HeaderContent>
+                        <MudTh>Timestamp</MudTh>
+                        <MudTh>Level</MudTh>
+                        <MudTh>Message</MudTh>
+                        <MudTh>Details</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Timestamp">
+                            <MudText>@context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Level">
+                            <MudChip T="string" 
+                                    Size="Size.Small" 
+                                    Color="@GetLogLevelColor(context.Level)"
+                                    Variant="Variant.Filled">
+                                @context.Level
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Message">
+                            <MudText>@context.Message</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Details">
+                            @if (!string.IsNullOrEmpty(context.Details))
+                            {
+                                <MudIconButton Icon="@Icons.Material.Outlined.Info" 
+                                             Size="Size.Small"
+                                             Color="Color.Info"
+                                             OnClick="@(() => ShowLogDetails(context))" />
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 25, 50, 100, 200 }" />
+                    </PagerContent>
+                </MudTable>
+            </MudTabPanel>
+            
+        </MudTabs>
+    </MudPaper>
+    
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> breadcrumbs = new()
+    {
+        new BreadcrumbItem("Home", "/", icon: Icons.Material.Outlined.Home),
+        new BreadcrumbItem("ICUMS", "/icums", icon: Icons.Material.Outlined.Cloud),
+        new BreadcrumbItem("Batch Download Management", "/icums/batch-download", icon: Icons.Material.Outlined.CloudDownload)
+    };
+    
+    // Service Status
+    private bool _serviceEnabled = false;
+    private int _batchIntervalMinutes = 30;
+    private string _lastFetchTime = "Never";
+    private string _nextScheduledTime = "N/A";
+    
+    // Statistics
+    private BatchDownloadStatsDto _stats = new();
+    
+    // Downloaded Files
+    private List<DownloadedFileDto> _downloadedFiles = new();
+    private List<DownloadedFileDto> _filteredFiles = new();
+    private string? _fileStatusFilter;
+    private DateTime? _fileDateFrom;
+    private DateTime? _fileDateTo;
+    private string _fileSearchText = string.Empty;
+    
+    // Downloaded Containers
+    private List<DownloadedContainerDto> _downloadedContainers = new();
+    private List<DownloadedContainerDto> _filteredContainers = new();
+    private string _containerSearchText = string.Empty;
+    private DateTime? _containerDateFrom;
+    private DateTime? _containerDateTo;
+    
+    // Activity Logs
+    private List<ActivityLogDto> _activityLogs = new();
+    private string? _logLevelFilter;
+    private DateTime? _logDateFrom;
+    private DateTime? _logDateTo;
+    
+    // Data Transfer
+    private TransferServiceStatusDto _transferStatus = new();
+    private TransferStatisticsDto _transferStats = new();
+    private List<TransferHistoryDto> _transferHistory = new();
+    private DateTime? _transferDateFrom;
+    private DateTime? _transferDateTo;
+    
+    // UI State
+    private bool _isLoading = false;
+    private int _activeTab = 0;
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllData();
+        
+        // Auto-refresh every 30 seconds
+        _refreshTimer = new System.Threading.Timer(async _ => await InvokeAsync(async () =>
+        {
+            if (_activeTab == 0) // Only refresh if on first tab
+            {
+                await LoadServiceStatus();
+                await LoadStatistics();
+            }
+        }), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    private async Task LoadAllData()
+    {
+        _isLoading = true;
+        try
+        {
+            await Task.WhenAll(
+                LoadServiceStatus(),
+                LoadStatistics(),
+                LoadDownloadedFiles(),
+                LoadDownloadedContainers(),
+                LoadActivityLogs(),
+                LoadTransferStatus(),
+                LoadTransferStatistics(),
+                LoadTransferHistory()
+            );
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task RefreshAll()
+    {
+        await LoadAllData();
+        Snackbar.Add("✅ Data refreshed", Severity.Success);
+    }
+    
+    private async Task LoadServiceStatus()
+    {
+        try
+        {
+            var status = await ApiService.GetAsync<BatchServiceStatusDto>("/api/icums/batch/status");
+            if (status != null)
+            {
+                _serviceEnabled = status.IsEnabled;
+                _batchIntervalMinutes = status.BatchIntervalMinutes;
+                _lastFetchTime = status.LastFetchTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never";
+                _nextScheduledTime = status.NextScheduledTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A";
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading service status: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            _stats = await ApiService.GetAsync<BatchDownloadStatsDto>("/api/icums/batch/stats") ?? new BatchDownloadStatsDto();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadDownloadedFiles()
+    {
+        try
+        {
+            var queryParams = new List<string>();
+            if (_fileStatusFilter != null) queryParams.Add($"status={_fileStatusFilter}");
+            if (_fileDateFrom.HasValue) queryParams.Add($"fromDate={_fileDateFrom.Value:yyyy-MM-dd}");
+            if (_fileDateTo.HasValue) queryParams.Add($"toDate={_fileDateTo.Value:yyyy-MM-dd}");
+            
+            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
+            _downloadedFiles = await ApiService.GetAsync<List<DownloadedFileDto>>($"/api/icums/batch/files{query}") ?? new();
+            ApplyFileFilters();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading files: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadDownloadedContainers()
+    {
+        try
+        {
+            var queryParams = new List<string>();
+            if (_containerDateFrom.HasValue) queryParams.Add($"fromDate={_containerDateFrom.Value:yyyy-MM-dd}");
+            if (_containerDateTo.HasValue) queryParams.Add($"toDate={_containerDateTo.Value:yyyy-MM-dd}");
+            if (!string.IsNullOrEmpty(_containerSearchText)) queryParams.Add($"search={_containerSearchText}");
+            
+            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
+            _downloadedContainers = await ApiService.GetAsync<List<DownloadedContainerDto>>($"/api/icums/batch/containers{query}") ?? new();
+            ApplyContainerFilters();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading containers: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadActivityLogs()
+    {
+        try
+        {
+            var queryParams = new List<string>();
+            if (_logLevelFilter != null) queryParams.Add($"level={_logLevelFilter}");
+            if (_logDateFrom.HasValue) queryParams.Add($"fromDate={_logDateFrom.Value:yyyy-MM-dd}");
+            if (_logDateTo.HasValue) queryParams.Add($"toDate={_logDateTo.Value:yyyy-MM-dd}");
+            
+            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
+            _activityLogs = await ApiService.GetAsync<List<ActivityLogDto>>($"/api/icums/batch/logs{query}") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading logs: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadTransferStatus()
+    {
+        try
+        {
+            _transferStatus = await ApiService.GetAsync<TransferServiceStatusDto>("/api/icums/transfer/status") ?? new TransferServiceStatusDto();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading transfer status: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadTransferStatistics()
+    {
+        try
+        {
+            _transferStats = await ApiService.GetAsync<TransferStatisticsDto>("/api/icums/transfer/statistics") ?? new TransferStatisticsDto();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading transfer statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadTransferHistory()
+    {
+        try
+        {
+            var queryParams = new List<string> { "page=1", "pageSize=100" };
+            if (_transferDateFrom.HasValue) queryParams.Add($"fromDate={_transferDateFrom.Value:yyyy-MM-dd}");
+            if (_transferDateTo.HasValue) queryParams.Add($"toDate={_transferDateTo.Value:yyyy-MM-dd}");
+            
+            var query = "?" + string.Join("&", queryParams);
+            _transferHistory = await ApiService.GetAsync<List<TransferHistoryDto>>($"/api/icums/transfer/history{query}") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading transfer history: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task TriggerManualTransfer()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Trigger Manual Transfer",
+            "Are you sure you want to trigger a manual transfer now?",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+        
+        try
+        {
+            var result = await ApiService.PostAsync<object, TransferTriggerResultDto>("/api/icums/transfer/trigger", new { });
+            if (result != null)
+            {
+                Snackbar.Add($"✅ {result.Message}", Severity.Success);
+                await LoadTransferStatus();
+                await LoadTransferStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error triggering transfer: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private void ApplyFileFilters()
+    {
+        _filteredFiles = _downloadedFiles.Where(f =>
+            (string.IsNullOrEmpty(_fileSearchText) || 
+             f.FileName.Contains(_fileSearchText, StringComparison.OrdinalIgnoreCase)) &&
+            (_fileStatusFilter == null || f.ProcessingStatus == _fileStatusFilter)
+        ).ToList();
+    }
+    
+    private void ApplyContainerFilters()
+    {
+        _filteredContainers = _downloadedContainers.Where(c =>
+            string.IsNullOrEmpty(_containerSearchText) ||
+            c.ContainerNumber.Contains(_containerSearchText, StringComparison.OrdinalIgnoreCase) ||
+            (c.DeclarationNumber?.Contains(_containerSearchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (c.BlNumber?.Contains(_containerSearchText, StringComparison.OrdinalIgnoreCase) ?? false)
+        ).ToList();
+    }
+    
+    private bool FilterFiles(DownloadedFileDto file)
+    {
+        if (!string.IsNullOrEmpty(_fileSearchText) && 
+            !file.FileName.Contains(_fileSearchText, StringComparison.OrdinalIgnoreCase))
+            return false;
+        
+        if (_fileStatusFilter != null && file.ProcessingStatus != _fileStatusFilter)
+            return false;
+        
+        return true;
+    }
+    
+    private async Task ToggleService()
+    {
+        try
+        {
+            var request = new { enabled = !_serviceEnabled };
+            await ApiService.PostAsync<object, object>("/api/icums/batch/toggle", request);
+            _serviceEnabled = !_serviceEnabled;
+            Snackbar.Add($"✅ Service {(_serviceEnabled ? "started" : "stopped")}", Severity.Success);
+            await LoadServiceStatus();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error toggling service: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task SaveConfiguration()
+    {
+        try
+        {
+            var request = new { batchIntervalMinutes = _batchIntervalMinutes };
+            await ApiService.PostAsync<object, object>("/api/icums/batch/config", request);
+            Snackbar.Add("✅ Configuration saved", Severity.Success);
+            await LoadServiceStatus();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error saving configuration: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task TriggerManualBatch()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Trigger Manual Batch Download",
+            "Are you sure you want to trigger a manual batch download now?",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+        
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/icums/batch/trigger", new { });
+            Snackbar.Add("✅ Manual batch download triggered", Severity.Success);
+            await LoadServiceStatus();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error triggering batch: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task ViewFileDetails(DownloadedFileDto file)
+    {
+        var parameters = new DialogParameters
+        {
+            ["File"] = file
+        };
+        
+        var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Large, CloseButton = true, CloseOnEscapeKey = true };
+        await DialogService.ShowAsync<FileDetailsDialog>("File Details", parameters, options);
+    }
+    
+    private async Task RetryFile(DownloadedFileDto file)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/icums/batch/files/{file.Id}/retry", new { });
+            // Optimistically update UI to reflect backend change to Pending
+            file.ProcessingStatus = "Pending";
+            file.RecordCount = 0;
+            Snackbar.Add($"✅ File marked for retry: {file.FileName}", Severity.Success);
+            // Reload list to reflect any changes from the server (including updated counts after reprocessing)
+            await LoadDownloadedFiles();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error retrying file: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task DeleteFile(DownloadedFileDto file)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Delete File",
+            $"Are you sure you want to delete {file.FileName}?",
+            yesText: "Delete", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+        
+        try
+        {
+            await ApiService.DeleteAsync($"/api/icums/batch/files/{file.Id}");
+            Snackbar.Add($"✅ File deleted: {file.FileName}", Severity.Success);
+            await LoadDownloadedFiles();
+            await LoadStatistics();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error deleting file: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task ViewContainerDetails(DownloadedContainerDto container)
+    {
+        Navigation.NavigateTo($"/containers/{container.ContainerNumber}");
+    }
+    
+    private async Task ShowLogDetails(ActivityLogDto log)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Log"] = log
+        };
+        
+        var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Medium };
+        await DialogService.ShowAsync<LogDetailsDialog>("Log Details", parameters, options);
+    }
+    
+    private async Task ExportFilesList()
+    {
+        try
+        {
+            var csv = "FileName,DownloadDate,Status,RecordCount,FileSize\n";
+            foreach (var file in _filteredFiles)
+            {
+                csv += $"{file.FileName},{file.DownloadDate:yyyy-MM-dd HH:mm:ss},{file.ProcessingStatus},{file.RecordCount},{file.FileSizeBytes}\n";
+            }
+            
+            // Create blob and download
+            var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"batch-files-{DateTime.Now:yyyyMMddHHmmss}.csv";
+            await JSRuntime.InvokeVoidAsync("eval", $"var blob = new Blob([atob('{base64}')], {{type: 'text/csv'}}); var url = window.URL.createObjectURL(blob); var a = document.createElement('a'); a.href = url; a.download = '{fileName}'; a.click(); window.URL.revokeObjectURL(url);");
+            Snackbar.Add("✅ Files list exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task ExportContainersList()
+    {
+        try
+        {
+            var csv = "ContainerNumber,DeclarationNumber,BlNumber,DownloadDate,ClearanceType\n";
+            foreach (var container in _filteredContainers)
+            {
+                csv += $"{container.ContainerNumber},{container.DeclarationNumber ?? ""},{container.BlNumber ?? ""},{container.DownloadDate:yyyy-MM-dd HH:mm:ss},{container.ClearanceType ?? ""}\n";
+            }
+            
+            // Create blob and download
+            var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"batch-containers-{DateTime.Now:yyyyMMddHHmmss}.csv";
+            await JSRuntime.InvokeVoidAsync("eval", $"var blob = new Blob([atob('{base64}')], {{type: 'text/csv'}}); var url = window.URL.createObjectURL(blob); var a = document.createElement('a'); a.href = url; a.download = '{fileName}'; a.click(); window.URL.revokeObjectURL(url);");
+            Snackbar.Add("✅ Containers list exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private Color GetAccuracyColor(double accuracy) => accuracy switch
+    {
+        >= 100 => Color.Success,
+        >= 90 => Color.Info,
+        >= 70 => Color.Warning,
+        _ => Color.Error
+    };
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Completed" => Color.Success,
+        "Processing" => Color.Info,
+        "Pending" => Color.Warning,
+        "Failed" => Color.Error,
+        "Archived" => Color.Secondary,
+        _ => Color.Default
+    };
+    
+    private Color GetClearanceTypeColor(string? clearanceType) => clearanceType switch
+    {
+        "CMR" => Color.Success,
+        "GREEN" => Color.Success,
+        "YELLOW" => Color.Warning,
+        "RED" => Color.Error,
+        _ => Color.Default
+    };
+    
+    private Color GetLogLevelColor(string level) => level switch
+    {
+        "Info" => Color.Info,
+        "Warning" => Color.Warning,
+        "Error" => Color.Error,
+        _ => Color.Default
+    };
+    
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+
+    private string GetRecordCountDisplay(DownloadedFileDto file)
+    {
+        // Frontend reflects backend processing status:
+        // - Completed/ManuallyProcessed: show numeric count.
+        // - Pending/Processing: show "Pending" (not ingested yet).
+        // - Failed: show "Failed".
+        return file.ProcessingStatus switch
+        {
+            "Completed" or "ManuallyProcessed" => file.RecordCount.ToString("N0"),
+            "Failed" => "Failed",
+            "Processing" => "Processing",
+            _ => "Pending"
+        };
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    // DTOs
+    public class BatchServiceStatusDto
+    {
+        public bool IsEnabled { get; set; }
+        public int BatchIntervalMinutes { get; set; }
+        public DateTime? LastFetchTime { get; set; }
+        public DateTime? NextScheduledTime { get; set; }
+    }
+
+    public class BatchDownloadStatsDto
+    {
+        public int TotalFiles { get; set; }
+        public int FilesLast24h { get; set; }
+        public int TotalContainers { get; set; }
+        public int ContainersLast24h { get; set; }
+        public int ConsolidatedContainers { get; set; }
+        public int NonConsolidatedContainers { get; set; }
+        public int PendingFiles { get; set; }
+        public int FailedFiles { get; set; }
+        public int ArchivedFiles { get; set; }
+    }
+
+    public class DownloadedFileDto
+    {
+        public int Id { get; set; }
+        public string FileName { get; set; } = string.Empty;
+        public string FilePath { get; set; } = string.Empty;
+        public DateTime DownloadDate { get; set; }
+        public string ProcessingStatus { get; set; } = string.Empty;
+        public int RecordCount { get; set; }
+        public long FileSizeBytes { get; set; }
+        public string? ErrorMessage { get; set; }
+        public double? AverageAccuracyPercent { get; set; }
+        public int? VerifiedDocumentCount { get; set; }
+        public int? PerfectDocumentCount { get; set; }
+    }
+
+    public class DownloadedContainerDto
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string? DeclarationNumber { get; set; }
+        public string? BlNumber { get; set; }
+        public DateTime DownloadDate { get; set; }
+        public string? ClearanceType { get; set; }
+    }
+
+    public class ActivityLogDto
+    {
+        public DateTime Timestamp { get; set; }
+        public string Level { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string? Details { get; set; }
+    }
+    
+    // Data Transfer DTOs
+    public class TransferServiceStatusDto
+    {
+        public bool IsEnabled { get; set; }
+        public int TransferIntervalMinutes { get; set; }
+        public DateTime? LastTransferTime { get; set; }
+        public DateTime? NextScheduledTime { get; set; }
+    }
+    
+    public class TransferStatisticsDto
+    {
+        public int PendingTransfers { get; set; }
+        public int TotalTransferred { get; set; }
+        public int TransferredLast24h { get; set; }
+        public int TransferredLast7d { get; set; }
+        public int TransferredLast30d { get; set; }
+        public int FailedTransfers { get; set; }
+        public int TotalManifestItemsTransferred { get; set; }
+        public DateTime? LastTransferTime { get; set; }
+        public double TransferRatePerHour { get; set; }
+    }
+    
+    public class TransferHistoryDto
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public DateTime TransferredAt { get; set; }
+        public string? ErrorMessage { get; set; }
+        public string ClearanceType { get; set; } = string.Empty;
+        public bool IsConsolidated { get; set; }
+    }
+    
+    public class TransferTriggerResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public int PendingCount { get; set; }
+        public DateTime TriggeredAt { get; set; }
+    }
+}
+

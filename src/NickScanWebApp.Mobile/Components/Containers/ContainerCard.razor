@@ -1,0 +1,102 @@
+<!-- ContainerCard Component - Mobile optimized -->
+
+<MudCard Elevation="@Elevation" Class="@($"hoverable-card-modern {Class}")" OnClick="@(() => NavigateToDetails())">
+    <MudCardContent>
+        <MudStack Spacing="2">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+                <MudText Typo="Typo.h6">@ContainerNumber</MudText>
+                <MudChip T="string" Size="Size.Small" Color="@GetScannerColor()">
+                    @ScannerType
+                </MudChip>
+            </MudStack>
+            
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Scanned: @ScanDate.ToString("dd MMM yyyy HH:mm")
+            </MudText>
+            
+            <MudStack Spacing="1">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.caption">Status:</MudText>
+                    <ValidationStatusBadge Status="@ValidationStatus" Size="Size.Small" />
+                </MudStack>
+                
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.caption">Completeness:</MudText>
+                    <CompletenessIndicator Score="@CompletenessScore" 
+                                           ShowAsProgressBar="false" 
+                                           ChipSize="Size.Small" />
+                </MudStack>
+                
+                @if (!string.IsNullOrEmpty(ClearanceType))
+                {
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.caption">Clearance:</MudText>
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@ClearanceType</MudChip>
+                    </MudStack>
+                }
+                
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.caption">Images:</MudText>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudIcon Icon="@Icons.Material.Filled.Image" 
+                                 Size="Size.Small" 
+                                 Color="@(HasImage ? Color.Success : Color.Default)" />
+                        <MudText Typo="Typo.caption">@(HasImage ? "Available" : "None")</MudText>
+                    </MudStack>
+                </MudStack>
+            </MudStack>
+        </MudStack>
+    </MudCardContent>
+    @if (ShowActions && OnApprove.HasDelegate)
+    {
+        <MudCardActions>
+            <MudButton Size="Size.Small" 
+                       Color="Color.Success" 
+                       Variant="Variant.Text"
+                       OnClick="@(() => OnApprove.InvokeAsync(ContainerNumber))"
+                       FullWidth="true">
+                Approve
+            </MudButton>
+        </MudCardActions>
+    }
+</MudCard>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string ScannerType { get; set; } = "Unknown";
+    [Parameter] public DateTime ScanDate { get; set; } = DateTime.Now;
+    [Parameter] public string ValidationStatus { get; set; } = "Pending";
+    [Parameter] public double CompletenessScore { get; set; } = 0;
+    [Parameter] public string? ClearanceType { get; set; }
+    [Parameter] public bool HasImage { get; set; } = false;
+    [Parameter] public bool ShowActions { get; set; } = false;
+    [Parameter] public int Elevation { get; set; } = 1;
+    [Parameter] public string Class { get; set; } = "";
+    [Parameter] public EventCallback<string> OnApprove { get; set; }
+    [Parameter] public EventCallback OnViewDetails { get; set; }
+    
+    [Inject] private NavigationManager Navigation { get; set; } = null!;
+    
+    private void NavigateToDetails()
+    {
+        if (OnViewDetails.HasDelegate)
+        {
+            OnViewDetails.InvokeAsync();
+        }
+        else
+        {
+            Navigation.NavigateTo($"/containers/{ContainerNumber}");
+        }
+    }
+    
+    private Color GetScannerColor()
+    {
+        return ScannerType?.ToUpper() switch
+        {
+            "FS6000" => Color.Primary,
+            "ASE" => Color.Secondary,
+            "HEIMANN" or "HEIMANNSMITH" => Color.Tertiary,
+            _ => Color.Default
+        };
+    }
+}

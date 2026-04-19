@@ -1,0 +1,240 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using MudBlazor
+
+@*
+    CargoSummarySnapshot — compact view of a CargoSummaryDto.
+
+    Used by both branches of CargoGroupSummaryTab (consolidated per-HBL view
+    and non-consolidated single-summary view) so they render identically.
+
+    Layout:
+      1. Stat snapshot bar      — line items + totals (qty / weight / FOB / duty)
+      2. Context chips row      — consignees, origin countries, top HS codes
+      3. Goods Description      — ALWAYS rendered as a table; if there are no
+                                  structured ItemDescriptions, the narrative
+                                  GoodsDescription string is split into rows
+      4. (optional) Full text   — collapsed expander showing the original
+                                  multi-line SummaryText narrative
+*@
+
+@if (Summary != null)
+{
+    @* ====== 1. STAT SNAPSHOT BAR ====== *@
+    <MudPaper Elevation="1" Class="pa-3 mb-3" Style="border-left: 3px solid var(--mud-palette-primary);">
+        <MudStack Row="true" Spacing="4" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center">
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                <MudIcon Icon="@Icons.Material.Outlined.Summarize" Color="Color.Primary" Size="Size.Small" />
+                <MudText Typo="Typo.subtitle2" Color="Color.Primary" Style="font-weight:600;">Cargo Snapshot</MudText>
+            </MudStack>
+
+            <MudDivider Vertical="true" FlexItem="true" />
+
+            @if (Summary.LineItemCount > 0 || Summary.ItemDescriptions.Any())
+            {
+                @StatCell("Line Items", Summary.LineItemCount > 0 ? Summary.LineItemCount.ToString() : Summary.ItemDescriptions.Count.ToString())
+            }
+            @if (!string.IsNullOrWhiteSpace(Summary.TotalQuantity))
+            {
+                @StatCell("Total Qty", Summary.TotalQuantity)
+            }
+            @if (!string.IsNullOrWhiteSpace(Summary.TotalWeight))
+            {
+                @StatCell("Total Weight", Summary.TotalWeight)
+            }
+            @if (!string.IsNullOrWhiteSpace(Summary.TotalFOBValue))
+            {
+                @StatCell("FOB Value", Summary.TotalFOBValue)
+            }
+            @if (!string.IsNullOrWhiteSpace(Summary.TotalDutyPaid))
+            {
+                @StatCell("Duty Paid", Summary.TotalDutyPaid)
+            }
+        </MudStack>
+    </MudPaper>
+
+    @* ====== 2. CONTEXT CHIPS ROW ====== *@
+    @if (Summary.Consignees.Any() || Summary.CountriesOfOrigin.Any() || Summary.HSCodes.Any())
+    {
+        <MudGrid Spacing="2" Class="mb-3">
+            @if (Summary.Consignees.Any())
+            {
+                <MudItem xs="12" md="4">
+                    <MudPaper Elevation="0" Class="pa-2" Style="border: 1px solid var(--mud-palette-lines-default); min-width:0; overflow-wrap:anywhere;">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600;">
+                            <MudIcon Icon="@Icons.Material.Outlined.Business" Size="Size.Small" /> Consignee@(Summary.Consignees.Count > 1 ? "s" : "")
+                        </MudText>
+                        @* Consignee names are long company strings — use wrapped text rows
+                           instead of MudChip (which sets white-space:nowrap and overflows
+                           the parent box for long text). *@
+                        <MudStack Spacing="0" Class="mt-1">
+                            @foreach (var consignee in Summary.Consignees.Take(3))
+                            {
+                                <MudText Typo="Typo.body2"
+                                         Style="line-height:1.3; word-break:break-word; overflow-wrap:anywhere;"
+                                         Title="@consignee">
+                                    • @consignee
+                                </MudText>
+                            }
+                            @if (Summary.Consignees.Count > 3)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary" Style="line-height:1.3;">
+                                    +@(Summary.Consignees.Count - 3) more
+                                </MudText>
+                            }
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            }
+            @if (Summary.CountriesOfOrigin.Any())
+            {
+                <MudItem xs="12" md="4">
+                    <MudPaper Elevation="0" Class="pa-2" Style="border: 1px solid var(--mud-palette-lines-default);">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600;">
+                            <MudIcon Icon="@Icons.Material.Outlined.Public" Size="Size.Small" /> Origin
+                        </MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mt-1">
+                            @foreach (var country in Summary.CountriesOfOrigin.Take(5))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@country</MudChip>
+                            }
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            }
+            @if (Summary.HSCodes.Any())
+            {
+                <MudItem xs="12" md="4">
+                    <MudPaper Elevation="0" Class="pa-2" Style="border: 1px solid var(--mud-palette-lines-default);">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600;">
+                            <MudIcon Icon="@Icons.Material.Outlined.Code" Size="Size.Small" /> HS Codes
+                        </MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mt-1">
+                            @foreach (var hsCode in Summary.HSCodes.Take(6))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">@hsCode</MudChip>
+                            }
+                            @if (Summary.HSCodes.Count > 6)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Text">+@(Summary.HSCodes.Count - 6)</MudChip>
+                            }
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            }
+        </MudGrid>
+    }
+
+    @* ====== 3. GOODS DESCRIPTION (always table) ====== *@
+    @* Build a unified row list. If we have structured ItemDescriptions use them
+       directly; otherwise split the narrative GoodsDescription into rows so the
+       table layout stays consistent across all records. *@
+    var rows = BuildGoodsRows();
+    @if (rows.Count > 0)
+    {
+        <MudPaper Elevation="0" Class="pa-2 mb-3" Style="border: 1px solid var(--mud-palette-lines-default);">
+            <MudText Typo="Typo.subtitle2" Color="Color.Success" Class="mb-1" Style="font-weight:600;">
+                <MudIcon Icon="@Icons.Material.Outlined.Inventory" Size="Size.Small" />
+                Goods Description (@rows.Count item@(rows.Count == 1 ? "" : "s"))
+                @if (_isNarrativeFallback)
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default">Narrative</MudChip>
+                }
+            </MudText>
+            <MudSimpleTable Dense="true" Hover="true" Bordered="true" Style="">
+                <thead>
+                    <tr>
+                        <th style="width:40px;">#</th>
+                        <th>Description</th>
+                        <th style="width:100px;">HS Code</th>
+                        <th style="width:80px;">Qty</th>
+                        <th style="width:80px;">Weight</th>
+                        <th style="width:60px;">Origin</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in rows)
+                    {
+                        <tr>
+                            <td style="color:#94a3b8;">@item.ItemNo</td>
+                            <td style="font-weight:500;">@item.Description</td>
+                            <td><code style="font-size:11px;">@(item.HsCode ?? "-")</code></td>
+                            <td>@(item.Quantity ?? "-")</td>
+                            <td>@(item.Weight ?? "-")</td>
+                            <td>@(item.CountryOfOrigin ?? "-")</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </MudPaper>
+    }
+
+    @* ====== 4. Optional full narrative summary (collapsed by default) ====== *@
+    @if (!string.IsNullOrWhiteSpace(Summary.SummaryText))
+    {
+        <MudExpansionPanels Class="mb-3" Elevation="0">
+            <MudExpansionPanel Text="Show full text summary"
+                               Icon="@Icons.Material.Outlined.Notes"
+                               IsExpanded="false">
+                <MudText Typo="Typo.body2" Style="white-space: pre-line; line-height: 1.6;">@Summary.SummaryText</MudText>
+            </MudExpansionPanel>
+        </MudExpansionPanels>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public CargoSummaryDto? Summary { get; set; }
+
+    private bool _isNarrativeFallback;
+
+    private List<LineItemSummary> BuildGoodsRows()
+    {
+        _isNarrativeFallback = false;
+        if (Summary == null) return new();
+
+        // Prefer structured items
+        if (Summary.ItemDescriptions != null && Summary.ItemDescriptions.Any())
+        {
+            return Summary.ItemDescriptions;
+        }
+
+        // Fall back to splitting the narrative GoodsDescription into rows
+        if (!string.IsNullOrWhiteSpace(Summary.GoodsDescription))
+        {
+            _isNarrativeFallback = true;
+            var separators = new[] { '\n', ';', '|' };
+            var parts = Summary.GoodsDescription
+                .Split(separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .ToList();
+
+            if (parts.Count == 0)
+            {
+                parts = new List<string> { Summary.GoodsDescription.Trim() };
+            }
+
+            return parts
+                .Select((p, i) => new LineItemSummary
+                {
+                    ItemNo = i + 1,
+                    Description = p,
+                    HsCode = null,
+                    Quantity = null,
+                    Weight = null,
+                    CountryOfOrigin = null
+                })
+                .ToList();
+        }
+
+        return new();
+    }
+
+    // Tiny render-fragment helper for the snapshot bar's individual stat cells.
+    // Invoked from the markup above as @StatCell("Label", "Value") which renders
+    // the fragment inline. Uses Razor's @<element> template syntax which works
+    // in .razor @code blocks for local render fragment methods.
+    private RenderFragment StatCell(string label, string? value) =>
+        @<MudStack Spacing="0">
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-size:0.7rem; line-height:1;">@label</MudText>
+            <MudText Typo="Typo.subtitle2" Style="font-weight:600; line-height:1.2;">@(value ?? "-")</MudText>
+        </MudStack>;
+}

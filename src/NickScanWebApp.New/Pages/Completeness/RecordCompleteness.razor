@@ -1,0 +1,539 @@
+@page "/validation/record-completeness"
+@page "/completeness/record-completeness"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationRecordCompleteness)]
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject ILogger<RecordCompleteness> Logger
+
+@*
+    1.15.0 — Record Completeness
+
+    Record-level view of the ICUMS reconciliation state. Each row is one customs
+    declaration (plus Pattern A "used cars in one container" grouping). Operators
+    filter by status, find PartiallyReady records (the integrity-gap cases), and
+    click through to see the full expected-container set.
+
+    Backed by RecordCompletenessController (1.15.0). Populated proactively by
+    RecordReconciliationWorker from the ICUMS downloads feed on a 30-minute loop.
+*@
+
+<PageTitle>NICKSCAN ERP — Record Completeness</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+        <div>
+            <MudText Typo="Typo.h4">
+                <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Class="mr-2" />
+                Record Completeness
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Declaration-level view — see the full container set ICUMS expects for each record, find the integrity gaps
+            </MudText>
+        </div>
+        <MudStack Row="true" Spacing="2">
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Outlined.ManageSearch"
+                       Href="/validation/boe-lookup">
+                BOE Lookup
+            </MudButton>
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Default"
+                       StartIcon="@Icons.Material.Outlined.Refresh"
+                       OnClick="LoadAsync">
+                Refresh
+            </MudButton>
+        </MudStack>
+    </MudStack>
+
+    @* ── Summary strip with integrity gap ── *@
+    @if (_summary != null)
+    {
+        <MudPaper Elevation="0" Outlined="true" Class="pa-3 mb-3">
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="3">
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total records</MudText>
+                        <MudText Typo="Typo.h5">@_summary.TotalRecords</MudText>
+                    </MudStack>
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Multi-container</MudText>
+                        <MudText Typo="Typo.h5">@_summary.TotalMultiContainer</MudText>
+                    </MudStack>
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Partially ready</MudText>
+                        <MudText Typo="Typo.h5" Color="@(_summary.PartiallyReady > 0 ? Color.Warning : Color.Default)">
+                            @_summary.PartiallyReady
+                        </MudText>
+                    </MudStack>
+                </MudItem>
+                <MudItem xs="12" sm="3">
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Integrity gap (containers)</MudText>
+                        <MudText Typo="Typo.h5" Color="@(_summary.IntegrityGapContainers > 0 ? Color.Warning : Color.Success)">
+                            @_summary.IntegrityGapContainers
+                        </MudText>
+                    </MudStack>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+    }
+
+    @* ── Filter tabs ── *@
+    <MudPaper Elevation="0" Outlined="true" Class="pa-3 mb-3">
+        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+            <MudChipSet T="string" SelectedValue="@_statusFilter" SelectedValueChanged="OnStatusFilterChanged" Mandatory="true">
+                <MudChip T="string" Value="@("Active")"         Color="Color.Primary">Active</MudChip>
+                <MudChip T="string" Value="@("PartiallyReady")" Color="Color.Warning">Partially Ready @(_summary != null ? $"({_summary.PartiallyReady})" : "")</MudChip>
+                <MudChip T="string" Value="@("Ready")"          Color="Color.Success">Ready @(_summary != null ? $"({_summary.Ready})" : "")</MudChip>
+                <MudChip T="string" Value="@("Pending")"        Color="Color.Info">Pending @(_summary != null ? $"({_summary.Pending})" : "")</MudChip>
+                <MudChip T="string" Value="@("Archived")"       Color="Color.Default">Archived @(_summary != null ? $"({_summary.Archived})" : "")</MudChip>
+                <MudChip T="string" Value="@("All")"            Color="Color.Default">All</MudChip>
+            </MudChipSet>
+            <MudSpacer />
+            <MudCheckBox T="bool" @bind-Value="_onlyMultiContainer" Label="Only multi-container" Color="Color.Primary" Dense="true" />
+            <MudTextField T="string"
+                          @bind-Value="_search"
+                          Placeholder="Declaration / BL / rotation"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Outlined.Search"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Immediate="true"
+                          OnKeyDown="OnSearchKeyDown"
+                          Style="max-width:320px;" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" OnClick="LoadAsync">Apply</MudButton>
+        </MudStack>
+    </MudPaper>
+
+    @* ── Results table ── *@
+    @if (_loading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading records…</MudText>
+        </MudStack>
+    }
+    else if (_results == null || _results.Results.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+            No records match the current filter.
+        </MudAlert>
+    }
+    else
+    {
+        <MudPaper Elevation="0" Outlined="true">
+            <MudToolBar Dense="true">
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Showing @((_results.Page - 1) * _results.PageSize + 1)-@(Math.Min(_results.Page * _results.PageSize, _results.TotalCount)) of @_results.TotalCount records
+                </MudText>
+            </MudToolBar>
+            <MudTable Items="_results.Results"
+                      Hover="true"
+                      Dense="true"
+                      Striped="true"
+                      Breakpoint="Breakpoint.Sm"
+                      @bind-RowsPerPage="_pageSize">
+                <HeaderContent>
+                    <MudTh>Declaration</MudTh>
+                    <MudTh>Clearance / Regime</MudTh>
+                    <MudTh>Containers</MudTh>
+                    <MudTh>Progress</MudTh>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Last Activity</MudTh>
+                    <MudTh></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <MudText Typo="Typo.body2"><b>@context.DeclarationNumber</b></MudText>
+                        @if (!string.IsNullOrEmpty(context.ContainerGroupKey))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Pattern A · shared @context.ContainerGroupKey</MudText>
+                        }
+                        else if (!string.IsNullOrEmpty(context.BlNumber))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">BL @context.BlNumber</MudText>
+                        }
+                    </MudTd>
+                    <MudTd>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                            @(context.ClearanceType ?? "—") @(context.RegimeCode != null ? $"/ {context.RegimeCode}" : "")
+                        </MudChip>
+                    </MudTd>
+                    <MudTd>
+                        <MudText Typo="Typo.body2">
+                            <b>@context.TotalExpectedContainers</b>
+                            @if (context.TotalExpectedContainers > 1)
+                            {
+                                <span>expected</span>
+                            }
+                        </MudText>
+                    </MudTd>
+                    <MudTd>
+                        <MudStack Row="true" Spacing="1">
+                            @if (context.ContainersReady > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@context.ContainersReady ready</MudChip>
+                            }
+                            @if (context.ContainersScanned > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">@context.ContainersScanned scanned</MudChip>
+                            }
+                            @if (context.ContainersAwaitingScan > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">@context.ContainersAwaitingScan awaiting</MudChip>
+                            }
+                            @if (context.ContainersNoImage > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">@context.ContainersNoImage no-img</MudChip>
+                            }
+                            @if (context.ContainersNoScan > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">@context.ContainersNoScan no-scan</MudChip>
+                            }
+                        </MudStack>
+                    </MudTd>
+                    <MudTd>
+                        <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.Status)" Variant="Variant.Filled">
+                            @context.Status
+                        </MudChip>
+                    </MudTd>
+                    <MudTd>
+                        <MudText Typo="Typo.caption">
+                            @(context.LastNewContainerAtUtc?.ToString("dd MMM HH:mm") ?? context.FirstSeenUtc.ToString("dd MMM HH:mm"))
+                        </MudText>
+                    </MudTd>
+                    <MudTd>
+                        <MudButton Variant="Variant.Text"
+                                   Color="Color.Primary"
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.Visibility"
+                                   OnClick="@(() => OpenDetail(context))">
+                            Details
+                        </MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+            @if (_results.TotalPages > 1)
+            {
+                <MudStack Row="true" AlignItems="AlignItems.Center" Class="pa-2">
+                    <MudText Typo="Typo.caption">Page @_results.Page of @_results.TotalPages</MudText>
+                    <MudSpacer />
+                    <MudButton Disabled="@(_results.Page <= 1)" OnClick="PrevPage" Size="Size.Small">Previous</MudButton>
+                    <MudButton Disabled="@(_results.Page >= _results.TotalPages)" OnClick="NextPage" Size="Size.Small">Next</MudButton>
+                </MudStack>
+            }
+        </MudPaper>
+    }
+
+    @* ── Detail drawer ── *@
+    <MudDrawer @bind-Open="_detailOpen" Width="600px" Anchor="Anchor.End" Elevation="4" Variant="DrawerVariant.Temporary">
+        <MudDrawerHeader>
+            <MudText Typo="Typo.h6">Record Detail</MudText>
+        </MudDrawerHeader>
+        <MudContainer Class="pa-4">
+            @if (_detail == null)
+            {
+                <MudProgressCircular Indeterminate="true" />
+            }
+            else
+            {
+                <MudText Typo="Typo.subtitle1"><b>Declaration @_detail.DeclarationNumber</b></MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+                    @(_detail.ClearanceType ?? "—") / regime @(_detail.RegimeCode ?? "—") &middot; rotation @(_detail.RotationNumber ?? "—")
+                </MudText>
+                @if (!string.IsNullOrEmpty(_detail.BlNumber))
+                {
+                    <MudText Typo="Typo.body2">Master BL: <b>@_detail.BlNumber</b></MudText>
+                }
+                @if (!string.IsNullOrEmpty(_detail.ContainerGroupKey))
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="my-2">
+                        Pattern A (shared container). All records with <code>ContainerGroupKey=@_detail.ContainerGroupKey</code> share one physical image.
+                    </MudAlert>
+                }
+
+                <MudChip T="string" Size="Size.Small" Color="@StatusColor(_detail.Status)" Variant="Variant.Filled" Class="my-2">
+                    @_detail.Status
+                </MudChip>
+
+                <MudDivider Class="my-2" />
+
+                <MudText Typo="Typo.subtitle2" Class="mt-2">Expected containers (@_detail.TotalExpectedContainers)</MudText>
+                @if (_detail.ExpectedContainers.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">No container list.</MudText>
+                }
+                else
+                {
+                    <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                        <thead>
+                            <tr>
+                                <th>Container</th>
+                                <th>Status</th>
+                                <th>House BL</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var c in _detail.ExpectedContainers)
+                            {
+                                <tr>
+                                    <td><code>@c.ContainerNumber</code></td>
+                                    <td>
+                                        <MudChip T="string" Size="Size.Small" Color="@ContainerStatusColor(c.Status)" Variant="Variant.Filled">@c.Status</MudChip>
+                                    </td>
+                                    <td><MudText Typo="Typo.caption">@(c.HouseBl ?? "—")</MudText></td>
+                                    <td>
+                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary"
+                                                   OnClick="@(() => OpenContainer(c.ContainerNumber))">Open</MudButton>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                }
+
+                @if (!string.IsNullOrEmpty(_detail.DeclarationsJson))
+                {
+                    <MudDivider Class="my-2" />
+                    <MudText Typo="Typo.subtitle2">Sibling declarations (Pattern A)</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="white-space:pre-wrap;">@_detail.DeclarationsJson</MudText>
+                }
+            }
+        </MudContainer>
+    </MudDrawer>
+</MudContainer>
+
+@code {
+    private bool _loading;
+    private bool _detailOpen;
+    private string _statusFilter = "Active";
+    private string _search = string.Empty;
+    private bool _onlyMultiContainer = false;
+    private int _pageSize = 50;
+    private int _currentPage = 1;
+    private RecordSummaryCounts? _summary;
+    private RecordListResponse? _results;
+    private RecordDetail? _detail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Allow deep-link via ?declaration=... or ?status=...
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        var qs = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        if (qs.TryGetValue("status", out var status)) _statusFilter = status.ToString();
+        if (qs.TryGetValue("search", out var search)) _search = search.ToString();
+
+        await LoadSummaryAsync();
+        await LoadAsync();
+
+        if (qs.TryGetValue("declaration", out var decl) && !string.IsNullOrWhiteSpace(decl.ToString()))
+        {
+            await OpenByDeclarationAsync(decl.ToString());
+        }
+    }
+
+    private async Task LoadSummaryAsync()
+    {
+        try
+        {
+            _summary = await ApiService.GetAsync<RecordSummaryCounts>("/api/recordcompleteness/summary");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load record summary");
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+        try
+        {
+            var statusParam = _statusFilter switch
+            {
+                "Active" => "Pending,PartiallyReady,Ready,InAnalysis,InAudit",
+                "All" => "",
+                _ => _statusFilter
+            };
+            var url = $"/api/recordcompleteness?status={Uri.EscapeDataString(statusParam)}&search={Uri.EscapeDataString(_search)}&onlyMultiContainer={_onlyMultiContainer}&page={_currentPage}&pageSize={_pageSize}";
+            _results = await ApiService.GetAsync<RecordListResponse>(url);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load records");
+            Snackbar.Add($"Load failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnStatusFilterChanged(string value)
+    {
+        _statusFilter = value;
+        _currentPage = 1;
+        await LoadAsync();
+    }
+
+    private async Task OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            _currentPage = 1;
+            await LoadAsync();
+        }
+    }
+
+    private async Task PrevPage() { if (_currentPage > 1) { _currentPage--; await LoadAsync(); } }
+    private async Task NextPage() { if (_results != null && _currentPage < _results.TotalPages) { _currentPage++; await LoadAsync(); } }
+
+    private async Task OpenDetail(RecordSummary row)
+    {
+        _detailOpen = true;
+        _detail = null;
+        StateHasChanged();
+        try
+        {
+            _detail = await ApiService.GetAsync<RecordDetail>($"/api/recordcompleteness/{row.Id}");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load detail: {ex.Message}", Severity.Error);
+            _detailOpen = false;
+        }
+    }
+
+    private async Task OpenByDeclarationAsync(string declarationNumber)
+    {
+        _detailOpen = true;
+        _detail = null;
+        StateHasChanged();
+        try
+        {
+            _detail = await ApiService.GetAsync<RecordDetail>($"/api/recordcompleteness/by-declaration/{Uri.EscapeDataString(declarationNumber)}");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load record for declaration {declarationNumber}: {ex.Message}", Severity.Error);
+            _detailOpen = false;
+        }
+    }
+
+    private void OpenContainer(string containerNumber)
+    {
+        if (string.IsNullOrWhiteSpace(containerNumber)) return;
+        Navigation.NavigateTo($"/containers/{Uri.EscapeDataString(containerNumber)}");
+    }
+
+    private static Color StatusColor(string? status) => status switch
+    {
+        "Ready"            => Color.Success,
+        "PartiallyReady"   => Color.Warning,
+        "Pending"          => Color.Info,
+        "InAnalysis"       => Color.Primary,
+        "InAudit"          => Color.Primary,
+        "PendingSubmission"=> Color.Tertiary,
+        "Submitted"        => Color.Tertiary,
+        "Completed"        => Color.Success,
+        "Archived"         => Color.Default,
+        "Failed"           => Color.Error,
+        _                  => Color.Default,
+    };
+
+    private static Color ContainerStatusColor(string? status) => status switch
+    {
+        "Ready"            => Color.Success,
+        "Pending"          => Color.Info,
+        "AwaitingScan"     => Color.Warning,
+        "Decided"          => Color.Primary,
+        "Submitted"        => Color.Tertiary,
+        "NoImageAvailable" => Color.Error,
+        "NoScanReceived"   => Color.Error,
+        _                  => Color.Default,
+    };
+
+    public class RecordListResponse
+    {
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalCount { get; set; }
+        public int TotalPages { get; set; }
+        public List<RecordSummary> Results { get; set; } = new();
+    }
+
+    public class RecordSummary
+    {
+        public int Id { get; set; }
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string? ClearanceType { get; set; }
+        public string? RegimeCode { get; set; }
+        public string? RotationNumber { get; set; }
+        public string? BlNumber { get; set; }
+        public string? ContainerGroupKey { get; set; }
+        public string? ScannerType { get; set; }
+        public int TotalExpectedContainers { get; set; }
+        public int ContainersAwaitingScan { get; set; }
+        public int ContainersScanned { get; set; }
+        public int ContainersReady { get; set; }
+        public int ContainersDecided { get; set; }
+        public int ContainersSubmitted { get; set; }
+        public int ContainersNoImage { get; set; }
+        public int ContainersNoScan { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string WorkflowStage { get; set; } = string.Empty;
+        public DateTime FirstSeenUtc { get; set; }
+        public DateTime? LastNewContainerAtUtc { get; set; }
+        public DateTime? ArchivedAtUtc { get; set; }
+        public string? ArchivalReason { get; set; }
+    }
+
+    public class RecordDetail : RecordSummary
+    {
+        public int? PrimaryBoeDocumentId { get; set; }
+        public DateTime? FirstReadyAtUtc { get; set; }
+        public string? DeclarationsJson { get; set; }
+        public List<ExpectedContainerDto> ExpectedContainers { get; set; } = new();
+    }
+
+    public class ExpectedContainerDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string? HouseBl { get; set; }
+        public string? ConsigneeName { get; set; }
+        public string? InspectionId { get; set; }
+        public string? ScannerType { get; set; }
+        public DateTime FirstSeenUtc { get; set; }
+        public DateTime? ScannedAtUtc { get; set; }
+        public DateTime? BecameReadyUtc { get; set; }
+        public DateTime? DecidedAtUtc { get; set; }
+    }
+
+    public class RecordSummaryCounts
+    {
+        public int TotalRecords { get; set; }
+        public int TotalMultiContainer { get; set; }
+        public int IntegrityGapContainers { get; set; }
+        public int Pending { get; set; }
+        public int PartiallyReady { get; set; }
+        public int Ready { get; set; }
+        public int InAnalysis { get; set; }
+        public int InAudit { get; set; }
+        public int Submitted { get; set; }
+        public int Completed { get; set; }
+        public int Archived { get; set; }
+    }
+}

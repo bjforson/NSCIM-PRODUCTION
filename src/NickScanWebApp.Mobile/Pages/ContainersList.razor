@@ -1,0 +1,224 @@
+﻿@page "/containers"
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Shared.Services
+@attribute [Authorize(Policy = Permissions.PagesContainersView)]
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>Containers - NickScan Mobile</PageTitle>
+
+@if (!_initialized)
+{
+    <MudContainer Class="d-flex flex-column align-center justify-center" Style="height: 100vh;">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" Class="mb-4" />
+        <MudText Typo="Typo.h6" Align="Align.Center">
+            Loading containers&hellip;
+        </MudText>
+    </MudContainer>
+}
+else
+{
+    <MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+        <MudStack Spacing="3">
+            <!-- Search Bar -->
+            <MudPaper Elevation="2" Class="pa-3 rounded-lg">
+                <MudTextField @bind-Value="_searchQuery"
+                            Placeholder="Search containers..."
+                            Adornment="Adornment.Start"
+                            AdornmentIcon="@Icons.Material.Filled.Search"
+                            Immediate="true"
+                            Variant="Variant.Outlined"
+                            Class="w-100" />
+            </MudPaper>
+
+            @if (_isLoading)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="my-4" />
+            }
+            else if (_containers.Any())
+            {
+                @foreach (var container in _filteredContainers)
+                {
+                    <MudCard Elevation="2" Class="mb-3 rounded-lg" @onclick="() => NavigateToDetails(container.ContainerNumber)" style="cursor: pointer;">
+                        <MudCardContent>
+                            <MudStack Spacing="2">
+                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                    <MudText Typo="Typo.h6" Class="mb-0">@container.ContainerNumber</MudText>
+                                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(container.ValidationStatus)">
+                                        @container.ValidationStatus
+                                    </MudChip>
+                                </MudStack>
+
+                                <MudDivider />
+
+                                <MudGrid>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Scanner</MudText>
+                                        <MudText Typo="Typo.body2">@container.ScannerType</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Scan Date</MudText>
+                                        <MudText Typo="Typo.body2">@container.ScanDate.ToString("MM/dd/yy HH:mm")</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Completeness</MudText>
+                                        <MudText Typo="Typo.body2">@((int)container.CompletenessScore)%</MudText>
+                                    </MudItem>
+                                    <MudItem xs="6">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance</MudText>
+                                        <MudText Typo="Typo.body2">@container.ClearanceType</MudText>
+                                    </MudItem>
+                                </MudGrid>
+
+                                @if (container.HasImage)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Filled.Image" Color="Color.Info">Has Image</MudChip>
+                                }
+                            </MudStack>
+                        </MudCardContent>
+                    </MudCard>
+                }
+            }
+            else
+            {
+                <MudPaper Elevation="1" Class="pa-4 rounded-lg text-center">
+                    <MudIcon Icon="@Icons.Material.Filled.Inventory2" Size="Size.Large" Color="Color.Default" Class="mb-3" />
+                    <MudText Typo="Typo.h6" Class="mb-2">No containers found</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        @if (!string.IsNullOrWhiteSpace(_searchQuery))
+                        {
+                            <text>Try adjusting your search query.</text>
+                        }
+                        else
+                        {
+                            <text>There are no containers available at this time.</text>
+                        }
+                    </MudText>
+                </MudPaper>
+            }
+        </MudStack>
+    </MudContainer>
+}
+
+@code {
+    private bool _initialized = false;
+    private bool _isLoading = false;
+    private string _searchQuery = string.Empty;
+    private readonly List<ContainerViewModel> _containers = new();
+
+    private IEnumerable<ContainerViewModel> _filteredContainers =>
+        string.IsNullOrWhiteSpace(_searchQuery)
+            ? _containers
+            : _containers.Where(c =>
+                c.ContainerNumber.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+                c.ScannerType.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+                c.ValidationStatus.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase) ||
+                c.ClearanceType.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (!authState.User.Identity?.IsAuthenticated ?? true)
+        {
+            Navigation.NavigateTo("/login");
+            return;
+        }
+
+        await LoadContainers();
+        _initialized = true;
+    }
+
+    private async Task LoadContainers()
+    {
+        _isLoading = true;
+        try
+        {
+            var response = await ApiService.GetAsync<PagedApiResponse>("/api/containervalidation/pending?page=1&pageSize=50");
+            _containers.Clear();
+
+            if (response?.Data != null)
+            {
+                _containers.AddRange(response.Data.Select(c => new ContainerViewModel
+                {
+                    ContainerNumber = c.ContainerNumber ?? string.Empty,
+                    ScannerType = c.ScannerType ?? "Unknown",
+                    ScanDate = c.CreatedAt,
+                    ValidationStatus = c.Status ?? "Pending",
+                    CompletenessScore = c.DataCompleteness,
+                    ClearanceType = ConvertClearanceTypeToString(c.ClearanceType),
+                    HasImage = c.HasICUMSData
+                }));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading containers: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void NavigateToDetails(string containerNumber)
+    {
+        Navigation.NavigateTo($"/containers/{Uri.EscapeDataString(containerNumber)}");
+    }
+
+    private Color GetStatusColor(string status)
+    {
+        return status.ToLowerInvariant() switch
+        {
+            "pending" => Color.Warning,
+            "approved" => Color.Success,
+            "rejected" => Color.Error,
+            "incomplete" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    // Removed ConvertValidationStatusToString - Status is now a string from API
+
+    private string ConvertClearanceTypeToString(int? clearanceType)
+    {
+        return clearanceType switch
+        {
+            0 => "Green Lane",
+            1 => "Yellow Lane",
+            2 => "Red Lane",
+            _ => "Unknown"
+        };
+    }
+
+    private class ContainerViewModel
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public DateTime ScanDate { get; set; }
+        public string ValidationStatus { get; set; } = string.Empty;
+        public double CompletenessScore { get; set; }
+        public string ClearanceType { get; set; } = string.Empty;
+        public bool HasImage { get; set; }
+    }
+
+    private class PagedApiResponse
+    {
+        public List<ContainerDto>? Data { get; set; }
+    }
+
+    private class ContainerDto
+    {
+        public string? ContainerNumber { get; set; }
+        public string? ScannerType { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? Status { get; set; }
+        public double DataCompleteness { get; set; }
+        public int? ClearanceType { get; set; }
+        public bool HasICUMSData { get; set; }
+    }
+}
+

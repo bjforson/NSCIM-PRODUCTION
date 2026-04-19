@@ -1,0 +1,307 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using ImageMetadata = NickScanWebApp.Shared.Models.ImageMetadata
+@using NickScanCentralImagingPortal.Core.Entities
+@using NickScanWebApp.Mobile.Components.Containers
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    <!-- Header -->
+    <MudPaper Elevation="1" Class="pa-3 mb-3" Style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.Assignment" Size="Size.Small" />
+            <MudText Typo="Typo.h6">Image Decision Panel</MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Primary">
+                @ContainerNumber
+            </MudChip>
+        </MudStack>
+    </MudPaper>
+    
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body2">Loading images...</MudText>
+        </MudStack>
+    }
+    else if (images?.Any() == true)
+    {
+        <MudStack Spacing="2" Class="pa-2">
+            @foreach (var image in images)
+            {
+                var decisionPair = _decisions.FirstOrDefault(d => d.Value.ScannerType == image.ImageType);
+                var decision = decisionPair.Value;
+                var currentDecision = decision?.Decision ?? "Pending";
+
+                <MudPaper Elevation="1" Class="pa-3">
+                    <!-- Image Header -->
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                        <MudIcon Icon="@GetScannerIcon(image.ImageType)" Size="Size.Small" />
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">
+                            @image.ImageType Scanner
+                        </MudText>
+                        <MudSpacer />
+                        <MudChip T="string" Size="Size.Small" Color="@GetDecisionColor(currentDecision)">
+                            @currentDecision
+                        </MudChip>
+                    </MudStack>
+
+                    <!-- Image Display -->
+                    <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 250px; border-radius: 4px; margin-bottom: 12px;">
+                        <img src="@GetImageSrc(image)" 
+                             alt="@image.ImageType Image" 
+                             style="max-width: 100%; max-height: 250px; cursor: pointer; object-fit: contain;"
+                             @onclick="@(() => OpenFullImage(image))"
+                             @onerror="@(() => HandleImageError(image.Id))" />
+                    </div>
+
+                    <!-- Decision Controls -->
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">Make Decision:</MudText>
+                        <MudRadioGroup T="string" Value="@GetDecisionValue(image.ImageType)" ValueChanged="@((string value) => SetDecisionValue(image.ImageType, value))" Required="true">
+                            <MudRadio T="string" Value="@NormalValue" Color="Color.Success">
+                                <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Small" Class="mr-1" />
+                                Normal
+                            </MudRadio>
+                            <MudRadio T="string" Value="@AbnormalValue" Color="Color.Error">
+                                <MudIcon Icon="@Icons.Material.Filled.Warning" Size="Size.Small" Class="mr-1" />
+                                Abnormal
+                            </MudRadio>
+                        </MudRadioGroup>
+                        
+                        <MudTextField Value="@GetCommentsValue(image.ImageType)" ValueChanged="@((string value) => SetCommentsValue(image.ImageType, value))"
+                                     Label="Comments (optional)"
+                                     Variant="Variant.Outlined"
+                                     Lines="2"
+                                     FullWidth="true" />
+                        
+                        <MudButton Color="Color.Primary" 
+                                  Variant="Variant.Filled" 
+                                  OnClick="@(() => SaveDecision(image.ImageType))"
+                                  FullWidth="true"
+                                  StartIcon="@Icons.Material.Filled.Save">
+                            Save Decision
+                        </MudButton>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No images available for this container.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
+    [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public EventCallback OnDecisionChanged { get; set; }
+    [Parameter] public EventCallback OnDecisionSaved { get; set; }
+
+    private const string NormalValue = "Normal";
+    private const string AbnormalValue = "Abnormal";
+
+    private List<ImageMetadata>? images;
+    private bool isLoading = false;
+    private Dictionary<string, ImageAnalysisDecision> _decisions = new();
+    private Dictionary<string, string> _decisionValues = new();
+    private Dictionary<string, string> _commentsValues = new();
+    private Dictionary<int, bool> imageLoadError = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadImages();
+        await LoadExistingDecisions();
+    }
+
+    private async Task LoadImages()
+    {
+        isLoading = true;
+        try
+        {
+            var response = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            images = response?.ToList();
+            
+            // Normalize URLs
+            if (images != null)
+            {
+                var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+                foreach (var image in images)
+                {
+                    image.ThumbnailUrl = NormalizeImageUrl(image.ThumbnailUrl, apiBaseUrl);
+                    image.FullImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading images: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadExistingDecisions()
+    {
+        try
+        {
+            var decisions = await ApiService.GetAsync<List<ImageAnalysisDecision>>(
+                $"/api/image-analysis/decisions?groupIdentifier={Uri.EscapeDataString(GroupIdentifier)}");
+            
+            if (decisions != null)
+            {
+                foreach (var decision in decisions)
+                {
+                    if (decision != null)
+                    {
+                        _decisions[decision.ScannerType] = decision;
+                        _decisionValues[decision.ScannerType] = decision.Decision;
+                        _commentsValues[decision.ScannerType] = decision.Comments ?? "";
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Silently fail - decisions may not exist yet
+        }
+    }
+
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private string GetImageSrc(ImageMetadata image)
+    {
+        return image.ThumbnailUrl ?? image.FullImageUrl ?? "";
+    }
+
+    private string GetDecisionValue(string scannerType)
+    {
+        return _decisionValues.GetValueOrDefault(scannerType, "Pending");
+    }
+
+    private string GetCommentsValue(string scannerType)
+    {
+        return _commentsValues.GetValueOrDefault(scannerType, "");
+    }
+
+    private void SetDecisionValue(string scannerType, string value)
+    {
+        _decisionValues[scannerType] = value;
+    }
+
+    private void SetCommentsValue(string scannerType, string value)
+    {
+        _commentsValues[scannerType] = value;
+    }
+
+    private Color GetDecisionColor(string decision)
+    {
+        return decision switch
+        {
+            "Normal" => Color.Success,
+            "Abnormal" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private string GetScannerIcon(string imageType)
+    {
+        return imageType?.ToUpper() switch
+        {
+            "FS6000" => Icons.Material.Filled.Scanner,
+            "ASE" => Icons.Material.Filled.CropFree,
+            "HEIMANN" or "HEIMANNSMITH" => Icons.Material.Filled.CameraAlt,
+            _ => Icons.Material.Filled.Image
+        };
+    }
+
+    private async Task OpenFullImage(ImageMetadata image)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = image.FullImageUrl,
+            ["ContainerNumber"] = ContainerNumber,
+            ["ScannerType"] = image.ImageType,
+            ["ScanDate"] = image.CreatedAt
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.False,
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>("Image Viewer", parameters, options);
+    }
+
+    private async Task SaveDecision(string scannerType)
+    {
+        var decision = _decisionValues.GetValueOrDefault(scannerType, "Pending");
+        var comments = _commentsValues.GetValueOrDefault(scannerType, "");
+
+        if (decision == "Pending")
+        {
+            Snackbar.Add("Please select a decision", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var username = authState.User?.Identity?.Name ?? "Unknown";
+
+            var request = new
+            {
+                GroupIdentifier = GroupIdentifier,
+                ContainerNumber = ContainerNumber,
+                ScannerType = scannerType,
+                Decision = decision,
+                Comments = comments,
+                ReviewedBy = username,
+                Tags = ""
+            };
+
+            await ApiService.PostAsync<object, object>("/api/image-analysis/decisions", request);
+            Snackbar.Add("Decision saved successfully", Severity.Success);
+            
+            if (OnDecisionSaved.HasDelegate)
+            {
+                await OnDecisionSaved.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error saving decision: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void HandleImageError(int imageId)
+    {
+        imageLoadError[imageId] = true;
+        StateHasChanged();
+    }
+}

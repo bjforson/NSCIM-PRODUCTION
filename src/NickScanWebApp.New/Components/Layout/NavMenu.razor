@@ -1,0 +1,524 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using NickScanWebApp.New.Services.Permissions
+@inject NickScanWebApp.New.Services.CustomAuthStateProvider AuthStateProvider
+@inject AuthenticationStateProvider BaseAuthStateProvider
+@inject PermissionGuard Guard
+@inject ILogger<NavMenu> Logger
+@implements IDisposable
+
+@* Sidebar brand + profile (Domiex style) *@
+<div style="padding: 14px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+    <div style="width: 32px; height: 32px; background: linear-gradient(135deg, #4facfe, #00f2fe); border-radius: 7px; display: flex; align-items: center; justify-content: center;">
+        <MudIcon Icon="@Icons.Material.Outlined.Security" Style="color: white; font-size: 16px;" />
+    </div>
+    <MudText Style="font-size: 16px; font-weight: 700; color: white;">NSCIS</MudText>
+</div>
+<div style="padding: 12px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+    <MudAvatar Size="Size.Small" Style="background: linear-gradient(135deg, #667eea, #764ba2); font-size: 12px; font-weight: 600; width: 34px; height: 34px;">
+        @(_username?.Length >= 2 ? _username.Substring(0, 2).ToUpper() : "U")
+    </MudAvatar>
+    <div>
+        <MudText Style="font-size: 12px; font-weight: 600; color: white;">@(_username ?? "User")</MudText>
+        <MudText Style="font-size: 10px; color: rgba(255,255,255,0.4);">Nick TC-Scan Ltd</MudText>
+    </div>
+</div>
+
+<MudNavMenu>
+    @* ═══════════════ 1. DASHBOARD ═══════════════ *@
+    @if (CanAny(PermissionIds.Pages.DashboardView, PermissionIds.Pages.DashboardAnalytics, PermissionIds.Pages.ReportsView))
+    {
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">DASHBOARD</MudText>
+
+        @if (Can(PermissionIds.Pages.DashboardView))
+        {
+            <MudNavLink Href="/dashboard" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">
+                Home
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.ReportsView))
+        {
+            <MudNavLink Href="/reports" Icon="@Icons.Material.Filled.Assessment">
+                Reports
+            </MudNavLink>
+        }
+
+        <MudNavLink Href="/notifications" Icon="@Icons.Material.Filled.Notifications">
+            Notifications
+        </MudNavLink>
+    }
+
+    @* ═══════════════ 2. CONTAINERS & SEARCH ═══════════════ *@
+    @if (CanAny(
+            PermissionIds.Pages.ContainersView,
+            PermissionIds.Pages.VehiclesView,
+            PermissionIds.Pages.Search))
+    {
+        <MudDivider Class="my-2" />
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">CONTAINERS & SEARCH</MudText>
+
+        @if (Can(PermissionIds.Pages.ContainersView))
+        {
+            <MudNavLink Href="/containers" Icon="@Icons.Material.Filled.Inventory">
+                Containers
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.VehiclesView))
+        {
+            <MudNavLink Href="/vehicles" Icon="@Icons.Material.Filled.DirectionsCar">
+                Vehicles
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.Search))
+        {
+            <MudNavLink Href="/search" Icon="@Icons.Material.Filled.Search">
+                Global Search
+            </MudNavLink>
+        }
+    }
+
+    @* ═══════════════ 3. IMAGE ANALYSIS ═══════════════ *@
+    @if (CanAny(
+            PermissionIds.Pages.ImageAnalysisView,
+            PermissionIds.Pages.ImageAnalysisAudit,
+            PermissionIds.Pages.ImageAnalysisManagement,
+            PermissionIds.Pages.ValidationXrayInspector))
+    {
+        <MudDivider Class="my-2" />
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">IMAGE ANALYSIS</MudText>
+
+        @if (CanAny(PermissionIds.Pages.ImageAnalysisView, PermissionIds.Pages.ImageAnalysisAudit))
+        {
+            <MudNavGroup Title="Workbench" Icon="@Icons.Material.Filled.ImageSearch" Expanded="true">
+                @if (Can(PermissionIds.Pages.ImageAnalysisView))
+                {
+                    <MudNavLink Href="/image-analysis/workbench" Icon="@Icons.Material.Filled.ImageSearch">
+                        Workbench
+                    </MudNavLink>
+                    <MudNavLink Href="/image-analysis" Icon="@Icons.Material.Filled.Gavel">
+                        BL Decision Review
+                    </MudNavLink>
+                    <MudNavLink Href="/image-analysis/split" Icon="@Icons.Material.Filled.CallSplit">
+                        Split Review
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.ImageAnalysisAudit))
+                {
+                    <MudNavLink Href="/image-analysis/audit" Icon="@Icons.Material.Filled.Verified">
+                        Audit Review
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+
+        @if (Can(PermissionIds.Pages.ValidationXrayInspector))
+        {
+            <MudNavLink Href="/image-analysis/xray-inspector" Icon="@Icons.Material.Filled.Biotech">
+                X-Ray Inspector
+            </MudNavLink>
+        }
+
+        @if (HasClaimPermission("controllers.ai-workflow"))
+        {
+            <MudNavLink Href="/image-analysis/ai" Icon="@Icons.Material.Filled.SmartToy">
+                AI Review
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.ImageAnalysisManagement))
+        {
+            <MudNavLink Href="/image-analysis/config" Icon="@Icons.Material.Filled.ManageAccounts">
+                Configuration
+            </MudNavLink>
+        }
+    }
+
+    @* ═══════════════ 4. COMPLETENESS & CUSTOMS ═══════════════ *@
+    @if (CanAny(
+            PermissionIds.Pages.ContainerCompleteness,
+            PermissionIds.Pages.ValidationCompleteness,
+            PermissionIds.Pages.ValidationRules,
+            PermissionIds.Pages.ValidationRecordCompleteness,
+            PermissionIds.Pages.ValidationMatchCorrections,
+            PermissionIds.Pages.ValidationBoeLookup,
+            PermissionIds.Pages.CmrValidation,
+            PermissionIds.Pages.IcumsView,
+            PermissionIds.Pages.CompletedRecords,
+            PermissionIds.Pages.CrossRecordScans))
+    {
+        <MudDivider Class="my-2" />
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">COMPLETENESS & CUSTOMS</MudText>
+
+        @if (CanAny(
+                PermissionIds.Pages.ContainerCompleteness,
+                PermissionIds.Pages.ValidationCompleteness,
+                PermissionIds.Pages.CompletedRecords,
+                PermissionIds.Pages.CrossRecordScans))
+        {
+            <MudNavLink Href="/completeness" Icon="@Icons.Material.Filled.FactCheck">
+                Completeness
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.ValidationRecordCompleteness))
+        {
+            <MudNavLink Href="/completeness/record-completeness" Icon="@Icons.Material.Filled.AccountTree">
+                Record Completeness
+            </MudNavLink>
+        }
+
+        @if (CanAny(
+                PermissionIds.Pages.ValidationRules,
+                PermissionIds.Pages.ValidationMatchCorrections,
+                PermissionIds.Pages.CmrValidation))
+        {
+            <MudNavGroup Title="Data Quality" Icon="@Icons.Material.Filled.Rule" Expanded="false">
+                @if (Can(PermissionIds.Pages.ValidationRules))
+                {
+                    <MudNavLink Href="/completeness/rules" Icon="@Icons.Material.Filled.Rule">
+                        Business Rules
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.ValidationMatchCorrections))
+                {
+                    <MudNavLink Href="/completeness/match-corrections" Icon="@Icons.Material.Filled.RuleFolder">
+                        Match Corrections
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.CmrValidation))
+                {
+                    <MudNavLink Href="/completeness/cmr-validation" Icon="@Icons.Material.Filled.VerifiedUser">
+                        CMR Data Quality
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+
+        @if (CanAny(
+                PermissionIds.Pages.IcumsView,
+                PermissionIds.Pages.IcumsDownloadQueue,
+                PermissionIds.Pages.IcumsSubmissionQueue,
+                PermissionIds.Pages.IcumsBoeRequest,
+                PermissionIds.Pages.IcumsLooseCargo,
+                PermissionIds.Pages.IcumsAnalytics,
+                PermissionIds.Pages.IcumsBatchDownload,
+                PermissionIds.Pages.ValidationBoeLookup))
+        {
+            <MudNavGroup Title="Customs / ICUMS" Icon="@Icons.Material.Filled.Cloud" Expanded="false">
+                @if (Can(PermissionIds.Pages.IcumsView))
+                {
+                    <MudNavLink Href="/customs/icums" Icon="@Icons.Material.Filled.Cloud">
+                        ICUMS Dashboard
+                    </MudNavLink>
+                }
+                @* ICUMS Analytics absorbed into /customs/icums as a tab *@
+                @if (Can(PermissionIds.Pages.IcumsDownloadQueue))
+                {
+                    <MudNavLink Href="/customs/icums/downloads" Icon="@Icons.Material.Filled.CloudDownload">
+                        Downloads
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.IcumsSubmissionQueue))
+                {
+                    <MudNavLink Href="/customs/icums/submissions" Icon="@Icons.Material.Filled.CloudUpload">
+                        Submission Queue
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.IcumsBoeRequest))
+                {
+                    <MudNavLink Href="/customs/icums/boe-request" Icon="@Icons.Material.Filled.RequestQuote">
+                        BOE Request
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.IcumsLooseCargo))
+                {
+                    <MudNavLink Href="/customs/icums/loose-cargo" Icon="@Icons.Material.Filled.LocalShipping">
+                        Loose Cargo
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.ValidationBoeLookup))
+                {
+                    <MudNavLink Href="/customs/boe-lookup" Icon="@Icons.Material.Filled.ManageSearch">
+                        BOE Lookup
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+    }
+
+    @* ═══════════════ 5. OPERATIONS & MONITORING ═══════════════ *@
+    @if (CanAny(
+            PermissionIds.Pages.ScannersView,
+            PermissionIds.Pages.ScannersAse,
+            PermissionIds.Pages.ScannersFs6000,
+            PermissionIds.Pages.ScannersHeimann,
+            PermissionIds.Pages.ServicesMonitoring,
+            PermissionIds.Pages.ServicesPerformanceMetrics,
+            PermissionIds.Pages.ServicesDiagnostics,
+            PermissionIds.Pages.ServicesDatabase,
+            PermissionIds.Pages.ServicesGateway,
+            PermissionIds.Pages.ServicesIngestion,
+            PermissionIds.Pages.ServicesImageProcessing,
+            PermissionIds.Pages.ServicesAseSync,
+            PermissionIds.Pages.ServicesFs6000Completeness,
+            PermissionIds.Pages.ServicesConsolidatedCargo,
+            PermissionIds.Pages.ServicesDebug,
+            PermissionIds.Pages.AdminServiceControl) || HasClaimPermission("pages.operations.errors"))
+    {
+        <MudDivider Class="my-2" />
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">OPERATIONS & MONITORING</MudText>
+
+        @if (Can(PermissionIds.Pages.ScannersView))
+        {
+            <MudNavLink Href="/scanners" Icon="@Icons.Material.Filled.Scanner">
+                Scanners
+            </MudNavLink>
+        }
+
+        @if (CanAny(
+                PermissionIds.Pages.ServicesMonitoring,
+                PermissionIds.Pages.ServicesPerformanceMetrics,
+                PermissionIds.Pages.AdminServiceControl))
+        {
+            <MudNavLink Href="/monitoring" Icon="@Icons.Material.Filled.MonitorHeart">
+                System Monitoring
+            </MudNavLink>
+        }
+
+        @if (Can(PermissionIds.Pages.ServicesDiagnostics))
+        {
+            <MudNavLink Href="/monitoring/diagnostics" Icon="@Icons.Material.Filled.BugReport">
+                System Diagnostics
+            </MudNavLink>
+        }
+
+        @* Data Pipeline (Database/Gateway/Ingestion/ImageProcessing) absorbed into /monitoring/diagnostics as tabs *@
+
+        @if (CanAny(
+                PermissionIds.Pages.ServicesAseSync,
+                PermissionIds.Pages.ServicesFs6000Completeness,
+                PermissionIds.Pages.ServicesConsolidatedCargo))
+        {
+            <MudNavGroup Title="Scanner Sync" Icon="@Icons.Material.Filled.Sync" Expanded="false">
+                @if (Can(PermissionIds.Pages.ServicesAseSync))
+                {
+                    <MudNavLink Href="/monitoring/ase-sync" Icon="@Icons.Material.Filled.Sync">
+                        ASE Sync
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.ServicesFs6000Completeness))
+                {
+                    <MudNavLink Href="/monitoring/fs6000-completeness" Icon="@Icons.Material.Filled.CheckCircle">
+                        FS6000 Completeness
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.ServicesConsolidatedCargo))
+                {
+                    <MudNavLink Href="/operations/consolidated-cargo" Icon="@Icons.Material.Filled.Inventory2">
+                        Consolidated Cargo
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+
+        @if (HasClaimPermission("pages.operations.errors") || Can(PermissionIds.Pages.AdminServiceControl) || Can(PermissionIds.Pages.AdminAudit))
+        {
+            <MudNavLink Href="/monitoring/errors-audit" Icon="@Icons.Material.Filled.ErrorOutline" IconColor="Color.Error">
+                Errors &amp; Audit
+            </MudNavLink>
+        }
+
+        @* Debug Tools absorbed into /monitoring/diagnostics as a tab *@
+    }
+
+    @* ═══════════════ 6. ADMINISTRATION ═══════════════ *@
+    @if (CanAny(
+            PermissionIds.Pages.AdminUsers,
+            PermissionIds.Pages.AdminRoles,
+            PermissionIds.Pages.AdminPermissions,
+            PermissionIds.Pages.AdminSettings,
+            PermissionIds.Pages.AdminLogs,
+            PermissionIds.Pages.AdminAudit,
+            PermissionIds.Pages.IcumsPayloads,
+            PermissionIds.Pages.ServicesAccessReview))
+    {
+        <MudDivider Class="my-2" />
+        <MudText Typo="Typo.caption" Class="px-4 py-2" Style="color: var(--mud-palette-drawer-text); opacity: 0.5; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;">ADMINISTRATION</MudText>
+
+        @if (CanAny(PermissionIds.Pages.AdminUsers, PermissionIds.Pages.AdminRoles, PermissionIds.Pages.AdminPermissions))
+        {
+            <MudNavGroup Title="Users & Roles" Icon="@Icons.Material.Filled.People" Expanded="false">
+                @if (Can(PermissionIds.Pages.AdminUsers))
+                {
+                    <MudNavLink Href="/admin/users/management" Icon="@Icons.Material.Filled.Person">
+                        Users
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.AdminRoles))
+                {
+                    <MudNavLink Href="/admin/roles" Icon="@Icons.Material.Filled.Badge">
+                        Roles
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.AdminPermissions))
+                {
+                    <MudNavLink Href="/admin/permissions" Icon="@Icons.Material.Filled.Security">
+                        Permissions
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+
+        @if (CanAny(PermissionIds.Pages.AdminSettings, PermissionIds.Pages.AdminLogs))
+        {
+            <MudNavGroup Title="System" Icon="@Icons.Material.Filled.AdminPanelSettings" Expanded="false">
+                @if (Can(PermissionIds.Pages.AdminSettings))
+                {
+                    <MudNavLink Href="/admin/settings" Icon="@Icons.Material.Filled.Settings">
+                        System Settings
+                    </MudNavLink>
+                    <MudNavLink Href="/admin/comms-gateway" Icon="@Icons.Material.Filled.Send">
+                        Comms Gateway
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.AdminLogs))
+                {
+                    <MudNavLink Href="/admin/logs" Icon="@Icons.Material.Filled.Description">
+                        Logs
+                    </MudNavLink>
+                }
+                @if (Can(PermissionIds.Pages.IcumsPayloads))
+                {
+                    <MudNavLink Href="/admin/icums-payloads" Icon="@Icons.Material.Filled.FactCheck">
+                        ICUMS Payloads
+                    </MudNavLink>
+                }
+            </MudNavGroup>
+        }
+
+        @if (Can(PermissionIds.Pages.ServicesAccessReview))
+        {
+            <MudNavLink Href="/admin/access-review" Icon="@Icons.Material.Filled.Security">
+                Access Review
+            </MudNavLink>
+        }
+    }
+
+    <div style="flex-grow: 1; min-height: 40px;"></div>
+
+    <div style="padding: 16px; margin-top: auto;">
+        <MudDivider Class="mb-2" />
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+            <MudIcon Icon="@Icons.Material.Filled.Circle"
+                     Size="Size.Small"
+                     Style="color: #4caf50;" />
+            <MudText Typo="Typo.caption">System Online</MudText>
+        </MudStack>
+        <MudText Typo="Typo.caption" Style="color: rgba(0,0,0,0.38); font-size: 10px;">
+            v@(NickScanWebApp.New.DeploymentInfo.Version) | Nick TC-Scan Ltd
+        </MudText>
+    </div>
+</MudNavMenu>
+
+@code {
+    private ClaimsPrincipal? _currentUser;
+    private string? _username;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Sync CustomAuthStateProvider from SimpleAuthStateProvider BEFORE any permission checks.
+        // Without this, Guard.Can() uses CustomAuthStateProvider._currentUser which is still null
+        // during the first render, causing all permissions to be denied.
+        try
+        {
+            await AuthStateProvider.GetAuthenticationStateAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[NavMenu] Failed to sync CustomAuthStateProvider — permissions may be delayed");
+        }
+
+        var authState = await BaseAuthStateProvider.GetAuthenticationStateAsync();
+        _currentUser = authState?.User;
+        _username = _currentUser?.Identity?.Name;
+
+        if (_currentUser != null && _currentUser.Identity?.IsAuthenticated == true)
+        {
+            var roleClaim = _currentUser.FindFirst(ClaimTypes.Role)?.Value ?? _currentUser.FindFirst("role")?.Value;
+            Logger.LogDebug("[NavMenu] User: {UserName}, Role: {Role}", _currentUser.Identity?.Name, roleClaim);
+            var permissionClaims = _currentUser.FindAll("Permission").Select(c => c.Value).ToList();
+            Logger.LogDebug("[NavMenu] Permission claims count: {Count}", permissionClaims.Count);
+            Logger.LogDebug("[NavMenu] Sample permissions: {Permissions}", string.Join(", ", permissionClaims.Take(3)));
+        }
+
+        BaseAuthStateProvider.AuthenticationStateChanged += OnAuthenticationStateChanged;
+        AuthStateProvider.PermissionsChanged += OnPermissionsChanged;
+        StateHasChanged();
+    }
+
+    private async void OnAuthenticationStateChanged(Task<AuthenticationState> task)
+    {
+        try
+        {
+            var authState = await task;
+            _currentUser = authState?.User;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            // Ignore failures
+        }
+    }
+
+    private void OnPermissionsChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                // Small delay to ensure permissions are fully updated
+                await Task.Delay(50);
+                var authState = await BaseAuthStateProvider.GetAuthenticationStateAsync();
+                _currentUser = authState?.User;
+            }
+            catch
+            {
+                // ignore failures - keep current state
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        BaseAuthStateProvider.AuthenticationStateChanged -= OnAuthenticationStateChanged;
+        AuthStateProvider.PermissionsChanged -= OnPermissionsChanged;
+    }
+
+    private bool Can(PermissionId permission) => Guard.Can(permission, "NavMenu");
+    private bool CanAny(params PermissionId[] permissions) => Guard.CanAny("NavMenu", permissions);
+
+    private bool HasClaimPermission(string permissionValue)
+    {
+        if (_currentUser?.Identity?.IsAuthenticated != true) return false;
+        var hasClaim = _currentUser.Claims.Any(c =>
+            string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(c.Value, permissionValue, StringComparison.OrdinalIgnoreCase));
+        if (!hasClaim)
+        {
+            // Also check without "pages." prefix or with it added
+            if (permissionValue.StartsWith("pages.", StringComparison.OrdinalIgnoreCase))
+            {
+                var trimmed = permissionValue.Substring(6);
+                hasClaim = _currentUser.Claims.Any(c =>
+                    string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(c.Value, trimmed, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        return hasClaim;
+    }
+}

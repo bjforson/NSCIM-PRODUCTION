@@ -1,0 +1,114 @@
+@using MudBlazor
+@using NickScanWebApp.New.Components.Images
+@inject IJSRuntime JS
+
+<MudDialog>
+    <DialogContent>
+        <MudPaper Elevation="0" Class="pa-4" Style="background-color: #2b2b2b; min-height: 600px;">
+            <MudStack Spacing="4">
+                <!-- Image Container -->
+                <MudPaper Elevation="4" Class="pa-4 d-flex justify-center align-center" Style="background-color: #1a1a1a; min-height: 500px; position: relative; overflow: hidden;">
+                    <div style="position: relative; display: inline-block;">
+                        <img src="@ImageUrl"
+                             alt="Container Scan"
+                             style="max-width: 100%; max-height: 500px; transform: scale(@_zoom) rotate(@(_rotation)deg); transition: transform 0.2s ease;"
+                             @ref="_imageElement" />
+                        <AnnotationOverlay ContainerNumber="@ContainerNumber" ScannerType="@ScannerType" />
+                    </div>
+                </MudPaper>
+
+                <!-- Controls -->
+                <MudPaper Elevation="1" Class="pa-3">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <!-- Zoom Controls -->
+                        <MudButtonGroup Variant="Variant.Outlined" Color="Color.Primary">
+                            <MudIconButton Icon="@Icons.Material.Outlined.ZoomOut" OnClick="ZoomOut" Disabled="@(_zoom <= 0.5)" />
+                            <MudButton>@(_zoom.ToString("P0"))</MudButton>
+                            <MudIconButton Icon="@Icons.Material.Outlined.ZoomIn" OnClick="ZoomIn" Disabled="@(_zoom >= 3.0)" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.FitScreen" OnClick="ResetZoom" />
+                        </MudButtonGroup>
+
+                        <!-- Rotation Controls -->
+                        <MudButtonGroup Variant="Variant.Outlined" Color="Color.Secondary">
+                            <MudIconButton Icon="@Icons.Material.Outlined.RotateLeft" OnClick="RotateLeft" />
+                            <MudButton>@_rotation°</MudButton>
+                            <MudIconButton Icon="@Icons.Material.Outlined.RotateRight" OnClick="RotateRight" />
+                        </MudButtonGroup>
+
+                        <!-- Action Controls -->
+                        <MudStack Row="true" Spacing="1">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Fullscreen" Variant="Variant.Filled" Color="Color.Info" OnClick="ToggleFullscreen" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.Download" Variant="Variant.Filled" Color="Color.Success" OnClick="DownloadImage" />
+                            <MudIconButton Icon="@Icons.Material.Outlined.Print" Variant="Variant.Filled" Color="Color.Default" OnClick="PrintImage" />
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                <!-- Image Info -->
+                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Container: @ContainerNumber</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Scanner: @ScannerType</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Scan Date: @ScanDate.ToString("yyyy-MM-dd HH:mm")</MudText>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public string ImageUrl { get; set; } = "";
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string ScannerType { get; set; } = "";
+    [Parameter] public DateTime ScanDate { get; set; }
+
+    private ElementReference _imageElement;
+    private double _zoom = 1.0;
+    private int _rotation = 0;
+    private bool _isFullscreen = false;
+
+    private void ZoomIn()
+    {
+        if (_zoom < 3.0)
+            _zoom += 0.25;
+    }
+
+    private void ZoomOut()
+    {
+        if (_zoom > 0.5)
+            _zoom -= 0.25;
+    }
+
+    private void ResetZoom()
+    {
+        _zoom = 1.0;
+        _rotation = 0;
+    }
+
+    private void RotateRight()
+    {
+        _rotation = (_rotation + 90) % 360;
+    }
+
+    private void RotateLeft()
+    {
+        _rotation = (_rotation - 90 + 360) % 360;
+    }
+
+    private Task ToggleFullscreen()
+    {
+        // TODO: Implement fullscreen using JS Interop
+        _isFullscreen = !_isFullscreen;
+        return Task.CompletedTask;
+    }
+
+    private Task DownloadImage() => Task.CompletedTask;
+
+    private Task PrintImage() => Task.CompletedTask;
+
+    private async Task Close() => await OnClose.InvokeAsync();
+}
+

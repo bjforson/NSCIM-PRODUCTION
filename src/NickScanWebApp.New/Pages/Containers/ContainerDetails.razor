@@ -1,0 +1,887 @@
+@page "/containers/{ContainerNumber}"
+@page "/containers/details"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesContainersDetails)]
+@using NickScanWebApp.New.Components.ICUMS
+@using NickScanWebApp.New.Components.Containers
+@using NickScanWebApp.New.Components.CargoGroup
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+@using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.New.Models
+@using NickScanWebApp.Shared.Models
+@using System.Text.Json
+@using System.Linq
+@using Microsoft.JSInterop
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject NickScanWebApp.Shared.Services.ExportService ExportService
+@inject NickScanWebApp.New.Services.CargoGroupService CargoGroupService
+@inject NickScanWebApp.New.Services.ContainerViewPreloader ContainerViewPreloader
+@inject IJSRuntime JSRuntime
+@inject IConfiguration Configuration
+
+<PageTitle>@ContainerNumber - Container Details</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4">
+        <ItemTemplate Context="item">
+            <MudLink Href="@item.Href">@item.Text</MudLink>
+        </ItemTemplate>
+    </MudBreadcrumbs>
+    
+    @if (isLoading)
+    {
+        <LoadingIndicator Message="Loading container data..." />
+    }
+    else if (containerData == null)
+    {
+        <EmptyState Icon="@Icons.Material.Outlined.SearchOff"
+                   Message="Container not found"
+                   SubMessage="@($"No data found for container: {ContainerNumber}")"
+                   Height="400">
+            <ActionButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Href="/containers" StartIcon="@Icons.Material.Outlined.ArrowBack">
+                    Back to Container List
+                </MudButton>
+            </ActionButton>
+        </EmptyState>
+    }
+    else
+    {
+        <!-- Header with Actions -->
+        <MudPaper Elevation="0" Class="mb-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <div>
+                    <MudText Typo="Typo.h4">
+                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Class="mr-2" />
+                        @ContainerNumber
+                    </MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Scanned by @containerData.ScannerType on @containerData.ScanDate.ToString("dd MMM yyyy HH:mm")
+                    </MudText>
+                </div>
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="Variant.Filled" 
+                              Color="Color.Success"
+                              StartIcon="@Icons.Material.Outlined.CheckCircle"
+                              OnClick="@ApproveContainerAsync"
+                              Disabled="@(containerData.ValidationStatus == "Validated" || _actionInProgress)">
+                        Approve
+                    </MudButton>
+                    <MudButton Variant="Variant.Filled" 
+                              Color="Color.Error"
+                              StartIcon="@Icons.Material.Outlined.Cancel"
+                              OnClick="@RejectContainerAsync"
+                              Disabled="@_actionInProgress">
+                        Reject
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.CloudUpload"
+                              OnClick="@SubmitToICUMSAsync"
+                              Disabled="@(!canSubmit || _actionInProgress)">
+                        Submit to ICUMS
+                    </MudButton>
+                    <MudMenu Variant="Variant.Outlined"
+                             Color="Color.Default"
+                             StartIcon="@Icons.Material.Outlined.Download"
+                             Label="Export Report"
+                             Disabled="@_actionInProgress">
+                        <MudMenuItem Icon="@Icons.Material.Outlined.TextSnippet" OnClick="@(() => ExportReportAsync("csv"))">CSV (.csv)</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Outlined.GridOn" OnClick="@(() => ExportReportAsync("xlsx"))">Excel (.xlsx)</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Outlined.PictureAsPdf" OnClick="@(() => ExportReportAsync("pdf"))">PDF (.pdf)</MudMenuItem>
+                    </MudMenu>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+        
+        <!-- Status Overview Cards -->
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Validation Status</MudText>
+                        <ValidationStatusBadge Status="@containerData.ValidationStatus" Size="Size.Medium" />
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Data Completeness</MudText>
+                        <CompletenessIndicator Score="@containerData.CompletenessScore" ShowAsProgressBar="false" ChipSize="Size.Medium" />
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Images Available</MudText>
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Image" 
+                                    Color="@(containerData.ImageCount > 0 ? Color.Success : Color.Default)" 
+                                    Size="Size.Large" />
+                            <MudText Typo="Typo.h5">@containerData.ImageCount</MudText>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance Type</MudText>
+                        <MudChip T="string" Size="Size.Medium" Color="Color.Info" Variant="Variant.Filled">
+                            @(containerData.ClearanceType ?? "N/A")
+                        </MudChip>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        
+        <!-- Main Content Grid -->
+        <MudGrid>
+            <!-- Left Column - Standardized Cargo Group View -->
+            <MudItem xs="12">
+                @if (_loadingGroupIdentifier)
+                {
+                    <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+                        <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                        <MudText Typo="Typo.body1">Determining cargo group...</MudText>
+                    </MudStack>
+                }
+                else if (!string.IsNullOrEmpty(_groupIdentifier))
+                {
+                    <!-- Use standardized CargoGroupView -->
+                    <CargoGroupView GroupIdentifier="@_groupIdentifier" Type="@_cargoType" />
+                }
+                else
+                {
+                    <!-- Fallback to old view if group identifier not found -->
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-6" Color="Color.Primary">
+                            
+                            <!-- Scanner Data Tab -->
+                            <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner">
+                                <MudSimpleTable Striped="true" Hover="true">
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>Scanner Type</strong></td>
+                                            <td>@containerData.ScannerType</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Scan Date</strong></td>
+                                            <td>@containerData.ScanDate.ToString("dd MMM yyyy HH:mm:ss")</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Scan Location</strong></td>
+                                            <td>@(containerData.ScanLocation ?? (containerData.ScannerType == "FS6000" ? "Takoradi Port" : containerData.ScannerType == "ASE" ? "Tema Port" : "Unknown"))</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Operator</strong></td>
+                                            <td>@(containerData.Operator ?? "System")</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Container Size</strong></td>
+                                            <td>@(containerData.ContainerSize ?? "N/A")</td>
+                                        </tr>
+                                    </tbody>
+                                </MudSimpleTable>
+
+                                @if (_containerContext?.ScannerData?.Data != null && _containerContext.ScannerData.Data.Count > 0)
+                                {
+                                    <MudDivider Class="my-4" />
+                                    <MudText Typo="Typo.h6" Class="mb-3">Scanner records (@_containerContext.ScannerData.Data.Count)</MudText>
+                                    <MudSimpleTable Striped="true" Hover="true" Dense="true" Style="max-height:320px;overflow:auto;">
+                                        <thead>
+                                            <tr>
+                                                <th>Field</th>
+                                                <th>Value</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var row in _containerContext.ScannerData.Data.Take(80))
+                                            {
+                                                <tr>
+                                                    <td style="white-space:nowrap;">@row.Field</td>
+                                                    <td>@row.Value</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </MudSimpleTable>
+                                }
+                                else
+                                {
+                                    <MudDivider Class="my-4" />
+                                    <MudAlert Severity="Severity.Info" Dense="true">
+                                        No detailed scanner field rows were returned for this container. Try Refresh Data or verify scanner pipeline data.
+                                    </MudAlert>
+                                }
+                            </MudTabPanel>
+                            
+                            <!-- ICUMS/BOE Data Tab -->
+                            <MudTabPanel Text="ICUMS Data" Icon="@Icons.Material.Outlined.Description" Disabled="@(containerData == null || !containerData.HasICUMSData)">
+                                <ICUMSDataTab ContainerNumber="@ContainerNumber" 
+                                             TotalRecords="@(_containerContext?.ICUMSData?.TotalCount ?? 0)"
+                                             PreloadedData="@_containerContext?.ICUMSData" />
+                            </MudTabPanel>
+                            
+                            <!-- Images Tab -->
+                            <MudTabPanel Text="Images" Icon="@Icons.Material.Outlined.Image" BadgeData="@containerData.ImageCount" BadgeColor="Color.Success" Disabled="@(containerData.ImageCount == 0)">
+                                <ImagesTab ContainerNumber="@ContainerNumber" 
+                                          ImageCount="@containerData.ImageCount"
+                                          PreloadedImages="@_containerContext?.Images" />
+                            </MudTabPanel>
+                        
+                            <!-- Validation Tab -->
+                            <MudTabPanel Text="Validation" Icon="@Icons.Material.Outlined.FactCheck">
+                                <MudStack Spacing="3">
+                                    <div>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Validation Summary</MudText>
+                                        <MudAlert Severity="@GetValidationSeverity()" Variant="Variant.Outlined">
+                                            <MudText Typo="Typo.body1">
+                                                <strong>Status:</strong> @containerData.ValidationStatus
+                                            </MudText>
+                                            <MudText Typo="Typo.body2">
+                                                Completeness Score: @containerData.CompletenessScore%
+                                            </MudText>
+                                        </MudAlert>
+                                    </div>
+                                    
+                                    <div>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Data Checks</MudText>
+                                        <MudList T="string" Dense="true">
+                                            <MudListItem T="string" Icon="@Icons.Material.Outlined.CheckCircle" IconColor="@(containerData.HasScannerData ? Color.Success : Color.Error)">
+                                                Scanner Data: @(containerData.HasScannerData ? "Available" : "Missing")
+                                            </MudListItem>
+                                            <MudListItem T="string" Icon="@Icons.Material.Outlined.CheckCircle" IconColor="@(containerData.HasICUMSData ? Color.Success : Color.Error)">
+                                                ICUMS Data: @(containerData.HasICUMSData ? "Available" : "Missing")
+                                            </MudListItem>
+                                            <MudListItem T="string" Icon="@Icons.Material.Outlined.CheckCircle" IconColor="@(containerData.ImageCount > 0 ? Color.Success : Color.Error)">
+                                                Images: @(containerData.ImageCount > 0 ? $"{containerData.ImageCount} found" : "None")
+                                            </MudListItem>
+                                        </MudList>
+                                    </div>
+                                </MudStack>
+                            </MudTabPanel>
+                            
+                            <!-- History/Audit Tab -->
+                            <MudTabPanel Text="History" Icon="@Icons.Material.Outlined.History">
+                                <MudTimeline TimelineOrientation="TimelineOrientation.Vertical" TimelinePosition="TimelinePosition.Start">
+                                    <MudTimelineItem Color="Color.Success" Size="Size.Small">
+                                        <ItemContent>
+                                            <MudText Typo="Typo.body1"><strong>Container Scanned</strong></MudText>
+                                            <MudText Typo="Typo.caption">@containerData.ScanDate.ToString("dd MMM yyyy HH:mm")</MudText>
+                                            <MudText Typo="Typo.body2">Scanned by @containerData.ScannerType</MudText>
+                                        </ItemContent>
+                                    </MudTimelineItem>
+                                    
+                                    @if (containerData.HasICUMSData)
+                                    {
+                                        <MudTimelineItem Color="Color.Info" Size="Size.Small">
+                                            <ItemContent>
+                                                <MudText Typo="Typo.body1"><strong>ICUMS Data Fetched</strong></MudText>
+                                                <MudText Typo="Typo.caption">After scan</MudText>
+                                                <MudText Typo="Typo.body2">BOE data synchronized</MudText>
+                                            </ItemContent>
+                                        </MudTimelineItem>
+                                    }
+                                    
+                                    @if (containerData.ValidationStatus == "Validated")
+                                    {
+                                        <MudTimelineItem Color="Color.Success" Size="Size.Small">
+                                            <ItemContent>
+                                                <MudText Typo="Typo.body1"><strong>Validated</strong></MudText>
+                                                <MudText Typo="Typo.caption">After scan</MudText>
+                                                <MudText Typo="Typo.body2">Approved for customs clearance</MudText>
+                                            </ItemContent>
+                                        </MudTimelineItem>
+                                    }
+                                </MudTimeline>
+                            </MudTabPanel>
+                            
+                        </MudTabs>
+                    </MudPaper>
+                }
+            </MudItem>
+            
+            <!-- Right Column - Quick Info -->
+            <MudItem xs="12" md="4">
+                
+                <!-- Image Preview -->
+                <MudPaper Elevation="2" Class="pa-4 mb-4 rounded-lg">
+                    <MudText Typo="Typo.h6" Class="mb-4">Image Preview</MudText>
+                    @if (containerData.ImageCount > 0 && !string.IsNullOrEmpty(firstImageThumbnailUrl))
+                    {
+                        <MudImage Src="@firstImageThumbnailUrl"
+                                 Alt="Container scan"
+                                 Elevation="2"
+                                 Class="rounded-lg mb-3"
+                                 ObjectFit="ObjectFit.Cover"
+                                 Height="200" />
+                        <MudButton Variant="Variant.Outlined"
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.ZoomIn"
+                                  FullWidth="true"
+                                  OnClick="@OpenFullscreenViewer">
+                            View Full Image
+                        </MudButton>
+                    }
+                    else
+                    {
+                        <EmptyState Icon="@Icons.Material.Outlined.ImageNotSupported"
+                                   Message="No image available"
+                                   Height="200" />
+                    }
+                </MudPaper>
+                
+                <!-- Quick Actions -->
+                <MudPaper Elevation="2" Class="pa-4 mb-4 rounded-lg">
+                    <MudText Typo="Typo.h6" Class="mb-4">Quick Actions</MudText>
+                    <MudStack Spacing="2">
+                        <MudButton Variant="Variant.Outlined"
+                                  StartIcon="@Icons.Material.Outlined.Refresh"
+                                  FullWidth="true"
+                                  OnClick="@RefreshData">
+                            Refresh Data
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined"
+                                  StartIcon="@Icons.Material.Outlined.CloudDownload"
+                                  FullWidth="true"
+                                  OnClick="@FetchICUMSData"
+                                  Disabled="@isFetchingICUMS">
+                            @if (isFetchingICUMS)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                                <span>Fetching...</span>
+                            }
+                            else
+                            {
+                                <span>Fetch ICUMS Data</span>
+                            }
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined"
+                                  StartIcon="@Icons.Material.Outlined.PlayArrow"
+                                  FullWidth="true"
+                                  OnClick="@TriggerValidationAsync"
+                                  Disabled="@_actionInProgress">
+                            Run Validation
+                        </MudButton>
+                        <MudDivider />
+                        <MudTooltip Text="Opens the container list; inline editing is not available on this page.">
+                            <MudButton Variant="Variant.Outlined"
+                                      StartIcon="@Icons.Material.Outlined.Edit"
+                                      FullWidth="true"
+                                      OnClick="@EditContainer">
+                                Edit Details
+                            </MudButton>
+                        </MudTooltip>
+                        <MudButton Variant="Variant.Outlined"
+                                  StartIcon="@Icons.Material.Outlined.NoteAdd"
+                                  FullWidth="true"
+                                  OnClick="@AddAnnotation">
+                            Add Annotation
+                        </MudButton>
+                    </MudStack>
+                </MudPaper>
+                
+                <!-- Related Information -->
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                    <MudText Typo="Typo.h6" Class="mb-4">Related Information</MudText>
+                    <MudList T="string" Dense="true">
+                        <MudListItem T="string" Icon="@Icons.Material.Outlined.DirectionsBoat">
+                            <MudText Typo="Typo.body2">Vessel: @(containerData.VesselName ?? "Unknown")</MudText>
+                        </MudListItem>
+                        <MudListItem T="string" Icon="@Icons.Material.Outlined.Place">
+                            <MudText Typo="Typo.body2">Origin: @(containerData.OriginPort ?? "Unknown")</MudText>
+                        </MudListItem>
+                        <MudListItem T="string" Icon="@Icons.Material.Outlined.Business">
+                            <MudText Typo="Typo.body2">Consignee: @(containerData.Consignee ?? "Unknown")</MudText>
+                        </MudListItem>
+                        @if (containerData.VehicleCount > 0)
+                        {
+                            <MudListItem T="string" Icon="@Icons.Material.Outlined.DirectionsCar">
+                                <MudLink Href="@($"/vehicles?container={ContainerNumber}")">
+                                    @containerData.VehicleCount Vehicle(s)
+                                </MudLink>
+                            </MudListItem>
+                        }
+                    </MudList>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+</MudContainer>
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    
+    private bool isLoading = true;
+    private bool isFetchingICUMS = false;
+    private bool _actionInProgress = false;
+    private bool canSubmit = false;
+    private ContainerDetailsViewModel? containerData;
+    private string? firstImageThumbnailUrl;
+    private string? _groupIdentifier;
+    private CargoType? _cargoType;
+    private bool _loadingGroupIdentifier = true;
+    private NickScanWebApp.New.Models.ContainerViewContext? _containerContext;
+    
+    private List<BreadcrumbItem> breadcrumbs = new();
+    
+    protected override async Task OnParametersSetAsync()
+    {
+        breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Containers", href: "/containers", icon: Icons.Material.Outlined.Inventory),
+            new BreadcrumbItem(ContainerNumber, href: null, disabled: true)
+        };
+        
+        // Check if we have a groupIdentifier query parameter (for direct navigation)
+        var uri = new Uri(NavigationManager.Uri);
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        
+        if (query.TryGetValue("groupIdentifier", out var groupIdentifier) &&
+            query.TryGetValue("type", out var typeStr) &&
+            Enum.TryParse<CargoType>(typeStr, out var type))
+        {
+            _groupIdentifier = groupIdentifier;
+            _cargoType = type;
+            _loadingGroupIdentifier = false;
+
+            // When navigating via groupIdentifier, use it as ContainerNumber for data loading
+            if (string.IsNullOrEmpty(ContainerNumber))
+                ContainerNumber = groupIdentifier;
+
+            await LoadContainerData();
+        }
+        else if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadContainerData();
+            await DetermineCargoGroupAsync();
+        }
+    }
+    
+    private async Task LoadContainerData()
+    {
+        isLoading = true;
+        try
+        {
+            _containerContext = await ContainerViewPreloader.LoadAsync(ContainerNumber, forceRefresh: false);
+            var fullDetails = await ContainerDetailsService.GetFullDetailsAsync(ContainerNumber);
+
+            if (_containerContext?.BasicInfo == null && fullDetails == null)
+            {
+                containerData = null;
+                Snackbar.Add("No data found for container", Severity.Warning);
+                return;
+            }
+
+            firstImageThumbnailUrl = _containerContext?.Images?.FirstOrDefault()?.ThumbnailUrl;
+
+            if (fullDetails != null)
+            {
+                var scanDate = fullDetails.ScanDate == default ? DateTime.UtcNow : fullDetails.ScanDate;
+                var imageCount = fullDetails.ImageCount;
+                if (imageCount == 0 && _containerContext?.BasicInfo != null)
+                    imageCount = _containerContext.BasicInfo.ImageCount;
+
+                containerData = new ContainerDetailsViewModel
+                {
+                    ContainerNumber = ContainerNumber,
+                    ScannerType = fullDetails.ScannerType,
+                    ScanDate = scanDate,
+                    ValidationStatus = fullDetails.ValidationStatus,
+                    CompletenessScore = fullDetails.CompletenessScore,
+                    ClearanceType = fullDetails.ClearanceType,
+                    ImageCount = imageCount,
+                    HasScannerData = fullDetails.HasScannerData,
+                    HasICUMSData = fullDetails.HasICUMSData,
+                    BOENumber = fullDetails.BOENumber,
+                    Consignee = fullDetails.Consignee,
+                    OriginPort = fullDetails.OriginPort,
+                    Destination = fullDetails.Destination,
+                    VesselName = fullDetails.VesselName,
+                    VehicleCount = fullDetails.VehicleCount,
+                    ScanLocation = fullDetails.ScanLocation,
+                    Operator = fullDetails.Operator,
+                    ContainerSize = fullDetails.ContainerSize
+                };
+            }
+            else if (_containerContext?.BasicInfo != null)
+            {
+                var basicInfo = _containerContext.BasicInfo;
+                string? boeNumber = null;
+                string? clearanceType = null;
+                string? consignee = null;
+                try
+                {
+                    var icumsData = await ContainerDetailsService.GetFullBOEDataAsync(ContainerNumber);
+                    if (icumsData != null)
+                    {
+                        clearanceType = icumsData.ClearanceType;
+                        boeNumber = icumsData.DeclarationNumber ?? icumsData.BOENumber;
+                        consignee = icumsData.ConsigneeName;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Warning: Could not load full BOE data for summary: {ex.Message}");
+                }
+
+                containerData = new ContainerDetailsViewModel
+                {
+                    ContainerNumber = ContainerNumber,
+                    ScannerType = basicInfo.ScannerType,
+                    ScanDate = basicInfo.LastUpdated,
+                    ValidationStatus = basicInfo.ValidationStatus,
+                    CompletenessScore = basicInfo.DataCompletenessScore,
+                    ClearanceType = clearanceType,
+                    ImageCount = basicInfo.ImageCount,
+                    HasScannerData = basicInfo.ScannerRecordCount > 0,
+                    HasICUMSData = basicInfo.ICUMSRecordCount > 0,
+                    BOENumber = boeNumber,
+                    Consignee = consignee,
+                    OriginPort = null,
+                    Destination = null,
+                    VesselName = null,
+                    VehicleCount = 0,
+                    ScanLocation = null,
+                    Operator = null,
+                    ContainerSize = null
+                };
+            }
+
+            if (containerData != null)
+            {
+                canSubmit = containerData.CompletenessScore >= 70 && containerData.HasICUMSData;
+                Snackbar.Add("Container loaded successfully", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading container details: {ex.Message}");
+            containerData = null;
+            Snackbar.Add("Could not load container details", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+    
+    private async Task RefreshData()
+    {
+        // Force refresh the container context
+        _containerContext = await ContainerViewPreloader.LoadAsync(ContainerNumber, forceRefresh: true);
+        await LoadContainerData();
+        await DetermineCargoGroupAsync();
+        Snackbar.Add("Data refreshed", Severity.Success);
+    }
+
+    private async Task DetermineCargoGroupAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber))
+        {
+            _loadingGroupIdentifier = false;
+            return;
+        }
+
+        _loadingGroupIdentifier = true;
+        try
+        {
+            // Use dedicated API endpoint to get group identifier from container number
+            var groupIdentifierResponse = await CargoGroupService.GetGroupIdentifierByContainerAsync(ContainerNumber);
+
+            if (groupIdentifierResponse != null)
+            {
+                _groupIdentifier = groupIdentifierResponse.GroupIdentifier;
+                _cargoType = groupIdentifierResponse.Type;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error determining cargo group: {ex.Message}");
+            // Fallback: use container number directly (will show old view)
+            _groupIdentifier = null;
+        }
+        finally
+        {
+            _loadingGroupIdentifier = false;
+        }
+    }
+    
+    private async Task FetchICUMSData()
+    {
+        isFetchingICUMS = true;
+        Snackbar.Add("Queuing manual BOE request...", Severity.Info);
+        
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/ManualBOERequest", new { ContainerNumber = ContainerNumber });
+            Snackbar.Add("Manual BOE request submitted successfully. Data will be available shortly.", Severity.Success);
+            await RefreshData();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error submitting manual BOE request: {ex.Message}");
+            Snackbar.Add($"Failed to submit BOE request: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isFetchingICUMS = false;
+        }
+    }
+    
+    private async Task ApproveContainerAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber)) return;
+        _actionInProgress = true;
+        try
+        {
+            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/approve/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            if (containerData != null) containerData.ValidationStatus = "Validated";
+            Snackbar.Add($"Container {ContainerNumber} approved and queued for ICUMS submission.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Approve failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _actionInProgress = false;
+        }
+    }
+
+    private async Task RejectContainerAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber)) return;
+        _actionInProgress = true;
+        try
+        {
+            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/reject/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            Snackbar.Add($"Container {ContainerNumber} rejected.", Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Reject failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _actionInProgress = false;
+        }
+    }
+
+    private async Task SubmitToICUMSAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber) || !canSubmit) return;
+        _actionInProgress = true;
+        try
+        {
+            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/approve/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            if (containerData != null) containerData.ValidationStatus = "Validated";
+            Snackbar.Add($"Container {ContainerNumber} queued for ICUMS submission.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Submit to ICUMS failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _actionInProgress = false;
+        }
+    }
+
+    // Headers + row-mapper are shared across CSV / Excel / PDF so the three
+    // formats stay in sync. Adding a column only requires one edit.
+    private static readonly string[] ContainerExportHeaders = new[]
+    {
+        "ContainerNumber", "ScannerType", "ScanDate", "ValidationStatus", "CompletenessScore",
+        "ClearanceType", "ImageCount", "HasScannerData", "HasICUMSData", "BOENumber", "Consignee",
+        "OriginPort", "Destination", "VesselName", "VehicleCount", "ScanLocation", "Operator", "ContainerSize"
+    };
+
+    private static string[] ContainerExportRow(dynamic r) => new[]
+    {
+        (string)(r.ContainerNumber ?? ""),
+        (string)(r.ScannerType ?? ""),
+        ((DateTime)r.ScanDate).ToString("yyyy-MM-dd HH:mm:ss"),
+        (string)(r.ValidationStatus ?? ""),
+        ((double)r.CompletenessScore).ToString("F0"),
+        (string)(r.ClearanceType ?? ""),
+        ((int)r.ImageCount).ToString(),
+        ((bool)r.HasScannerData).ToString(),
+        ((bool)r.HasICUMSData).ToString(),
+        (string)(r.BOENumber ?? ""),
+        (string)(r.Consignee ?? ""),
+        (string)(r.OriginPort ?? ""),
+        (string)(r.Destination ?? ""),
+        (string)(r.VesselName ?? ""),
+        ((int)r.VehicleCount).ToString(),
+        (string)(r.ScanLocation ?? ""),
+        (string)(r.Operator ?? ""),
+        (string)(r.ContainerSize ?? "")
+    };
+
+    private async Task ExportReportAsync(string format = "csv")
+    {
+        if (containerData == null) return;
+        try
+        {
+            byte[] bytes;
+            string mime;
+            string ext;
+            switch (format)
+            {
+                case "xlsx":
+                    bytes = ExportService.ExportToExcel(
+                        new[] { containerData },
+                        ContainerExportHeaders,
+                        r => ContainerExportRow(r),
+                        sheetName: "Container",
+                        title: $"Container Report — {ContainerNumber}");
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+                    ext = "xlsx";
+                    break;
+                case "pdf":
+                    bytes = ExportService.ExportToPDF(
+                        new[] { containerData },
+                        ContainerExportHeaders,
+                        r => ContainerExportRow(r),
+                        title: $"Container Report — {ContainerNumber}",
+                        subtitle: $"Scan date: {containerData.ScanDate:yyyy-MM-dd HH:mm:ss}");
+                    mime = "application/pdf";
+                    ext = "pdf";
+                    break;
+                default:
+                    bytes = ExportService.ExportToCSV(
+                        new[] { containerData },
+                        ContainerExportHeaders,
+                        r => ContainerExportRow(r));
+                    mime = "text/csv;charset=utf-8";
+                    ext = "csv";
+                    break;
+            }
+
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = ExportService.GenerateFilename($"container_{ContainerNumber}", ext);
+            // Use a binary-safe decoder (atob only handles pure-ASCII; for xlsx/pdf
+            // the raw bytes aren't ASCII, so we build a Uint8Array from the base64).
+            await JSRuntime.InvokeVoidAsync("eval",
+                "(function() {" +
+                $"  var b64 = '{base64}';" +
+                "   var binary = atob(b64);" +
+                "   var bytes = new Uint8Array(binary.length);" +
+                "   for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);" +
+                $"  var blob = new Blob([bytes], {{type: '{mime}'}});" +
+                "   var url = window.URL.createObjectURL(blob);" +
+                "   var a = document.createElement('a');" +
+                $"  a.href = url; a.download = '{fileName}'; a.click();" +
+                "   window.URL.revokeObjectURL(url);" +
+                "})();");
+            Snackbar.Add($"Report exported ({ext.ToUpperInvariant()}).", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task TriggerValidationAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber)) return;
+        _actionInProgress = true;
+        try
+        {
+            var details = await ApiService.GetAsync<ContainerValidationDetails>($"/api/ContainerValidation/details/{Uri.EscapeDataString(ContainerNumber)}");
+            if (details == null)
+            {
+                Snackbar.Add("No validation details returned.", Severity.Warning);
+                return;
+            }
+
+            Snackbar.Add($"Validation: {details.ValidationStatus}. Clearance: {details.ClearanceType}.", Severity.Info);
+            await RefreshData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Validation refresh failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _actionInProgress = false;
+        }
+    }
+
+    private void EditContainer()
+    {
+        NavigationManager.NavigateTo("/containers");
+    }
+
+    private void AddAnnotation()
+    {
+        NavigationManager.NavigateTo($"/images/viewer/{Uri.EscapeDataString(ContainerNumber)}");
+    }
+    
+    private void OpenFullscreenViewer()
+    {
+        NavigationManager.NavigateTo($"/images/viewer/{ContainerNumber}");
+    }
+    
+    private void AnnotateImage()
+    {
+        NavigationManager.NavigateTo($"/images/viewer/{ContainerNumber}");
+    }
+    
+    // DTO for API response
+    private class CargoGroupIdentifierDto
+    {
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public CargoType Type { get; set; }
+    }
+    
+    private void DownloadImage()
+    {
+        Snackbar.Add("Downloading image...", Severity.Info);
+        // TODO: Download image
+    }
+    
+    private Severity GetValidationSeverity()
+    {
+        return containerData?.ValidationStatus switch
+        {
+            "Validated" => Severity.Success,
+            "Pending" => Severity.Warning,
+            "Error" => Severity.Error,
+            _ => Severity.Info
+        };
+    }
+    
+    
+    // View Model
+    public class ContainerDetailsViewModel
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public string ValidationStatus { get; set; } = "";
+        public double CompletenessScore { get; set; }
+        public string? ClearanceType { get; set; }
+        public int ImageCount { get; set; }
+        public bool HasScannerData { get; set; }
+        public bool HasICUMSData { get; set; }
+        public string? BOENumber { get; set; }
+        public string? Consignee { get; set; }
+        public string? OriginPort { get; set; }
+        public string? Destination { get; set; }
+        public string? VesselName { get; set; }
+        public int VehicleCount { get; set; }
+        public string? ScanLocation { get; set; }
+        public string? Operator { get; set; }
+        public string? ContainerSize { get; set; }
+    }
+}
+

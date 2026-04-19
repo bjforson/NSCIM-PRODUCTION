@@ -1,0 +1,77 @@
+@using MudBlazor
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3" Color="Color.Secondary">
+            Raise a manual MatchQualityFlag against a container. Use this when
+            the automated pipeline missed something but the match still looks
+            wrong (or right but needs documentation).
+        </MudText>
+        <MudTextField T="string"
+                      @bind-Value="_containerNumber"
+                      Label="Container number (required)"
+                      Variant="Variant.Outlined"
+                      Required="true" />
+        <MudSelect T="string"
+                   @bind-Value="_severity"
+                   Label="Severity"
+                   Variant="Variant.Outlined"
+                   Class="mt-3">
+            <MudSelectItem T="string" Value="@("Warning")">Warning</MudSelectItem>
+            <MudSelectItem T="string" Value="@("Critical")">Critical</MudSelectItem>
+        </MudSelect>
+        <MudTextField T="string"
+                      @bind-Value="_reason"
+                      Label="Reason (required)"
+                      Variant="Variant.Outlined"
+                      Lines="4"
+                      Required="true"
+                      Class="mt-3" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@(string.IsNullOrWhiteSpace(_containerNumber) || string.IsNullOrWhiteSpace(_reason) || _submitting)"
+                   OnClick="SubmitAsync">
+            @(_submitting ? "Saving…" : "Create flag")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private string _containerNumber = string.Empty;
+    private string _severity = "Warning";
+    private string _reason = string.Empty;
+    private bool _submitting;
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        try
+        {
+            var body = new
+            {
+                ContainerNumber = _containerNumber.Trim(),
+                Severity = _severity,
+                Reason = _reason.Trim(),
+            };
+            await ApiService.PostAsync<object, object>("/api/admin/match-corrections/flag", body);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Flag failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

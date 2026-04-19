@@ -1,0 +1,101 @@
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+
+@if (_rectangles.Any())
+{
+    <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 20;">
+        @foreach (var rect in _rectangles)
+        {
+            <g>
+                <rect x="@(rect.X)" y="@(rect.Y)" width="@(rect.Width)" height="@(rect.Height)"
+                      fill="rgba(255,0,0,0.08)" stroke="red" stroke-width="3" opacity="0.85" />
+                @if (!string.IsNullOrEmpty(rect.Tag))
+                {
+                    <rect x="@(rect.X)" y="@(rect.Y - 20)" width="@(rect.Tag.Length * 8 + 12)" height="20"
+                          fill="rgba(220,0,0,0.85)" rx="3" />
+                    @((MarkupString)$"<text x=\"{rect.X + 6}\" y=\"{rect.Y - 5}\" fill=\"white\" font-size=\"12\" font-family=\"sans-serif\">{System.Net.WebUtility.HtmlEncode(rect.Tag)}</text>")
+                }
+            </g>
+        }
+    </svg>
+}
+
+@if (_tags.Any())
+{
+    <div style="position: absolute; top: 8px; left: 8px; z-index: 21; pointer-events: none;">
+        @foreach (var tag in _tags)
+        {
+            <span style="display: inline-block; background: rgba(220,0,0,0.85); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 4px; margin-bottom: 4px;">@tag</span>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string? ScannerType { get; set; }
+
+    private List<AnnotationRect> _rectangles = new();
+    private List<string> _tags = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadAnnotations();
+        }
+    }
+
+    private async Task LoadAnnotations()
+    {
+        try
+        {
+            var decisions = await ApiService.GetAsync<List<DecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+
+            if (decisions == null) return;
+
+            var decision = decisions.FirstOrDefault(d =>
+                string.IsNullOrEmpty(ScannerType) || d.ScannerType == ScannerType);
+
+            if (decision == null && decisions.Any())
+                decision = decisions.First();
+
+            if (decision != null)
+            {
+                if (!string.IsNullOrEmpty(decision.SuspiciousAreas))
+                {
+                    _rectangles = System.Text.Json.JsonSerializer.Deserialize<List<AnnotationRect>>(
+                        decision.SuspiciousAreas,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+                }
+
+                if (!string.IsNullOrEmpty(decision.Tags))
+                {
+                    _tags = decision.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"AnnotationOverlay: Error loading annotations for {ContainerNumber}: {ex.Message}");
+        }
+    }
+
+    private class AnnotationRect
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public string? Tag { get; set; }
+        public string? CreatedBy { get; set; }
+    }
+
+    private class DecisionDto
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public string? Decision { get; set; }
+        public string? Tags { get; set; }
+        public string? SuspiciousAreas { get; set; }
+    }
+}

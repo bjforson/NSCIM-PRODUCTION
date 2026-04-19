@@ -1,0 +1,1045 @@
+@page "/admin/settings"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminSettings)]
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanCentralImagingPortal.Core.Constants
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Rendering
+@inject NickScanWebApp.Shared.Services.SettingsService SettingsService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<SystemSettings> Logger
+@inject IJSRuntime JSRuntime
+
+<PageTitle>NICKSCAN ERP — NSCIS — System Settings</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Settings" Class="mr-2" />
+        System Settings
+    </MudText>
+    
+    @if (isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading settings...</MudText>
+    }
+    else if (categories == null || !categories.Any())
+    {
+        <MudAlert Severity="Severity.Info">
+            No settings found. Please configure your system settings.
+        </MudAlert>
+    }
+    else
+    {
+        <!-- Service Control Section -->
+        <MudPaper Elevation="2" Class="pa-4 mb-4" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <MudStack Spacing="3">
+                <MudText Typo="Typo.h6" Style="color: white;">
+                    <MudIcon Icon="@Icons.Material.Outlined.PowerSettingsNew" Class="mr-2" Style="color: white;" />
+                    Service Control
+                </MudText>
+                <MudText Typo="Typo.body2" Style="color: rgba(255,255,255,0.9);">
+                    Gracefully shutdown or restart services. All ongoing processes will complete before shutdown.
+                </MudText>
+
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Class="pa-3" Style="background: rgba(255,255,255,0.15); border-radius: 8px;">
+                            <MudText Typo="Typo.subtitle1" Style="color: white; font-weight: 600;" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Api" Class="mr-1" Style="color: white;" Size="Size.Small" />
+                                API Service
+                            </MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Filled" 
+                                          Color="Color.Warning" Size="Size.Small"
+                                          StartIcon="@Icons.Material.Outlined.Stop"
+                                          OnClick="HandleApiShutdown"
+                                          Disabled="isShuttingDown || isRestarting">
+                                    @if (isApiShuttingDown) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> <span>Stopping...</span> }
+                                    else { <span>Shutdown</span> }
+                                </MudButton>
+                                <MudButton Variant="Variant.Filled" 
+                                          Color="Color.Info" Size="Size.Small"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="HandleApiRestart"
+                                          Disabled="isShuttingDown || isRestarting">
+                                    @if (isApiRestarting) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> <span>Restarting...</span> }
+                                    else { <span>Restart</span> }
+                                </MudButton>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Class="pa-3" Style="background: rgba(255,255,255,0.15); border-radius: 8px;">
+                            <MudText Typo="Typo.subtitle1" Style="color: white; font-weight: 600;" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Web" Class="mr-1" Style="color: white;" Size="Size.Small" />
+                                Web Application
+                            </MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Filled" 
+                                          Color="Color.Warning" Size="Size.Small"
+                                          StartIcon="@Icons.Material.Outlined.Stop"
+                                          OnClick="HandleWebAppShutdown"
+                                          Disabled="isShuttingDown || isRestarting">
+                                    @if (isWebAppShuttingDown) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> <span>Stopping...</span> }
+                                    else { <span>Shutdown</span> }
+                                </MudButton>
+                                <MudButton Variant="Variant.Filled" 
+                                          Color="Color.Info" Size="Size.Small"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="HandleWebAppRestart"
+                                          Disabled="isShuttingDown || isRestarting">
+                                    @if (isWebAppRestarting) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> <span>Restarting...</span> }
+                                    else { <span>Restart</span> }
+                                </MudButton>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Error" Size="Size.Medium"
+                          StartIcon="@Icons.Material.Outlined.RestartAlt"
+                          OnClick="HandleRestartAll"
+                          Disabled="isShuttingDown || isRestarting"
+                          Style="align-self: flex-start;">
+                    @if (isRestartingAll) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> <span>Restarting All...</span> }
+                    else { <span>Restart All Services</span> }
+                </MudButton>
+            </MudStack>
+        </MudPaper>
+
+        <!-- Settings Source Toggle -->
+        <MudPaper Elevation="2" Class="pa-3 mb-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudText Typo="Typo.body1">
+                    <MudIcon Icon="@Icons.Material.Outlined.Tune" Class="mr-2" />
+                    Configuration Source:
+                </MudText>
+                <MudButtonGroup Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small">
+                    <MudButton Variant="@(showAppSettings ? Variant.Text : Variant.Filled)" 
+                              OnClick="async () => { showAppSettings = false; await LoadSettings(); }">
+                        Database Settings
+                    </MudButton>
+                    <MudButton Variant="@(showAppSettings ? Variant.Filled : Variant.Text)" 
+                              OnClick="async () => { showAppSettings = true; await LoadAppSettings(); }">
+                        appsettings.json
+                    </MudButton>
+                </MudButtonGroup>
+            </MudStack>
+        </MudPaper>
+
+        @if (!showAppSettings)
+        {
+            <!-- Database Settings Tabs -->
+            <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+                @foreach (var category in categories.OrderBy(c => c.Category))
+                {
+                    <MudTabPanel Text="@category.DisplayName" Icon="@GetCategoryIcon(category.Category)">
+                    <MudPaper Elevation="0" Class="pa-4">
+                        @if (!string.IsNullOrEmpty(category.Description))
+                        {
+                            <MudAlert Severity="Severity.Info" Class="mb-4">@category.Description</MudAlert>
+                        }
+
+                        @if (category.RequiresRestart)
+                        {
+                            <MudAlert Severity="Severity.Warning" Class="mb-4">
+                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Class="mr-2" />
+                                Some settings in this category require an application restart to take effect.
+                            </MudAlert>
+                        }
+
+                        @* Group settings by subcategory for better organization *@
+                        @{
+                            var subcategories = GroupSettingsBySubcategory(category.Settings);
+                        }
+
+                        @if (subcategories.Count > 1)
+                        {
+                            @* Multiple subcategories - use accordion *@
+                            <MudExpansionPanels MultiExpansion="true" Elevation="1">
+                                @foreach (var subcategory in subcategories.OrderBy(s => s.Key))
+                                {
+                                    <MudExpansionPanel Text="@subcategory.Key" Expanded="true">
+            <MudGrid>
+                                            @foreach (var setting in subcategory.Value.OrderBy(s => s.DisplayOrder))
+                                            {
+                <MudItem xs="12" md="6">
+                                                    @RenderSettingInput(setting)
+                </MudItem>
+                                            }
+                                        </MudGrid>
+                                    </MudExpansionPanel>
+                                }
+                            </MudExpansionPanels>
+                        }
+                        else
+                        {
+                            @* Single subcategory or no subcategories - show flat grid *@
+                            <MudGrid>
+                                @foreach (var setting in category.Settings.OrderBy(s => s.DisplayOrder))
+                                {
+                <MudItem xs="12" md="6">
+                                        @RenderSettingInput(setting)
+                </MudItem>
+                                }
+            </MudGrid>
+                        }
+
+                        <MudDivider Class="my-4" />
+
+                        <MudStack Row="true" Spacing="2" Class="mt-4">
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary" 
+                                      StartIcon="@Icons.Material.Outlined.Save" 
+                                      OnClick="@(() => SaveCategory(category.Category))"
+                                      Disabled="isSaving">
+                                @if (isSaving)
+                                {
+                                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                    <span class="ml-2">Saving...</span>
+                                }
+                                else
+                                {
+                                    <span>Save Settings</span>
+                                }
+                            </MudButton>
+                            
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Secondary" 
+                                      StartIcon="@Icons.Material.Outlined.Refresh" 
+                                      OnClick="@LoadSettings"
+                                      Disabled="isLoading">
+                                Refresh
+                            </MudButton>
+
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Secondary" 
+                                      StartIcon="@Icons.Material.Outlined.Restore" 
+                                      OnClick="@(() => ResetCategory(category.Category))">
+                                Reset to Defaults
+                            </MudButton>
+
+                            @if (category.Category == "ICUMS" || category.Category == "Email")
+                            {
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Info" 
+                                          StartIcon="@Icons.Material.Outlined.Cable" 
+                                          OnClick="@(() => TestConnection(category.Category))">
+                                    Test Connection
+                                </MudButton>
+                            }
+
+                            <MudSpacer />
+
+                            <MudButton Variant="Variant.Text" 
+                                      Color="Color.Default" 
+                                      StartIcon="@Icons.Material.Outlined.History" 
+                                      OnClick="@(() => ShowHistory(category.Category))">
+                                View History
+                            </MudButton>
+            </MudStack>
+                    </MudPaper>
+        </MudTabPanel>
+                }
+            </MudTabs>
+        }
+        else
+        {
+            <!-- AppSettings.json Tabs -->
+            <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+                @foreach (var section in appSettingsSections.OrderBy(s => s))
+                {
+                    <MudTabPanel Text="@GetAppSettingsSectionDisplayName(section)" Icon="@GetAppSettingsSectionIcon(section)">
+                        <MudPaper Elevation="0" Class="pa-4">
+                            <MudAlert Severity="Severity.Warning" Class="mb-4">
+                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Class="mr-2" />
+                                <strong>⚠️ Restart Required:</strong> Changes to appsettings.json require an application restart to take effect.
+                            </MudAlert>
+
+                            @if (isLoadingAppSettings)
+                            {
+                                <MudProgressCircular Indeterminate="true" />
+                                <MudText>Loading section...</MudText>
+                            }
+                            else if (appSettingsData.ContainsKey(section))
+                            {
+                                <MudExpansionPanels MultiExpansion="true" Elevation="1">
+                                    @RenderAppSettingsSection(section, appSettingsData[section])
+                                </MudExpansionPanels>
+
+                                <MudDivider Class="my-4" />
+
+                                <MudStack Row="true" Spacing="2" Class="mt-4">
+                                    <MudButton Variant="Variant.Filled" 
+                                              Color="Color.Primary" 
+                                              StartIcon="@Icons.Material.Outlined.Save" 
+                                              OnClick="@(() => SaveAppSettingsSection(section))"
+                                              Disabled="isSaving">
+                                        @if (isSaving)
+                                        {
+                                            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                            <span class="ml-2">Saving...</span>
+                                        }
+                                        else
+                                        {
+                                            <span>Save Section</span>
+                                        }
+                                    </MudButton>
+                                    
+                                    <MudButton Variant="Variant.Outlined" 
+                                              Color="Color.Secondary" 
+                                              StartIcon="@Icons.Material.Outlined.Refresh" 
+                                              OnClick="@(() => LoadAppSettings())"
+                                              Disabled="isLoadingAppSettings">
+                                        Refresh
+                                    </MudButton>
+
+                                    <MudSpacer />
+
+                                    <MudAlert Severity="Severity.Info" Dense="true" Class="ma-0">
+                                        Changes are written directly to appsettings.json
+                                    </MudAlert>
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Info">No data available for this section.</MudAlert>
+                            }
+                        </MudPaper>
+                    </MudTabPanel>
+                }
+            </MudTabs>
+        }
+    
+        <!-- Settings History Dialog -->
+        <MudDialog @bind-Visible="showHistoryDialog" Options="dialogOptions">
+            <TitleContent>
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Outlined.History" Class="mr-2" />
+                    Settings History - @selectedCategoryForHistory
+                </MudText>
+            </TitleContent>
+            <DialogContent>
+                @if (settingsHistory == null || !settingsHistory.Any())
+                {
+                    <MudAlert Severity="Severity.Info">No history available for this category.</MudAlert>
+                }
+                else
+                {
+                    <MudTable Items="@settingsHistory" Dense="true" Hover="true" Striped="true">
+                        <HeaderContent>
+                            <MudTh>Date</MudTh>
+                            <MudTh>Setting</MudTh>
+                            <MudTh>Old Value</MudTh>
+                            <MudTh>New Value</MudTh>
+                            <MudTh>Changed By</MudTh>
+                            <MudTh>Reason</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Date">@context.ChangedAt.ToString("g")</MudTd>
+                            <MudTd DataLabel="Setting">@context.SettingKey</MudTd>
+                            <MudTd DataLabel="Old Value">
+                                <code>@TruncateValue(context.OldValue)</code>
+                            </MudTd>
+                            <MudTd DataLabel="New Value">
+                                <code>@TruncateValue(context.NewValue)</code>
+                            </MudTd>
+                            <MudTd DataLabel="Changed By">@context.ChangedBy</MudTd>
+                            <MudTd DataLabel="Reason">@context.Reason</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+            </DialogContent>
+            <DialogActions>
+                <MudButton OnClick="@(() => showHistoryDialog = false)">Close</MudButton>
+            </DialogActions>
+        </MudDialog>
+    }
+</MudContainer>
+
+@code {
+    private List<NickScanWebApp.Shared.Models.CategorySettingsDto> categories = new();
+    private Dictionary<string, Dictionary<string, string>> settingValues = new();
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private int activeTab = 0;
+    
+    // AppSettings.json
+    private bool showAppSettings = false;
+    private List<string> appSettingsSections = new();
+    private Dictionary<string, Dictionary<string, object>> appSettingsData = new();
+    private Dictionary<string, Dictionary<string, object>> appSettingsChanges = new();
+    private bool isLoadingAppSettings = false;
+    
+    // History dialog
+    private bool showHistoryDialog = false;
+    private string selectedCategoryForHistory = "";
+    private List<NickScanWebApp.Shared.Models.SettingsHistoryDto> settingsHistory = new();
+    private DialogOptions dialogOptions = new() { MaxWidth = MaxWidth.Large, FullWidth = true };
+
+    // Service control
+    private bool isShuttingDown = false;
+    private bool isRestarting = false;
+    private bool isApiShuttingDown = false;
+    private bool isApiRestarting = false;
+    private bool isWebAppShuttingDown = false;
+    private bool isWebAppRestarting = false;
+    private bool isRestartingAll = false;
+
+    private string currentUsername = "System";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUsername = user?.Identity?.Name ?? "System";
+
+        await LoadSettings();
+    }
+
+    private async Task LoadSettings()
+    {
+        try
+        {
+            isLoading = true;
+            Snackbar.Add("Loading settings from API...", Severity.Info);
+            
+            categories = await SettingsService.GetAllCategoriesAsync();
+
+            if (categories == null || !categories.Any())
+            {
+                Snackbar.Add("⚠️ No settings found. Database may need seeding.", Severity.Warning);
+                return;
+            }
+
+            Snackbar.Add($"✅ Loaded {categories.Count} categories", Severity.Success);
+
+            // Initialize setting values dictionary
+            settingValues.Clear();
+            foreach (var category in categories)
+            {
+                if (!settingValues.ContainsKey(category.Category))
+                {
+                    settingValues[category.Category] = new Dictionary<string, string>();
+                }
+
+                foreach (var setting in category.Settings)
+                {
+                    settingValues[category.Category][setting.SettingKey] = setting.SettingValue;
+                }
+            }
+        }
+        catch (HttpRequestException httpEx)
+        {
+            Snackbar.Add($"❌ API Connection Error: {httpEx.Message}. Is the API running on port 5205?", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading settings: {ex.Message}", Severity.Error);
+            Console.WriteLine($"Settings Load Error: {ex}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private RenderFragment RenderSettingInput(NickScanWebApp.Shared.Models.SystemSettingDto setting)
+    {
+        return builder =>
+        {
+            var value = GetSettingValue(setting.Category, setting.SettingKey);
+
+            // Render different inputs based on data type
+            switch (setting.DataType.ToLower())
+            {
+                case "bool":
+                    builder.OpenComponent<MudSwitch<bool>>(0);
+                    builder.AddAttribute(1, "Label", setting.Description ?? setting.SettingKey);
+                    builder.AddAttribute(2, "Value", bool.Parse(value ?? "false"));
+                    builder.AddAttribute(3, "ValueChanged", EventCallback.Factory.Create<bool>(this, (val) =>
+                    {
+                        UpdateSettingValue(setting.Category, setting.SettingKey, val.ToString().ToLower());
+                    }));
+                    builder.AddAttribute(4, "Color", Color.Primary);
+                    builder.CloseComponent();
+                    break;
+
+                case "int":
+                    builder.OpenComponent<MudNumericField<int>>(0);
+                    builder.AddAttribute(1, "Label", setting.Description ?? setting.SettingKey);
+                    builder.AddAttribute(2, "Value", int.TryParse(value, out var intVal) ? intVal : 0);
+                    builder.AddAttribute(3, "ValueChanged", EventCallback.Factory.Create<int>(this, (val) =>
+                    {
+                        UpdateSettingValue(setting.Category, setting.SettingKey, val.ToString());
+                    }));
+                    builder.AddAttribute(4, "Variant", Variant.Outlined);
+                    if (setting.RequiresRestart)
+                    {
+                        builder.AddAttribute(5, "Adornment", Adornment.End);
+                        builder.AddAttribute(6, "AdornmentIcon", Icons.Material.Outlined.RestartAlt);
+                        builder.AddAttribute(7, "AdornmentColor", Color.Warning);
+                    }
+                    builder.CloseComponent();
+                    break;
+
+                case "decimal":
+                    builder.OpenComponent<MudNumericField<decimal>>(0);
+                    builder.AddAttribute(1, "Label", setting.Description ?? setting.SettingKey);
+                    builder.AddAttribute(2, "Value", decimal.TryParse(value, out var decVal) ? decVal : 0m);
+                    builder.AddAttribute(3, "ValueChanged", EventCallback.Factory.Create<decimal>(this, (val) =>
+                    {
+                        UpdateSettingValue(setting.Category, setting.SettingKey, val.ToString());
+                    }));
+                    builder.AddAttribute(4, "Variant", Variant.Outlined);
+                    builder.CloseComponent();
+                    break;
+
+                default: // string, json, etc.
+                    builder.OpenComponent<MudTextField<string>>(0);
+                    builder.AddAttribute(1, "Label", setting.Description ?? setting.SettingKey);
+                    builder.AddAttribute(2, "Value", value);
+                    builder.AddAttribute(3, "ValueChanged", EventCallback.Factory.Create<string>(this, (val) =>
+                    {
+                        UpdateSettingValue(setting.Category, setting.SettingKey, val);
+                    }));
+                    builder.AddAttribute(4, "Variant", Variant.Outlined);
+                    builder.AddAttribute(5, "Lines", setting.DataType == "json" ? 5 : 1);
+                    
+                    if (setting.IsEncrypted || setting.SettingKey.Contains("Password"))
+                    {
+                        builder.AddAttribute(6, "InputType", InputType.Password);
+                        builder.AddAttribute(7, "Adornment", Adornment.End);
+                        builder.AddAttribute(8, "AdornmentIcon", Icons.Material.Outlined.Lock);
+                        builder.AddAttribute(9, "AdornmentColor", Color.Warning);
+                    }
+                    
+                    if (setting.RequiresRestart)
+                    {
+                        builder.AddAttribute(10, "Adornment", Adornment.End);
+                        builder.AddAttribute(11, "AdornmentIcon", Icons.Material.Outlined.RestartAlt);
+                        builder.AddAttribute(12, "AdornmentColor", Color.Warning);
+                    }
+                    builder.CloseComponent();
+                    break;
+            }
+        };
+    }
+
+    private string GetSettingValue(string category, string key)
+    {
+        if (settingValues.ContainsKey(category) && settingValues[category].ContainsKey(key))
+        {
+            return settingValues[category][key];
+        }
+        return "";
+    }
+
+    private void UpdateSettingValue(string category, string key, string value)
+    {
+        if (!settingValues.ContainsKey(category))
+        {
+            settingValues[category] = new Dictionary<string, string>();
+        }
+        settingValues[category][key] = value;
+    }
+
+    private async Task SaveCategory(string category)
+    {
+        try
+        {
+            isSaving = true;
+            
+            if (!settingValues.ContainsKey(category))
+            {
+                Snackbar.Add("No changes to save", Severity.Info);
+                return;
+            }
+
+            var bulkUpdate = new NickScanWebApp.Shared.Models.BulkSettingsUpdateDto
+            {
+                Category = category,
+                Settings = settingValues[category],
+                ChangedBy = currentUsername,
+                Reason = "Updated via Settings UI"
+            };
+
+            List<NickScanWebApp.Shared.Models.SystemSettingDto> updated = await SettingsService.BulkUpdateAsync(bulkUpdate);
+            
+            Snackbar.Add($"✅ {category} settings saved successfully ({updated.Count} settings)", Severity.Success);
+
+            // Check if any require restart
+            var requiresRestart = updated.Any(s => s.RequiresRestart);
+            if (requiresRestart)
+            {
+                Snackbar.Add("⚠️ Some settings require an application restart to take effect", Severity.Warning);
+            }
+
+            // Reload settings to get updated values
+            await LoadSettings();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error saving settings: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task ResetCategory(string category)
+    {
+        try
+        {
+            var confirmed = await Task.FromResult(true); // TODO: Add confirmation dialog
+            
+            if (confirmed)
+            {
+                await SettingsService.ResetToDefaultsAsync(category, currentUsername);
+                Snackbar.Add($"✅ {category} settings reset to defaults", Severity.Success);
+                await LoadSettings();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error resetting settings: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task TestConnection(string category)
+    {
+        try
+        {
+            Snackbar.Add($"Testing {category} connection...", Severity.Info);
+            
+            var result = await SettingsService.TestConnectionAsync(category);
+            
+            if (result.Success)
+            {
+                Snackbar.Add($"✅ {category} connection test successful: {result.Message}", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"❌ {category} connection test failed: {result.Message}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error testing connection: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowHistory(string category)
+    {
+        try
+        {
+            selectedCategoryForHistory = category;
+            
+            // Get recent changes for all settings in this category
+            var allHistory = await SettingsService.GetRecentChangesAsync(200);
+            settingsHistory = allHistory.Where(h => h.Category == category).ToList();
+            
+            showHistoryDialog = true;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading history: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private Dictionary<string, List<NickScanWebApp.Shared.Models.SystemSettingDto>> GroupSettingsBySubcategory(List<NickScanWebApp.Shared.Models.SystemSettingDto> settings)
+    {
+        var groups = new Dictionary<string, List<NickScanWebApp.Shared.Models.SystemSettingDto>>();
+        
+        foreach (var setting in settings)
+        {
+            // Extract subcategory from setting key (e.g., "JWT.Issuer" -> "JWT")
+            var subcategoryName = "General";
+            if (setting.SettingKey.Contains('.'))
+            {
+                var parts = setting.SettingKey.Split('.');
+                if (parts.Length >= 2)
+                {
+                    subcategoryName = parts[0]; // First part is subcategory
+                }
+            }
+
+            if (!groups.ContainsKey(subcategoryName))
+            {
+                groups[subcategoryName] = new List<NickScanWebApp.Shared.Models.SystemSettingDto>();
+            }
+
+            groups[subcategoryName].Add(setting);
+        }
+
+        return groups;
+    }
+
+    private string GetCategoryIcon(string category)
+    {
+        return category switch
+        {
+            "General" => Icons.Material.Outlined.Settings,
+            "Security" => Icons.Material.Outlined.Security,
+            "ICUMS" => Icons.Material.Outlined.Cloud,
+            "Email" => Icons.Material.Outlined.Email,
+            "Scanners" => Icons.Material.Outlined.Scanner,
+            "Performance" => Icons.Material.Outlined.Speed,
+            "Backup" => Icons.Material.Outlined.Backup,
+            "Monitoring" => Icons.Material.Outlined.Monitor,
+            "Database" => Icons.Material.Outlined.Storage,
+            "RateLimiting" => Icons.Material.Outlined.Speed,
+            "Authentication" => Icons.Material.Outlined.Lock,
+            "ImageAnalysis" => Icons.Material.Outlined.ImageSearch,
+            "Validation" => Icons.Material.Outlined.CheckCircle,
+            "Caching" => Icons.Material.Outlined.Cached,
+            "UI" => Icons.Material.Outlined.DesignServices,
+            "Alerts" => Icons.Material.Outlined.NotificationsActive,
+            "Capacity" => Icons.Material.Outlined.People,
+            "HealthChecks" => Icons.Material.Outlined.HealthAndSafety,
+            "CargoGroup" => Icons.Material.Outlined.Inventory2,
+            "ApiSettings" => Icons.Material.Outlined.Api,
+            _ => Icons.Material.Outlined.Settings
+        };
+    }
+
+    private string TruncateValue(string? value, int maxLength = 50)
+    {
+        if (string.IsNullOrEmpty(value)) return "-";
+        return value.Length > maxLength ? value.Substring(0, maxLength) + "..." : value;
+    }
+
+    // AppSettings.json methods
+    private async Task LoadAppSettings()
+    {
+        try
+        {
+            isLoadingAppSettings = true;
+            Snackbar.Add("Loading appsettings.json...", Severity.Info);
+            
+            appSettingsSections = await SettingsService.GetAppSettingsSectionsAsync();
+            appSettingsData.Clear();
+            appSettingsChanges.Clear();
+
+            // Load all sections in parallel
+            var tasks = appSettingsSections.Select(async section =>
+            {
+                try
+                {
+                    var data = await SettingsService.GetAppSettingsSectionAsync(section);
+                    appSettingsData[section] = data;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex, "Error loading appsettings section {Section}", section);
+                }
+            });
+
+            await Task.WhenAll(tasks);
+            
+            Snackbar.Add($"✅ Loaded {appSettingsSections.Count} appsettings.json sections", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error loading appsettings: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isLoadingAppSettings = false;
+        }
+    }
+
+    private RenderFragment RenderAppSettingsSection(string sectionPath, Dictionary<string, object> data)
+    {
+        return builder =>
+        {
+            foreach (var kvp in data.OrderBy(x => x.Key))
+            {
+                var key = kvp.Key;
+                var value = kvp.Value;
+
+                // Handle nested objects
+                if (value is Dictionary<string, object> nestedDict)
+                {
+                    builder.OpenComponent<MudExpansionPanel>(0);
+                    builder.AddAttribute(1, "Text", key);
+                    builder.AddAttribute(2, "IsExpanded", true);
+                    builder.AddAttribute(3, "ChildContent", (RenderFragment)(builder2 => 
+                    {
+                        var nestedFragment = RenderAppSettingsSection($"{sectionPath}:{key}", nestedDict);
+                        nestedFragment(builder2);
+                    }));
+                    builder.CloseComponent();
+                }
+                else if (value is JsonElement jsonElement)
+                {
+                    // Handle JSON elements
+                    if (jsonElement.ValueKind == JsonValueKind.Object)
+                    {
+                        var nested = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonElement.GetRawText());
+                        if (nested != null)
+                        {
+                            builder.OpenComponent<MudExpansionPanel>(0);
+                            builder.AddAttribute(1, "Text", key);
+                            builder.AddAttribute(2, "IsExpanded", true);
+                            builder.AddAttribute(3, "ChildContent", (RenderFragment)(builder2 => 
+                            {
+                                var nestedFragment = RenderAppSettingsSection($"{sectionPath}:{key}", nested);
+                                nestedFragment(builder2);
+                            }));
+                            builder.CloseComponent();
+                        }
+                    }
+                    else if (jsonElement.ValueKind == JsonValueKind.Array)
+                    {
+                        builder.OpenElement(0, "div");
+                        builder.AddAttribute(1, "class", "ma-2");
+                        builder.OpenComponent<MudTextField<string>>(2);
+                        builder.AddAttribute(3, "Label", key);
+                        builder.AddAttribute(4, "Value", jsonElement.GetRawText());
+                        builder.AddAttribute(5, "Variant", Variant.Outlined);
+                        builder.AddAttribute(6, "Lines", 3);
+                        builder.AddAttribute(7, "ValueChanged", EventCallback.Factory.Create<string>(this, (val) =>
+                        {
+                            UpdateAppSettingsValue(sectionPath, key, val);
+                        }));
+                        builder.CloseComponent();
+                        builder.CloseElement();
+                    }
+                    else
+                    {
+                        RenderSettingField(builder, sectionPath, key, jsonElement.GetRawText());
+                    }
+                }
+                else
+                {
+                    RenderSettingField(builder, sectionPath, key, value?.ToString() ?? "");
+                }
+            }
+        };
+    }
+
+    private void RenderSettingField(RenderTreeBuilder builder, string sectionPath, string key, string value)
+    {
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "class", "ma-2");
+        
+        var isPassword = key.Contains("Password", StringComparison.OrdinalIgnoreCase) || 
+                         key.Contains("Secret", StringComparison.OrdinalIgnoreCase) ||
+                         key.Contains("Key", StringComparison.OrdinalIgnoreCase) && value?.Contains("***USE_ENV_VAR") != true;
+
+        builder.OpenComponent<MudTextField<string>>(2);
+        builder.AddAttribute(3, "Label", key);
+        builder.AddAttribute(4, "Value", value);
+        builder.AddAttribute(5, "Variant", Variant.Outlined);
+        builder.AddAttribute(6, "ValueChanged", EventCallback.Factory.Create<string>(this, (val) =>
+        {
+            UpdateAppSettingsValue(sectionPath, key, val ?? "");
+        }));
+        
+        if (isPassword && !value?.Contains("***USE_ENV_VAR") == true)
+        {
+            builder.AddAttribute(7, "InputType", InputType.Password);
+            builder.AddAttribute(8, "Adornment", Adornment.End);
+            builder.AddAttribute(9, "AdornmentIcon", Icons.Material.Outlined.Lock);
+            builder.AddAttribute(10, "AdornmentColor", Color.Warning);
+        }
+        else if (value?.Contains("***USE_ENV_VAR") == true)
+        {
+            builder.AddAttribute(11, "HelperText", "This value uses an environment variable placeholder");
+            builder.AddAttribute(12, "Disabled", true);
+        }
+        
+        builder.CloseComponent();
+        builder.CloseElement();
+    }
+
+    private void UpdateAppSettingsValue(string sectionPath, string key, string value)
+    {
+        var section = sectionPath.Split(':').First();
+        if (!appSettingsChanges.ContainsKey(section))
+        {
+            appSettingsChanges[section] = new Dictionary<string, object>();
+        }
+
+        // Handle nested paths
+        if (sectionPath.Contains(':'))
+        {
+            // For nested, we'll need to reconstruct the structure
+            // For now, store with flattened key
+            appSettingsChanges[section][key] = value;
+        }
+        else
+        {
+            appSettingsChanges[section][key] = value;
+        }
+    }
+
+    private async Task SaveAppSettingsSection(string section)
+    {
+        try
+        {
+            isSaving = true;
+            
+            if (!appSettingsChanges.ContainsKey(section) || !appSettingsChanges[section].Any())
+            {
+                Snackbar.Add("No changes to save", Severity.Info);
+                return;
+            }
+
+            var success = await SettingsService.UpdateAppSettingsSectionAsync(
+                section, 
+                appSettingsChanges[section], 
+                currentUsername);
+
+            if (success)
+            {
+                Snackbar.Add($"✅ Section '{section}' saved successfully. Application restart required.", Severity.Success);
+                appSettingsChanges[section].Clear();
+                await LoadAppSettings(); // Reload to show updated values
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error saving section: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task HandleApiShutdown()
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will gracefully shut down the API service.\n\nAll background tasks will complete before shutdown.\nThe WebApp will lose its backend until the API is restarted.\n\nContinue?");
+        if (!confirmed) return;
+
+        isApiShuttingDown = true; isShuttingDown = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/shutdown", new { });
+            Snackbar.Add("API shutdown initiated. Background tasks are completing.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); }
+        finally { isApiShuttingDown = false; isShuttingDown = false; }
+    }
+
+    private async Task HandleApiRestart()
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will gracefully restart the API service.\n\nBackground tasks will complete, then the API will restart automatically.\n\nContinue?");
+        if (!confirmed) return;
+
+        isApiRestarting = true; isRestarting = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart", new { });
+            Snackbar.Add("API restart initiated. It will be back in a few seconds.", Severity.Success);
+            await Task.Delay(8000);
+            isApiRestarting = false; isRestarting = false;
+            Snackbar.Add("API should be back up now.", Severity.Info);
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); isApiRestarting = false; isRestarting = false; }
+    }
+
+    private async Task HandleWebAppShutdown()
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will shut down the Web Application.\n\nYou will lose your current session and this page will stop working.\n\nContinue?");
+        if (!confirmed) return;
+
+        isWebAppShuttingDown = true; isShuttingDown = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/shutdown-webapp", new { });
+            Snackbar.Add("WebApp shutdown initiated.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); isWebAppShuttingDown = false; isShuttingDown = false; }
+    }
+
+    private async Task HandleWebAppRestart()
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will restart the Web Application.\n\nYou will be briefly disconnected and the page will reload.\n\nContinue?");
+        if (!confirmed) return;
+
+        isWebAppRestarting = true; isRestarting = true;
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart-webapp", new { });
+            Snackbar.Add("WebApp restart initiated. Page will reload shortly.", Severity.Success);
+            await Task.Delay(8000);
+            NavigationManager.NavigateTo("/", forceLoad: true);
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); isWebAppRestarting = false; isRestarting = false; }
+    }
+
+    private async Task HandleRestartAll()
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm",
+            "This will restart BOTH the API and Web Application.\n\nAll services will go down briefly.\n\nContinue?");
+        if (!confirmed) return;
+
+        isRestartingAll = true; isRestarting = true;
+        try
+        {
+            // Restart WebApp first (it depends on API), then API
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart-webapp", new { });
+            Snackbar.Add("WebApp restart initiated.", Severity.Info);
+            await Task.Delay(2000);
+            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart", new { });
+            Snackbar.Add("API restart initiated. All services restarting.", Severity.Success);
+            await Task.Delay(10000);
+            NavigationManager.NavigateTo("/", forceLoad: true);
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); isRestartingAll = false; isRestarting = false; }
+    }
+
+    private string GetAppSettingsSectionDisplayName(string section)
+    {
+        return section switch
+        {
+            "ConnectionStrings" => "Connection Strings",
+            "BackgroundServices" => "Background Services",
+            "ApiSettings" => "API Settings",
+            "SslCertificates" => "SSL Certificates",
+            "TlsSettings" => "TLS Settings",
+            "ErrorNotifications" => "Error Notifications",
+            _ => section
+        };
+    }
+
+    private string GetAppSettingsSectionIcon(string section)
+    {
+        return section switch
+        {
+            "ConnectionStrings" => Icons.Material.Outlined.Storage,
+            "Jwt" => Icons.Material.Outlined.Security,
+            "Cors" => Icons.Material.Outlined.Public,
+            "Security" => Icons.Material.Outlined.Lock,
+            "Performance" => Icons.Material.Outlined.Speed,
+            "Redis" => Icons.Material.Outlined.Memory,
+            "Caching" => Icons.Material.Outlined.Cached,
+            "FS6000" => Icons.Material.Outlined.Scanner,
+            "ICUMS" => Icons.Material.Outlined.Cloud,
+            "ASE" => Icons.Material.Outlined.Storage,
+            "BackgroundServices" => Icons.Material.Outlined.Work,
+            "Email" => Icons.Material.Outlined.Email,
+            "ErrorNotifications" => Icons.Material.Outlined.NotificationsActive,
+            "Logging" => Icons.Material.Outlined.Assignment,
+            "Kestrel" => Icons.Material.Outlined.Settings,
+            "SuperAdminGuard" => Icons.Material.Outlined.AdminPanelSettings,
+            "ApiSettings" => Icons.Material.Outlined.Api,
+            "SslCertificates" => Icons.Material.Outlined.Verified,
+            "TlsSettings" => Icons.Material.Outlined.Verified,
+            _ => Icons.Material.Outlined.Settings
+        };
+    }
+}

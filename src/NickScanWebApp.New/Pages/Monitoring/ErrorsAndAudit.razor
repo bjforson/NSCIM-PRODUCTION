@@ -1,0 +1,423 @@
+@page "/operations/errors"
+@page "/monitoring/errors"
+@page "/monitoring/errors-audit"
+@page "/admin/error-investigations"
+@page "/administration/error-investigations"
+@page "/monitoring/error-investigations"
+@page "/admin/audit"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesOperationsErrors)]
+@using NickScanWebApp.New.Components.Monitoring
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NavigationManager NavManager
+@implements IDisposable
+
+<PageTitle>NICKSCAN ERP — NSCIS — Errors & Audit</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Live Errors" Icon="@Icons.Material.Filled.ErrorOutline">
+    <MudStack Row AlignItems="AlignItems.Center" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.ErrorOutline" Color="Color.Error" Size="Size.Large" />
+        <MudText Typo="Typo.h4">Error Monitor</MudText>
+        <MudSpacer />
+        <MudChip T="string" Color="@(autoRefresh ? Color.Success : Color.Default)" Size="Size.Small"
+                 OnClick="ToggleAutoRefresh" Icon="@Icons.Material.Outlined.Refresh">
+            @(autoRefresh ? $"Live ({refreshCountdown}s)" : "Paused")
+        </MudChip>
+        <MudIconButton Icon="@Icons.Material.Outlined.Refresh" OnClick="LoadData" Disabled="loading" />
+    </MudStack>
+
+    @if (statistics != null && statistics.ServiceStats.Any())
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" sm="3">
+                <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-error);">
+                    <MudText Typo="Typo.caption" Color="Color.Error">ERRORS (24h)</MudText>
+                    <MudText Typo="Typo.h4">@errorCount24h</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-warning);">
+                    <MudText Typo="Typo.caption" Color="Color.Warning">WARNINGS (24h)</MudText>
+                    <MudText Typo="Typo.h4">@warningCount24h</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+                    <MudText Typo="Typo.caption">AFFECTED SERVICES</MudText>
+                    <MudText Typo="Typo.h4">@affectedServices</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="3">
+                <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-success);">
+                    <MudText Typo="Typo.caption">LAST CHECKED</MudText>
+                    <MudText Typo="Typo.h6">@lastChecked.ToString("HH:mm:ss")</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" Label="Level" @bind-Value="filterLevel" Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="string" Value="@("All")">All Levels</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Fatal")">Fatal</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Error")">Error</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Warning")">Warning</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudDateRangePicker Label="Date Range" @bind-DateRange="dateRange" Variant="Variant.Outlined" Dense />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" Label="Search" Placeholder="Search messages, exceptions, services..."
+                              @bind-Value="searchTerm" Variant="Variant.Outlined" Dense
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search"
+                              OnKeyDown="OnSearchKeyDown" />
+            </MudItem>
+            <MudItem xs="12" md="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth OnClick="LoadLogs"
+                           Disabled="loading" StartIcon="@Icons.Material.Outlined.FilterList">
+                    Filter
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (loading)
+    {
+        <MudProgressLinear Color="Color.Error" Indeterminate />
+    }
+
+    <MudPaper Elevation="2">
+        <MudTable @ref="table" Items="@logs" Dense Hover Breakpoint="Breakpoint.None"
+                  RowClassFunc="GetRowClass" Loading="loading" LoadingProgressColor="Color.Error">
+            <HeaderContent>
+                <MudTh Style="width:160px">Timestamp</MudTh>
+                <MudTh Style="width:80px">Level</MudTh>
+                <MudTh Style="width:200px">Source</MudTh>
+                <MudTh>Message</MudTh>
+                <MudTh Style="width:60px">Details</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Timestamp">
+                    <MudText Typo="Typo.caption" Style="font-family:monospace">@context.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Level">
+                    <MudChip T="string" Size="Size.Small" Color="@GetLevelColor(context.Level)" Variant="Variant.Filled">
+                        @GetLevelIcon(context.Level) @context.Level
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Source">
+                    <MudText Typo="Typo.caption" Style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                             title="@context.ServiceId">
+                        @ShortenSource(context.ServiceId)
+                    </MudText>
+                </MudTd>
+                <MudTd DataLabel="Message">
+                    <MudText Typo="Typo.body2" Style="max-width:500px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                             title="@context.Message">
+                        @TruncateMessage(context.Message, 120)
+                    </MudText>
+                </MudTd>
+                <MudTd DataLabel="Details">
+                    @if (!string.IsNullOrEmpty(context.Exception))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Outlined.BugReport" Color="Color.Error" Size="Size.Small"
+                                       OnClick="@(() => ShowExceptionDetail(context))" />
+                    }
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudAlert Severity="Severity.Success" Dense Class="ma-4">
+                    No errors found for the selected filters. System is operating normally.
+                </MudAlert>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="pa-2">
+                    <MudText Typo="Typo.caption">Total: @totalCount entries</MudText>
+                    <MudStack Row>
+                        <MudButton Size="Size.Small" Disabled="@(currentPage <= 1)" OnClick="PrevPage">Previous</MudButton>
+                        <MudText Typo="Typo.caption" Class="align-self-center">Page @currentPage of @totalPages</MudText>
+                        <MudButton Size="Size.Small" Disabled="@(currentPage >= totalPages)" OnClick="NextPage">Next</MudButton>
+                    </MudStack>
+                </MudStack>
+            </PagerContent>
+        </MudTable>
+    </MudPaper>
+    </MudTabPanel>
+
+    <MudTabPanel Text="Investigations" Icon="@Icons.Material.Filled.BugReport">
+        <ErrorInvestigationsPanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Audit Trail" Icon="@Icons.Material.Filled.Assignment">
+        <AuditLogsPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+<MudDialog @bind-Visible="showExceptionDialog" Options="@(new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true })">
+    <TitleContent>
+        <MudStack Row AlignItems="AlignItems.Center">
+            <MudIcon Icon="@Icons.Material.Outlined.BugReport" Color="Color.Error" />
+            <MudText Typo="Typo.h6">Exception Detail</MudText>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        @if (selectedLog != null)
+        {
+            <MudGrid>
+                <MudItem xs="6">
+                    <MudText Typo="Typo.caption">Timestamp</MudText>
+                    <MudText>@selectedLog.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")</MudText>
+                </MudItem>
+                <MudItem xs="3">
+                    <MudText Typo="Typo.caption">Level</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@GetLevelColor(selectedLog.Level)">@selectedLog.Level</MudChip>
+                </MudItem>
+                <MudItem xs="3">
+                    <MudText Typo="Typo.caption">Source</MudText>
+                    <MudText>@selectedLog.ServiceId</MudText>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudText Typo="Typo.caption">Message</MudText>
+                    <MudAlert Severity="Severity.Error" Dense>@selectedLog.Message</MudAlert>
+                </MudItem>
+                @if (!string.IsNullOrEmpty(selectedLog.Exception))
+                {
+                    <MudItem xs="12">
+                        <MudText Typo="Typo.caption">Exception Stack Trace</MudText>
+                        <MudPaper Class="pa-3" Style="background:#1e1e1e;color:#d4d4d4;font-family:monospace;font-size:0.75rem;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all;">
+                            @selectedLog.Exception
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => showExceptionDialog = false)">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    // Top-level hub tab: 0 = Live Errors, 1 = Investigations, 2 = Audit Trail
+    private int _activeHubTab = 0;
+
+    private MudTable<LogEntryDto>? table;
+    private List<LogEntryDto> logs = new();
+    private LogStatisticsDto? statistics;
+    private bool loading;
+    private string filterLevel = "All";
+    private DateRange? dateRange;
+    private string searchTerm = "";
+    private int currentPage = 1;
+    private int pageSize = 50;
+    private int totalCount;
+    private int totalPages;
+    private bool autoRefresh = true;
+    private int refreshCountdown = 30;
+    private DateTime lastChecked = DateTime.Now;
+    private System.Threading.Timer? refreshTimer;
+    private bool showExceptionDialog;
+    private LogEntryDto? selectedLog;
+
+    private int errorCount24h => statistics?.ServiceStats.Where(s => s.Level == "Error" || s.Level == "Fatal").Sum(s => s.LogCount) ?? 0;
+    private int warningCount24h => statistics?.ServiceStats.Where(s => s.Level == "Warning").Sum(s => s.LogCount) ?? 0;
+    private int affectedServices => statistics?.ServiceStats.Select(s => s.ServiceId).Distinct().Count() ?? 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        _activeHubTab = path switch
+        {
+            "/admin/error-investigations"          => 1,
+            "/administration/error-investigations" => 1,
+            "/monitoring/error-investigations"     => 1,
+            "/admin/audit"                         => 2,
+            _                                      => 0
+        };
+
+        await LoadData();
+        StartAutoRefresh();
+    }
+
+    private void StartAutoRefresh()
+    {
+        refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            if (!autoRefresh) return;
+            refreshCountdown--;
+            if (refreshCountdown <= 0)
+            {
+                refreshCountdown = 30;
+                await InvokeAsync(async () =>
+                {
+                    await LoadData();
+                    StateHasChanged();
+                });
+            }
+            else
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }, null, 1000, 1000);
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        autoRefresh = !autoRefresh;
+        refreshCountdown = 30;
+    }
+
+    private async Task LoadData()
+    {
+        await Task.WhenAll(LoadLogs(), LoadStatistics());
+        lastChecked = DateTime.Now;
+    }
+
+    private async Task LoadLogs()
+    {
+        loading = true;
+        StateHasChanged();
+        try
+        {
+            var queryParams = new List<string> { $"page={currentPage}", $"pageSize={pageSize}" };
+            if (filterLevel != "All") queryParams.Add($"level={filterLevel}");
+            if (!string.IsNullOrEmpty(searchTerm)) queryParams.Add($"search={Uri.EscapeDataString(searchTerm)}");
+            if (dateRange?.Start != null) queryParams.Add($"fromDate={dateRange.Start.Value:yyyy-MM-dd}");
+            if (dateRange?.End != null) queryParams.Add($"toDate={dateRange.End.Value:yyyy-MM-dd}");
+
+            var url = $"/api/LogManagement/logs?{string.Join("&", queryParams)}";
+            var result = await ApiService.GetAsync<PagedResultDto>(url);
+            if (result != null)
+            {
+                logs = result.Data ?? new();
+                totalCount = result.TotalCount;
+                totalPages = result.TotalPages;
+            }
+            else
+            {
+                logs = new();
+                totalCount = 0;
+                totalPages = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading logs: {ex.Message}", Severity.Error);
+            logs = new();
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            statistics = await ApiService.GetAsync<LogStatisticsDto>("/api/LogManagement/statistics?hoursBack=24");
+        }
+        catch { }
+    }
+
+    private async Task PrevPage() { if (currentPage > 1) { currentPage--; await LoadLogs(); } }
+    private async Task NextPage() { if (currentPage < totalPages) { currentPage++; await LoadLogs(); } }
+
+    private async Task OnSearchKeyDown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") { currentPage = 1; await LoadLogs(); }
+    }
+
+    private void ShowExceptionDetail(LogEntryDto log)
+    {
+        selectedLog = log;
+        showExceptionDialog = true;
+    }
+
+    private Color GetLevelColor(string? level) => level switch
+    {
+        "Fatal" => Color.Dark,
+        "Error" => Color.Error,
+        "Warning" => Color.Warning,
+        _ => Color.Default
+    };
+
+    private string GetLevelIcon(string? level) => level switch
+    {
+        "Fatal" => "\U0001f480",
+        "Error" => "\u274c",
+        "Warning" => "\u26a0\ufe0f",
+        _ => "\u2139\ufe0f"
+    };
+
+    private string GetRowClass(LogEntryDto item, int index) => item.Level switch
+    {
+        "Fatal" => "mud-theme-dark",
+        "Error" => "error-row",
+        "Warning" => "warning-row",
+        _ => ""
+    };
+
+    private string ShortenSource(string? source)
+    {
+        if (string.IsNullOrEmpty(source)) return "System";
+        var parts = source.Split('.');
+        return parts.Length > 2 ? parts[^1] : source;
+    }
+
+    private string TruncateMessage(string? msg, int max)
+    {
+        if (string.IsNullOrEmpty(msg)) return "";
+        return msg.Length > max ? msg[..max] + "..." : msg;
+    }
+
+    public void Dispose()
+    {
+        refreshTimer?.Dispose();
+    }
+
+    public class LogEntryDto
+    {
+        public long Id { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string? Level { get; set; }
+        public string? ServiceId { get; set; }
+        public string? Message { get; set; }
+        public string? Exception { get; set; }
+        public string? Properties { get; set; }
+    }
+
+    public class PagedResultDto
+    {
+        public List<LogEntryDto>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+
+    public class LogStatisticsDto
+    {
+        public List<ServiceLogStatsDto> ServiceStats { get; set; } = new();
+    }
+
+    public class ServiceLogStatsDto
+    {
+        public string ServiceId { get; set; } = "";
+        public string Level { get; set; } = "";
+        public int LogCount { get; set; }
+    }
+}
+
+<style>
+    .error-row { background-color: rgba(244, 67, 54, 0.06) !important; }
+    .warning-row { background-color: rgba(255, 152, 0, 0.06) !important; }
+</style>

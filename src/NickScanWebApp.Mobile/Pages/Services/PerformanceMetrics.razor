@@ -1,0 +1,23 @@
+@page "/services/performance"
+@page "/services/performance-metrics"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesPerformanceMetrics)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Performance Metrics - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Speed" Class="mr-2" />
+            Performance Metrics
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Performance metrics dashboard. Use desktop version for detailed analytics.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

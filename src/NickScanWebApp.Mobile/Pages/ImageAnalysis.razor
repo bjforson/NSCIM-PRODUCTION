@@ -1,0 +1,146 @@
+@page "/image-analysis"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisView)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<PageTitle>Image Analysis - BL Review</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    
+    <!-- Header -->
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Filled.ImageSearch" Class="mr-2" />
+                BL Review - Image Analysis
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Review containers grouped by Bill of Lading and make Normal/Abnormal decisions
+            </MudText>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Info Cards -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="12">
+            <MudPaper Elevation="1" Class="pa-3">
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Inventory2" Color="Color.Primary" />
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.body1"><strong>BL Grouping</strong></MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Containers grouped by Bill of Lading for review
+                        </MudText>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- BL Groups List -->
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+    }
+    else if (_blGroups.Any())
+    {
+        <MudStack Spacing="2">
+            @foreach (var blGroup in _blGroups.Take(50))
+            {
+                <MudCard Elevation="2" Class="pa-3">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body1" Style="font-family: monospace;"><strong>@blGroup.BLNumber</strong></MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @blGroup.ContainerCount container(s)
+                                </MudText>
+                            </MudStack>
+                            <MudChip T="string" Size="Size.Small" Color="@GetDecisionColor(blGroup.Decision)">
+                                @blGroup.Decision
+                            </MudChip>
+                        </MudStack>
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  Size="Size.Small"
+                                  StartIcon="@Icons.Material.Filled.Visibility"
+                                  OnClick="@(() => ReviewBL(blGroup.BLNumber))"
+                                  FullWidth="true">
+                            Review
+                        </MudButton>
+                    </MudStack>
+                </MudCard>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info">
+            No BL groups found. All containers need complete data (Scanner + ICUMS + Images) to appear here.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private List<BLGroupViewModel> _blGroups = new();
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadBLGroups();
+    }
+    
+    private async Task LoadBLGroups()
+    {
+        _isLoading = true;
+        try
+        {
+            // TODO: Replace with actual API call
+            // var response = await ApiService.GetAsync<List<BLGroupDto>>("/api/blreview/groups");
+            // _blGroups = response?.Select(b => new BLGroupViewModel { ... }).ToList() ?? new();
+            
+            // Mock data for now
+            _blGroups = new List<BLGroupViewModel>
+            {
+                new() { BLNumber = "BL123456", ContainerCount = 5, Decision = "Pending" },
+                new() { BLNumber = "BL789012", ContainerCount = 3, Decision = "Normal" },
+                new() { BLNumber = "BL345678", ContainerCount = 8, Decision = "Abnormal" }
+            };
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading BL groups: {ex.Message}", Severity.Error);
+            _blGroups = new List<BLGroupViewModel>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private void ReviewBL(string blNumber)
+    {
+        NavigationManager.NavigateTo($"/operations/image-analysis?bl={Uri.EscapeDataString(blNumber)}");
+    }
+    
+    private Color GetDecisionColor(string decision)
+    {
+        return decision switch
+        {
+            "Normal" => Color.Success,
+            "Abnormal" => Color.Error,
+            "Pending" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+    
+    public class BLGroupViewModel
+    {
+        public string BLNumber { get; set; } = "";
+        public int ContainerCount { get; set; }
+        public string Decision { get; set; } = "Pending";
+    }
+}
+

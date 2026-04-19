@@ -1,0 +1,514 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+using System.Text;
+using System.Text.Json;
+
+namespace NickScanCentralImagingPortal.API.Controllers
+{
+    [ApiController]
+    [Route("api/image-splitter")]
+    [Authorize]
+    public class ImageSplitterController : ControllerBase
+    {
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogger<ImageSplitterController> _logger;
+        private readonly ApplicationDbContext _db;
+
+        public ImageSplitterController(
+            IHttpClientFactory httpClientFactory,
+            ILogger<ImageSplitterController> logger,
+            ApplicationDbContext db)
+        {
+            _httpClientFactory = httpClientFactory;
+            _logger = logger;
+            _db = db;
+        }
+
+        [HttpGet("health")]
+        public async Task<IActionResult> GetHealth() => await ForwardGetAsync("/api/health");
+
+        [HttpGet("jobs/pending")]
+        public async Task<IActionResult> GetPendingJobs() => await ForwardGetAsync("/api/split/pending");
+
+        [HttpGet("jobs/{jobId}")]
+        public async Task<IActionResult> GetJob(string jobId) => await ForwardGetAsync($"/api/split/{jobId}");
+
+        [HttpGet("jobs/{jobId}/results")]
+        public async Task<IActionResult> GetJobResults(string jobId) => await ForwardGetAsync($"/api/split/{jobId}/results");
+
+        [HttpGet("jobs/{jobId}/results/{resultId}/image/{side}")]
+        public async Task<IActionResult> GetResultImage(string jobId, string resultId, string side)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync($"/api/split/{jobId}/results/{resultId}/image/{side}");
+                if (!response.IsSuccessStatusCode) return StatusCode((int)response.StatusCode);
+                var bytes = await response.Content.ReadAsByteArrayAsync();
+                return File(bytes, "image/jpeg");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get split image");
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        [HttpPost("jobs/{jobId}/approve")]
+        public async Task<IActionResult> ApproveResult(string jobId, [FromBody] JsonElement body)
+            => await ForwardPostAsync($"/api/split/{jobId}/approve", body);
+
+        [HttpPost("jobs/{jobId}/reject")]
+        public async Task<IActionResult> RejectResult(string jobId, [FromBody] JsonElement body)
+            => await ForwardPostAsync($"/api/split/{jobId}/reject", body);
+
+        [HttpPost("jobs/{jobId}/manual")]
+        public async Task<IActionResult> ManualSplit(string jobId, [FromBody] JsonElement body)
+            => await ForwardPostAsync($"/api/split/{jobId}/manual", body);
+
+        [HttpGet("jobs/{jobId}/original")]
+        public async Task<IActionResult> GetOriginalImage(string jobId)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync($"/api/split/{jobId}/original");
+                if (!response.IsSuccessStatusCode) return StatusCode((int)response.StatusCode);
+                var bytes = await response.Content.ReadAsByteArrayAsync();
+                return File(bytes, "image/jpeg");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get original image");
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        // ── Container-level split integration endpoints ──
+
+        /// <summary>
+        /// Get split options for a specific container. Returns split status and
+        /// the top 2 candidate crop images for this container's position (left/right).
+        /// Called by the frontend before opening the image viewer.
+        /// </summary>
+        [HttpGet("container/{containerNumber}/split-options")]
+        public async Task<IActionResult> GetSplitOptions(string containerNumber)
+        {
+            try
+            {
+                // Find the most recent AnalysisRecord for this container
+                var record = await _db.AnalysisRecords
+                    .Where(r => r.ContainerNumber == containerNumber)
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                // Lazy detection: if AnalysisRecord exists but split fields not yet populated,
+                // check OriginalScanRecords to see if this is a multi-container scan
+                if (record != null && !record.IsMultiContainerScan && record.SplitStatus == null)
+                {
+                    var originalScan = await _db.Set<NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord>()
+                        .Where(o => o.DerivedRecordCount == 2 &&
+                                    o.OriginalContainerNumbers.Contains(containerNumber))
+                        .OrderByDescending(o => o.ScanTime)
+                        .FirstOrDefaultAsync();
+
+                    if (originalScan != null)
+                    {
+                        // This IS a multi-container scan — populate the split fields
+                        var containers = originalScan.OriginalContainerNumbers
+                            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                            .Select(c => c.Trim())
+                            .ToList();
+
+                        var position = containers.Count >= 2 && containers[0] == containerNumber ? "left" : "right";
+                        record.IsMultiContainerScan = true;
+                        record.SplitPosition = position;
+
+                        // Check if a split job already exists in the splitter
+                        var splitterJobId = await FindExistingSplitJobAsync(originalScan.OriginalContainerNumbers);
+                        if (splitterJobId != null)
+                        {
+                            record.SplitJobId = splitterJobId;
+                            var jobStatus = await GetSplitterJobStatusAsync(splitterJobId.Value);
+                            if (jobStatus == "completed")
+                            {
+                                record.SplitStatus = "Ready";
+                                await PopulateSplitCandidatesAsync(record);
+                            }
+                            else if (jobStatus == "failed")
+                            {
+                                record.SplitStatus = "Skipped";
+                            }
+                            else
+                            {
+                                record.SplitStatus = "Pending";
+                            }
+                        }
+                        else
+                        {
+                            record.SplitStatus = "Pending";
+                            // No split job exists — will need to be submitted
+                            // (orchestrator or backfill handles this)
+                        }
+
+                        // Also update the sibling container's record
+                        var siblingNumber = containers.FirstOrDefault(c => c != containerNumber);
+                        if (!string.IsNullOrEmpty(siblingNumber))
+                        {
+                            var sibling = await _db.AnalysisRecords
+                                .Where(r => r.ContainerNumber == siblingNumber && !r.IsMultiContainerScan)
+                                .OrderByDescending(r => r.CreatedAtUtc)
+                                .FirstOrDefaultAsync();
+                            if (sibling != null)
+                            {
+                                sibling.IsMultiContainerScan = true;
+                                sibling.SplitPosition = position == "left" ? "right" : "left";
+                                sibling.SplitJobId = record.SplitJobId;
+                                sibling.SplitStatus = record.SplitStatus;
+                                sibling.SplitOptionA_ResultId = record.SplitOptionA_ResultId;
+                                sibling.SplitOptionB_ResultId = record.SplitOptionB_ResultId;
+                            }
+                        }
+
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
+                if (record == null || !record.IsMultiContainerScan || record.SplitStatus == null)
+                {
+                    return Ok(new
+                    {
+                        containerNumber,
+                        isMultiContainer = false,
+                        splitStatus = (string?)null,
+                        options = Array.Empty<object>()
+                    });
+                }
+
+                // Build options from the splitter API if we have candidates
+                var options = new List<object>();
+                if (record.SplitJobId.HasValue &&
+                    (record.SplitStatus == "Ready" || record.SplitStatus == "Chosen"))
+                {
+                    var client = _httpClientFactory.CreateClient("RawImageEngine");
+                    var resultsResponse = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
+                    if (resultsResponse.IsSuccessStatusCode)
+                    {
+                        var resultsJson = await resultsResponse.Content.ReadAsStringAsync();
+                        var results = JsonSerializer.Deserialize<JsonElement>(resultsJson);
+
+                        if (results.ValueKind == JsonValueKind.Array)
+                        {
+                            // Get top 2 results by confidence, matching the stored option IDs
+                            foreach (var result in results.EnumerateArray())
+                            {
+                                var resultId = result.GetProperty("id").GetString();
+                                var isOptionA = record.SplitOptionA_ResultId?.ToString() == resultId;
+                                var isOptionB = record.SplitOptionB_ResultId?.ToString() == resultId;
+
+                                if (isOptionA || isOptionB)
+                                {
+                                    var side = record.SplitPosition ?? "left";
+                                    options.Add(new
+                                    {
+                                        resultId,
+                                        strategy = result.TryGetProperty("strategy_name", out var sn) ? sn.GetString() : null,
+                                        splitX = result.TryGetProperty("split_x", out var sx) ? sx.GetInt32() : 0,
+                                        confidence = result.TryGetProperty("confidence", out var conf) ? conf.GetDouble() : 0.0,
+                                        cropImageUrl = $"/api/image-splitter/jobs/{record.SplitJobId}/results/{resultId}/image/{side}",
+                                        reasoning = result.TryGetProperty("reasoning", out var rs) ? rs.GetString() : null
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return Ok(new
+                {
+                    containerNumber,
+                    isMultiContainer = true,
+                    splitStatus = record.SplitStatus,
+                    position = record.SplitPosition,
+                    jobId = record.SplitJobId,
+                    chosenResultId = record.SplitResultId,
+                    options,
+                    originalImageUrl = $"/api/ImageProcessing/container/{containerNumber}/complete/image"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get split options for container {Container}", containerNumber);
+                return Ok(new
+                {
+                    containerNumber,
+                    isMultiContainer = false,
+                    splitStatus = (string?)null,
+                    options = Array.Empty<object>()
+                });
+            }
+        }
+
+        /// <summary>
+        /// Analyst chooses a split crop for their container. Updates both this container's
+        /// AnalysisRecord and the sibling container's record (same split job, opposite position).
+        /// Also records the choice in the splitter's consensus corpus.
+        /// </summary>
+        [HttpPost("container/{containerNumber}/choose-split")]
+        public async Task<IActionResult> ChooseSplit(string containerNumber, [FromBody] JsonElement body)
+        {
+            try
+            {
+                if (!body.TryGetProperty("resultId", out var resultIdProp) ||
+                    !body.TryGetProperty("approvedBy", out var approvedByProp))
+                {
+                    return BadRequest(new { error = "resultId and approvedBy are required" });
+                }
+
+                var resultId = resultIdProp.GetString();
+                var approvedBy = approvedByProp.GetString();
+
+                if (string.IsNullOrEmpty(resultId) || !Guid.TryParse(resultId, out var resultGuid))
+                    return BadRequest(new { error = "Invalid resultId" });
+
+                // Find the AnalysisRecord
+                var record = await _db.AnalysisRecords
+                    .Where(r => r.ContainerNumber == containerNumber && r.IsMultiContainerScan)
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for {containerNumber}" });
+
+                // Update this container's record
+                record.SplitResultId = resultGuid;
+                record.SplitStatus = "Chosen";
+
+                // Update the sibling container (same SplitJobId, opposite position)
+                if (record.SplitJobId.HasValue)
+                {
+                    var siblingPosition = record.SplitPosition == "left" ? "right" : "left";
+                    var sibling = await _db.AnalysisRecords
+                        .Where(r => r.SplitJobId == record.SplitJobId &&
+                                    r.SplitPosition == siblingPosition &&
+                                    r.Id != record.Id)
+                        .FirstOrDefaultAsync();
+
+                    if (sibling != null)
+                    {
+                        sibling.SplitResultId = resultGuid;
+                        sibling.SplitStatus = "Chosen";
+                    }
+
+                    // Forward approval to the splitter for consensus corpus recording
+                    try
+                    {
+                        var client = _httpClientFactory.CreateClient("RawImageEngine");
+                        var approveBody = JsonSerializer.Serialize(new
+                        {
+                            result_id = resultId,
+                            container_left = record.SplitPosition == "left" ? containerNumber : sibling?.ContainerNumber ?? "",
+                            container_right = record.SplitPosition == "right" ? containerNumber : sibling?.ContainerNumber ?? "",
+                            approved_by = approvedBy
+                        });
+                        var content = new StringContent(approveBody, Encoding.UTF8, "application/json");
+                        await client.PostAsync($"/api/split/{record.SplitJobId}/approve", content);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Non-blocking — consensus recording failure shouldn't block the analyst
+                        _logger.LogWarning(ex, "Failed to record split approval in splitter for job {JobId}", record.SplitJobId);
+                    }
+                }
+
+                await _db.SaveChangesAsync();
+
+                _logger.LogInformation(
+                    "Split chosen for container {Container}: result {ResultId} by {Analyst}",
+                    containerNumber, resultId, approvedBy);
+
+                return Ok(new { success = true, containerNumber, resultId, splitStatus = "Chosen" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to choose split for container {Container}", containerNumber);
+                return StatusCode(500, new { error = "Failed to save split choice" });
+            }
+        }
+
+        /// <summary>
+        /// Skip the split for a container — analyst wants to use the original combined image.
+        /// </summary>
+        [HttpPost("container/{containerNumber}/skip-split")]
+        public async Task<IActionResult> SkipSplit(string containerNumber, [FromBody] JsonElement body)
+        {
+            try
+            {
+                var skippedBy = body.TryGetProperty("skippedBy", out var sb) ? sb.GetString() : "unknown";
+
+                var record = await _db.AnalysisRecords
+                    .Where(r => r.ContainerNumber == containerNumber && r.IsMultiContainerScan)
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for {containerNumber}" });
+
+                record.SplitStatus = "Skipped";
+                await _db.SaveChangesAsync();
+
+                _logger.LogInformation("Split skipped for container {Container} by {Analyst}", containerNumber, skippedBy);
+                return Ok(new { success = true, containerNumber, splitStatus = "Skipped" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to skip split for container {Container}", containerNumber);
+                return StatusCode(500, new { error = "Failed to save skip" });
+            }
+        }
+
+        // ── Split job lookup helpers ──
+
+        /// <summary>
+        /// Find an existing split job in the Python splitter by container_numbers.
+        /// The splitter stores container_numbers as comma-separated string.
+        /// </summary>
+        private async Task<Guid?> FindExistingSplitJobAsync(string containerNumbers)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                // Normalize: the splitter may have "C1,C2" or "C1, C2"
+                var normalized = containerNumbers.Replace(" ", "");
+                var response = await client.GetAsync($"/api/split/pending?limit=500");
+                if (!response.IsSuccessStatusCode)
+                {
+                    // Try completed jobs endpoint
+                    response = await client.GetAsync($"/api/split/search?container_numbers={Uri.EscapeDataString(normalized)}");
+                    if (!response.IsSuccessStatusCode) return null;
+                }
+
+                var json = await response.Content.ReadAsStringAsync();
+                var jobs = JsonSerializer.Deserialize<JsonElement>(json);
+
+                if (jobs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var job in jobs.EnumerateArray())
+                    {
+                        if (job.TryGetProperty("container_numbers", out var cn))
+                        {
+                            var jobContainers = cn.GetString()?.Replace(" ", "") ?? "";
+                            if (jobContainers == normalized)
+                            {
+                                if (job.TryGetProperty("id", out var idProp))
+                                    return Guid.Parse(idProp.GetString()!);
+                            }
+                        }
+                    }
+                }
+                else if (jobs.ValueKind == JsonValueKind.Object)
+                {
+                    if (jobs.TryGetProperty("id", out var idProp))
+                        return Guid.Parse(idProp.GetString()!);
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to find existing split job for {Containers}", containerNumbers);
+                return null;
+            }
+        }
+
+        private async Task<string?> GetSplitterJobStatusAsync(Guid jobId)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync($"/api/split/{jobId}");
+                if (!response.IsSuccessStatusCode) return null;
+                var json = await response.Content.ReadAsStringAsync();
+                var job = JsonSerializer.Deserialize<JsonElement>(json);
+                return job.TryGetProperty("status", out var s) ? s.GetString() : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Populate the top 2 split candidates on an AnalysisRecord from the splitter results.
+        /// </summary>
+        private async Task PopulateSplitCandidatesAsync(NickScanCentralImagingPortal.Core.Entities.Analysis.AnalysisRecord record)
+        {
+            if (!record.SplitJobId.HasValue) return;
+
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
+                if (!response.IsSuccessStatusCode) return;
+
+                var json = await response.Content.ReadAsStringAsync();
+                var results = JsonSerializer.Deserialize<JsonElement>(json);
+
+                if (results.ValueKind != JsonValueKind.Array) return;
+
+                // Get top 2 results by confidence
+                var sorted = results.EnumerateArray()
+                    .Select(r => new
+                    {
+                        Id = r.TryGetProperty("id", out var id) ? id.GetString() : null,
+                        Confidence = r.TryGetProperty("confidence", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetDouble() : 0.0
+                    })
+                    .Where(r => r.Id != null)
+                    .OrderByDescending(r => r.Confidence)
+                    .Take(2)
+                    .ToList();
+
+                if (sorted.Count >= 1)
+                    record.SplitOptionA_ResultId = Guid.Parse(sorted[0].Id!);
+                if (sorted.Count >= 2)
+                    record.SplitOptionB_ResultId = Guid.Parse(sorted[1].Id!);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to populate split candidates for job {JobId}", record.SplitJobId);
+            }
+        }
+
+        private async Task<IActionResult> ForwardGetAsync(string path)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync(path);
+                var content = await response.Content.ReadAsStringAsync();
+                return Content(content, "application/json");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to forward GET {Path}", path);
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        private async Task<IActionResult> ForwardPostAsync(string path, JsonElement body)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var jsonContent = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json");
+                var response = await client.PostAsync(path, jsonContent);
+                var content = await response.Content.ReadAsStringAsync();
+                return Content(content, "application/json");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to forward POST {Path}", path);
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+    }
+}

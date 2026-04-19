@@ -1,0 +1,167 @@
+@using MudBlazor
+@using NickScanWebApp.Mobile.Services
+@using NickScanWebApp.Shared.Services
+@using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.Shared.Models
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Medium">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Size="Size.Small" Class="mr-2" />
+            Cross-Record Scan Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                <MudProgressCircular Size="Size.Medium" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.body2">Loading scan details...</MudText>
+            </MudStack>
+        }
+        else if (_scan == null)
+        {
+            <MudAlert Severity="Severity.Error">
+                Failed to load scan details
+            </MudAlert>
+        }
+        else
+        {
+            <!-- Header Banner -->
+            <MudPaper Class="pa-3 mb-3" Elevation="1" Style="background: linear-gradient(135deg, #ff9800 0%, #ffc107 100%);">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6" Style="color: white;">
+                        Cross-Record Scan Alert
+                    </MudText>
+                    <MudText Typo="Typo.caption" Style="color: white;">
+                        Scan: @_scan.ScanDateTime.ToString("dd-MMM-yyyy HH:mm") | Scanner: @_scan.ScannerType
+                    </MudText>
+                    <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                        <MudChip T="string" Size="Size.Small" Color="@GetSeverityColor(_scan.Severity)">
+                            @_scan.Severity
+                        </MudChip>
+                        <MudChip T="string" Size="Size.Small" Color="@GetIssueTypeColor(_scan.CrossRecordType)">
+                            @FormatIssueType(_scan.CrossRecordType)
+                        </MudChip>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+
+            <!-- Container Comparison - Mobile Stacked -->
+            <MudStack Spacing="2">
+                <!-- Container 1 -->
+                <MudPaper Elevation="1" Class="pa-3" Style="border-left: 4px solid #1976d2;">
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        Container 1: <strong>@_scan.Container1</strong>
+                    </MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td>BOE/Declaration:</td>
+                                <td>@(_scan.Container1_BOE ?? "N/A")</td>
+                            </tr>
+                            <tr>
+                                <td>Consignee:</td>
+                                <td>@(_scan.Container1_Consignee ?? "N/A")</td>
+                            </tr>
+                            <tr>
+                                <td>Master BL:</td>
+                                <td>@(_scan.Container1_MasterBL ?? "N/A")</td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+
+                <!-- Container 2 -->
+                <MudPaper Elevation="1" Class="pa-3" Style="border-left: 4px solid #d32f2f;">
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        Container 2: <strong>@_scan.Container2</strong>
+                    </MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td>BOE/Declaration:</td>
+                                <td>@(_scan.Container2_BOE ?? "N/A")</td>
+                            </tr>
+                            <tr>
+                                <td>Consignee:</td>
+                                <td>@(_scan.Container2_Consignee ?? "N/A")</td>
+                            </tr>
+                            <tr>
+                                <td>Master BL:</td>
+                                <td>@(_scan.Container2_MasterBL ?? "N/A")</td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Close" FullWidth="true">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int ScanId { get; set; }
+    [CascadingParameter] IDialogReference? MudDialog { get; set; }
+
+    private CrossRecordScanDto? _scan;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadScanDetails();
+    }
+
+    private async Task LoadScanDetails()
+    {
+        _loading = true;
+        try
+        {
+            _scan = await ApiService.GetAsync<CrossRecordScanDto>($"/api/cross-record-scans/{ScanId}");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading scan details: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Close()
+    {
+        MudDialog?.Close();
+    }
+
+    private Color GetSeverityColor(string severity)
+    {
+        return severity?.ToUpper() switch
+        {
+            "HIGH" => Color.Error,
+            "MEDIUM" => Color.Warning,
+            "LOW" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetIssueTypeColor(string issueType)
+    {
+        return issueType?.ToUpper() switch
+        {
+            "DUPLICATE" => Color.Warning,
+            "MISMATCH" => Color.Error,
+            "ANOMALY" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    private string FormatIssueType(string issueType)
+    {
+        return issueType?.Replace("_", " ") ?? "Unknown";
+    }
+}

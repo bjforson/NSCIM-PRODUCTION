@@ -1,0 +1,314 @@
+@page "/search"
+@attribute [Authorize(Policy = Permissions.PagesSearch)]
+@using NickScanWebApp.Shared.Services
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NavigationManager NavigationManager
+@inject ISnackbar Snackbar
+
+<PageTitle>NICKSCAN ERP — NSCIS — Search</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    <MudPaper Elevation="2" Class="pa-6 mb-4">
+        <MudStack Spacing="3">
+            <!-- Search Header -->
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.Search" Size="Size.Large" Color="Color.Primary" />
+                <MudText Typo="Typo.h4">Search Results</MudText>
+            </MudStack>
+
+            <!-- Search Input -->
+            <MudTextField @bind-Value="_searchQuery"
+                          Placeholder="Search containers, BOE, VIN..."
+                          Adornment="Adornment.End"
+                          AdornmentIcon="@Icons.Material.Outlined.Search"
+                          OnAdornmentClick="PerformSearch"
+                          OnKeyUp="OnSearchKeyUp"
+                          Variant="Variant.Outlined"
+                          Immediate="false"
+                          FullWidth="true"
+                          Class="mb-2" />
+
+            <!-- Search Info Bar -->
+            @if (_searchResponse != null && !_isLoading)
+            {
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Found <strong>@_searchResponse.TotalResults</strong> results for "<strong>@_searchResponse.Query</strong>"
+                        <span style="color: #999; margin-left: 8px;">(@_searchResponse.ResponseTimeMs ms)</span>
+                    </MudText>
+                    
+                    @if (_searchResponse.ResultsByType.Any())
+                    {
+                        <MudStack Row="true" Spacing="2">
+                            @foreach (var typeCount in _searchResponse.ResultsByType)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                    @typeCount.Key: @typeCount.Value
+                                </MudChip>
+                            }
+                        </MudStack>
+                    }
+                </MudStack>
+            }
+        </MudStack>
+    </MudPaper>
+
+    <!-- Loading State -->
+    @if (_isLoading)
+    {
+        <MudPaper Elevation="1" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">Searching...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (_searchResponse != null)
+    {
+        <!-- Results List -->
+        @if (_searchResponse.Results.Any())
+        {
+            <MudStack Spacing="2">
+                @foreach (var result in _searchResponse.Results)
+                {
+                    <MudPaper Elevation="1" Class="pa-4 hover-card" Style="cursor: pointer;" @onclick="@(() => NavigateToResult(result))">
+                        <MudStack Spacing="1">
+                            <!-- Result Header -->
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@GetIconForEntityType(result.EntityType)" 
+                                         Color="@GetColorForEntityType(result.EntityType)" 
+                                         Size="Size.Medium" />
+                                <MudText Typo="Typo.h6" Color="Color.Primary">@result.PrimaryField</MudText>
+                                <MudChip T="string" Size="Size.Small" 
+                                         Color="@GetColorForEntityType(result.EntityType)" 
+                                         Variant="Variant.Filled">
+                                    @result.EntityType
+                                </MudChip>
+                                @if (result.RelevanceScore >= 0.9)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.Star">
+                                        Exact Match
+                                    </MudChip>
+                                }
+                            </MudStack>
+
+                            <!-- Result Details -->
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                @result.Preview
+                            </MudText>
+
+                            <!-- Metadata -->
+                            @if (result.Metadata.Any())
+                            {
+                                <MudStack Row="true" Spacing="1" Class="mt-2">
+                                    @foreach (var meta in result.Metadata.Take(4))
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Text">
+                                            @meta.Key: @meta.Value
+                                        </MudChip>
+                                    }
+                                </MudStack>
+                            }
+
+                            <!-- Secondary Info -->
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                @result.SecondaryField
+                            </MudText>
+                        </MudStack>
+                    </MudPaper>
+                }
+            </MudStack>
+        }
+        else
+        {
+            <!-- No Results -->
+            <MudPaper Elevation="1" Class="pa-8">
+                <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                    <MudIcon Icon="@Icons.Material.Outlined.SearchOff" Size="Size.Large" Color="Color.Secondary" />
+                    <MudText Typo="Typo.h6" Color="Color.Secondary">No results found</MudText>
+                    <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Secondary">
+                        Try searching for:
+                        <ul style="list-style: none; padding: 0; margin-top: 12px;">
+                            <li>Container Number (e.g., MSDU7991072)</li>
+                            <li>BOE Number</li>
+                            <li>VIN Number</li>
+                            <li>Truck Plate</li>
+                        </ul>
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+        }
+    }
+    else if (!string.IsNullOrWhiteSpace(_searchQuery))
+    {
+        <!-- Initial Search Prompt -->
+        <MudPaper Elevation="1" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudIcon Icon="@Icons.Material.Outlined.Search" Size="Size.Large" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Enter a search term and press Enter</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+</MudContainer>
+
+<style>
+    .hover-card {
+        transition: all 0.2s ease;
+    }
+
+    .hover-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        transform: translateY(-2px);
+    }
+</style>
+
+@code {
+    private string _searchQuery = string.Empty;
+    private GlobalSearchResponse? _searchResponse;
+    private bool _isLoading = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get the query parameter from URL
+        var uri = new Uri(NavigationManager.Uri);
+        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var searchTerm = query["q"];
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            _searchQuery = searchTerm;
+            await PerformSearch();
+        }
+    }
+
+    private async Task OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await PerformSearch();
+        }
+    }
+
+    private async Task PerformSearch()
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery))
+        {
+            Snackbar.Add("Please enter a search term", Severity.Warning);
+            return;
+        }
+
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            var searchRequest = new GlobalSearchRequest
+            {
+                Query = _searchQuery.Trim(),
+                MaxResults = 100,
+                Skip = 0,
+                IncludeMetadata = true
+            };
+
+            _searchResponse = await ApiService.PostAsync<GlobalSearchRequest, GlobalSearchResponse>(
+                "/api/Gateway/search", 
+                searchRequest);
+
+            if (_searchResponse != null)
+            {
+                Snackbar.Add($"Found {_searchResponse.TotalResults} results", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Search failed: {ex.Message}", Severity.Error);
+            Console.WriteLine($"❌ Search error: {ex}");
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void NavigateToResult(SearchResult result)
+    {
+        try
+        {
+            // Navigate based on entity type
+            var route = result.EntityType.ToLower() switch
+            {
+                "container" => $"/operations/container-details/{result.PrimaryField}",
+                "icums" => $"/icums?search={result.PrimaryField}",
+                "vehicle" => $"/vehicles?search={result.PrimaryField}",
+                _ => $"/containers?search={result.PrimaryField}"
+            };
+
+            NavigationManager.NavigateTo(route);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Navigation failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string GetIconForEntityType(string entityType)
+    {
+        return entityType.ToLower() switch
+        {
+            "container" => Icons.Material.Outlined.Inventory,
+            "icums" => Icons.Material.Outlined.Cloud,
+            "vehicle" => Icons.Material.Outlined.DirectionsCar,
+            "operator" => Icons.Material.Outlined.Person,
+            _ => Icons.Material.Outlined.Search
+        };
+    }
+
+    private Color GetColorForEntityType(string entityType)
+    {
+        return entityType.ToLower() switch
+        {
+            "container" => Color.Primary,
+            "icums" => Color.Info,
+            "vehicle" => Color.Success,
+            "operator" => Color.Secondary,
+            _ => Color.Default
+        };
+    }
+
+    // Models matching the API
+    public class GlobalSearchRequest
+    {
+        public string Query { get; set; } = string.Empty;
+        public List<string> EntityTypes { get; set; } = new();
+        public int MaxResults { get; set; } = 100;
+        public int Skip { get; set; } = 0;
+        public bool IncludeMetadata { get; set; } = true;
+        public Dictionary<string, string> Filters { get; set; } = new();
+    }
+
+    public class GlobalSearchResponse
+    {
+        public string Query { get; set; } = string.Empty;
+        public int TotalResults { get; set; }
+        public int ResultsReturned { get; set; }
+        public int ResponseTimeMs { get; set; }
+        public DateTime SearchedAt { get; set; } = DateTime.UtcNow;
+        public List<SearchResult> Results { get; set; } = new();
+        public Dictionary<string, int> ResultsByType { get; set; } = new();
+        public List<string> Suggestions { get; set; } = new();
+    }
+
+    public class SearchResult
+    {
+        public string EntityType { get; set; } = string.Empty;
+        public string Id { get; set; } = string.Empty;
+        public string PrimaryField { get; set; } = string.Empty;
+        public string SecondaryField { get; set; } = string.Empty;
+        public double RelevanceScore { get; set; }
+        public Dictionary<string, object> Metadata { get; set; } = new();
+        public List<string> MatchedFields { get; set; } = new();
+        public string Preview { get; set; } = string.Empty;
+    }
+}
+

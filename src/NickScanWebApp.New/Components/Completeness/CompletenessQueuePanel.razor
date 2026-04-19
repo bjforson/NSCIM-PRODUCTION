@@ -1,0 +1,568 @@
+@using MudBlazor
+@using Microsoft.AspNetCore.SignalR.Client
+@using NickScanWebApp.New.Components.Validation
+@using NickScanWebApp.New.Models
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<CompletenessQueuePanel> Logger
+@inject IConfiguration Configuration
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JS
+@implements IDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Queue" Class="mr-2" />
+                    CCQ - Container Completeness Queue
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Real-time visibility into container scan queue processing
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudChip T="string" 
+                         Size="Size.Medium" 
+                         Color="@(_autoRefreshEnabled ? Color.Success : Color.Default)" 
+                         Icon="@(_autoRefreshEnabled ? Icons.Material.Outlined.Autorenew : Icons.Material.Outlined.PauseCircle)"
+                         OnClick="ToggleAutoRefresh">
+                    Auto-Refresh: @(_autoRefreshEnabled ? "Active (30s)" : "Paused")
+                </MudChip>
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="LoadQueueItems"
+                          Disabled="_isLoading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Queue Statistics -->
+    @if (_queueStats != null)
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%); color: white;">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Pending</MudText>
+                        <MudText Typo="Typo.h4">@_queueStats.TotalPending</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Processing</MudText>
+                        <MudText Typo="Typo.h4">@_queueStats.TotalProcessing</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Completed</MudText>
+                        <MudText Typo="Typo.h4">@_queueStats.TotalCompleted</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed</MudText>
+                        <MudText Typo="Typo.h4">@_queueStats.TotalFailed</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+
+    <!-- Filters -->
+    <MudPaper Elevation="1" Class="pa-3 mb-4">
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="string" 
+                          Label="Scanner Type" 
+                          Variant="Variant.Outlined"
+                          Value="_filterScannerType"
+                          ValueChanged="@((string val) => { _filterScannerType = val; LoadQueueItems(); })">
+                    <MudSelectItem T="string" Value="@("All")">All Scanners</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("FS6000")">FS6000</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("ASE")">ASE</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("HeimannSmith")">Heimann Smith</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="string" 
+                          Label="Status" 
+                          Variant="Variant.Outlined"
+                          Value="_filterStatus"
+                          ValueChanged="@((string val) => { _filterStatus = val; LoadQueueItems(); })">
+                    <MudSelectItem T="string" Value="@("All")">All Status</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Pending")">Pending</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Processing")">Processing</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Completed")">Completed</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Failed")">Failed</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField T="string" 
+                             Label="Search" 
+                             Variant="Variant.Outlined"
+                             @bind-Value="_searchText"
+                             Adornment="Adornment.Start"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             Placeholder="Container number or Inspection ID..."
+                             OnKeyPress="@((KeyboardEventArgs e) => { if (e.Key == "Enter") LoadQueueItems(); })" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.End">
+                    <MudButton Variant="Variant.Text" 
+                              Color="Color.Secondary"
+                              OnClick="ClearFilters">
+                        Clear
+                    </MudButton>
+                </MudStack>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Queue Items Table -->
+    <MudPaper Elevation="1">
+        <MudTable Items="@_queueItems" 
+                 Dense="true"
+                 Hover="true"
+                 Striped="true"
+                 Loading="_isLoading"
+                 FixedHeader="true"
+                 Height="600px">
+            <HeaderContent>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("QueuedAt"))"
+                              EndIcon="@GetSortIcon("QueuedAt")">
+                        Queued At
+                    </MudButton>
+                </MudTh>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("ContainerNumber"))"
+                              EndIcon="@GetSortIcon("ContainerNumber")">
+                        Container Number
+                    </MudButton>
+                </MudTh>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("ScannerType"))"
+                              EndIcon="@GetSortIcon("ScannerType")">
+                        Scanner
+                    </MudButton>
+                </MudTh>
+                <MudTh>Inspection ID</MudTh>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("Status"))"
+                              EndIcon="@GetSortIcon("Status")">
+                        Status
+                    </MudButton>
+                </MudTh>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("ScanDate"))"
+                              EndIcon="@GetSortIcon("ScanDate")">
+                        Scan Date
+                    </MudButton>
+                </MudTh>
+                <MudTh>Retries</MudTh>
+                <MudTh>
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              OnClick="@(() => SortBy("ProcessedAt"))"
+                              EndIcon="@GetSortIcon("ProcessedAt")">
+                        Processed At
+                    </MudButton>
+                </MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Queued At">
+                    <MudText Typo="Typo.caption">@context.QueuedAt.ToString("MMM dd HH:mm:ss")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Container Number">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudText Typo="Typo.body2">@context.ContainerNumber</MudText>
+                        <MudIconButton Icon="@Icons.Material.Outlined.ContentCopy" 
+                                      Size="Size.Small"
+                                      OnClick="@(() => CopyToClipboard(context.ContainerNumber))" />
+                    </MudStack>
+                </MudTd>
+                <MudTd DataLabel="Scanner">
+                    <MudChip T="string" Size="Size.Small" Color="@GetScannerColor(context.ScannerType)">
+                        @context.ScannerType
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Inspection ID">
+                    <MudText Typo="Typo.caption">@(context.InspectionId ?? "-")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Status">
+                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.Status)" Variant="Variant.Filled">
+                        @context.Status
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Scan Date">
+                    <MudText Typo="Typo.caption">@context.ScanDate.ToString("MMM dd HH:mm")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Retries">
+                    <MudText Typo="Typo.body2">@context.RetryCount/@context.MaxRetries</MudText>
+                </MudTd>
+                <MudTd DataLabel="Processed At">
+                    <MudText Typo="Typo.caption">@(context.ProcessedAt?.ToString("MMM dd HH:mm:ss") ?? "-")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Actions">
+                    <MudButton Variant="Variant.Text" 
+                              Size="Size.Small"
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.Visibility"
+                              OnClick="@(() => ShowItemDetails(context))">
+                        View Details
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudAlert Severity="Severity.Info">No queue items found</MudAlert>
+            </NoRecordsContent>
+        </MudTable>
+        
+        <!-- Pagination -->
+        @if (_pagedResponse != null && _pagedResponse.TotalPages > 1)
+        {
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="pa-3">
+                <MudText Typo="Typo.body2">
+                    Showing @((_currentPage - 1) * _pageSize + 1) to @(Math.Min(_currentPage * _pageSize, _pagedResponse.TotalCount)) of @_pagedResponse.TotalCount items
+                </MudText>
+                <MudPagination Count="@_pagedResponse.TotalPages" 
+                              Selected="@_currentPage" 
+                              SelectedChanged="@((int page) => OnPageChanged(page))"
+                              ShowFirstButton="true"
+                              ShowLastButton="true"
+                              ShowNextButton="true"
+                              ShowPreviousButton="true" />
+            </MudStack>
+        }
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new();
+    private HubConnection? _hubConnection;
+    private bool _isSignalRConnected = false;
+    private bool _isLoading = false;
+    private List<QueueItemDetailResponse> _queueItems = new();
+    private QueueStatistics? _queueStats;
+    private PagedQueueItemsResponse? _pagedResponse;
+    
+    // Filters
+    private string _filterScannerType = "All";
+    private string _filterStatus = "All";
+    private string _searchText = "";
+    
+    // Pagination
+    private int _currentPage = 1;
+    private int _pageSize = 50;
+    
+    // Sorting
+    private string _sortBy = "QueuedAt";
+    private bool _sortDescending = true;
+    
+    // Auto-refresh
+    private System.Threading.Timer? _refreshTimer;
+    private bool _autoRefreshEnabled = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Validation", href: "#", icon: Icons.Material.Outlined.FactCheck),
+            new BreadcrumbItem("CCQ - Container Completeness Queue", href: null, disabled: true)
+        };
+        
+        await LoadQueueStatistics();
+        await LoadQueueItems();
+        await InitializeSignalR();
+        StartAutoRefresh();
+    }
+
+    private void StartAutoRefresh()
+    {
+        _refreshTimer?.Dispose();
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            if (!_autoRefreshEnabled) return;
+            await InvokeAsync(async () =>
+            {
+                await LoadQueueStatistics();
+                await LoadQueueItems();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        _autoRefreshEnabled = !_autoRefreshEnabled;
+        StateHasChanged();
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/containerScanQueue";
+
+            // Get token for SignalR authentication
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null)
+                    {
+                        token = await task;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
+            }
+
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    }
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            // Listen for new queue items
+            _hubConnection.On<object>("QueueItemAdded", (data) =>
+            {
+                Logger.LogInformation("Received QueueItemAdded signal");
+                InvokeAsync(async () =>
+                {
+                    await LoadQueueItems();
+                    await LoadQueueStatistics();
+                    StateHasChanged();
+                });
+            });
+
+            // Listen for queue item updates
+            _hubConnection.On<object>("QueueItemUpdated", (data) =>
+            {
+                Logger.LogInformation("Received QueueItemUpdated signal");
+                InvokeAsync(async () =>
+                {
+                    await LoadQueueItems();
+                    await LoadQueueStatistics();
+                    StateHasChanged();
+                });
+            });
+
+            // Listen for statistics updates
+            _hubConnection.On<object>("QueueStatisticsUpdated", (data) =>
+            {
+                Logger.LogInformation("Received QueueStatisticsUpdated signal");
+                InvokeAsync(async () =>
+                {
+                    await LoadQueueStatistics();
+                    StateHasChanged();
+                });
+            });
+
+            _hubConnection.Reconnecting += error =>
+            {
+                _isSignalRConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Reconnected += connectionId =>
+            {
+                _isSignalRConnected = true;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Closed += error =>
+            {
+                _isSignalRConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            await _hubConnection.StartAsync();
+            _isSignalRConnected = true;
+            Logger.LogInformation("SignalR connected to ContainerScanQueueHub");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing SignalR connection");
+            Snackbar.Add("Failed to connect to real-time updates", Severity.Warning);
+        }
+    }
+
+    private async Task LoadQueueItems()
+    {
+        _isLoading = true;
+        try
+        {
+            var queryParams = $"page={_currentPage}&pageSize={_pageSize}&sortBy={_sortBy}&sortDescending={_sortDescending}";
+            
+            if (!string.IsNullOrEmpty(_filterScannerType) && _filterScannerType != "All")
+                queryParams += $"&scannerType={Uri.EscapeDataString(_filterScannerType)}";
+            
+            if (!string.IsNullOrEmpty(_filterStatus) && _filterStatus != "All")
+                queryParams += $"&status={Uri.EscapeDataString(_filterStatus)}";
+            
+            if (!string.IsNullOrEmpty(_searchText))
+                queryParams += $"&search={Uri.EscapeDataString(_searchText)}";
+
+            _pagedResponse = await ApiService.GetAsync<PagedQueueItemsResponse>($"/api/QueueHealth/items?{queryParams}");
+            
+            if (_pagedResponse != null)
+            {
+                _queueItems = _pagedResponse.Items;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading queue items");
+            Snackbar.Add($"Error loading queue items: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadQueueStatistics()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<QueueStatisticsResponse>("/api/QueueHealth/statistics");
+            if (response != null)
+            {
+                _queueStats = response.Statistics;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading queue statistics");
+        }
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        _currentPage = page;
+        await LoadQueueItems();
+    }
+
+    private async Task SortBy(string column)
+    {
+        if (_sortBy == column)
+        {
+            _sortDescending = !_sortDescending;
+        }
+        else
+        {
+            _sortBy = column;
+            _sortDescending = true;
+        }
+        _currentPage = 1; // Reset to first page when sorting changes
+        await LoadQueueItems();
+    }
+
+    private string GetSortIcon(string column)
+    {
+        if (_sortBy != column) return Icons.Material.Outlined.UnfoldMore;
+        return _sortDescending ? Icons.Material.Outlined.ArrowDownward : Icons.Material.Outlined.ArrowUpward;
+    }
+
+    private async Task ClearFilters()
+    {
+        _filterScannerType = "All";
+        _filterStatus = "All";
+        _searchText = "";
+        _currentPage = 1;
+        await LoadQueueItems();
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            Snackbar.Add($"Copied {text} to clipboard", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error copying to clipboard");
+            Snackbar.Add("Could not copy to clipboard", Severity.Error);
+        }
+    }
+
+    private async Task ShowItemDetails(QueueItemDetailResponse item)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Item"] = item
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<QueueItemDetailDialog>("Queue Item Details", parameters, options);
+    }
+
+    private Color GetScannerColor(string scanner) => scanner switch
+    {
+        "FS6000" => Color.Primary,
+        "ASE" => Color.Secondary,
+        "HeimannSmith" => Color.Tertiary,
+        _ => Color.Default
+    };
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Pending" => Color.Info,
+        "Processing" => Color.Warning,
+        "Completed" => Color.Success,
+        "Failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+        _hubConnection?.DisposeAsync().AsTask().Wait(1000);
+    }
+}

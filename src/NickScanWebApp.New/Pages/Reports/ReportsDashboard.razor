@@ -1,0 +1,214 @@
+@page "/reports"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesReportsView)]
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NavigationManager NavManager
+@inject IDialogService DialogService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>NICKSCAN ERP — NSCIS — Reports & Analytics</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Analytics" Class="mr-2" />
+        Reports & Analytics
+    </MudText>
+
+    <!-- Date Range Filter -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudDatePicker Label="Start Date" @bind-Date="_startDate" Variant="Variant.Outlined" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudDatePicker Label="End Date" @bind-Date="_endDate" Variant="Variant.Outlined" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" Label="Export Format" @bind-Value="_exportFormat" Variant="Variant.Outlined">
+                    <MudSelectItem T="string" Value="@("excel")">Excel (.xlsx)</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("pdf")">PDF</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("csv")">CSV</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3" Class="d-flex align-end">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
+                    StartIcon="@Icons.Material.Outlined.Refresh"
+                    OnClick="() => StateHasChanged()" Disabled="_isLoading">
+                    Refresh
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    }
+
+    <MudGrid>
+        @foreach (var report in reports)
+        {
+            <MudItem xs="12" md="6" lg="4">
+                <MudCard Elevation="2" Class="hoverable-card">
+                    <MudCardHeader Style="@GetReportGradient(report.Category)">
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6" Style="color: white;">@report.Name</MudText>
+                        </CardHeaderContent>
+                        <CardHeaderActions>
+                            <MudIcon Icon="@report.Icon" Style="color: white;" />
+                        </CardHeaderActions>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        <MudText Typo="Typo.body2">@report.Description</MudText>
+                    </MudCardContent>
+                    <MudCardActions>
+                        <MudButton Size="Size.Small" Color="Color.Primary"
+                            StartIcon="@Icons.Material.Outlined.Visibility"
+                            OnClick="@(() => ViewReport(report))"
+                            Disabled="_isLoading">View</MudButton>
+                        <MudButton Size="Size.Small" Color="Color.Success"
+                            StartIcon="@Icons.Material.Outlined.Download"
+                            OnClick="@(() => ExportReport(report))"
+                            Disabled="_isLoading">Export</MudButton>
+                    </MudCardActions>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private DateTime? _startDate = DateTime.Now.AddDays(-30);
+    private DateTime? _endDate = DateTime.Now;
+    private string _exportFormat = "excel";
+
+    private List<ReportDefinition> reports = new()
+    {
+        new() { Name = "Container Summary", Description = "Overview of all container scans, clearance types, daily trends", Icon = Icons.Material.Outlined.Inventory, Category = "Container", ReportType = "container-summary" },
+        new() { Name = "Scanner Performance", Description = "Scanner statistics, success rates, and uptime", Icon = Icons.Material.Outlined.Scanner, Category = "Scanner", ReportType = "scanner-performance" },
+        new() { Name = "ICUMS Activity", Description = "Download and submission metrics, error analysis", Icon = Icons.Material.Outlined.Cloud, Category = "ICUMS", ReportType = "icums-activity" },
+        new() { Name = "User Activity", Description = "User login and action logs", Icon = Icons.Material.Outlined.People, Category = "Admin", ReportType = "user-activity" },
+        new() { Name = "Vehicle Imports", Description = "VIN extraction and vehicle tracking", Icon = Icons.Material.Outlined.DirectionsCar, Category = "Vehicle", ReportType = "vehicle-imports" },
+        new() { Name = "Validation Report", Description = "Data completeness and validation analysis", Icon = Icons.Material.Outlined.FactCheck, Category = "Container", ReportType = "validation-summary" }
+    };
+
+    private string BuildQueryString()
+    {
+        var parts = new List<string>();
+        if (_startDate.HasValue) parts.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
+        if (_endDate.HasValue) parts.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
+        return parts.Any() ? "?" + string.Join("&", parts) : "";
+    }
+
+    private async Task ViewReport(ReportDefinition report)
+    {
+        try
+        {
+            _isLoading = true;
+            StateHasChanged();
+
+            var endpoint = $"/api/Reports/{report.ReportType}{BuildQueryString()}";
+            var reportData = await ApiService.GetAsync<System.Text.Json.JsonElement>(endpoint);
+
+            var parameters = new DialogParameters
+            {
+                { "ReportName", report.Name },
+                { "ReportData", (System.Text.Json.JsonElement?)reportData }
+            };
+
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.Large,
+                FullWidth = true,
+                CloseOnEscapeKey = true
+            };
+
+            await DialogService.ShowAsync<NickScanWebApp.New.Components.Reports.ReportViewerDialog>(
+                report.Name, parameters, options);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading {report.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ExportReport(ReportDefinition report)
+    {
+        try
+        {
+            _isLoading = true;
+            StateHasChanged();
+            Snackbar.Add($"Exporting {report.Name} as {_exportFormat.ToUpper()}...", Severity.Info);
+
+            // Map report types to the export API's expected types
+            var exportType = report.ReportType switch
+            {
+                "container-summary" => "container",
+                "scanner-performance" => "scanner",
+                "icums-activity" => "icums",
+                "user-activity" => "user",
+                "vehicle-imports" => "vehicle",
+                "validation-summary" => "validation",
+                _ => report.ReportType
+            };
+
+            var endpoint = $"/api/Reports/{exportType}/export?format={_exportFormat}{BuildQueryString().Replace("?", "&")}";
+
+            // Get the raw bytes from the API
+            var response = await ApiService.GetBytesAsync(endpoint);
+            if (response != null && response.Length > 0)
+            {
+                var extension = _exportFormat switch { "excel" => "xlsx", "pdf" => "pdf", _ => "csv" };
+                var contentType = _exportFormat switch
+                {
+                    "excel" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "pdf" => "application/pdf",
+                    _ => "text/csv"
+                };
+                var fileName = $"{exportType}_report_{DateTime.Now:yyyyMMdd_HHmmss}.{extension}";
+                var base64 = Convert.ToBase64String(response);
+
+                await JSRuntime.InvokeVoidAsync("downloadFile", fileName, base64, contentType);
+                Snackbar.Add($"{report.Name} exported successfully", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"No data to export for {report.Name}", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private string GetReportGradient(string category) => category switch
+    {
+        "Container" => "linear-gradient(135deg, #1976d2 0%, #1565c0 100%)",
+        "Scanner" => "linear-gradient(135deg, #7b1fa2 0%, #6a1b9a 100%)",
+        "ICUMS" => "linear-gradient(135deg, #388e3c 0%, #2e7d32 100%)",
+        "Admin" => "linear-gradient(135deg, #f57c00 0%, #ef6c00 100%)",
+        "Vehicle" => "linear-gradient(135deg, #d32f2f 0%, #c62828 100%)",
+        _ => "linear-gradient(135deg, #0288d1 0%, #0277bd 100%)"
+    };
+
+    public class ReportDefinition
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Icon { get; set; } = "";
+        public string Category { get; set; } = "";
+        public string ReportType { get; set; } = "";
+    }
+}

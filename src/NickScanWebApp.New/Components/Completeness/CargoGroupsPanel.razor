@@ -1,0 +1,1656 @@
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Inventory2" Class="mr-2" />
+                    New Container Completeness Model
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Consolidated cargo model with completeness tracking by Master BL and House BL
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudChip T="string" 
+                         Size="Size.Medium" 
+                         Color="Color.Info"
+                         Icon="@Icons.Material.Outlined.Info">
+                    @(nonConsolidatedGroupsWithCompleteness.Count + consolidatedGroupsWithCompleteness.Count) Cargo Groups
+                </MudChip>
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Primary" 
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="@RefreshData"
+                          Disabled="@isLoadingCargoGroups">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Statistics Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Cargo Groups</MudText>
+                        <MudText Typo="Typo.h4">@(nonConsolidatedGroupsWithCompleteness.Count + consolidatedGroupsWithCompleteness.Count)</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @nonConsolidatedGroupsWithCompleteness.Count Non-Consolidated, @consolidatedGroupsWithCompleteness.Count Consolidated
+                        </MudText>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Complete Groups</MudText>
+                        <MudText Typo="Typo.h4" Style="color: var(--mud-palette-success);">@completeGroupsCount</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@completeGroupsPercentage.ToString("F1")% of total</MudText>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Partial Groups</MudText>
+                        <MudText Typo="Typo.h4" Style="color: var(--mud-palette-warning);">@partialGroupsCount</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@partialGroupsPercentage.ToString("F1")% of total</MudText>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudCard Elevation="2">
+                <MudCardContent>
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Incomplete Groups</MudText>
+                        <MudText Typo="Typo.h4" Style="color: var(--mud-palette-error);">@incompleteGroupsCount</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@incompleteGroupsPercentage.ToString("F1")% of total</MudText>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Main Content -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary">
+            
+            <!-- Cargo Groups Tab - PRIMARY VIEW -->
+            <MudTabPanel Text="Cargo Groups" Icon="@Icons.Material.Outlined.Inventory2" BadgeData="@(nonConsolidatedGroupsWithCompleteness.Count + consolidatedGroupsWithCompleteness.Count)" BadgeColor="Color.Info">
+                
+                <!-- Filters -->
+                <MudPaper Elevation="1" Class="pa-3 mb-4">
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudSelect T="string" 
+                                      Label="Completeness Status" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterCompletenessStatus"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Status</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("Complete")">Complete</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("Partial")">Partial</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("Incomplete")">Incomplete</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudSelect T="string" 
+                                      Label="Clearance Type" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterClearanceType"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Types</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("CMR")">CMR</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("IMEX")">IMEX</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudTextField T="string" 
+                                         Label="Search" 
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="searchTerm"
+                                         Adornment="Adornment.Start"
+                                         AdornmentIcon="@Icons.Material.Outlined.Search"
+                                         Placeholder="Master BL, Declaration, Container..." />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="2">
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary" 
+                                      FullWidth="true"
+                                      StartIcon="@Icons.Material.Outlined.FilterList"
+                                      OnClick="@ApplyCargoGroupFilters">
+                                Filter
+                            </MudButton>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+                
+                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" Color="Color.Info">
+                    <!-- Non-Consolidated Sub-Tab -->
+                    <MudTabPanel Text="Non-Consolidated" Icon="@Icons.Material.Outlined.LocalShipping" BadgeData="@filteredNonConsolidatedGroups.Count" BadgeColor="Color.Primary">
+                        <MudAlert Severity="Severity.Info" Class="mb-4">
+                            <MudText>Non-Consolidated Cargo: One Master BL covers multiple containers. Click to expand each record and see all containers.</MudText>
+                        </MudAlert>
+                        
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!filteredNonConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No non-consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in filteredNonConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600;">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Description" Size="Size.Small" Class="mr-2" />
+                                                @group.DeclarationNumber
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                Master BL: @group.MasterBL
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" 
+                                                    Size="Size.Small" 
+                                                    Color="@GetCompletenessStatusColor(group.CompletenessStatus)"
+                                                    Icon="@GetCompletenessStatusIcon(group.CompletenessStatus)">
+                                                @group.CompletenessStatus
+                                            </MudChip>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @group.ContainersWithData / @group.TotalContainers containers
+                                            </MudText>
+                                            <MudProgressLinear Color="@GetCompletenessStatusColor(group.CompletenessStatus)"
+                                                               Value="@group.CompletionPercentage"
+                                                               Min="0" Max="100"
+                                                               Size="Size.Small"
+                                                               Rounded="true"
+                                                               Style="width: 100px;" />
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                @group.CompletionPercentage%
+                                            </MudText>
+                                            @if (group.AnalysisReviewedCount > 0)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                                         Color="@(group.AnalysisAbnormalCount > 0 ? Color.Error : Color.Success)"
+                                                         Icon="@Icons.Material.Outlined.ImageSearch">
+                                                    @group.AnalysisReviewedCount reviewed (@(group.AnalysisNormalCount)N @(group.AnalysisAbnormalCount)A)
+                                                </MudChip>
+                                            }
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-background-grey);">
+                                            <MudStack Spacing="3">
+                                                <!-- Summary Info -->
+                                                <MudGrid>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Consignee</MudText>
+                                                        <MudText Typo="Typo.body2">@group.ConsigneeName</MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance Type</MudText>
+                                                        <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(group.ClearanceType)">
+                                                            @group.ClearanceType
+                                                        </MudChip>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                                                        <MudText Typo="Typo.body2">@group.TotalContainers</MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Containers with Data</MudText>
+                                                        <MudText Typo="Typo.body2" Style="color: var(--mud-palette-success);">
+                                                            @group.ContainersWithData
+                                                        </MudText>
+                                                    </MudItem>
+                                                </MudGrid>
+                                                
+                                                <MudDivider />
+                                                
+                                                <!-- Containers List -->
+                                                <MudText Typo="Typo.h6">Containers (@group.Containers.Count)</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Container Number</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var container in group.Containers)
+                                                        {
+                                                            var isComplete = group.CompleteContainers.Contains(container);
+                                                            var isMissing = group.MissingContainers.Contains(container);
+                                                            <tr>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{container}")" Typo="Typo.body2">
+                                                                        <strong>@container</strong>
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    @if (isComplete)
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                                            Complete
+                                                                        </MudChip>
+                                                                    }
+                                                                    else if (isMissing)
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                                            Missing
+                                                                        </MudChip>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Icon="@Icons.Material.Outlined.Info">
+                                                                            Unknown
+                                                                        </MudChip>
+                                                                    }
+                                                                </td>
+                                                                <td>
+                                                                    <MudStack Row="true" Spacing="1">
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Info"
+                                                                                      Href="@($"/containers/{container}")"
+                                                                                      title="View container details" />
+                                                                        @if (isMissing)
+                                                                        {
+                                                                            <MudIconButton Icon="@Icons.Material.Outlined.CloudDownload"
+                                                                                          Size="Size.Small"
+                                                                                          Color="Color.Primary"
+                                                                                          OnClick="@(() => RequestBOE(container))"
+                                                                                          title="Request BOE from ICUMS" />
+                                                                        }
+                                                                    </MudStack>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                    
+                    <!-- Consolidated Sub-Tab -->
+                    <MudTabPanel Text="Consolidated" Icon="@Icons.Material.Outlined.Inventory" BadgeData="@filteredConsolidatedGroups.Count" BadgeColor="Color.Warning">
+                        <MudAlert Severity="Severity.Info" Class="mb-4">
+                            <MudText>Consolidated Cargo: One Master BL has multiple House BLs (different consignees). A Master BL can span one or multiple containers. Click to expand each record and see all House BLs.</MudText>
+                        </MudAlert>
+                        
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!filteredConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in filteredConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600;">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Inventory" Size="Size.Small" Class="mr-2" />
+                                                @group.MasterBL
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @group.ContainerNumbers.Count container(s)
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" 
+                                                    Size="Size.Small" 
+                                                    Color="@GetCompletenessStatusColor(group.CompletenessStatus)"
+                                                    Icon="@GetCompletenessStatusIcon(group.CompletenessStatus)">
+                                                @group.CompletenessStatus
+                                            </MudChip>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @group.CompleteHouseBLs / @group.TotalHouseBLs House BLs
+                                            </MudText>
+                                            <MudProgressLinear Color="@GetCompletenessStatusColor(group.CompletenessStatus)"
+                                                               Value="@group.CompletionPercentage"
+                                                               Min="0" Max="100"
+                                                               Size="Size.Small"
+                                                               Rounded="true"
+                                                               Style="width: 100px;" />
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                @group.CompletionPercentage%
+                                            </MudText>
+                                            @if (group.AnalysisReviewedCount > 0)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                                         Color="@(group.AnalysisAbnormalCount > 0 ? Color.Error : Color.Success)"
+                                                         Icon="@Icons.Material.Outlined.ImageSearch">
+                                                    @group.AnalysisReviewedCount reviewed (@(group.AnalysisNormalCount)N @(group.AnalysisAbnormalCount)A)
+                                                </MudChip>
+                                            }
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-background-grey);">
+                                            <MudStack Spacing="3">
+                                                <!-- Summary Info -->
+                                                <MudGrid>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Containers</MudText>
+                                                        <MudStack Spacing="1">
+                                                            @foreach (var container in group.ContainerNumbers.Take(5))
+                                                            {
+                                                                <MudLink Href="@($"/containers/{container}")" Typo="Typo.caption">
+                                                                    @container
+                                                                </MudLink>
+                                                            }
+                                                            @if (group.ContainerNumbers.Count > 5)
+                                                            {
+                                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                    +@(group.ContainerNumbers.Count - 5) more
+                                                                </MudText>
+                                                            }
+                                                        </MudStack>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total House BLs</MudText>
+                                                        <MudText Typo="Typo.body2">@group.TotalHouseBLs</MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Complete House BLs</MudText>
+                                                        <MudText Typo="Typo.body2" Style="color: var(--mud-palette-success);">
+                                                            @group.CompleteHouseBLs
+                                                        </MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance Type</MudText>
+                                                        @if (group.HouseBLDetails.Any())
+                                                        {
+                                                            var clearanceType = group.HouseBLDetails.First().ClearanceType;
+                                                            <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(clearanceType)">
+                                                                @clearanceType
+                                                            </MudChip>
+                                                        }
+                                                    </MudItem>
+                                                </MudGrid>
+                                                
+                                                <MudDivider />
+                                                
+                                                <!-- House BLs List -->
+                                                <MudText Typo="Typo.h6">House BLs (@group.HouseBLDetails.Count)</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>House BL</th>
+                                                            <th>Declaration</th>
+                                                            <th>Consignee</th>
+                                                            <th>Clearance Type</th>
+                                                            <th>Container</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var hbl in group.HouseBLDetails)
+                                                        {
+                                                            var isComplete = group.CompleteHouseBLsList.Contains(hbl.HouseBL);
+                                                            <tr>
+                                                                <td><strong>@hbl.HouseBL</strong></td>
+                                                                <td>@hbl.DeclarationNumber</td>
+                                                                <td>@hbl.ConsigneeName</td>
+                                                                <td>
+                                                                    <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(hbl.ClearanceType)">
+                                                                        @hbl.ClearanceType
+                                                                    </MudChip>
+                                                                </td>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{hbl.ContainerNumber}")" Typo="Typo.caption">
+                                                                        @hbl.ContainerNumber
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    @if (isComplete)
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                                            Complete
+                                                                        </MudChip>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                                            Incomplete
+                                                                        </MudChip>
+                                                                    }
+                                                                </td>
+                                                                <td>
+                                                                    <MudStack Row="true" Spacing="1">
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Info"
+                                                                                      Href="@($"/containers/{hbl.ContainerNumber}")"
+                                                                                      title="View container details" />
+                                                                        @if (!isComplete)
+                                                                        {
+                                                                            <MudIconButton Icon="@Icons.Material.Outlined.CloudDownload"
+                                                                                          Size="Size.Small"
+                                                                                          Color="Color.Primary"
+                                                                                          OnClick="@(() => RequestBOE(hbl.ContainerNumber))"
+                                                                                          title="Request BOE from ICUMS" />
+                                                                        }
+                                                                    </MudStack>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                </MudTabs>
+            </MudTabPanel>
+            
+            <!-- Missing Data Tab - Using Consolidated Model -->
+            <MudTabPanel Text="Missing Data" Icon="@Icons.Material.Outlined.Warning" BadgeData="@incompleteGroupsCount" BadgeColor="Color.Error">
+                <MudAlert Severity="Severity.Warning" Class="mb-4">
+                    <MudText>Showing cargo groups with incomplete data. Expand to see which containers or House BLs are missing data.</MudText>
+                </MudAlert>
+                
+                <!-- Filters -->
+                <MudPaper Elevation="1" Class="pa-3 mb-4">
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="string" 
+                                      Label="Cargo Type" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterMissingCargoType"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Types</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("NonConsolidated")">Non-Consolidated</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("Consolidated")">Consolidated</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="string" 
+                                      Label="Clearance Type" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterMissingClearanceType"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Types</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("CMR")">CMR</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("IMEX")">IMEX</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudTextField T="string" 
+                                         Label="Search" 
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="searchTermMissing"
+                                         Adornment="Adornment.Start"
+                                         AdornmentIcon="@Icons.Material.Outlined.Search"
+                                         Placeholder="Master BL, Declaration, Container..." />
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+                
+                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" Color="Color.Error">
+                    <!-- Non-Consolidated Missing -->
+                    <MudTabPanel Text="Non-Consolidated Missing" Icon="@Icons.Material.Outlined.LocalShipping" BadgeData="@incompleteNonConsolidatedGroups.Count" BadgeColor="Color.Error">
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Error" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!incompleteNonConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No incomplete non-consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in incompleteNonConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600; color: var(--mud-palette-error);">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Small" Class="mr-2" />
+                                                @group.DeclarationNumber
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                Master BL: @group.MasterBL
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                @group.MissingContainers.Count missing
+                                            </MudChip>
+                                            <MudProgressLinear Color="Color.Error"
+                                                               Value="@group.CompletionPercentage"
+                                                               Min="0" Max="100" 
+                                                               Size="Size.Small" 
+                                                               Rounded="true"
+                                                               Style="width: 100px;" />
+                                            <MudText Typo="Typo.caption" Color="Color.Error">
+                                                @group.CompletionPercentage%
+                                            </MudText>
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-error-lighten);">
+                                            <MudStack Spacing="3">
+                                                <MudText Typo="Typo.h6" Color="Color.Error">Missing Containers (@group.MissingContainers.Count)</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Container Number</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var container in group.MissingContainers)
+                                                        {
+                                                            <tr>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{container}")" Typo="Typo.body2">
+                                                                        <strong>@container</strong>
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                                        Missing Data
+                                                                    </MudChip>
+                                                                </td>
+                                                                <td>
+                                                                    <MudStack Row="true" Spacing="1">
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.CloudDownload"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Primary"
+                                                                                      OnClick="@(() => RequestBOE(container))"
+                                                                                      title="Request BOE from ICUMS" />
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Info"
+                                                                                      Href="@($"/containers/{container}")"
+                                                                                      title="View container details" />
+                                                                    </MudStack>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                    
+                    <!-- Consolidated Missing -->
+                    <MudTabPanel Text="Consolidated Missing" Icon="@Icons.Material.Outlined.Inventory" BadgeData="@incompleteConsolidatedGroups.Count" BadgeColor="Color.Error">
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Error" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!incompleteConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No incomplete consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in incompleteConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600; color: var(--mud-palette-error);">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Small" Class="mr-2" />
+                                                @group.MasterBL
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @group.ContainerNumbers.Count container(s)
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                @(group.TotalHouseBLs - group.CompleteHouseBLs) missing
+                                            </MudChip>
+                                            <MudProgressLinear Color="Color.Error"
+                                                               Value="@group.CompletionPercentage"
+                                                               Min="0" Max="100" 
+                                                               Size="Size.Small" 
+                                                               Rounded="true"
+                                                               Style="width: 100px;" />
+                                            <MudText Typo="Typo.caption" Color="Color.Error">
+                                                @group.CompletionPercentage%
+                                            </MudText>
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-error-lighten);">
+                                            <MudStack Spacing="3">
+                                                <MudText Typo="Typo.h6" Color="Color.Error">Incomplete House BLs (@(group.TotalHouseBLs - group.CompleteHouseBLs))</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>House BL</th>
+                                                            <th>Declaration</th>
+                                                            <th>Consignee</th>
+                                                            <th>Container</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var hbl in group.HouseBLDetails.Where(h => !group.CompleteHouseBLsList.Contains(h.HouseBL)))
+                                                        {
+                                                            <tr>
+                                                                <td><strong>@hbl.HouseBL</strong></td>
+                                                                <td>@hbl.DeclarationNumber</td>
+                                                                <td>@hbl.ConsigneeName</td>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{hbl.ContainerNumber}")" Typo="Typo.caption">
+                                                                        @hbl.ContainerNumber
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Icon="@Icons.Material.Outlined.Warning">
+                                                                        Incomplete
+                                                                    </MudChip>
+                                                                </td>
+                                                                <td>
+                                                                    <MudStack Row="true" Spacing="1">
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.CloudDownload"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Primary"
+                                                                                      OnClick="@(() => RequestBOE(hbl.ContainerNumber))"
+                                                                                      title="Request BOE from ICUMS" />
+                                                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                      Size="Size.Small"
+                                                                                      Color="Color.Info"
+                                                                                      Href="@($"/containers/{hbl.ContainerNumber}")"
+                                                                                      title="View container details" />
+                                                                    </MudStack>
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                </MudTabs>
+            </MudTabPanel>
+            
+            <!-- Complete Data Tab - Using Consolidated Model -->
+            <MudTabPanel Text="Complete Data" Icon="@Icons.Material.Outlined.CheckCircle" BadgeData="@completeGroupsCount" BadgeColor="Color.Success">
+                <MudAlert Severity="Severity.Success" Class="mb-4">
+                    <MudText>Showing cargo groups with complete data. All containers (non-consolidated) or all House BLs (consolidated) have ICUMS data.</MudText>
+                </MudAlert>
+                
+                <!-- Filters -->
+                <MudPaper Elevation="1" Class="pa-3 mb-4">
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="string" 
+                                      Label="Cargo Type" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterCompleteCargoType"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Types</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("NonConsolidated")">Non-Consolidated</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("Consolidated")">Consolidated</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudSelect T="string" 
+                                      Label="Clearance Type" 
+                                      Variant="Variant.Outlined"
+                                      @bind-Value="filterCompleteClearanceType"
+                                      Clearable="true">
+                                <MudSelectItem T="string" Value="@("All")">All Types</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("CMR")">CMR</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("IMEX")">IMEX</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudTextField T="string" 
+                                         Label="Search" 
+                                         Variant="Variant.Outlined"
+                                         @bind-Value="searchTermComplete"
+                                         Adornment="Adornment.Start"
+                                         AdornmentIcon="@Icons.Material.Outlined.Search"
+                                         Placeholder="Master BL, Declaration, Container..." />
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+                
+                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" Color="Color.Success">
+                    <!-- Non-Consolidated Complete -->
+                    <MudTabPanel Text="Non-Consolidated Complete" Icon="@Icons.Material.Outlined.LocalShipping" BadgeData="@completeNonConsolidatedGroups.Count" BadgeColor="Color.Success">
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Success" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!completeNonConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No complete non-consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in completeNonConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600; color: var(--mud-palette-success);">
+                                                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Class="mr-2" />
+                                                @group.DeclarationNumber
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                Master BL: @group.MasterBL
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                @group.TotalContainers / @group.TotalContainers complete
+                                            </MudChip>
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                100%
+                                            </MudChip>
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-success-lighten);">
+                                            <MudStack Spacing="3">
+                                                <MudGrid>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Consignee</MudText>
+                                                        <MudText Typo="Typo.body2">@group.ConsigneeName</MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance Type</MudText>
+                                                        <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(group.ClearanceType)">
+                                                            @group.ClearanceType
+                                                        </MudChip>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                                                        <MudText Typo="Typo.body2">@group.TotalContainers</MudText>
+                                                    </MudItem>
+                                                </MudGrid>
+                                                
+                                                <MudDivider />
+                                                
+                                                <MudText Typo="Typo.h6" Color="Color.Success">All Containers Complete (@group.Containers.Count)</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Container Number</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var container in group.Containers)
+                                                        {
+                                                            <tr>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{container}")" Typo="Typo.body2">
+                                                                        <strong>@container</strong>
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                                        Complete
+                                                                    </MudChip>
+                                                                </td>
+                                                                <td>
+                                                                    <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                  Size="Size.Small"
+                                                                                  Color="Color.Info"
+                                                                                  Href="@($"/containers/{container}")"
+                                                                                  title="View container details" />
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                    
+                    <!-- Consolidated Complete -->
+                    <MudTabPanel Text="Consolidated Complete" Icon="@Icons.Material.Outlined.Inventory" BadgeData="@completeConsolidatedGroups.Count" BadgeColor="Color.Success">
+                        @if (isLoadingCargoGroups)
+                        {
+                            <MudProgressLinear Color="Color.Success" Indeterminate="true" Class="mb-4" />
+                        }
+                        
+                        @if (!completeConsolidatedGroups.Any() && !isLoadingCargoGroups)
+                        {
+                            <MudAlert Severity="Severity.Info">No complete consolidated cargo groups found.</MudAlert>
+                        }
+                        
+                        <MudExpansionPanels MultiExpansion="true" Class="mb-4">
+                            @foreach (var group in completeConsolidatedGroups)
+                            {
+                                <MudExpansionPanel>
+                                    <TitleContent>
+                                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center" Style="width: 100%;">
+                                            <MudText Typo="Typo.body1" Style="font-weight: 600; color: var(--mud-palette-success);">
+                                                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Class="mr-2" />
+                                                @group.MasterBL
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                @group.ContainerNumbers.Count container(s)
+                                            </MudText>
+                                            <MudSpacer />
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                @group.TotalHouseBLs / @group.TotalHouseBLs House BLs
+                                            </MudChip>
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                100%
+                                            </MudChip>
+                                        </MudStack>
+                                    </TitleContent>
+                                    <ChildContent>
+                                        <MudPaper Elevation="0" Class="pa-3" Style="background-color: var(--mud-palette-success-lighten);">
+                                            <MudStack Spacing="3">
+                                                <MudGrid>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Containers</MudText>
+                                                        <MudStack Spacing="1">
+                                                            @foreach (var container in group.ContainerNumbers.Take(5))
+                                                            {
+                                                                <MudLink Href="@($"/containers/{container}")" Typo="Typo.caption">
+                                                                    @container
+                                                                </MudLink>
+                                                            }
+                                                            @if (group.ContainerNumbers.Count > 5)
+                                                            {
+                                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                                    +@(group.ContainerNumbers.Count - 5) more
+                                                                </MudText>
+                                                            }
+                                                        </MudStack>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total House BLs</MudText>
+                                                        <MudText Typo="Typo.body2">@group.TotalHouseBLs</MudText>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Clearance Type</MudText>
+                                                        @if (group.HouseBLDetails.Any())
+                                                        {
+                                                            var clearanceType = group.HouseBLDetails.First().ClearanceType;
+                                                            <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(clearanceType)">
+                                                                @clearanceType
+                                                            </MudChip>
+                                                        }
+                                                    </MudItem>
+                                                </MudGrid>
+                                                
+                                                <MudDivider />
+                                                
+                                                <MudText Typo="Typo.h6" Color="Color.Success">All House BLs Complete (@group.HouseBLDetails.Count)</MudText>
+                                                <MudSimpleTable Dense="true" Striped="true" Hover="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>House BL</th>
+                                                            <th>Declaration</th>
+                                                            <th>Consignee</th>
+                                                            <th>Container</th>
+                                                            <th>Status</th>
+                                                            <th>Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var hbl in group.HouseBLDetails)
+                                                        {
+                                                            <tr>
+                                                                <td><strong>@hbl.HouseBL</strong></td>
+                                                                <td>@hbl.DeclarationNumber</td>
+                                                                <td>@hbl.ConsigneeName</td>
+                                                                <td>
+                                                                    <MudLink Href="@($"/containers/{hbl.ContainerNumber}")" Typo="Typo.caption">
+                                                                        @hbl.ContainerNumber
+                                                                    </MudLink>
+                                                                </td>
+                                                                <td>
+                                                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Icon="@Icons.Material.Outlined.CheckCircle">
+                                                                        Complete
+                                                                    </MudChip>
+                                                                </td>
+                                                                <td>
+                                                                    <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                                  Size="Size.Small"
+                                                                                  Color="Color.Info"
+                                                                                  Href="@($"/containers/{hbl.ContainerNumber}")"
+                                                                                  title="View container details" />
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </ChildContent>
+                                </MudExpansionPanel>
+                            }
+                        </MudExpansionPanels>
+                    </MudTabPanel>
+                </MudTabs>
+            </MudTabPanel>
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    // Breadcrumbs
+    private List<BreadcrumbItem> breadcrumbs = new();
+    
+    // ✅ CONSOLIDATED CARGO MODEL - Data with Completeness
+    private List<NonConsolidatedCargoGroupWithCompleteness> nonConsolidatedGroupsWithCompleteness = new();
+    private List<ConsolidatedCargoGroupWithCompleteness> consolidatedGroupsWithCompleteness = new();
+    
+    // Filtered lists
+    private List<NonConsolidatedCargoGroupWithCompleteness> filteredNonConsolidatedGroups = new();
+    private List<ConsolidatedCargoGroupWithCompleteness> filteredConsolidatedGroups = new();
+    
+    // Missing/Complete filtered lists
+    private List<NonConsolidatedCargoGroupWithCompleteness> incompleteNonConsolidatedGroups = new();
+    private List<ConsolidatedCargoGroupWithCompleteness> incompleteConsolidatedGroups = new();
+    private List<NonConsolidatedCargoGroupWithCompleteness> completeNonConsolidatedGroups = new();
+    private List<ConsolidatedCargoGroupWithCompleteness> completeConsolidatedGroups = new();
+    
+    // Completeness data (from LoadData)
+    private List<MissingContainerData> allMissingData = new();
+    private List<CompleteContainerData> completeData = new();
+    
+    // Statistics
+    private int completeGroupsCount = 0;
+    private int partialGroupsCount = 0;
+    private int incompleteGroupsCount = 0;
+    private double completeGroupsPercentage = 0;
+    private double partialGroupsPercentage = 0;
+    private double incompleteGroupsPercentage = 0;
+    
+    // Loading state
+    private bool isLoadingCargoGroups = false;
+    
+    // Expanded rows
+    private HashSet<NonConsolidatedCargoGroupWithCompleteness> expandedNonConsolidated = new();
+    private HashSet<ConsolidatedCargoGroupWithCompleteness> expandedConsolidated = new();
+    
+    // Filters
+    private string filterCompletenessStatus = "All";
+    private string filterClearanceType = "All";
+    private string searchTerm = "";
+    private string filterMissingCargoType = "All";
+    private string filterMissingClearanceType = "All";
+    private string searchTermMissing = "";
+    private string filterCompleteCargoType = "All";
+    private string filterCompleteClearanceType = "All";
+    private string searchTermComplete = "";
+    
+    // Auto-refresh timer
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Validation", href: "/validation", icon: Icons.Material.Outlined.FactCheck),
+            new BreadcrumbItem("New Completeness Model", href: null, disabled: true)
+        };
+        
+        // Wait for authentication
+        await WaitForAuthenticationAsync();
+        
+        // Load completeness data first (needed for calculation)
+        await LoadCompletenessData();
+        
+        // Load cargo groups and calculate completeness
+        await LoadCargoGroupsWithCompleteness();
+        
+        // Apply initial filters
+        ApplyCargoGroupFilters();
+        UpdateMissingCompleteLists();
+        
+        // Auto-refresh every 30 seconds
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadCompletenessData();
+                await LoadCargoGroupsWithCompleteness();
+                ApplyCargoGroupFilters();
+                UpdateMissingCompleteLists();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    /// <summary>
+    /// Wait for authentication to be ready
+    /// </summary>
+    private async Task WaitForAuthenticationAsync()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            if (AuthStateProvider is NickScanWebApp.New.Services.SimpleAuthStateProvider simpleAuth)
+            {
+                var token = await simpleAuth.GetTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    await Task.Delay(100);
+                    token = await simpleAuth.GetTokenAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NewCompletenessModel] Error waiting for authentication: {ex.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Load completeness data (missing and complete containers)
+    /// </summary>
+    private async Task LoadCompletenessData()
+    {
+        try
+        {
+            // Load missing containers
+            var missingResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/missing");
+            if (missingResponse != null)
+            {
+                allMissingData = missingResponse.Select(m => new MissingContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    DaysMissing = (int)(DateTime.Now - m.ScanDate).TotalDays,
+                    Status = m.Status ?? "Missing",
+                    RetryCount = m.RetryCount,
+                    LastChecked = m.LastCheckedAt
+                }).ToList();
+            }
+            
+            // Load complete containers
+            var completeResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/complete");
+            if (completeResponse != null)
+            {
+                completeData = completeResponse.Select(m => new CompleteContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    ICUMSDataDate = null
+                }).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NewCompletenessModel] Error loading completeness data: {ex.Message}");
+            allMissingData = new List<MissingContainerData>();
+            completeData = new List<CompleteContainerData>();
+        }
+    }
+    
+    /// <summary>
+    /// Load cargo groups and calculate completeness status
+    /// </summary>
+    private async Task LoadCargoGroupsWithCompleteness()
+    {
+        isLoadingCargoGroups = true;
+        try
+        {
+            Console.WriteLine("[NewCompletenessModel] Loading cargo groups with completeness...");
+            
+            var nonConsolidatedResponse = await ApiService.GetAsync<List<NonConsolidatedCargoGroup>>("/api/consolidatedcargo/non-consolidated?pageSize=500");
+            if (nonConsolidatedResponse != null)
+            {
+                nonConsolidatedGroupsWithCompleteness = nonConsolidatedResponse.Select(g => CalculateNonConsolidatedCompleteness(g)).ToList();
+                Console.WriteLine($"[NewCompletenessModel] Loaded {nonConsolidatedGroupsWithCompleteness.Count} non-consolidated cargo groups");
+            }
+            
+            var consolidatedResponse = await ApiService.GetAsync<List<ConsolidatedCargoGroup>>("/api/consolidatedcargo/consolidated?pageSize=500");
+            if (consolidatedResponse != null)
+            {
+                consolidatedGroupsWithCompleteness = consolidatedResponse.Select(g => CalculateConsolidatedCompleteness(g)).ToList();
+                Console.WriteLine($"[NewCompletenessModel] Loaded {consolidatedGroupsWithCompleteness.Count} consolidated cargo groups");
+            }
+            
+            // Update statistics
+            UpdateStatistics();
+
+            // Load analysis status for all groups (fire-and-forget enrichment)
+            _ = LoadAnalysisStatusAsync();
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NewCompletenessModel] Error loading cargo groups: {ex.Message}");
+            Snackbar.Add($"Could not load cargo groups: {ex.Message}", Severity.Error);
+            nonConsolidatedGroupsWithCompleteness = new List<NonConsolidatedCargoGroupWithCompleteness>();
+            consolidatedGroupsWithCompleteness = new List<ConsolidatedCargoGroupWithCompleteness>();
+        }
+        finally
+        {
+            isLoadingCargoGroups = false;
+        }
+    }
+    
+    /// <summary>
+    /// Calculate completeness for non-consolidated cargo group
+    /// </summary>
+    private NonConsolidatedCargoGroupWithCompleteness CalculateNonConsolidatedCompleteness(NonConsolidatedCargoGroup group)
+    {
+        var totalContainers = group.Containers.Count;
+        var completeContainers = group.Containers.Where(c => 
+            completeData.Any(cd => cd.ContainerNumber == c) || 
+            !allMissingData.Any(md => md.ContainerNumber == c)
+        ).ToList();
+        var missingContainers = group.Containers.Where(c => 
+            allMissingData.Any(md => md.ContainerNumber == c)
+        ).ToList();
+        
+        var containersWithData = completeContainers.Count;
+        var completionPercentage = totalContainers > 0 ? (containersWithData * 100) / totalContainers : 0;
+        
+        string status;
+        if (completionPercentage == 100)
+            status = "Complete";
+        else if (completionPercentage > 0)
+            status = "Partial";
+        else
+            status = "Incomplete";
+        
+        return new NonConsolidatedCargoGroupWithCompleteness
+        {
+            // Copy base properties
+            DeclarationNumber = group.DeclarationNumber,
+            MasterBL = group.MasterBL,
+            Containers = group.Containers,
+            NoOfContainers = group.NoOfContainers,
+            ClearanceType = group.ClearanceType,
+            ConsigneeName = group.ConsigneeName,
+            RotationNumber = group.RotationNumber,
+            GoodsDescription = group.GoodsDescription,
+            TotalDutyPaid = group.TotalDutyPaid,
+            DeclarationDate = group.DeclarationDate,
+            SampleBOEId = group.SampleBOEId,
+            
+            // Add completeness properties
+            TotalContainers = totalContainers,
+            ContainersWithData = containersWithData,
+            CompletionPercentage = completionPercentage,
+            CompletenessStatus = status,
+            CompleteContainers = completeContainers,
+            MissingContainers = missingContainers
+        };
+    }
+    
+    /// <summary>
+    /// Calculate completeness for consolidated cargo group
+    /// </summary>
+    private ConsolidatedCargoGroupWithCompleteness CalculateConsolidatedCompleteness(ConsolidatedCargoGroup group)
+    {
+        var totalHouseBLs = group.HouseBLDetails.Count;
+        
+        // For consolidated, a House BL is complete if its container has data
+        var completeHouseBLs = group.HouseBLDetails.Where(hbl =>
+            completeData.Any(cd => cd.ContainerNumber == hbl.ContainerNumber) ||
+            !allMissingData.Any(md => md.ContainerNumber == hbl.ContainerNumber)
+        ).Select(hbl => hbl.HouseBL).ToList();
+        
+        var completeHouseBLsCount = completeHouseBLs.Count;
+        var completionPercentage = totalHouseBLs > 0 ? (completeHouseBLsCount * 100) / totalHouseBLs : 0;
+        
+        string status;
+        if (completionPercentage == 100)
+            status = "Complete";
+        else if (completionPercentage > 0)
+            status = "Partial";
+        else
+            status = "Incomplete";
+        
+        return new ConsolidatedCargoGroupWithCompleteness
+        {
+            // Copy base properties
+            MasterBL = group.MasterBL,
+            ContainerNumbers = group.ContainerNumbers,
+            HouseBLDetails = group.HouseBLDetails,
+            
+            // Add completeness properties
+            TotalHouseBLs = totalHouseBLs,
+            CompleteHouseBLs = completeHouseBLsCount,
+            CompletionPercentage = completionPercentage,
+            CompletenessStatus = status,
+            CompleteHouseBLsList = completeHouseBLs
+        };
+    }
+    
+    /// <summary>
+    /// Load analysis status (decisions) for all cargo groups via batch API
+    /// </summary>
+    private async Task LoadAnalysisStatusAsync()
+    {
+        try
+        {
+            var allGroupIds = new List<string>();
+            allGroupIds.AddRange(nonConsolidatedGroupsWithCompleteness.Select(g => g.DeclarationNumber).Where(g => !string.IsNullOrEmpty(g)));
+            allGroupIds.AddRange(consolidatedGroupsWithCompleteness.Select(g => g.MasterBL).Where(g => !string.IsNullOrEmpty(g)));
+
+            if (!allGroupIds.Any()) return;
+
+            var batchParam = string.Join(",", allGroupIds.Take(200).Select(Uri.EscapeDataString));
+            var result = await ApiService.GetAsync<Dictionary<string, AnalysisStatusDto>>($"/api/ImageAnalysisDecision/groups/batch?groups={batchParam}");
+            if (result == null) return;
+
+            foreach (var group in nonConsolidatedGroupsWithCompleteness)
+            {
+                if (result.TryGetValue(group.DeclarationNumber, out var status))
+                {
+                    group.AnalysisReviewedCount = status.TotalDecisions;
+                    group.AnalysisNormalCount = status.NormalCount;
+                    group.AnalysisAbnormalCount = status.AbnormalCount;
+                }
+            }
+            foreach (var group in consolidatedGroupsWithCompleteness)
+            {
+                if (result.TryGetValue(group.MasterBL, out var status))
+                {
+                    group.AnalysisReviewedCount = status.TotalDecisions;
+                    group.AnalysisNormalCount = status.NormalCount;
+                    group.AnalysisAbnormalCount = status.AbnormalCount;
+                }
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NewCompletenessModel] Analysis status load failed: {ex.Message}");
+        }
+    }
+
+    public class AnalysisStatusDto
+    {
+        public int TotalDecisions { get; set; }
+        public int NormalCount { get; set; }
+        public int AbnormalCount { get; set; }
+    }
+
+    /// <summary>
+    /// Update statistics
+    /// </summary>
+    private void UpdateStatistics()
+    {
+        var allGroups = nonConsolidatedGroupsWithCompleteness.Count + consolidatedGroupsWithCompleteness.Count;
+        
+        completeGroupsCount = nonConsolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Complete") +
+                             consolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Complete");
+        
+        partialGroupsCount = nonConsolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Partial") +
+                           consolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Partial");
+        
+        incompleteGroupsCount = nonConsolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Incomplete") +
+                               consolidatedGroupsWithCompleteness.Count(g => g.CompletenessStatus == "Incomplete");
+        
+        if (allGroups > 0)
+        {
+            completeGroupsPercentage = (completeGroupsCount * 100.0) / allGroups;
+            partialGroupsPercentage = (partialGroupsCount * 100.0) / allGroups;
+            incompleteGroupsPercentage = (incompleteGroupsCount * 100.0) / allGroups;
+        }
+    }
+    
+    /// <summary>
+    /// Apply filters to cargo groups
+    /// </summary>
+    private void ApplyCargoGroupFilters()
+    {
+        // Filter non-consolidated
+        filteredNonConsolidatedGroups = nonConsolidatedGroupsWithCompleteness.Where(g =>
+        {
+            if (filterCompletenessStatus != "All" && g.CompletenessStatus != filterCompletenessStatus)
+                return false;
+            
+            if (filterClearanceType != "All" && g.ClearanceType != filterClearanceType)
+                return false;
+            
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var searchLower = searchTerm.ToLower();
+                if (!g.DeclarationNumber.ToLower().Contains(searchLower) &&
+                    !g.MasterBL.ToLower().Contains(searchLower) &&
+                    !g.Containers.Any(c => c.ToLower().Contains(searchLower)))
+                    return false;
+            }
+            
+            return true;
+        }).ToList();
+        
+        // Filter consolidated
+        filteredConsolidatedGroups = consolidatedGroupsWithCompleteness.Where(g =>
+        {
+            if (filterCompletenessStatus != "All" && g.CompletenessStatus != filterCompletenessStatus)
+                return false;
+            
+            if (filterClearanceType != "All" && (g.HouseBLDetails == null || !g.HouseBLDetails.Any() || g.HouseBLDetails.First().ClearanceType != filterClearanceType))
+                return false;
+            
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var searchLower = searchTerm.ToLower();
+                if (!g.MasterBL.ToLower().Contains(searchLower) &&
+                    !g.ContainerNumbers.Any(c => c.ToLower().Contains(searchLower)) &&
+                    !(g.HouseBLDetails?.Any(h => h.HouseBL.ToLower().Contains(searchLower)) ?? false))
+                    return false;
+            }
+            
+            return true;
+        }).ToList();
+    }
+    
+    /// <summary>
+    /// Update missing and complete lists
+    /// </summary>
+    private void UpdateMissingCompleteLists()
+    {
+        // Incomplete groups
+        incompleteNonConsolidatedGroups = nonConsolidatedGroupsWithCompleteness
+            .Where(g => g.CompletenessStatus != "Complete")
+            .Where(g =>
+            {
+                if (filterMissingCargoType != "All" && filterMissingCargoType != "NonConsolidated")
+                    return false;
+                if (filterMissingClearanceType != "All" && g.ClearanceType != filterMissingClearanceType)
+                    return false;
+                if (!string.IsNullOrWhiteSpace(searchTermMissing))
+                {
+                    var searchLower = searchTermMissing.ToLower();
+                    if (!g.DeclarationNumber.ToLower().Contains(searchLower) &&
+                        !g.MasterBL.ToLower().Contains(searchLower) &&
+                        !g.Containers.Any(c => c.ToLower().Contains(searchLower)))
+                        return false;
+                }
+                return true;
+            })
+            .ToList();
+        
+        incompleteConsolidatedGroups = consolidatedGroupsWithCompleteness
+            .Where(g => g.CompletenessStatus != "Complete")
+            .Where(g =>
+            {
+                if (filterMissingCargoType != "All" && filterMissingCargoType != "Consolidated")
+                    return false;
+                if (filterMissingClearanceType != "All" && (g.HouseBLDetails == null || !g.HouseBLDetails.Any() || g.HouseBLDetails.First().ClearanceType != filterMissingClearanceType))
+                    return false;
+                if (!string.IsNullOrWhiteSpace(searchTermMissing))
+                {
+                    var searchLower = searchTermMissing.ToLower();
+                    if (!g.MasterBL.ToLower().Contains(searchLower) &&
+                        !g.ContainerNumbers.Any(c => c.ToLower().Contains(searchLower)) &&
+                        !(g.HouseBLDetails?.Any(h => h.HouseBL.ToLower().Contains(searchLower)) ?? false))
+                        return false;
+                }
+                return true;
+            })
+            .ToList();
+        
+        // Complete groups
+        completeNonConsolidatedGroups = nonConsolidatedGroupsWithCompleteness
+            .Where(g => g.CompletenessStatus == "Complete")
+            .Where(g =>
+            {
+                if (filterCompleteCargoType != "All" && filterCompleteCargoType != "NonConsolidated")
+                    return false;
+                if (filterCompleteClearanceType != "All" && g.ClearanceType != filterCompleteClearanceType)
+                    return false;
+                if (!string.IsNullOrWhiteSpace(searchTermComplete))
+                {
+                    var searchLower = searchTermComplete.ToLower();
+                    if (!g.DeclarationNumber.ToLower().Contains(searchLower) &&
+                        !g.MasterBL.ToLower().Contains(searchLower) &&
+                        !g.Containers.Any(c => c.ToLower().Contains(searchLower)))
+                        return false;
+                }
+                return true;
+            })
+            .ToList();
+        
+        completeConsolidatedGroups = consolidatedGroupsWithCompleteness
+            .Where(g => g.CompletenessStatus == "Complete")
+            .Where(g =>
+            {
+                if (filterCompleteCargoType != "All" && filterCompleteCargoType != "Consolidated")
+                    return false;
+                if (filterCompleteClearanceType != "All" && (g.HouseBLDetails == null || !g.HouseBLDetails.Any() || g.HouseBLDetails.First().ClearanceType != filterCompleteClearanceType))
+                    return false;
+                if (!string.IsNullOrWhiteSpace(searchTermComplete))
+                {
+                    var searchLower = searchTermComplete.ToLower();
+                    if (!g.MasterBL.ToLower().Contains(searchLower) &&
+                        !g.ContainerNumbers.Any(c => c.ToLower().Contains(searchLower)) &&
+                        !(g.HouseBLDetails?.Any(h => h.HouseBL.ToLower().Contains(searchLower)) ?? false))
+                        return false;
+                }
+                return true;
+            })
+            .ToList();
+    }
+    
+    /// <summary>
+    /// Refresh all data
+    /// </summary>
+    private async Task RefreshData()
+    {
+        await LoadCompletenessData();
+        await LoadCargoGroupsWithCompleteness();
+        ApplyCargoGroupFilters();
+        UpdateMissingCompleteLists();
+        Snackbar.Add("Data refreshed", Severity.Success);
+    }
+    
+    /// <summary>
+    /// Request BOE for a container
+    /// </summary>
+    private async Task RequestBOE(string containerNumber)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/containercompleteness/request-boe/{containerNumber}", new { });
+            Snackbar.Add($"BOE request queued for {containerNumber}", Severity.Success);
+            await RefreshData();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error requesting BOE: {ex.Message}");
+            Snackbar.Add("Could not request BOE", Severity.Error);
+        }
+    }
+    
+    // Helper Methods
+    private Color GetClearanceTypeColor(string clearanceType)
+    {
+        return clearanceType switch
+        {
+            "CMR" => Color.Info,
+            "IMEX" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetCompletenessStatusColor(string status)
+    {
+        return status switch
+        {
+            "Complete" => Color.Success,
+            "Partial" => Color.Warning,
+            "Incomplete" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    private string GetCompletenessStatusIcon(string status)
+    {
+        return status switch
+        {
+            "Complete" => Icons.Material.Outlined.CheckCircle,
+            "Partial" => Icons.Material.Outlined.Warning,
+            "Incomplete" => Icons.Material.Outlined.Error,
+            _ => Icons.Material.Outlined.Circle
+        };
+    }
+    
+    // Data Models
+    public class NonConsolidatedCargoGroup
+    {
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string MasterBL { get; set; } = string.Empty;
+        public List<string> Containers { get; set; } = new();
+        public int NoOfContainers { get; set; }
+        public string ClearanceType { get; set; } = string.Empty;
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string? DeclarationDate { get; set; }
+        public int SampleBOEId { get; set; }
+    }
+    
+    public class ConsolidatedCargoGroup
+    {
+        public string MasterBL { get; set; } = string.Empty;
+        public List<string> ContainerNumbers { get; set; } = new();
+        public List<HouseBLDetail> HouseBLDetails { get; set; } = new();
+    }
+    
+    public class HouseBLDetail
+    {
+        public string HouseBL { get; set; } = string.Empty;
+        public string MasterBL { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string? DeclarationDate { get; set; }
+        public int BOEId { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+    }
+    
+    // ✅ PHASE 1 & 2: Data Models with Completeness
+    public class NonConsolidatedCargoGroupWithCompleteness : NonConsolidatedCargoGroup
+    {
+        public int TotalContainers { get; set; }
+        public int ContainersWithData { get; set; }
+        public int CompletionPercentage { get; set; }
+        public string CompletenessStatus { get; set; } = "Unknown";
+        public List<string> CompleteContainers { get; set; } = new();
+        public List<string> MissingContainers { get; set; } = new();
+        // Analysis status
+        public int AnalysisReviewedCount { get; set; }
+        public int AnalysisNormalCount { get; set; }
+        public int AnalysisAbnormalCount { get; set; }
+    }
+
+    public class ConsolidatedCargoGroupWithCompleteness : ConsolidatedCargoGroup
+    {
+        public int TotalHouseBLs { get; set; }
+        public int CompleteHouseBLs { get; set; }
+        public int CompletionPercentage { get; set; }
+        public string CompletenessStatus { get; set; } = "Unknown";
+        public List<string> CompleteHouseBLsList { get; set; } = new();
+        // Analysis status
+        public int AnalysisReviewedCount { get; set; }
+        public int AnalysisNormalCount { get; set; }
+        public int AnalysisAbnormalCount { get; set; }
+    }
+    
+    // Completeness Data Models
+    public class MissingContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public int DaysMissing { get; set; }
+        public string Status { get; set; } = "";
+        public int RetryCount { get; set; }
+        public DateTime? LastChecked { get; set; }
+    }
+    
+    public class CompleteContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public DateTime? ICUMSDataDate { get; set; }
+    }
+    
+    // API Response Models
+    public class ApiMissingContainer
+    {
+        public string? ContainerNumber { get; set; }
+        public string? ScannerType { get; set; }
+        public DateTime ScanDate { get; set; }
+        public string? Status { get; set; }
+        public int RetryCount { get; set; }
+        public DateTime? LastCheckedAt { get; set; }
+    }
+}
+

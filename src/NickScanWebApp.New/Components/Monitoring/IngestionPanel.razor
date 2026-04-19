@@ -1,0 +1,424 @@
+@using MudBlazor
+@using System.Text.Json
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<IngestionPanel> Logger
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.FileUpload" Class="mr-2" />
+        File Ingestion Management
+    </MudText>
+
+    <!-- Summary Cards -->
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudStack>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Pending Files</MudText>
+                    <MudText Typo="Typo.h5">@(_pendingFiles?.Count ?? 0)</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudStack>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Total Waiting Time</MudText>
+                    <MudText Typo="Typo.h5">@FormatTotalWaitingTime()</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudStack>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Oldest Pending</MudText>
+                    <MudText Typo="Typo.h5">@FormatOldestPending()</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudStack>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Service Status</MudText>
+                    <MudChip T="string" Color="@(_ingestionStatus?.IsRunning == true ? Color.Success : Color.Warning)" Size="Size.Small">
+                        @(_ingestionStatus?.IsRunning == true ? "Running" : "Stopped")
+                    </MudChip>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Pending Files Table -->
+    <MudPaper Class="pa-4" Elevation="2">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+            <MudText Typo="Typo.h6">Pending Files</MudText>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadPendingFiles">
+                    Refresh
+                </MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Outlined.PlayArrow" OnClick="TriggerIngestion">
+                    Trigger Ingestion
+                </MudButton>
+            </MudStack>
+        </MudStack>
+        <MudTable Items="@_pendingFiles" Hover="true" Dense="true">
+            <HeaderContent>
+                <MudTh>File Name</MudTh>
+                <MudTh>File Path</MudTh>
+                <MudTh>Download Date</MudTh>
+                <MudTh>File Size</MudTh>
+                <MudTh>Waiting Time</MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                @{
+                    var file = context;
+                }
+                <MudTd DataLabel="File Name">@GetFileName(file)</MudTd>
+                <MudTd DataLabel="File Path">@GetFilePath(file)</MudTd>
+                <MudTd DataLabel="Download Date">@FormatDateTime(GetDownloadDate(file))</MudTd>
+                <MudTd DataLabel="File Size">@FormatFileSize(GetFileSize(file))</MudTd>
+                <MudTd DataLabel="Waiting Time">@FormatWaitingTime(GetWaitingMinutes(file))</MudTd>
+                <MudTd DataLabel="Actions">
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" OnClick="@(() => ProcessFile(GetFileId(file)))">
+                        Process
+                    </MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Warning" OnClick="@(() => ResetFileStatus(GetFileId(file)))">
+                        Reset
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _isLoading = false;
+    private List<PendingFileItem>? _pendingFiles;
+    private IngestionStatusDto? _ingestionStatus;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPendingFiles();
+        await LoadIngestionStatus();
+    }
+
+    private async Task LoadPendingFiles()
+    {
+        try
+        {
+            _isLoading = true;
+            var response = await ApiService.GetAsync<PendingFilesResponseDto>("api/ingestion/pending-files");
+            
+            if (response?.Files != null)
+            {
+                _pendingFiles = response.Files.Select(f => new PendingFileItem
+                {
+                    Id = GetIntProperty(f, "Id"),
+                    FileName = GetStringProperty(f, "FileName") ?? "",
+                    FilePath = GetStringProperty(f, "FilePath") ?? "",
+                    DownloadDate = GetDateTimeProperty(f, "DownloadDate"),
+                    FileSize = GetLongProperty(f, "FileSize"),
+                    WaitingMinutes = GetDoubleProperty(f, "WaitingMinutes")
+                }).ToList();
+            }
+            else
+            {
+                _pendingFiles = new List<PendingFileItem>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading pending files");
+            Snackbar.Add($"Error loading files: {ex.Message}", Severity.Error);
+            _pendingFiles = new List<PendingFileItem>();
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadIngestionStatus()
+    {
+        try
+        {
+            _ingestionStatus = await ApiService.GetAsync<IngestionStatusDto>("api/ingestion/service-status");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading ingestion status");
+        }
+    }
+
+    private async Task ProcessFile(int fileId)
+    {
+        try
+        {
+            var response = await ApiService.PostAsync<object, ProcessFileResponseDto>($"api/ingestion/process-file/{fileId}", new { });
+            Snackbar.Add(response?.Message ?? "File processed", Severity.Success);
+            await LoadPendingFiles();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error processing file");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ResetFileStatus(int fileId)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"api/ingestion/reset-file-status/{fileId}", new { });
+            Snackbar.Add("File status reset to Pending", Severity.Success);
+            await LoadPendingFiles();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error resetting file status");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task TriggerIngestion()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Trigger Ingestion",
+            "Are you sure you want to trigger manual ingestion?",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        try
+        {
+            await ApiService.PostAsync<object, object>("api/ingestion/manual-trigger", new { });
+            Snackbar.Add("Ingestion triggered", Severity.Success);
+            await LoadPendingFiles();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error triggering ingestion");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    // Helper methods to safely extract properties from JsonElement or dynamic objects
+    private string? GetStringProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return null;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                return prop.GetValue(obj)?.ToString();
+            }
+        }
+        return null;
+    }
+    
+    private int GetIntProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return 0;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.Number)
+                    return property.GetInt32();
+                if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is int intValue) return intValue;
+                if (value != null && int.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return 0;
+    }
+    
+    private long GetLongProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return 0;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.Number)
+                    return property.GetInt64();
+                if (property.ValueKind == JsonValueKind.String && long.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is long longValue) return longValue;
+                if (value is int intValue) return intValue;
+                if (value != null && long.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return 0;
+    }
+    
+    private double GetDoubleProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return 0;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.Number)
+                    return property.GetDouble();
+                if (property.ValueKind == JsonValueKind.String && double.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is double doubleValue) return doubleValue;
+                if (value != null && double.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return 0;
+    }
+    
+    private DateTime? GetDateTimeProperty(object? obj, string propertyName)
+    {
+        if (obj == null) return null;
+        
+        if (obj is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.String && DateTime.TryParse(property.GetString(), out var parsed))
+                    return parsed;
+            }
+        }
+        else
+        {
+            var prop = obj.GetType().GetProperty(propertyName);
+            if (prop != null)
+            {
+                var value = prop.GetValue(obj);
+                if (value is DateTime dt) return dt;
+                if (value != null && DateTime.TryParse(value.ToString(), out var parsed))
+                    return parsed;
+            }
+        }
+        return null;
+    }
+    
+    // Helper methods for template access
+    private int GetFileId(PendingFileItem file) => file.Id;
+    private string GetFileName(PendingFileItem file) => file.FileName;
+    private string GetFilePath(PendingFileItem file) => file.FilePath;
+    private DateTime? GetDownloadDate(PendingFileItem file) => file.DownloadDate;
+    private long GetFileSize(PendingFileItem file) => file.FileSize;
+    private double GetWaitingMinutes(PendingFileItem file) => file.WaitingMinutes;
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+
+    private string FormatWaitingTime(double? minutes)
+    {
+        if (minutes == null) return "N/A";
+        if (minutes < 60) return $"{minutes:F0}m";
+        if (minutes < 1440) return $"{minutes / 60:F1}h";
+        return $"{minutes / 1440:F1}d";
+    }
+
+    private string FormatTotalWaitingTime()
+    {
+        if (_pendingFiles == null) return "0m";
+        var total = _pendingFiles.Sum(f => f.WaitingMinutes);
+        return FormatWaitingTime(total);
+    }
+
+    private string FormatOldestPending()
+    {
+        if (_pendingFiles == null || !_pendingFiles.Any()) return "N/A";
+        var oldest = _pendingFiles.Max(f => f.WaitingMinutes);
+        return FormatWaitingTime(oldest);
+    }
+
+    // DTOs
+    public class PendingFilesResponseDto
+    {
+        public int? Count { get; set; }
+        public List<object>? Files { get; set; }
+    }
+
+    public class ProcessFileResponseDto
+    {
+        public bool? Success { get; set; }
+        public string? Message { get; set; }
+    }
+
+    public class IngestionStatusDto
+    {
+        public bool IsRunning { get; set; }
+        public DateTime? LastRunTime { get; set; }
+        public DateTime? NextRunTime { get; set; }
+        public int IntervalMinutes { get; set; }
+        public string Message { get; set; } = string.Empty;
+    }
+    
+    // Pending File Item model
+    private class PendingFileItem
+    {
+        public int Id { get; set; }
+        public string FileName { get; set; } = string.Empty;
+        public string FilePath { get; set; } = string.Empty;
+        public DateTime? DownloadDate { get; set; }
+        public long FileSize { get; set; }
+        public double WaitingMinutes { get; set; }
+    }
+}

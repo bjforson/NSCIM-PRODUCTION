@@ -1,0 +1,115 @@
+@using MudBlazor
+@using NickScanWebApp.New.Models
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.Info" Class="mr-2" />
+            Queue Item Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (Item != null)
+        {
+            <MudGrid Spacing="3">
+
+                <!-- Basic Information -->
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Container Number" Value="@Item.ContainerNumber" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Scanner Type" Value="@Item.ScannerType" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Inspection ID" Value="@(Item.InspectionId ?? "-")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" Label="Status" Value="@Item.Status" Variant="Variant.Outlined" ReadOnly="true">
+                        <MudSelectItem Value="@Item.Status">@Item.Status</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                <!-- Dates -->
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Scan Date" Value="@Item.ScanDate.ToString("yyyy-MM-dd HH:mm:ss")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Queued At" Value="@Item.QueuedAt.ToString("yyyy-MM-dd HH:mm:ss")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Processed At" Value="@(Item.ProcessedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Completed At" Value="@(Item.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+
+                <!-- Retry Information -->
+                <MudItem xs="12" md="4">
+                    <MudTextField T="int" Label="Retry Count" Value="@Item.RetryCount" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudTextField T="int" Label="Max Retries" Value="@Item.MaxRetries" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudTextField T="int" Label="Priority" Value="@Item.Priority" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+
+                <!-- Error Message -->
+                @if (!string.IsNullOrEmpty(Item.ErrorMessage))
+                {
+                    <MudItem xs="12">
+                        <MudTextField T="string" 
+                                    Label="Error Message" 
+                                    Value="@Item.ErrorMessage" 
+                                    Variant="Variant.Outlined" 
+                                    ReadOnly="true"
+                                    Lines="3"
+                                    Multiline="true" />
+                    </MudItem>
+                }
+
+                <!-- Metadata -->
+                @if (!string.IsNullOrEmpty(Item.Metadata))
+                {
+                    <MudItem xs="12">
+                        <MudTextField T="string" 
+                                    Label="Metadata" 
+                                    Value="@Item.Metadata" 
+                                    Variant="Variant.Outlined" 
+                                    ReadOnly="true"
+                                    Lines="5"
+                                    Multiline="true" />
+                    </MudItem>
+                }
+
+                <!-- Timestamps -->
+                <MudItem xs="12">
+                    <MudDivider Class="my-2" />
+                    <MudText Typo="Typo.subtitle2" Color="Color.Secondary">System Timestamps</MudText>
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Created At" Value="@Item.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudTextField T="string" Label="Updated At" Value="@Item.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss")" Variant="Variant.Outlined" ReadOnly="true" />
+                </MudItem>
+            </MudGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IDialogReference? Dialog { get; set; }
+    [Parameter] public QueueItemDetailResponse? Item { get; set; }
+
+    void Close()
+    {
+        if (Dialog != null)
+        {
+            Dialog.Close(DialogResult.Ok(true));
+        }
+    }
+}

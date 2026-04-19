@@ -1,0 +1,1163 @@
+@page "/validation/xray-inspector"
+@page "/image-analysis/xray-inspector"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationXrayInspector)]
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject ILogger<XrayInspector> Logger
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@*
+    X-Ray Inspector — full-suite analysis workbench for ASE + FS6000 scans.
+
+    The heavy image math (decode, CLAHE, histograms, edge detection, ROI stats,
+    PDF reports) lives in the Python image-splitter service under
+    services/image-splitter/inspector/. This page is thin: it searches scans,
+    renders images in a canvas, captures user interactions via xrayInspector.js,
+    and proxies analysis requests through /api/xray-inspector/*.
+
+    Default pixel output is 16-bit lossless PNG (transform=raw), per the
+    project-wide feedback rule (feedback_xray_rendering_raw16.md).
+*@
+
+<PageTitle>NICKSCAN ERP — X-Ray Inspector</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-2">
+        <div>
+            <MudText Typo="Typo.h5">
+                <MudIcon Icon="@Icons.Material.Outlined.Biotech" Class="mr-2" />
+                X-Ray Inspector
+            </MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Full-suite analysis workbench for ASE and FS6000 scans — raw 16-bit pixel access, measurement, and analysis tools
+            </MudText>
+        </div>
+        <MudStack Row="true" Spacing="2">
+            @if (_selectedScan is not null)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                    @_selectedScan.Scanner.ToUpperInvariant() · @_selectedScan.ContainerNumber
+                </MudChip>
+            }
+            <MudButton Variant="Variant.Outlined" Color="Color.Default"
+                       StartIcon="@Icons.Material.Outlined.Refresh"
+                       OnClick="ReloadCurrentScan"
+                       Disabled="@(_selectedScan is null)">
+                Reload
+            </MudButton>
+        </MudStack>
+    </MudStack>
+
+    @if (!string.IsNullOrEmpty(_deepLinkError))
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-2" ShowCloseIcon="true" CloseIconClicked="@(() => { _deepLinkError = null; StateHasChanged(); })">
+            <strong>Deep-link error:</strong> @_deepLinkError
+        </MudAlert>
+    }
+
+    <MudGrid Spacing="2">
+
+        <!-- ── LEFT: search + results list ─────────────────────── -->
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="0" Outlined="true" Class="pa-3" Style="height: calc(100vh - 130px); overflow: hidden; display: flex; flex-direction: column;">
+                <MudText Typo="Typo.subtitle2" Class="mb-2">Search scans</MudText>
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Class="mb-2">
+                    <MudTextField T="string" @bind-Value="_searchQuery" Placeholder="Container #"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense"
+                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                                  OnKeyDown="@OnSearchKeyDown" Immediate="true" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Search"
+                                   Color="Color.Primary" Size="Size.Medium"
+                                   OnClick="DoSearchAsync" />
+                </MudStack>
+                <MudStack Row="true" Spacing="1" Class="mb-2">
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(_searchScanner == "both" ? Color.Primary : Color.Default)"
+                             OnClick="@(() => SetSearchScanner("both"))">Both</MudChip>
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(_searchScanner == "ase" ? Color.Primary : Color.Default)"
+                             OnClick="@(() => SetSearchScanner("ase"))">ASE</MudChip>
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(_searchScanner == "fs6000" ? Color.Primary : Color.Default)"
+                             OnClick="@(() => SetSearchScanner("fs6000"))">FS6000</MudChip>
+                </MudStack>
+
+                <MudDivider Class="my-1" />
+
+                <div style="flex: 1; overflow-y: auto;">
+                    @if (_searchInFlight)
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="my-2" />
+                    }
+                    else if (_searchResults is null || _searchResults.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center" Class="mt-4">
+                            No results yet. Enter a container number.
+                        </MudText>
+                    }
+                    else
+                    {
+                        @foreach (var r in _searchResults)
+                        {
+                            <MudCard Elevation="0" Outlined="true" Class="mb-1 mud-clickable"
+                                     Style="@(_selectedScan?.Id == r.Id ? "border-color:var(--mud-palette-primary);" : "")"
+                                     @onclick="@(() => SelectScanAsync(r))">
+                                <MudCardContent Class="pa-2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <MudText Typo="Typo.body2"><b>@r.ContainerNumber</b></MudText>
+                                        <MudChip T="string" Size="Size.Small"
+                                                 Color="@(r.Scanner == "ase" ? Color.Info : Color.Secondary)">
+                                            @r.Scanner.ToUpperInvariant()
+                                        </MudChip>
+                                    </MudStack>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @(r.ScanTime ?? "—")
+                                    </MudText>
+                                </MudCardContent>
+                            </MudCard>
+                        }
+                    }
+                </div>
+            </MudPaper>
+        </MudItem>
+
+        <!-- ── CENTER: canvas viewer + tool sidebar ─────────────── -->
+        <MudItem xs="12" md="7">
+            <MudPaper Elevation="0" Outlined="true" Class="pa-2" Style="height: calc(100vh - 130px); display: flex; flex-direction: column;">
+
+                <!-- Toolbar strip -->
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Class="mb-2" Wrap="Wrap.Wrap">
+                    <MudButtonGroup Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small">
+                        <MudTooltip Text="Pan (H)"><MudIconButton Icon="@Icons.Material.Filled.PanTool" Color="@ToolColor("pan")" OnClick="@(() => SetTool("pan"))" /></MudTooltip>
+                        <MudTooltip Text="Window/Level (W)"><MudIconButton Icon="@Icons.Material.Filled.Contrast" Color="@ToolColor("windowlevel")" OnClick="@(() => SetTool("windowlevel"))" /></MudTooltip>
+                        <MudTooltip Text="Ruler (R)"><MudIconButton Icon="@Icons.Material.Filled.Straighten" Color="@ToolColor("ruler")" OnClick="@(() => SetTool("ruler"))" /></MudTooltip>
+                        <MudTooltip Text="Rectangle ROI"><MudIconButton Icon="@Icons.Material.Filled.CropSquare" Color="@ToolColor("rect")" OnClick="@(() => SetTool("rect"))" /></MudTooltip>
+                        <MudTooltip Text="Ellipse ROI"><MudIconButton Icon="@Icons.Material.Filled.Circle" Color="@ToolColor("ellipse")" OnClick="@(() => SetTool("ellipse"))" /></MudTooltip>
+                        <MudTooltip Text="Polygon ROI (double-click to close)"><MudIconButton Icon="@Icons.Material.Filled.Polyline" Color="@ToolColor("polygon")" OnClick="@(() => SetTool("polygon"))" /></MudTooltip>
+                        <MudTooltip Text="Line profile"><MudIconButton Icon="@Icons.Material.Filled.Timeline" Color="@ToolColor("lineprofile")" OnClick="@(() => SetTool("lineprofile"))" /></MudTooltip>
+                    </MudButtonGroup>
+
+                    <MudDivider Vertical="true" FlexItem="true" Class="mx-1" />
+
+                    <MudTooltip Text="Reset view"><MudIconButton Icon="@Icons.Material.Filled.FitScreen" OnClick="ResetView" Size="Size.Small" /></MudTooltip>
+                    <MudTooltip Text="Clear ROIs"><MudIconButton Icon="@Icons.Material.Filled.LayersClear" OnClick="ClearRois" Size="Size.Small" /></MudTooltip>
+
+                    <MudDivider Vertical="true" FlexItem="true" Class="mx-1" />
+
+                    <MudSelect T="string" @bind-Value="_channel" @bind-Value:after="ReloadImageAsync"
+                               Dense="true" Label="Channel" Variant="Variant.Outlined" Margin="Margin.Dense"
+                               Style="min-width: 130px;">
+                        @foreach (var ch in _availableChannels)
+                        {
+                            <MudSelectItem Value="@ch">@ch</MudSelectItem>
+                        }
+                    </MudSelect>
+
+                    <MudSelect T="string" @bind-Value="_transform" @bind-Value:after="ReloadImageAsync"
+                               Dense="true" Label="Transform" Variant="Variant.Outlined" Margin="Margin.Dense"
+                               Style="min-width: 140px;">
+                        <MudSelectItem Value="@("raw")">raw 16-bit (default)</MudSelectItem>
+                        <MudSelectItem Value="@("clahe")">CLAHE</MudSelectItem>
+                        <MudSelectItem Value="@("percentile")">percentile</MudSelectItem>
+                        <MudSelectItem Value="@("log")">log</MudSelectItem>
+                        <MudSelectItem Value="@("gamma")">gamma</MudSelectItem>
+                        <MudSelectItem Value="@("window")">window/level</MudSelectItem>
+                    </MudSelect>
+
+                    <MudSelect T="string" @bind-Value="_colormap" @bind-Value:after="ReloadImageAsync"
+                               Dense="true" Label="Color" Variant="Variant.Outlined" Margin="Margin.Dense"
+                               Style="min-width: 120px;">
+                        <MudSelectItem Value="@("none")">none</MudSelectItem>
+                        <MudSelectItem Value="@("hot")">hot</MudSelectItem>
+                        <MudSelectItem Value="@("bone")">bone</MudSelectItem>
+                        <MudSelectItem Value="@("jet")">jet</MudSelectItem>
+                        <MudSelectItem Value="@("viridis")">viridis</MudSelectItem>
+                        <MudSelectItem Value="@("inferno")">inferno</MudSelectItem>
+                        <MudSelectItem Value="@("plasma")">plasma</MudSelectItem>
+                    </MudSelect>
+
+                    <MudCheckBox T="bool" @bind-Value="_invert" @bind-Value:after="ReloadImageAsync"
+                                 Label="Invert" Size="Size.Small" />
+
+                    <MudDivider Vertical="true" FlexItem="true" Class="mx-1" />
+
+                    <MudMenu Icon="@Icons.Material.Filled.Science" Label="Analyze" Variant="Variant.Outlined" Size="Size.Small">
+                        <MudMenuItem OnClick="@(() => RunAnalysisOverlayAsync("edge-canny"))">Edge detection (Canny)</MudMenuItem>
+                        <MudMenuItem OnClick="@(() => RunAnalysisOverlayAsync("edge-sobel"))">Edge detection (Sobel)</MudMenuItem>
+                        <MudMenuItem OnClick="@(() => RunAnalysisOverlayAsync("threshold"))">Threshold mask</MudMenuItem>
+                        <MudMenuItem OnClick="@(() => RunAnalysisOverlayAsync("dual-energy-diff"))">Dual-energy difference</MudMenuItem>
+                        <MudMenuItem OnClick="@(() => RunAnalysisOverlayAsync("composite"))">Material composite (color)</MudMenuItem>
+                        <MudDivider />
+                        <MudMenuItem OnClick="@(() => RunObjectsAsync())">Detect objects…</MudMenuItem>
+                        <MudMenuItem OnClick="ReloadImageAsync">Restore original view</MudMenuItem>
+                    </MudMenu>
+
+                    <MudMenu Icon="@Icons.Material.Filled.Download" Label="Export" Variant="Variant.Outlined" Size="Size.Small">
+                        <MudMenuItem OnClick="DownloadRaw16">Raw 16-bit PNG</MudMenuItem>
+                        <MudMenuItem OnClick="DownloadCookedPng">Cooked 8-bit PNG</MudMenuItem>
+                        <MudMenuItem OnClick="DownloadRoiCsv">ROI stats CSV</MudMenuItem>
+                        <MudMenuItem OnClick="DownloadPdfReport">PDF report</MudMenuItem>
+                        @if (_selectedScan?.Scanner == "fs6000")
+                        {
+                            <MudDivider />
+                            <MudMenuItem OnClick="DownloadVendorJpeg">Vendor JPEG (reference)</MudMenuItem>
+                        }
+                    </MudMenu>
+                </MudStack>
+
+                <!-- Canvas viewer host -->
+                <div id="xray-canvas-host" style="flex: 1; background: #111; border-radius: 4px; position: relative; min-height: 400px; overflow: hidden;">
+                    @if (_imageLoading)
+                    {
+                        <MudProgressCircular Indeterminate="true"
+                                             Style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;" />
+                    }
+                    @if (_selectedScan is null)
+                    {
+                        <MudText Align="Align.Center" Color="Color.Secondary"
+                                 Style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">
+                            <MudIcon Icon="@Icons.Material.Outlined.Image" Size="Size.Large" /> <br />
+                            Select a scan from the list to begin.
+                        </MudText>
+                    }
+                </div>
+
+                <!-- Status bar: cursor coord, pixel value, window/level -->
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mt-1">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @(_hoverText ?? "ready")
+                    </MudText>
+                    <MudSpacer />
+                    @if (_windowLo.HasValue && _windowHi.HasValue)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            W/L: @(_windowLo.Value.ToString("0")) – @(_windowHi.Value.ToString("0"))
+                        </MudText>
+                    }
+                    @if (_roiCount > 0)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                            @_roiCount ROI(s)
+                        </MudChip>
+                    }
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <!-- ── RIGHT: metadata + ROI stats + histogram ──────────── -->
+        <MudItem xs="12" md="2">
+            <MudPaper Elevation="0" Outlined="true" Class="pa-2" Style="height: calc(100vh - 130px); overflow-y: auto;">
+
+                <MudText Typo="Typo.subtitle2" Class="mb-1">Scan metadata</MudText>
+                @if (_scanMeta is null)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">—</MudText>
+                }
+                else
+                {
+                    <MudStack Spacing="0">
+                        @foreach (var kvp in _scanMeta)
+                        {
+                            <div style="font-size:0.72rem; line-height:1.2; word-break:break-word;">
+                                <span style="color:var(--mud-palette-text-secondary);">@kvp.Key:</span>
+                                <span>@kvp.Value</span>
+                            </div>
+                        }
+                    </MudStack>
+                }
+
+                @if (_linkedRecords is { Count: > 0 })
+                {
+                    <MudDivider Class="my-2" />
+                    <MudText Typo="Typo.subtitle2" Class="mb-1">Linked records</MudText>
+                    @foreach (var rec in _linkedRecords)
+                    {
+                        <MudText Typo="Typo.caption">@rec</MudText>
+                    }
+                }
+
+                @if (_latestRoiStats is not null)
+                {
+                    <MudDivider Class="my-2" />
+                    <MudText Typo="Typo.subtitle2" Class="mb-1">Latest ROI stats</MudText>
+                    <div style="font-size:0.72rem;">
+                        <div>count: @_latestRoiStats.Count</div>
+                        <div>min: @_latestRoiStats.Min · max: @_latestRoiStats.Max</div>
+                        <div>mean: @_latestRoiStats.Mean.ToString("0.0")</div>
+                        <div>std: @_latestRoiStats.Std.ToString("0.0")</div>
+                        <div>median: @_latestRoiStats.Median.ToString("0.0")</div>
+                    </div>
+                }
+
+                @if (_objectsBusy)
+                {
+                    <MudDivider Class="my-2" />
+                    <MudText Typo="Typo.subtitle2" Class="mb-1">Detecting objects…</MudText>
+                    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                }
+                else if (_detectedObjects is { Count: > 0 })
+                {
+                    <MudDivider Class="my-2" />
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-1">
+                        <MudText Typo="Typo.subtitle2">Detected objects (@_detectedObjects.Count)</MudText>
+                        <MudTooltip Text="Clear">
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="ClearDetectedObjectsAsync" />
+                        </MudTooltip>
+                    </MudStack>
+                    <div style="max-height: 260px; overflow-y: auto;">
+                        @for (var i = 0; i < _detectedObjects.Count; i++)
+                        {
+                            var idx = i;
+                            var obj = _detectedObjects[idx];
+                            var bg = idx == _focusedObjectIndex ? "var(--mud-palette-primary-hover)" : "transparent";
+                            <div style="font-size:0.72rem; line-height:1.35; padding:3px 5px; cursor:pointer; border-radius:3px; background:@bg;"
+                                 @onclick="@(() => FocusObjectAsync(idx))">
+                                <span style="color:var(--mud-palette-primary);font-weight:600;">#@(idx + 1)</span>
+                                <span style="color:var(--mud-palette-text-secondary);"> area=</span>@obj.Area
+                                <br/>
+                                <span style="color:var(--mud-palette-text-secondary);">bbox=</span>@(obj.Bbox.Length == 4 ? $"{obj.Bbox[0]},{obj.Bbox[1]} {obj.Bbox[2]}×{obj.Bbox[3]}" : "—")
+                            </div>
+                        }
+                    </div>
+                }
+
+                @if (_otherScannerHint is not null)
+                {
+                    <MudDivider Class="my-2" />
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="pa-2">
+                        <MudText Typo="Typo.caption">
+                            Also scanned by <b>@_otherScannerHint.Scanner.ToUpperInvariant()</b>
+                        </MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary"
+                                   OnClick="@(() => SelectScanAsync(_otherScannerHint!))">
+                            Switch
+                        </MudButton>
+                    </MudAlert>
+                }
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+</MudContainer>
+
+
+@code {
+    // ── State ────────────────────────────────────────────────────
+
+    private string _searchQuery = "";
+    private string _searchScanner = "both";
+    private bool _searchInFlight;
+    private List<ScanSearchDto>? _searchResults;
+
+    private ScanSearchDto? _selectedScan;
+    private ScanSearchDto? _otherScannerHint;
+    private Dictionary<string, string>? _scanMeta;
+    private List<string>? _linkedRecords;
+
+    private string _channel = "main";
+    private string _transform = "raw";
+    private string _colormap = "none";
+    private bool _invert;
+    private List<string> _availableChannels = new() { "main" };
+
+    private bool _imageLoading;
+    private string? _hoverText;
+    private double? _windowLo;
+    private double? _windowHi;
+    private int _roiCount;
+    private RoiStatsDto? _latestRoiStats;
+
+    private DotNetObjectReference<XrayInspector>? _dotnetRef;
+    private bool _viewerInitialized;
+    private string? _deepLinkError;
+
+    // Object detection overlay + panel
+    private List<DetectedObjectDto>? _detectedObjects;
+    private int _focusedObjectIndex = -1;
+    private bool _objectsBusy;
+
+    // ── Lifecycle ────────────────────────────────────────────────
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                _dotnetRef = DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("XrayInspector.init", "xray-canvas-host", _dotnetRef);
+                _viewerInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "XRay Inspector viewer init failed");
+                _deepLinkError = $"Viewer init: {ex.Message}";
+                return;
+            }
+
+            // Deep-linking: `?q=CONTAINER&scanner=ase&id=SCAN_UUID`.
+            // Kick off the search + select flow AFTER the first render has
+            // finished returning — heavy async work inside OnAfterRenderAsync
+            // is fragile (it races state changes and can kill the circuit),
+            // so we schedule it via InvokeAsync to run on the next dispatcher tick.
+            string? qParam = null, scannerParam = null, idParam = null;
+            try
+            {
+                var uri = new Uri(Navigation.Uri);
+                var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+                qParam = query["q"];
+                scannerParam = query["scanner"];
+                idParam = query["id"];
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "failed to parse query string");
+            }
+
+            if (!string.IsNullOrWhiteSpace(qParam))
+            {
+                // Capture the scan-ID to auto-select (if any) for the second
+                // stage. We run the search synchronously here via InvokeAsync
+                // so the MudTextField/chip/result-list state reflects the
+                // query-string immediately, then kick off the heavier
+                // SelectScanAsync (which does metadata + image fetch) from
+                // a second dispatcher tick so the first render can settle
+                // before we touch JS interop and HTTP clients again.
+                var deepIdCapture = idParam;
+                _ = InvokeAsync(async () =>
+                {
+                    try
+                    {
+                        _searchQuery = qParam!;
+                        if (!string.IsNullOrWhiteSpace(scannerParam)) _searchScanner = scannerParam!;
+                        await DoSearchAsync();
+                        StateHasChanged();
+
+                        // Second tick: auto-select. We tolerate ANY exception
+                        // so a flaky scan fetch never kills the page circuit.
+                        _ = InvokeAsync(async () =>
+                        {
+                            try
+                            {
+                                ScanSearchDto? target = null;
+                                if (!string.IsNullOrWhiteSpace(deepIdCapture) && _searchResults is not null)
+                                {
+                                    target = _searchResults.FirstOrDefault(r => r.Id == deepIdCapture);
+                                }
+                                else if (_searchResults is { Count: 1 })
+                                {
+                                    target = _searchResults[0];
+                                }
+                                if (target is not null)
+                                {
+                                    await SelectScanAsync(target);
+                                    StateHasChanged();
+                                }
+                            }
+                            catch (Exception innerEx)
+                            {
+                                Logger.LogError(innerEx, "XRay Inspector deep-link auto-select failed");
+                                _deepLinkError = $"Auto-select failed: {innerEx.GetType().Name}: {innerEx.Message}";
+                                StateHasChanged();
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError(ex, "XRay Inspector deep-link search failed");
+                        _deepLinkError = $"Search failed: {ex.GetType().Name}: {ex.Message}";
+                        StateHasChanged();
+                    }
+                });
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_viewerInitialized)
+            {
+                await JS.InvokeVoidAsync("XrayInspector.dispose", "xray-canvas-host");
+            }
+        }
+        catch { /* circuit may already be gone */ }
+        _dotnetRef?.Dispose();
+    }
+
+    // ── Search ────────────────────────────────────────────────────
+
+    private async Task OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await DoSearchAsync();
+    }
+
+    private void SetSearchScanner(string s)
+    {
+        _searchScanner = s;
+    }
+
+    private async Task DoSearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_searchQuery)) return;
+        _searchInFlight = true;
+        try
+        {
+            var url = $"/api/xray-inspector/search?q={Uri.EscapeDataString(_searchQuery)}&scanner={_searchScanner}&limit=50";
+            var json = await ApiService.GetAsync<SearchResponseDto>(url);
+            _searchResults = json?.Results ?? new();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "XRay Inspector search failed");
+            _deepLinkError = $"Search: {ex.GetType().Name}: {ex.Message}";
+            _searchResults = new();
+        }
+        finally
+        {
+            _searchInFlight = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Scan selection ─────────────────────────────────────────────
+
+    private async Task SelectScanAsync(ScanSearchDto scan)
+    {
+        _selectedScan = scan;
+        _channel = "main";
+        _roiCount = 0;
+        _latestRoiStats = null;
+        _linkedRecords = null;
+        _windowLo = null;
+        _windowHi = null;
+        _otherScannerHint = null;
+        _detectedObjects = null;
+        _focusedObjectIndex = -1;
+        if (_viewerInitialized)
+        {
+            try { await JS.InvokeVoidAsync("XrayInspector.clearDetectedObjects", "xray-canvas-host"); }
+            catch { /* non-fatal */ }
+        }
+
+        try
+        {
+            var meta = await ApiService.GetAsync<ScanDetailsDto>($"/api/xray-inspector/scan/{scan.Scanner}/{scan.Id}");
+            try { ApplyMetadata(meta); }
+            catch (Exception applyEx)
+            {
+                Logger.LogError(applyEx, "ApplyMetadata failed");
+                _deepLinkError = $"Metadata parse: {applyEx.GetType().Name}: {applyEx.Message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "failed to load scan metadata");
+            _deepLinkError = $"Metadata fetch: {ex.GetType().Name}: {ex.Message}";
+        }
+
+        // Find the "other scanner" scan for the same container, if any
+        if (!string.IsNullOrWhiteSpace(scan.ContainerNumber))
+        {
+            try
+            {
+                var otherType = scan.Scanner == "ase" ? "fs6000" : "ase";
+                var url = $"/api/xray-inspector/search?q={Uri.EscapeDataString(scan.ContainerNumber)}&scanner={otherType}&limit=1";
+                var json = await ApiService.GetAsync<SearchResponseDto>(url);
+                if (json?.Results is { Count: > 0 })
+                {
+                    _otherScannerHint = json.Results[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "other-scanner probe failed (non-fatal)");
+            }
+        }
+
+        try
+        {
+            await ReloadImageAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ReloadImageAsync escaped its own catch");
+            _deepLinkError = $"Image load: {ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
+    private async Task ReloadCurrentScan()
+    {
+        if (_selectedScan is null) return;
+        await SelectScanAsync(_selectedScan);
+    }
+
+    private void ApplyMetadata(ScanDetailsDto? details)
+    {
+        if (details is null) return;
+        _scanMeta = new Dictionary<string, string>();
+        _linkedRecords = new List<string>();
+
+        if (details.Splitter.TryGetProperty("image", out var imgEl) && imgEl.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in imgEl.EnumerateObject())
+            {
+                if (prop.Name == "xml_metadata_preview" || prop.Name == "container_info_hex") continue;
+                _scanMeta[prop.Name] = prop.Value.ToString();
+            }
+
+            // Available channels vary by scanner
+            if (_selectedScan?.Scanner == "fs6000")
+            {
+                _availableChannels = new() { "high", "low", "material" };
+                _channel = "high";
+            }
+            else if (imgEl.TryGetProperty("layout", out var layout) && layout.GetString() == "tri-panel")
+            {
+                _availableChannels = new() { "main", "low", "high", "material" };
+                _channel = "main";
+            }
+            else
+            {
+                _availableChannels = new() { "main" };
+                _channel = "main";
+            }
+
+            if (imgEl.TryGetProperty("pixel_min", out var pMin) && pMin.TryGetDouble(out var minD))
+                _windowLo = minD;
+            if (imgEl.TryGetProperty("pixel_max", out var pMax) && pMax.TryGetDouble(out var maxD))
+                _windowHi = maxD;
+            if (imgEl.TryGetProperty("high_stats", out var hs))
+            {
+                if (hs.TryGetProperty("min", out var minHS)) _windowLo = minHS.GetDouble();
+                if (hs.TryGetProperty("max", out var maxHS)) _windowHi = maxHS.GetDouble();
+            }
+        }
+
+        if (details.Nscim.ValueKind == JsonValueKind.Object &&
+            details.Nscim.TryGetProperty("completenessRecords", out var compEl) &&
+            compEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var rec in compEl.EnumerateArray().Take(5))
+            {
+                if (rec.TryGetProperty("scannerType", out var st) && rec.TryGetProperty("status", out var stat))
+                {
+                    _linkedRecords.Add($"{st.GetString()} · {stat.GetString()}");
+                }
+            }
+        }
+    }
+
+    // ── Image loading ──────────────────────────────────────────────
+
+    private async Task ReloadImageAsync()
+    {
+        if (_selectedScan is null || !_viewerInitialized) return;
+        _imageLoading = true;
+        StateHasChanged();
+        try
+        {
+            var qs = $"?channel={Uri.EscapeDataString(_channel)}" +
+                     $"&transform={Uri.EscapeDataString(_transform)}" +
+                     $"&colormap={Uri.EscapeDataString(_colormap)}" +
+                     $"&invert={(_invert ? "true" : "false")}";
+            if (_transform == "window" && _windowLo.HasValue && _windowHi.HasValue)
+            {
+                qs += $"&windowLo={_windowLo}&windowHi={_windowHi}";
+            }
+
+            // Build the inner API URL and wrap it in the existing ImageProxyController
+            // so the browser can load the image directly via a same-origin fetch or
+            // <img src>. This avoids shipping a multi-MB base64 payload through the
+            // Blazor SignalR circuit (which chokes Chrome devtools and doubles memory).
+            if (_transform == "raw" && _colormap == "none")
+            {
+                // Raw 16-bit path: ask the server for the compact binary
+                // envelope (no PNG encoding) and render client-side so
+                // window/level can operate on the true uint16 values.
+                // Canvas is fundamentally 8-bit per channel, so the only
+                // way to preserve 16-bit fidelity on screen is to keep
+                // the uint16 buffer in JS and map to 8-bit via the
+                // current W/L every time the user drags.
+                var rawApiUrl = $"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}&format=bin";
+                var rawProxyUrl = BuildProxyUrl(rawApiUrl);
+                await JS.InvokeVoidAsync("XrayInspector.loadRaw16Image", "xray-canvas-host", rawProxyUrl);
+            }
+            else
+            {
+                // Cooked path: server produces an 8-bit PNG (clahe/percentile/
+                // log/gamma/window/colormap). Load via plain <img src>.
+                var innerApiUrl = $"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}";
+                var proxyUrl = BuildProxyUrl(innerApiUrl);
+
+                var metaObj = new
+                {
+                    width = GetMetaInt("width"),
+                    height = GetMetaInt("height"),
+                    pixelMin = _windowLo ?? 0,
+                    pixelMax = (double)(_windowHi ?? 65535)
+                };
+                await JS.InvokeVoidAsync("XrayInspector.loadImage", "xray-canvas-host", proxyUrl, metaObj);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "ReloadImageAsync failed");
+            Snackbar.Add("Image load failed: " + ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _imageLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private int GetMetaInt(string key)
+    {
+        if (_scanMeta != null && _scanMeta.TryGetValue(key, out var s) && int.TryParse(s, out var i)) return i;
+        return 0;
+    }
+
+    /// <summary>
+    /// Wrap an inner API URL in the existing ImageProxyController so the
+    /// browser can load it directly via <img src> without a JWT cookie
+    /// (the proxy uses the WebApp's server-side HttpClient with the
+    /// configured API base URL). Eliminates the base64 SignalR round-trip
+    /// for every pixel render.
+    /// </summary>
+    private static string BuildProxyUrl(string innerApiUrl)
+    {
+        var b64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(innerApiUrl));
+        return $"/api/imageproxy?url={Uri.EscapeDataString(b64)}";
+    }
+
+    // ── Toolbar actions ────────────────────────────────────────────
+
+    private string _currentTool = "pan";
+    private Color ToolColor(string tool) => tool == _currentTool ? Color.Primary : Color.Default;
+
+    private async Task SetTool(string tool)
+    {
+        _currentTool = tool;
+        if (_viewerInitialized) await JS.InvokeVoidAsync("XrayInspector.setTool", "xray-canvas-host", tool);
+    }
+
+    private async Task ResetView()
+    {
+        if (_viewerInitialized) await JS.InvokeVoidAsync("XrayInspector.resetView", "xray-canvas-host");
+    }
+
+    private async Task ClearRois()
+    {
+        if (_viewerInitialized) await JS.InvokeVoidAsync("XrayInspector.clearRois", "xray-canvas-host");
+        _roiCount = 0;
+        _latestRoiStats = null;
+        StateHasChanged();
+    }
+
+    // ── JS → C# callbacks ──────────────────────────────────────────
+
+    [JSInvokable]
+    public Task OnHover(int x, int y)
+    {
+        _hoverText = $"x={x}, y={y}";
+        InvokeAsync(StateHasChanged);
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnWindowLevelChanged(double lo, double hi)
+    {
+        _windowLo = lo;
+        _windowHi = hi;
+        InvokeAsync(StateHasChanged);
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public async Task OnRoiCommitted(string roiJson)
+    {
+        _roiCount++;
+        if (_selectedScan is null) return;
+        try
+        {
+            var roi = JsonDocument.Parse(roiJson).RootElement;
+            if (roi.TryGetProperty("kind", out var kindEl) && kindEl.GetString() == "line")
+            {
+                // Line: request line profile
+                var x0 = roi.GetProperty("x0").GetDouble();
+                var y0 = roi.GetProperty("y0").GetDouble();
+                var x1 = roi.GetProperty("x1").GetDouble();
+                var y1 = roi.GetProperty("y1").GetDouble();
+                var req = new
+                {
+                    scanner = _selectedScan.Scanner,
+                    id = _selectedScan.Id,
+                    channel = _channel,
+                    x0, y0, x1, y1,
+                    samples = 512
+                };
+                var resp = await ApiService.PostAsync<object, JsonElement>("/api/xray-inspector/analyze/line-profile", req);
+                if (resp.ValueKind == JsonValueKind.Object)
+                {
+                    var mean = resp.GetProperty("mean").GetDouble();
+                    var mn = resp.GetProperty("min").GetDouble();
+                    var mx = resp.GetProperty("max").GetDouble();
+                    Snackbar.Add($"Line profile: {(int)mn}..{(int)mx} (mean {mean:0})", Severity.Info);
+                }
+            }
+            else
+            {
+                // Rect / Ellipse / Polygon: request ROI stats
+                var req = new
+                {
+                    scanner = _selectedScan.Scanner,
+                    id = _selectedScan.Id,
+                    channel = _channel,
+                    roi = JsonSerializer.Deserialize<object>(roi.GetRawText()),
+                    bins = 64
+                };
+                var resp = await ApiService.PostAsync<object, RoiStatsDto>("/api/xray-inspector/analyze/roi-stats", req);
+                if (resp is not null)
+                {
+                    _latestRoiStats = resp;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "ROI stats request failed");
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── Analysis overlays ─────────────────────────────────────────
+
+    private async Task RunAnalysisOverlayAsync(string op)
+    {
+        if (_selectedScan is null || !_viewerInitialized) return;
+        _imageLoading = true;
+        StateHasChanged();
+        try
+        {
+            byte[]? bytes = null;
+            switch (op)
+            {
+                case "edge-canny":
+                    {
+                        var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, method = "canny", low = 50.0, high = 150.0 };
+                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/edge", req);
+                        break;
+                    }
+                case "edge-sobel":
+                    {
+                        var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, method = "sobel", ksize = 5 };
+                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/edge", req);
+                        break;
+                    }
+                case "threshold":
+                    {
+                        var lo = _windowLo ?? 0;
+                        var hi = _windowHi ?? 65535;
+                        var mid = (lo + hi) / 2.0;
+                        var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, low = mid, high = (double?)null };
+                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/threshold", req);
+                        break;
+                    }
+                case "dual-energy-diff":
+                    {
+                        var url = $"/api/xray-inspector/analyze/dual-energy-diff?scanner={_selectedScan.Scanner}&id={_selectedScan.Id}";
+                        bytes = await PostEmptyForBytesAsync(url);
+                        break;
+                    }
+                case "composite":
+                    {
+                        // Composite is a GET — stream via ImageProxyController instead of base64
+                        var proxyUrl = BuildProxyUrl($"/api/xray-inspector/composite/{_selectedScan.Scanner}/{_selectedScan.Id}");
+                        await JS.InvokeVoidAsync("XrayInspector.loadImage", "xray-canvas-host", proxyUrl,
+                            new { width = GetMetaInt("width"), height = GetMetaInt("height") });
+                        Snackbar.Add("composite applied — use Analyze → Restore original view to revert", Severity.Info);
+                        return;
+                    }
+            }
+            if (bytes is null || bytes.Length == 0)
+            {
+                Snackbar.Add("Analysis failed or returned empty", Severity.Warning);
+                return;
+            }
+            var dataUrl = "data:image/png;base64," + Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("XrayInspector.loadImage", "xray-canvas-host", dataUrl,
+                new { width = GetMetaInt("width"), height = GetMetaInt("height") });
+            Snackbar.Add($"{op} applied — use Analyze → Restore original view to revert", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Analysis {Op} failed", op);
+            Snackbar.Add("Analysis error: " + ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _imageLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RunObjectsAsync()
+    {
+        if (_selectedScan is null) return;
+        _objectsBusy = true;
+        StateHasChanged();
+        try
+        {
+            var lo = _windowLo ?? 0;
+            var hi = _windowHi ?? 65535;
+            var mid = (lo + hi) / 2.0;
+            var req = new
+            {
+                scanner = _selectedScan.Scanner,
+                id = _selectedScan.Id,
+                channel = _channel,
+                low = mid,
+                high = (double?)null,
+                min_area = 100,
+                max_objects = 200
+            };
+            var resp = await ApiService.PostAsync<object, DetectedObjectsResponseDto>("/api/xray-inspector/analyze/objects", req);
+            if (resp is null)
+            {
+                Snackbar.Add("Object detection returned no response", Severity.Warning);
+                return;
+            }
+            _detectedObjects = resp.Objects ?? new List<DetectedObjectDto>();
+            _focusedObjectIndex = -1;
+
+            // Push bounding boxes to the canvas overlay
+            if (_viewerInitialized)
+            {
+                await JS.InvokeVoidAsync("XrayInspector.setDetectedObjects",
+                    "xray-canvas-host",
+                    _detectedObjects.Select((o, i) => new
+                    {
+                        index = i,
+                        bbox = o.Bbox,
+                        area = o.Area,
+                        centroid = o.Centroid
+                    }).ToArray());
+            }
+            Snackbar.Add($"Found {_detectedObjects.Count} candidate objects above threshold {mid:0}", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Object detection failed");
+            Snackbar.Add("Object detection failed: " + ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _objectsBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task FocusObjectAsync(int index)
+    {
+        _focusedObjectIndex = index;
+        if (_viewerInitialized)
+        {
+            await JS.InvokeVoidAsync("XrayInspector.focusDetectedObject", "xray-canvas-host", index);
+        }
+        StateHasChanged();
+    }
+
+    private async Task ClearDetectedObjectsAsync()
+    {
+        _detectedObjects = null;
+        _focusedObjectIndex = -1;
+        if (_viewerInitialized)
+        {
+            await JS.InvokeVoidAsync("XrayInspector.clearDetectedObjects", "xray-canvas-host");
+        }
+        StateHasChanged();
+    }
+
+    private async Task<byte[]?> PostForBytesAsync(string url, object body)
+    {
+        var client = HttpClientFactory.CreateClient();
+        var baseUrl = Navigation.BaseUri.TrimEnd('/');
+        var resp = await client.PostAsJsonAsync($"{baseUrl}{url}", body);
+        if (!resp.IsSuccessStatusCode) return null;
+        return await resp.Content.ReadAsByteArrayAsync();
+    }
+
+    private async Task<byte[]?> PostEmptyForBytesAsync(string url)
+    {
+        var client = HttpClientFactory.CreateClient();
+        var baseUrl = Navigation.BaseUri.TrimEnd('/');
+        var resp = await client.PostAsync($"{baseUrl}{url}", new StringContent(""));
+        if (!resp.IsSuccessStatusCode) return null;
+        return await resp.Content.ReadAsByteArrayAsync();
+    }
+
+    // ── Export actions ────────────────────────────────────────────
+
+    private async Task DownloadRaw16()
+    {
+        if (_selectedScan is null) return;
+        await DownloadImageAsync($"?channel={_channel}&transform=raw&colormap=none", $"{_selectedScan.ContainerNumber}_{_channel}.raw16.png");
+    }
+
+    private async Task DownloadCookedPng()
+    {
+        if (_selectedScan is null) return;
+        var qs = $"?channel={_channel}&transform={_transform}&colormap={_colormap}&invert={(_invert ? "true" : "false")}";
+        await DownloadImageAsync(qs, $"{_selectedScan.ContainerNumber}_{_channel}_{_transform}.png");
+    }
+
+    private async Task DownloadVendorJpeg()
+    {
+        if (_selectedScan is null) return;
+        try
+        {
+            var bytes = await ApiService.GetBytesAsync($"/api/xray-inspector/vendor-jpeg/{_selectedScan.Scanner}/{_selectedScan.Id}");
+            if (bytes is null) return;
+            await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_vendor.jpg", "image/jpeg");
+        }
+        catch (Exception ex) { Snackbar.Add("Download failed: " + ex.Message, Severity.Error); }
+    }
+
+    private async Task DownloadImageAsync(string qs, string filename)
+    {
+        if (_selectedScan is null) return;
+        try
+        {
+            var bytes = await ApiService.GetBytesAsync($"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}");
+            if (bytes is null) return;
+            await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, filename, "image/png");
+        }
+        catch (Exception ex) { Snackbar.Add("Download failed: " + ex.Message, Severity.Error); }
+    }
+
+    private async Task DownloadRoiCsv()
+    {
+        if (_selectedScan is null) return;
+        var rois = await JS.InvokeAsync<JsonElement[]>("XrayInspector.getRois", "xray-canvas-host");
+        if (rois is null || rois.Length == 0)
+        {
+            Snackbar.Add("No ROIs to export. Draw at least one.", Severity.Info);
+            return;
+        }
+        try
+        {
+            var req = new
+            {
+                scanner = _selectedScan.Scanner,
+                id = _selectedScan.Id,
+                channel = _channel,
+                rois = rois
+            };
+            // Use HttpClient directly for CSV (non-JSON response)
+            var client = HttpClientFactory.CreateClient();
+            var baseUrl = Navigation.BaseUri.TrimEnd('/');
+            var resp = await client.PostAsJsonAsync($"{baseUrl}/api/xray-inspector/export/roi-csv", req);
+            if (resp.IsSuccessStatusCode)
+            {
+                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_rois.csv", "text/csv");
+            }
+            else
+            {
+                Snackbar.Add("CSV export failed: " + resp.StatusCode, Severity.Error);
+            }
+        }
+        catch (Exception ex) { Snackbar.Add("CSV export error: " + ex.Message, Severity.Error); }
+    }
+
+    private async Task DownloadPdfReport()
+    {
+        if (_selectedScan is null) return;
+        var rois = await JS.InvokeAsync<JsonElement[]>("XrayInspector.getRois", "xray-canvas-host");
+        try
+        {
+            var req = new
+            {
+                scanner = _selectedScan.Scanner,
+                id = _selectedScan.Id,
+                title = $"X-Ray scan report — {_selectedScan.ContainerNumber}",
+                channel = _channel,
+                rois = rois,
+                include_composite = true
+            };
+            var client = HttpClientFactory.CreateClient();
+            var baseUrl = Navigation.BaseUri.TrimEnd('/');
+            var resp = await client.PostAsJsonAsync($"{baseUrl}/api/xray-inspector/export/pdf-report", req);
+            if (resp.IsSuccessStatusCode)
+            {
+                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_report.pdf", "application/pdf");
+            }
+            else
+            {
+                Snackbar.Add("PDF export failed: " + resp.StatusCode, Severity.Error);
+            }
+        }
+        catch (Exception ex) { Snackbar.Add("PDF export error: " + ex.Message, Severity.Error); }
+    }
+
+    // ── DTOs ─────────────────────────────────────────────────────
+
+    public class SearchResponseDto
+    {
+        [JsonPropertyName("query")]   public string Query { get; set; } = "";
+        [JsonPropertyName("scanner")] public string Scanner { get; set; } = "";
+        [JsonPropertyName("count")]   public int Count { get; set; }
+        [JsonPropertyName("results")] public List<ScanSearchDto> Results { get; set; } = new();
+    }
+
+    public class ScanSearchDto
+    {
+        [JsonPropertyName("scanner")]          public string Scanner { get; set; } = "";
+        [JsonPropertyName("id")]               public string Id { get; set; } = "";
+        [JsonPropertyName("container_number")] public string? ContainerNumber { get; set; }
+        [JsonPropertyName("scan_time")]        public string? ScanTime { get; set; }
+        [JsonPropertyName("inspection_id")]    public string? InspectionId { get; set; }
+        [JsonPropertyName("has_blob")]         public bool HasBlob { get; set; }
+    }
+
+    public class ScanDetailsDto
+    {
+        [JsonPropertyName("splitter")] public JsonElement Splitter { get; set; }
+        [JsonPropertyName("nscim")]    public JsonElement Nscim { get; set; }
+    }
+
+    public class RoiStatsDto
+    {
+        [JsonPropertyName("count")]  public int Count { get; set; }
+        [JsonPropertyName("min")]    public double Min { get; set; }
+        [JsonPropertyName("max")]    public double Max { get; set; }
+        [JsonPropertyName("mean")]   public double Mean { get; set; }
+        [JsonPropertyName("std")]    public double Std { get; set; }
+        [JsonPropertyName("median")] public double Median { get; set; }
+    }
+
+    public class DetectedObjectsResponseDto
+    {
+        [JsonPropertyName("count")]   public int Count { get; set; }
+        [JsonPropertyName("objects")] public List<DetectedObjectDto> Objects { get; set; } = new();
+    }
+
+    public class DetectedObjectDto
+    {
+        /// <summary>[x, y, w, h] in image pixel coords.</summary>
+        [JsonPropertyName("bbox")]     public int[] Bbox { get; set; } = Array.Empty<int>();
+        [JsonPropertyName("area")]     public int Area { get; set; }
+        /// <summary>[cx, cy] centroid in image pixel coords.</summary>
+        [JsonPropertyName("centroid")] public double[] Centroid { get; set; } = Array.Empty<double>();
+    }
+}

@@ -1,0 +1,201 @@
+@using MudBlazor
+@using NickScanWebApp.New.Pages.Completeness
+@inject ISnackbar Snackbar
+
+@* Import BusinessRuleItem from BusinessRules page *@
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.Rule" Class="mr-2" />
+            @(IsEdit ? "Edit Business Rule" : "Create Business Rule")
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudContainer Class="pa-4">
+            <MudForm @ref="_form">
+                <MudGrid Spacing="3">
+                    <!-- Name -->
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="Rule.Name"
+                                     Label="Rule Name"
+                                     Placeholder="Enter rule name"
+                                     Variant="Variant.Outlined"
+                                     Required="true"
+                                     RequiredError="Rule name is required"
+                                     MaxLength="200" />
+                    </MudItem>
+
+                    <!-- Description -->
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="Rule.Description"
+                                     Label="Description"
+                                     Placeholder="Describe what this rule does"
+                                     Variant="Variant.Outlined"
+                                     Required="true"
+                                     RequiredError="Description is required"
+                                     Lines="3"
+                                     MaxLength="1000" />
+                    </MudItem>
+
+                    <!-- Category and Priority -->
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="string" @bind-Value="Rule.Category"
+                                  Label="Category"
+                                  Variant="Variant.Outlined"
+                                  Required="true"
+                                  RequiredError="Category is required">
+                            <MudSelectItem Value="@("Container Validation")">Container Validation</MudSelectItem>
+                            <MudSelectItem Value="@("Document Validation")">Document Validation</MudSelectItem>
+                            <MudSelectItem Value="@("Image Analysis")">Image Analysis</MudSelectItem>
+                            <MudSelectItem Value="@("Data Completeness")">Data Completeness</MudSelectItem>
+                            <MudSelectItem Value="@("ICUMS Integration")">ICUMS Integration</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="string" @bind-Value="Rule.Priority"
+                                  Label="Priority"
+                                  Variant="Variant.Outlined"
+                                  Required="true"
+                                  RequiredError="Priority is required">
+                            <MudSelectItem Value="@("Critical")">Critical</MudSelectItem>
+                            <MudSelectItem Value="@("High")">High</MudSelectItem>
+                            <MudSelectItem Value="@("Medium")">Medium</MudSelectItem>
+                            <MudSelectItem Value="@("Low")">Low</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+
+                    <!-- Condition Expression -->
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="Rule.ConditionExpression"
+                                     Label="Condition Expression"
+                                     Placeholder="e.g., ContainerNumber.Length == 11 AND ContainerNumber matches '[A-Z]{4}[0-9]{7}'"
+                                     Variant="Variant.Outlined"
+                                     Required="true"
+                                     RequiredError="Condition expression is required"
+                                     Lines="3"
+                                     MaxLength="2000" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">
+                            SQL-like or pseudo-code expression that determines when the rule applies
+                        </MudText>
+                    </MudItem>
+
+                    <!-- Action Type and Execution Order -->
+                    <MudItem xs="12" md="6">
+                        <MudSelect T="string" @bind-Value="Rule.ActionType"
+                                  Label="Action Type"
+                                  Variant="Variant.Outlined"
+                                  Required="true"
+                                  RequiredError="Action type is required">
+                            <MudSelectItem Value="@("Block")">Block</MudSelectItem>
+                            <MudSelectItem Value="@("Reject")">Reject</MudSelectItem>
+                            <MudSelectItem Value="@("Warn")">Warn</MudSelectItem>
+                            <MudSelectItem Value="@("Flag")">Flag</MudSelectItem>
+                            <MudSelectItem Value="@("Notify")">Notify</MudSelectItem>
+                            <MudSelectItem Value="@("Filter/Exclude")">Filter/Exclude</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudNumericField T="int" @bind-Value="Rule.ExecutionOrder"
+                                         Label="Execution Order"
+                                         Variant="Variant.Outlined"
+                                         Min="0"
+                                         HelperText="Lower numbers execute first" />
+                    </MudItem>
+
+                    <!-- Action Message -->
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="Rule.ActionMessage"
+                                     Label="Action Message"
+                                     Placeholder="Message to display when rule is triggered"
+                                     Variant="Variant.Outlined"
+                                     Required="true"
+                                     RequiredError="Action message is required"
+                                     Lines="2"
+                                     MaxLength="1000" />
+                    </MudItem>
+
+                    <!-- Is Active -->
+                    <MudItem xs="12">
+                        <MudSwitch @bind-Value="Rule.IsActive"
+                                  Label="Active"
+                                  Color="Color.Success"
+                                  LabelPosition="LabelPosition.End">
+                            This rule is currently active and will be applied
+                        </MudSwitch>
+                    </MudItem>
+                </MudGrid>
+            </MudForm>
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" 
+                  Color="Color.Primary" 
+                  OnClick="Save"
+                  Disabled="@(!IsValid)">
+            @(IsEdit ? "Update" : "Create")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IDialogReference? Dialog { get; set; }
+
+    [Parameter] public BusinessRuleItem Rule { get; set; } = new();
+    [Parameter] public bool IsEdit { get; set; } = false;
+
+    private MudForm? _form;
+    private bool IsValid => !string.IsNullOrWhiteSpace(Rule.Name) &&
+                           !string.IsNullOrWhiteSpace(Rule.Description) &&
+                           !string.IsNullOrWhiteSpace(Rule.Category) &&
+                           !string.IsNullOrWhiteSpace(Rule.Priority) &&
+                           !string.IsNullOrWhiteSpace(Rule.ConditionExpression) &&
+                           !string.IsNullOrWhiteSpace(Rule.ActionType) &&
+                           !string.IsNullOrWhiteSpace(Rule.ActionMessage);
+
+    void Cancel()
+    {
+        if (Dialog != null)
+        {
+            Dialog.Close(DialogResult.Cancel());
+        }
+    }
+
+    void Save()
+    {
+        if (IsValid)
+        {
+            if (Dialog != null)
+            {
+                Dialog.Close(DialogResult.Ok(Rule));
+            }
+        }
+        else
+        {
+            Snackbar.Add("Please fill in all required fields", Severity.Warning);
+        }
+    }
+
+    // ✅ BusinessRuleItem model (matches BusinessRules.razor)
+    public class BusinessRuleItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string Priority { get; set; } = "Medium";
+        public string ConditionExpression { get; set; } = string.Empty;
+        public string ActionType { get; set; } = string.Empty;
+        public string ActionMessage { get; set; } = string.Empty;
+        public bool IsActive { get; set; } = true;
+        public int ExecutionOrder { get; set; } = 0;
+        public DateTime CreatedAt { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
+    }
+}
+

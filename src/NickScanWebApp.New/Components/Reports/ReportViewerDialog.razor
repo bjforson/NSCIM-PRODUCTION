@@ -1,0 +1,195 @@
+@using System.Text.Json
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.Analytics" Class="mr-2" />
+            @ReportName
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (_isLoading)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        }
+        else if (_reportData != null)
+        {
+            <!-- Summary Cards -->
+            <MudGrid Class="mb-4">
+                @foreach (var metric in _summaryMetrics)
+                {
+                    <MudItem xs="6" sm="3">
+                        <MudPaper Elevation="1" Class="pa-3 text-center">
+                            <MudText Typo="Typo.caption" Color="Color.Default">@metric.Label</MudText>
+                            <MudText Typo="Typo.h5" Color="Color.Primary">@metric.Value</MudText>
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+
+            <!-- Data Table -->
+            @if (_tableHeaders.Any() && _tableRows.Any())
+            {
+                <MudSimpleTable Dense="true" Hover="true" Bordered="true" Striped="true" Style="max-height: 500px; overflow-y: auto;">
+                    <thead>
+                        <tr>
+                            @foreach (var header in _tableHeaders)
+                            {
+                                <th style="background-color: #1a237e; color: white; font-weight: bold;">@header</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _tableRows)
+                        {
+                            <tr>
+                                @foreach (var cell in row)
+                                {
+                                    <td>@cell</td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+                <MudText Typo="Typo.caption" Class="mt-2" Color="Color.Default">
+                    Showing @_tableRows.Count rows
+                </MudText>
+            }
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Warning">No data available for this report.</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public string ReportName { get; set; } = "";
+    [Parameter] public JsonElement? ReportData { get; set; }
+
+    private bool _isLoading = true;
+    private JsonElement? _reportData;
+    private List<SummaryMetric> _summaryMetrics = new();
+    private List<string> _tableHeaders = new();
+    private List<string[]> _tableRows = new();
+
+    protected override void OnInitialized()
+    {
+        _reportData = ReportData;
+        if (_reportData.HasValue)
+        {
+            ExtractSummaryMetrics(_reportData.Value);
+            ExtractTableData(_reportData.Value);
+        }
+        _isLoading = false;
+    }
+
+    private void ExtractSummaryMetrics(JsonElement data)
+    {
+        // Extract top-level numeric properties as summary cards
+        if (data.ValueKind != JsonValueKind.Object) return;
+
+        var skipProps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "generatedAt", "startDate", "endDate", "dailyStats", "dailyActivity",
+            "dailyPerformance", "scannerDetails", "scannerStats", "performanceMetrics",
+            "uptimeStats", "topContainersByImages", "userActivityDetails", "roleActivity",
+            "vehicleTypeStats", "processingStatusStats", "processingStatus",
+            "validationTypes", "commonIssues", "commonErrors", "errorAnalysis"
+        };
+
+        foreach (var prop in data.EnumerateObject())
+        {
+            if (skipProps.Contains(prop.Name)) continue;
+
+            string? displayValue = null;
+            if (prop.Value.ValueKind == JsonValueKind.Number)
+            {
+                if (prop.Name.Contains("Rate", StringComparison.OrdinalIgnoreCase) ||
+                    prop.Name.Contains("Percentage", StringComparison.OrdinalIgnoreCase))
+                    displayValue = $"{prop.Value.GetDouble():F1}%";
+                else
+                    displayValue = prop.Value.TryGetInt64(out var intVal) ? intVal.ToString("N0") : prop.Value.GetDouble().ToString("F1");
+            }
+
+            if (displayValue != null)
+            {
+                _summaryMetrics.Add(new SummaryMetric
+                {
+                    Label = FormatPropertyName(prop.Name),
+                    Value = displayValue
+                });
+            }
+        }
+    }
+
+    private void ExtractTableData(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object) return;
+
+        // Find the first array property that looks like daily/detail data
+        var tableProps = new[] { "dailyStats", "dailyActivity", "dailyPerformance",
+            "scannerDetails", "userActivityDetails", "validationTypes", "commonIssues",
+            "dailyStats", "vehicleTypeStats" };
+
+        foreach (var propName in tableProps)
+        {
+            if (data.TryGetProperty(propName, out var arrayProp) && arrayProp.ValueKind == JsonValueKind.Array)
+            {
+                var items = arrayProp.EnumerateArray().ToList();
+                if (!items.Any()) continue;
+
+                // Extract headers from first item
+                _tableHeaders = items[0].EnumerateObject().Select(p => FormatPropertyName(p.Name)).ToList();
+
+                // Extract rows
+                _tableRows = items.Select(item =>
+                    item.EnumerateObject().Select(p => FormatCellValue(p)).ToArray()
+                ).ToList();
+                break;
+            }
+        }
+    }
+
+    private string FormatCellValue(JsonProperty prop)
+    {
+        return prop.Value.ValueKind switch
+        {
+            JsonValueKind.Number when prop.Name.Contains("Rate", StringComparison.OrdinalIgnoreCase)
+                => $"{prop.Value.GetDouble():F1}%",
+            JsonValueKind.Number when prop.Value.TryGetInt64(out var i) => i.ToString("N0"),
+            JsonValueKind.Number => prop.Value.GetDouble().ToString("F2"),
+            JsonValueKind.String when DateTime.TryParse(prop.Value.GetString(), out var dt)
+                => dt.ToString("yyyy-MM-dd"),
+            JsonValueKind.String => prop.Value.GetString() ?? "",
+            JsonValueKind.True => "Yes",
+            JsonValueKind.False => "No",
+            _ => prop.Value.ToString()
+        };
+    }
+
+    private static string FormatPropertyName(string name)
+    {
+        // Convert camelCase/PascalCase to spaced words
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < name.Length; i++)
+        {
+            if (i > 0 && char.IsUpper(name[i]) && !char.IsUpper(name[i - 1]))
+                sb.Append(' ');
+            sb.Append(i == 0 ? char.ToUpper(name[i]) : name[i]);
+        }
+        return sb.ToString();
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private class SummaryMetric
+    {
+        public string Label { get; set; } = "";
+        public string Value { get; set; } = "";
+    }
+}

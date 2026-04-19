@@ -1,0 +1,2527 @@
+@using Microsoft.AspNetCore.Authorization
+@using NickScanCentralImagingPortal.Core.Constants
+@using Microsoft.AspNetCore.SignalR.Client
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Components.Operations
+@using NickScanWebApp.Shared.Models
+@using NickScanCentralImagingPortal.Core.Models
+@using MudBlazor
+@inject ApiService ApiService
+@inject NavigationManager Navigation
+@inject ILogger<OperationsDashboardPanel> Logger
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+@inject IDialogService DialogService
+@inject IJSRuntime JSRuntime
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IAsyncDisposable
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="my-4">
+    
+    <!-- Header Section -->
+    <MudGrid Spacing="3" Class="mb-4">
+        <MudItem xs="12">
+            <MudPaper Elevation="0" Class="pa-4" Style="background: linear-gradient(135deg, #2563EB 0%, #60A5FA 100%);">
+                <MudGrid>
+                    <MudItem xs="12" md="8">
+                        <MudText Typo="Typo.h4" Color="Color.Surface" Class="mb-2">
+                            <MudIcon Icon="@Icons.Material.Outlined.Dashboard" Size="Size.Large" Class="mr-2" />
+                            Image Analysis Operations Dashboard
+                        </MudText>
+                        <MudText Typo="Typo.body1" Color="Color.Surface">
+                            Real-time monitoring of workflow status, assignments, and performance metrics
+                        </MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="4" Class="d-flex align-center justify-end">
+                        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                            <MudChip T="string" 
+                                     Color="@(_isConnected ? Color.Success : Color.Error)" 
+                                     Icon="@(_isConnected ? Icons.Material.Outlined.Cloud : Icons.Material.Outlined.CloudOff)"
+                                     Size="Size.Medium">
+                                @(_isConnected ? "Live" : "Offline")
+                            </MudChip>
+                            <MudChip T="string"
+                                     Color="@(_autoRefreshEnabled ? Color.Success : Color.Default)"
+                                     Icon="@Icons.Material.Outlined.Autorenew"
+                                     Size="Size.Medium"
+                                     OnClick="ToggleAutoRefresh"
+                                     Style="cursor:pointer">
+                                @(_autoRefreshEnabled ? "Auto 60s" : "Auto Off")
+                            </MudChip>
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Surface" 
+                                      StartIcon="@Icons.Material.Outlined.Refresh"
+                                      OnClick="RefreshAllSections"
+                                      Disabled="_isLoading">
+                                Refresh
+                            </MudButton>
+                            <MudMenu Icon="@Icons.Material.Outlined.FileDownload" Color="Color.Surface" Variant="Variant.Outlined">
+                                <MudMenuItem OnClick="ExportCsv" Icon="@Icons.Material.Outlined.InsertDriveFile">
+                                    Export CSV
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="ExportPdf" Icon="@Icons.Material.Outlined.PictureAsPdf">
+                                    Export PDF
+                                </MudMenuItem>
+                            </MudMenu>
+                            <MudMenu Icon="@Icons.Material.Outlined.ViewModule" Color="Color.Surface" Variant="Variant.Outlined">
+                                <MudMenuItem OnClick="@(() => _showWorkflowStatus = !_showWorkflowStatus)">
+                                    <MudIcon Icon="@(_showWorkflowStatus ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Workflow Status
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showAssignments = !_showAssignments)">
+                                    <MudIcon Icon="@(_showAssignments ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Assignments
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showPerformance = !_showPerformance)">
+                                    <MudIcon Icon="@(_showPerformance ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Performance
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showUserActivity = !_showUserActivity)">
+                                    <MudIcon Icon="@(_showUserActivity ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    User Activity
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showQuality = !_showQuality)">
+                                    <MudIcon Icon="@(_showQuality ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Quality & Audit
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showBottlenecks = !_showBottlenecks)">
+                                    <MudIcon Icon="@(_showBottlenecks ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Bottlenecks
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showPredictive = !_showPredictive)">
+                                    <MudIcon Icon="@(_showPredictive ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Predictive Analytics
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showAlerts = !_showAlerts)">
+                                    <MudIcon Icon="@(_showAlerts ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    Alerts
+                                </MudMenuItem>
+                                <MudMenuItem OnClick="@(() => _showSystemHealth = !_showSystemHealth)">
+                                    <MudIcon Icon="@(_showSystemHealth ? Icons.Material.Outlined.CheckBox : Icons.Material.Outlined.CheckBoxOutlineBlank)" Class="mr-2" />
+                                    System Health
+                                </MudMenuItem>
+                            </MudMenu>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    @if (_isLoading && _dashboardData == null)
+    {
+        <MudGrid>
+            <MudItem xs="12" Class="text-center pa-8">
+                <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+                <MudText Typo="Typo.h6" Class="mt-4">Loading dashboard data...</MudText>
+            </MudItem>
+        </MudGrid>
+    }
+    else if (_dashboardData != null)
+    {
+        <!-- SECTION 1: Workflow Status Overview -->
+        @if (_showWorkflowStatus)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Timeline" Class="mr-2" />
+                        Workflow Status Overview
+                    </MudText>
+                    
+                    <!-- Workflow Pipeline Visualization -->
+                    <div style="display:flex; align-items:center; gap:4px; overflow-x:auto; padding-bottom:8px;" class="mb-4">
+                        @foreach (var stage in _workflowStages)
+                        {
+                            var stageData = _dashboardData.WorkflowStatus.Stages.GetValueOrDefault(stage);
+                            var count = stageData?.Count ?? 0;
+                            var statusColor = GetStatusColor(stageData?.Status ?? "Normal");
+                            
+                            <MudCard Elevation="1" Class="text-center" Style="cursor:pointer; min-width:120px; flex:1 1 0;" @onclick="@(() => ShowStageDetails(stage))">
+                                <MudCardContent Class="pa-2">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-size:0.7rem;">@stage</MudText>
+                                    <MudText Typo="Typo.h5" Color="@statusColor">@count</MudText>
+                                    @if (stageData != null)
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-size:0.65rem;">
+                                            @FormatTimeSpan(stageData.AverageAge)
+                                        </MudText>
+                                    }
+                                </MudCardContent>
+                            </MudCard>
+                            
+                            @if (stage != _workflowStages.Last())
+                            {
+                                <MudIcon Icon="@Icons.Material.Outlined.ArrowForward" Color="Color.Primary" Size="Size.Small" />
+                            }
+                        }
+                    </div>
+
+                    <!-- Stage Breakdown Cards -->
+                    <MudGrid Spacing="2">
+                        @foreach (var stage in _workflowStages)
+                        {
+                            var stageData = _dashboardData.WorkflowStatus.Stages.GetValueOrDefault(stage);
+                            if (stageData != null)
+                            {
+                                <MudItem xs="12" sm="6" md="4">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudStack Spacing="2">
+                                                <MudText Typo="Typo.h6">@stage</MudText>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Count:</MudText>
+                                                    <MudText Typo="Typo.body1" Color="@GetStatusColor(stageData.Status)">@stageData.Count</MudText>
+                                                </MudStack>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Age:</MudText>
+                                                    <MudText Typo="Typo.body1">@FormatTimeSpan(stageData.AverageAge)</MudText>
+                                                </MudStack>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Oldest:</MudText>
+                                                    <MudText Typo="Typo.body1">@FormatTimeSpan(stageData.OldestAge)</MudText>
+                                                </MudStack>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Incoming:</MudText>
+                                                    <MudText Typo="Typo.body1">@stageData.IncomingRate.ToString("F1")/hr</MudText>
+                                                </MudStack>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Outgoing:</MudText>
+                                                    <MudText Typo="Typo.body1">@stageData.OutgoingRate.ToString("F1")/hr</MudText>
+                                                </MudStack>
+                                            </MudStack>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+                            }
+                        }
+                    </MudGrid>
+
+                    <!-- WorkflowStage Distribution -->
+                    <MudGrid Spacing="2" Class="mt-4">
+                        <MudItem xs="12" md="6">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.h6" Class="mb-3">WorkflowStage Distribution</MudText>
+                                    @if (_dashboardData.WorkflowStatus.Distribution.Any())
+                                    {
+                                        <MudSimpleTable Dense="true">
+                                            <thead>
+                                                <tr>
+                                                    <th>Stage</th>
+                                                    <th>Count</th>
+                                                    <th>Percentage</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var dist in _dashboardData.WorkflowStatus.Distribution)
+                                                {
+                                                    <tr>
+                                                        <td>@dist.StageName</td>
+                                                        <td>@dist.Count</td>
+                                                        <td>@dist.Percentage.ToString("F1")%</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </MudSimpleTable>
+                                    }
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 2: Assignment Management -->
+        @if (_showAssignments)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Assignment" Class="mr-2" />
+                        Assignment Management
+                    </MudText>
+
+                    <!-- Assignment Mode Status -->
+                    <MudGrid Spacing="2" Class="mb-4">
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Assignment Mode</MudText>
+                                        <MudChip T="string" Color="@GetAssignmentModeColor(_dashboardData.Assignments.AssignmentMode)" Size="Size.Medium">
+                                            @_dashboardData.Assignments.AssignmentMode
+                                        </MudChip>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Service Status</MudText>
+                                        <MudChip T="string" Color="@(_dashboardData.Assignments.ServiceEnabled ? Color.Success : Color.Error)" Size="Size.Medium">
+                                            @(_dashboardData.Assignments.ServiceEnabled ? "Enabled" : "Disabled")
+                                        </MudChip>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Strategy</MudText>
+                                        <MudText Typo="Typo.body1">@_dashboardData.Assignments.CurrentStrategy</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Balance Score</MudText>
+                                        <MudText Typo="Typo.h6" Color="@GetBalanceScoreColor(_dashboardData.Assignments.BalanceScore)">
+                                            @_dashboardData.Assignments.BalanceScore.ToString("F1")%
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- Active Assignments Table -->
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        Active Assignments 
+                        @if (_dashboardData.Assignments.UserAssignments != null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">@_dashboardData.Assignments.UserAssignments.Count</MudChip>
+                        }
+                    </MudText>
+                    @if (_dashboardData.Assignments.UserAssignments == null || !_dashboardData.Assignments.UserAssignments.Any())
+                    {
+                        <MudAlert Severity="Severity.Info" Class="mb-4">
+                            <MudText>No active assignments found. Users with active assignments will appear here.</MudText>
+                        </MudAlert>
+                    }
+                    else
+                    {
+                        <MudTable Items="@_dashboardData.Assignments.UserAssignments" Dense="true" Hover="true" Bordered="true" Class="mb-4">
+                        <HeaderContent>
+                            <MudTh>User</MudTh>
+                            <MudTh>Role</MudTh>
+                            <MudTh>Active</MudTh>
+                            <MudTh>Max</MudTh>
+                            <MudTh>Utilization</MudTh>
+                            <MudTh>Avg Age</MudTh>
+                            <MudTh>Oldest</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Username</MudTd>
+                            <MudTd>@context.Role</MudTd>
+                            <MudTd>@context.ActiveAssignments</MudTd>
+                            <MudTd>@context.MaxConcurrent</MudTd>
+                            <MudTd>
+                                <MudProgressLinear Color="@GetUtilizationColor(context.Utilization)" 
+                                                  Value="@context.Utilization" 
+                                                  Class="mt-2" />
+                                <MudText Typo="Typo.caption">@context.Utilization.ToString("F1")%</MudText>
+                            </MudTd>
+                            <MudTd>@FormatTimeSpan(context.AverageAge)</MudTd>
+                            <MudTd>@FormatTimeSpan(context.OldestAge)</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                    }
+
+                    <!-- Queue Status -->
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="6">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.h6" Class="mb-2">Analyst Queue</MudText>
+                                    <MudStack Spacing="2">
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Ready for Assignment:</MudText>
+                                            <MudText Typo="Typo.h6" Color="Color.Primary">@_dashboardData.Assignments.AnalystQueue.ReadyForAssignment</MudText>
+                                        </MudStack>
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Assignment Rate:</MudText>
+                                            <MudText Typo="Typo.body1">@_dashboardData.Assignments.AnalystQueue.AssignmentRate.ToString("F1")/hr</MudText>
+                                        </MudStack>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" md="6">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudText Typo="Typo.h6" Class="mb-2">Audit Queue</MudText>
+                                    <MudStack Spacing="2">
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Ready for Assignment:</MudText>
+                                            <MudText Typo="Typo.h6" Color="Color.Primary">@_dashboardData.Assignments.AuditQueue.ReadyForAssignment</MudText>
+                                        </MudStack>
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Assignment Rate:</MudText>
+                                            <MudText Typo="Typo.body1">@_dashboardData.Assignments.AuditQueue.AssignmentRate.ToString("F1")/hr</MudText>
+                                        </MudStack>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 2.5: Real-Time Readiness Status -->
+        @if (_showAssignments && _dashboardData?.RealTimeReadiness != null)
+        {
+            <MudGrid Spacing="3" Class="mb-4">
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="pa-4">
+                        <MudText Typo="Typo.h5" Class="mb-3">
+                            <MudIcon Icon="@Icons.Material.Outlined.Person" Class="mr-2" />
+                            Real-Time User Readiness
+                        </MudText>
+
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Ready Analysts</MudText>
+                                            <MudText Typo="Typo.h4" Color="Color.Success">
+                                                @_dashboardData.RealTimeReadiness.ReadyAnalysts / @_dashboardData.RealTimeReadiness.TotalAnalysts
+                                            </MudText>
+                                            <MudProgressLinear Color="Color.Success" 
+                                                              Value="@_dashboardData.RealTimeReadiness.AnalystReadinessPercentage" 
+                                                              Class="mt-2" />
+                                            <MudText Typo="Typo.caption">@_dashboardData.RealTimeReadiness.AnalystReadinessPercentage.ToString("F1")% Ready</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Ready Auditors</MudText>
+                                            <MudText Typo="Typo.h4" Color="Color.Success">
+                                                @_dashboardData.RealTimeReadiness.ReadyAuditors / @_dashboardData.RealTimeReadiness.TotalAuditors
+                                            </MudText>
+                                            <MudProgressLinear Color="Color.Success" 
+                                                              Value="@_dashboardData.RealTimeReadiness.AuditorReadinessPercentage" 
+                                                              Class="mt-2" />
+                                            <MudText Typo="Typo.caption">@_dashboardData.RealTimeReadiness.AuditorReadinessPercentage.ToString("F1")% Ready</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Total Ready Users</MudText>
+                                            <MudText Typo="Typo.h4" Color="Color.Primary">
+                                                @_dashboardData.RealTimeReadiness.ReadyUsers.Count
+                                            </MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">Last Update: @_dashboardData.RealTimeReadiness.LastUpdate.ToString("HH:mm:ss")</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Data Source</MudText>
+                                            <MudChip T="string" Color="Color.Info" Size="Size.Medium" Icon="@Icons.Material.Outlined.Cloud">
+                                                SignalR Real-Time
+                                            </MudChip>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        @if (_dashboardData.RealTimeReadiness.ReadyUsers != null && _dashboardData.RealTimeReadiness.ReadyUsers.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Ready Users</MudText>
+                            <MudTable Items="@_dashboardData.RealTimeReadiness.ReadyUsers" Dense="true" Hover="true" Bordered="true">
+                                <HeaderContent>
+                                    <MudTh>Username</MudTh>
+                                    <MudTh>Role</MudTh>
+                                    <MudTh>Status</MudTh>
+                                    <MudTh>Last Heartbeat</MudTh>
+                                    <MudTh>Time Since</MudTh>
+                                    <MudTh>Source</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.Username</MudTd>
+                                    <MudTd>@context.Role</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Color="Color.Success" Size="Size.Small">Ready</MudChip>
+                                    </MudTd>
+                                    <MudTd>@context.LastHeartbeat.ToString("HH:mm:ss")</MudTd>
+                                    <MudTd>@FormatTimeSpan(context.TimeSinceLastHeartbeat)</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Color="Color.Info" Size="Size.Small">@context.Source</MudChip>
+                                    </MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Warning" Class="mb-4">
+                                <MudText>No users currently marked as ready. Users will appear here when they signal readiness via the Image Analysis page.</MudText>
+                            </MudAlert>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+
+        <!-- SECTION 3: Performance Metrics -->
+        @if (_showPerformance)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Speed" Class="mr-2" />
+                        Performance Metrics
+                    </MudText>
+
+                    <!-- Throughput Metrics -->
+                    <MudGrid Spacing="2" Class="mb-4">
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Containers/Hour</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Primary">
+                                            @_dashboardData.Performance.Throughput.ContainersPerHour.ToString("F1")
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Groups/Hour</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Primary">
+                                            @_dashboardData.Performance.Throughput.GroupsPerHour.ToString("F1")
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Decisions/Hour</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Primary">
+                                            @_dashboardData.Performance.Throughput.DecisionsPerHour.ToString("F1")
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="2">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Performance vs Target</MudText>
+                                        <MudText Typo="Typo.h4" Color="@GetPerformanceColor(_dashboardData.Performance.Throughput.PerformanceVsTarget)">
+                                            @_dashboardData.Performance.Throughput.PerformanceVsTarget.ToString("F1")%
+                                        </MudText>
+                                        <MudProgressLinear 
+                                            Color="@GetPerformanceColor(_dashboardData.Performance.Throughput.PerformanceVsTarget)" 
+                                            Value="@Math.Min(100, _dashboardData.Performance.Throughput.PerformanceVsTarget)" 
+                                            Class="mt-1" />
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            Target: @_dashboardData.Performance.Throughput.TargetThroughput/hr
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- Processing Time Metrics -->
+                    <MudText Typo="Typo.h6" Class="mb-2">Processing Times</MudText>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Ready → Analyst Assigned</MudText>
+                                        <MudText Typo="Typo.h6">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.ReadyToAnalystAssigned)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Analyst Assigned → Completed</MudText>
+                                        <MudText Typo="Typo.h6">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.AnalystAssignedToCompleted)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Analyst Completed → Audit Assigned</MudText>
+                                        <MudText Typo="Typo.h6">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.AnalystCompletedToAuditAssigned)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Audit Assigned → Completed</MudText>
+                                        <MudText Typo="Typo.h6">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.AuditAssignedToCompleted)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="4">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total End-to-End</MudText>
+                                        <MudText Typo="Typo.h6" Color="Color.Primary">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.TotalEndToEnd)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- System Performance -->
+                    <MudText Typo="Typo.h6" Class="mb-2 mt-4">System Performance</MudText>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">AssignmentWorker Cycle</MudText>
+                                        <MudText Typo="Typo.body1">@FormatTimeSpan(_dashboardData.Performance.SystemPerformance.AssignmentWorkerCycleTime)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Avg DB Query Time</MudText>
+                                        <MudText Typo="Typo.body1">@FormatTimeSpan(_dashboardData.Performance.SystemPerformance.AverageDatabaseQueryTime)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Avg API Response</MudText>
+                                        <MudText Typo="Typo.body1">@FormatTimeSpan(_dashboardData.Performance.SystemPerformance.AverageApiResponseTime)</MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <MudCard Elevation="1">
+                                <MudCardContent>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Error Rate</MudText>
+                                        <MudText Typo="Typo.body1" Color="@(_dashboardData.Performance.SystemPerformance.ErrorRate > 1 ? Color.Error : Color.Success)">
+                                            @_dashboardData.Performance.SystemPerformance.ErrorRate.ToString("F2")/1000
+                                        </MudText>
+                                    </MudStack>
+                                </MudCardContent>
+                            </MudCard>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 3.5: Historical Trends -->
+        @if (_showPerformance)
+        {
+            <MudGrid Spacing="3" Class="mb-4">
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h5">
+                                <MudIcon Icon="@Icons.Material.Outlined.TrendingUp" Class="mr-2" />
+                                Historical Trends
+                            </MudText>
+                            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                <MudChipSet T="string" @bind-SelectedValue="_trendsPeriod" SelectionMode="SelectionMode.SingleSelection">
+                                    <MudChip T="string" Value="@("24h")" Color="Color.Primary" Variant="Variant.Text">24h</MudChip>
+                                    <MudChip T="string" Value="@("7d")" Color="Color.Primary" Variant="Variant.Text">7d</MudChip>
+                                    <MudChip T="string" Value="@("30d")" Color="Color.Primary" Variant="Variant.Text">30d</MudChip>
+                                </MudChipSet>
+                                <MudIconButton Icon="@Icons.Material.Outlined.Refresh" Size="Size.Small" OnClick="LoadTrendsData" />
+                            </MudStack>
+                        </MudStack>
+
+                        @if (_trendsData != null)
+                        {
+                            <MudGrid Spacing="2">
+                                <MudItem xs="12" md="6">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudText Typo="Typo.h6" Class="mb-2">Throughput Trend</MudText>
+                                            @if (_trendsData.ThroughputTrend.Any())
+                                            {
+                                                <MudSimpleTable Dense="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Time</th>
+                                                            <th>Groups/hr</th>
+                                                            <th>Decisions/hr</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var point in _trendsData.ThroughputTrend)
+                                                        {
+                                                            <tr>
+                                                                <td>@point.Timestamp.ToString("MMM dd HH:mm")</td>
+                                                                <td>@point.GroupsPerHour.ToString("F1")</td>
+                                                                <td>@point.DecisionsPerHour.ToString("F1")</td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">No trend data available</MudText>
+                                            }
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudText Typo="Typo.h6" Class="mb-2">Stage Duration Trend</MudText>
+                                            @if (_trendsData.StageDurationTrend.Any())
+                                            {
+                                                <MudSimpleTable Dense="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Stage</th>
+                                                            <th>Avg Duration</th>
+                                                            <th>Median</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var point in _trendsData.StageDurationTrend)
+                                                        {
+                                                            <tr>
+                                                                <td>@point.StageName</td>
+                                                                <td>@FormatTimeSpan(point.AverageDuration)</td>
+                                                                <td>@FormatTimeSpan(point.MedianDuration)</td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">No stage duration data available</MudText>
+                                            }
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudText Typo="Typo.h6" Class="mb-2">Assignment Efficiency</MudText>
+                                            @if (_trendsData.AssignmentEfficiencyTrend.Any())
+                                            {
+                                                <MudSimpleTable Dense="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Time</th>
+                                                            <th>Rate/hr</th>
+                                                            <th>Avg Wait</th>
+                                                            <th>Success %</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var point in _trendsData.AssignmentEfficiencyTrend)
+                                                        {
+                                                            <tr>
+                                                                <td>@point.Timestamp.ToString("MMM dd HH:mm")</td>
+                                                                <td>@point.AssignmentRate.ToString("F1")</td>
+                                                                <td>@FormatTimeSpan(point.AverageWaitTime)</td>
+                                                                <td>@point.SuccessRate.ToString("F1")%</td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">No assignment data available</MudText>
+                                            }
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudText Typo="Typo.h6" Class="mb-2">Quality Trend</MudText>
+                                            @if (_trendsData.QualityTrend.Any())
+                                            {
+                                                <MudSimpleTable Dense="true">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Time</th>
+                                                            <th>Quality</th>
+                                                            <th>Approval %</th>
+                                                            <th>Discrepancy %</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var point in _trendsData.QualityTrend)
+                                                        {
+                                                            <tr>
+                                                                <td>@point.Timestamp.ToString("MMM dd HH:mm")</td>
+                                                                <td>@point.QualityScore.ToString("F1")%</td>
+                                                                <td>@point.ApprovalRate.ToString("F1")%</td>
+                                                                <td>@point.DiscrepancyRate.ToString("F1")%</td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </MudSimpleTable>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">No quality data available</MudText>
+                                            }
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+                            </MudGrid>
+                        }
+                        else
+                        {
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadTrendsData">
+                                Load Historical Trends
+                            </MudButton>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+
+        <!-- SECTION 3.5: Data Integrity Monitoring -->
+        @if (_dashboardData?.DataIntegrity != null)
+        {
+            <MudGrid Spacing="3" Class="mb-4">
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="pa-4">
+                        <MudText Typo="Typo.h5" Class="mb-3">
+                            <MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Class="mr-2" />
+                            Data Integrity Monitoring
+                        </MudText>
+
+                        <!-- Integrity Overview -->
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Integrity Status</MudText>
+                                            <MudChip T="string" 
+                                                    Color="@GetIntegrityStatusColor(_dashboardData.DataIntegrity.IntegrityStatus)" 
+                                                    Size="Size.Medium"
+                                                    Icon="@GetIntegrityStatusIcon(_dashboardData.DataIntegrity.IntegrityStatus)">
+                                                @_dashboardData.DataIntegrity.IntegrityStatus
+                                            </MudChip>
+                                            <MudText Typo="Typo.h4" Color="@GetIntegrityStatusColor(_dashboardData.DataIntegrity.IntegrityStatus)">
+                                                @_dashboardData.DataIntegrity.IntegrityPercentage.ToString("F2")%
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Total Containers</MudText>
+                                            <MudText Typo="Typo.h4" Color="Color.Primary">
+                                                @_dashboardData.DataIntegrity.TotalContainers.ToString("N0")
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">NULL GroupIdentifier</MudText>
+                                            <MudText Typo="Typo.h4" Color="@(_dashboardData.DataIntegrity.ContainersWithNullGroupIdentifier > 0 ? Color.Warning : Color.Success)">
+                                                @_dashboardData.DataIntegrity.ContainersWithNullGroupIdentifier.ToString("N0")
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Missing BOEDocumentId</MudText>
+                                            <MudText Typo="Typo.h4" Color="@(_dashboardData.DataIntegrity.ContainersWithMissingBOEDocumentId > 0 ? Color.Warning : Color.Success)">
+                                                @_dashboardData.DataIntegrity.ContainersWithMissingBOEDocumentId.ToString("N0")
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Preventive Fixes -->
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Preventive Fixes (Last 24h)</MudText>
+                                            <MudText Typo="Typo.h5" Color="Color.Success">
+                                                @_dashboardData.DataIntegrity.PreventiveFixesLast24h
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Preventive Fixes (Last Hour)</MudText>
+                                            <MudText Typo="Typo.h5" Color="Color.Success">
+                                                @_dashboardData.DataIntegrity.PreventiveFixesLastHour
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Last Fix Time</MudText>
+                                            <MudText Typo="Typo.body1">
+                                                @_dashboardData.DataIntegrity.LastPreventiveFixTime.ToString("yyyy-MM-dd HH:mm:ss")
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        @if (_dashboardData.DataIntegrity.RecentIssues != null && _dashboardData.DataIntegrity.RecentIssues.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Recent Issues</MudText>
+                            <MudTable Items="@_dashboardData.DataIntegrity.RecentIssues" Dense="true" Hover="true" Bordered="true">
+                                <HeaderContent>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Scanner</MudTh>
+                                    <MudTh>Issue Type</MudTh>
+                                    <MudTh>Detected At</MudTh>
+                                    <MudTh>Status</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.ContainerNumber</MudTd>
+                                    <MudTd>@context.ScannerType</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" 
+                                                Color="@(context.IssueType == "NullGroupIdentifier" ? Color.Warning : Color.Error)" 
+                                                Size="Size.Small">
+                                            @context.IssueType
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd>@context.DetectedAt.ToString("yyyy-MM-dd HH:mm:ss")</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" 
+                                                Color="@(context.IsFixed ? Color.Success : Color.Warning)" 
+                                                Size="Size.Small">
+                                            @(context.IsFixed ? "Fixed" : "Pending")
+                                        </MudChip>
+                                    </MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+
+        <!-- SECTION 3.7: Container Completeness Safeguard Summary -->
+        @if (_safeguardData != null)
+        {
+            <MudGrid Spacing="3" Class="mb-4">
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h5">
+                                <MudIcon Icon="@Icons.Material.Outlined.Shield" Class="mr-2" />
+                                Container Completeness Safeguards
+                            </MudText>
+                            <MudIconButton Icon="@Icons.Material.Outlined.Refresh" Size="Size.Small" OnClick="LoadSafeguardData" />
+                        </MudStack>
+
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Total</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Primary">@_safeguardData.TotalCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Complete</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Success">@_safeguardData.CompleteCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Missing</MudText>
+                                        <MudText Typo="Typo.h4" Color="@(_safeguardData.MissingCount > 0 ? Color.Warning : Color.Success)">@_safeguardData.MissingCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Export-Pending</MudText>
+                                        <MudText Typo="Typo.h4" Color="Color.Info">@_safeguardData.ExportPendingCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Location Mismatch</MudText>
+                                        <MudText Typo="Typo.h4" Color="@(_safeguardData.LocationMismatchCount > 0 ? Color.Error : Color.Success)">@_safeguardData.LocationMismatchCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="2">
+                                <MudCard Elevation="1">
+                                    <MudCardContent Class="text-center">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Manual Review</MudText>
+                                        <MudText Typo="Typo.h4" Color="@(_safeguardData.FlaggedForReviewCount > 0 ? Color.Warning : Color.Success)">@_safeguardData.FlaggedForReviewCount</MudText>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        @if (_safeguardData.StatusBreakdown.Any())
+                        {
+                            <MudSimpleTable Dense="true" Class="mt-3">
+                                <thead>
+                                    <tr>
+                                        <th>Status</th>
+                                        <th>Count</th>
+                                        <th>Percentage</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var item in _safeguardData.StatusBreakdown.OrderByDescending(s => s.Count))
+                                    {
+                                        <tr>
+                                            <td>@item.Status</td>
+                                            <td>@item.Count</td>
+                                            <td>@(_safeguardData.TotalCount > 0 ? (item.Count * 100.0 / _safeguardData.TotalCount).ToString("F1") : "0")%</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+
+        <!-- SECTION 4: User Activity & Productivity (Phase 2) -->
+        @if (_showUserActivity)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.People" Class="mr-2" />
+                        User Activity & Productivity
+                    </MudText>
+
+                    @if (_userActivityData != null)
+                    {
+                        <!-- Active Users Panel -->
+                        <MudText Typo="Typo.h6" Class="mb-2">Active Users</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            @foreach (var user in _userActivityData.ActiveUsers)
+                            {
+                                <MudItem xs="12" sm="6" md="4">
+                                    <MudCard Elevation="1">
+                                        <MudCardContent>
+                                            <MudStack Spacing="1">
+                                                <MudText Typo="Typo.h6">@user.Username</MudText>
+                                                <MudChip T="string" Color="Color.Info" Size="Size.Small">@user.Role</MudChip>
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                    Last Activity: @FormatTimeSpan(user.TimeSinceLastActivity) ago
+                                                </MudText>
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                    Session: @FormatTimeSpan(user.SessionDuration)
+                                                </MudText>
+                                                <MudProgressLinear Color="Color.Success" Value="@user.ActivityLevel" Class="mt-2" />
+                                            </MudStack>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudItem>
+                            }
+                        </MudGrid>
+
+                        <!-- User Productivity Leaderboard -->
+                        <MudText Typo="Typo.h6" Class="mb-2">Productivity Leaderboard</MudText>
+                        <MudTable Items="@_userActivityData.UserProductivity" Dense="true" Hover="true" Bordered="true" Class="mb-4">
+                            <HeaderContent>
+                                <MudTh>Rank</MudTh>
+                                <MudTh>User</MudTh>
+                                <MudTh>Role</MudTh>
+                                <MudTh>Completed Today</MudTh>
+                                <MudTh>Avg Time</MudTh>
+                                <MudTh>Productivity</MudTh>
+                                <MudTh>Quality Score</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@(Array.IndexOf(_userActivityData.UserProductivity.ToArray(), context) + 1)</MudTd>
+                                <MudTd>@context.Username</MudTd>
+                                <MudTd>@context.Role</MudTd>
+                                <MudTd>@context.ContainersCompletedToday</MudTd>
+                                <MudTd>@FormatTimeSpan(context.AverageTimePerContainer)</MudTd>
+                                <MudTd>
+                                    <MudText Typo="Typo.body1" Color="Color.Primary">
+                                        @context.ProductivityScore.ToString("F1")/hr
+                                    </MudText>
+                                </MudTd>
+                                <MudTd>
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.body1" Color="@GetQualityColor(context.QualityScore)">
+                                            @context.QualityScore.ToString("F1")%
+                                        </MudText>
+                                        <MudProgressLinear 
+                                            Color="@GetQualityColor(context.QualityScore)" 
+                                            Value="@context.QualityScore" 
+                                            Size="Size.Small" />
+                                    </MudStack>
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadUserActivityData">
+                            Load User Activity Data
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 5: Quality & Audit Metrics (Phase 2) -->
+        @if (_showQuality)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Assessment" Class="mr-2" />
+                        Quality & Audit Metrics
+                    </MudText>
+
+                    @if (_qualityMetricsData != null)
+                    {
+                        <!-- Decision Distribution -->
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Decision Distribution</MudText>
+                                        <MudStack Spacing="2">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Normal:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Success">@_qualityMetricsData.DecisionDistribution.NormalCount</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Abnormal:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Warning">@_qualityMetricsData.DecisionDistribution.AbnormalCount</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Not Clear:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Info">@_qualityMetricsData.DecisionDistribution.NotClearCount</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Total:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Primary">@_qualityMetricsData.DecisionDistribution.TotalCount</MudText>
+                                            </MudStack>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+
+                            <!-- Audit Outcomes -->
+                            <MudItem xs="12" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Audit Outcomes</MudText>
+                                        <MudStack Spacing="2">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Total Audited:</MudText>
+                                                <MudText Typo="Typo.body1">@_qualityMetricsData.AuditOutcomes.TotalAudited</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Approved:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Success">@_qualityMetricsData.AuditOutcomes.ApprovedCount (@_qualityMetricsData.AuditOutcomes.ApprovedRate.ToString("F1")%)</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2">Rejected:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Error">@_qualityMetricsData.AuditOutcomes.RejectedCount (@_qualityMetricsData.AuditOutcomes.RejectionRate.ToString("F1")%)</MudText>
+                                            </MudStack>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+
+                            <!-- Quality Scores -->
+                            <MudItem xs="12" md="4">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Quality Scores</MudText>
+                                        <MudStack Spacing="3">
+                                            <!-- Overall Quality with Progress Bar -->
+                                            <div>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-1">
+                                                    <MudText Typo="Typo.body2">Overall Quality:</MudText>
+                                                    <MudText Typo="Typo.h6" Color="@GetQualityColor(_qualityMetricsData.QualityScores.OverallQualityScore)">
+                                                        @_qualityMetricsData.QualityScores.OverallQualityScore.ToString("F1")%
+                                                    </MudText>
+                                                </MudStack>
+                                                <MudProgressLinear 
+                                                    Color="@GetQualityColor(_qualityMetricsData.QualityScores.OverallQualityScore)" 
+                                                    Value="@_qualityMetricsData.QualityScores.OverallQualityScore" 
+                                                    Class="mt-1" />
+                                            </div>
+                                            <!-- Analyst Accuracy with Progress Bar -->
+                                            <div>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-1">
+                                                    <MudText Typo="Typo.body2">Analyst Accuracy:</MudText>
+                                                    <MudText Typo="Typo.body1">@_qualityMetricsData.QualityScores.AnalystAccuracy.ToString("F1")%</MudText>
+                                                </MudStack>
+                                                <MudProgressLinear 
+                                                    Color="@GetQualityColor(_qualityMetricsData.QualityScores.AnalystAccuracy)" 
+                                                    Value="@_qualityMetricsData.QualityScores.AnalystAccuracy" 
+                                                    Class="mt-1" />
+                                            </div>
+                                            <!-- Discrepancy Rate (inverse - lower is better) -->
+                                            <div>
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-1">
+                                                    <MudText Typo="Typo.body2">Discrepancy Rate:</MudText>
+                                                    <MudText Typo="Typo.body1" Color="Color.Warning">@_qualityMetricsData.QualityScores.AverageDiscrepancyRate.ToString("F1")%</MudText>
+                                                </MudStack>
+                                                <MudProgressLinear 
+                                                    Color="Color.Warning" 
+                                                    Value="@_qualityMetricsData.QualityScores.AverageDiscrepancyRate" 
+                                                    Class="mt-1" />
+                                            </div>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Audit Discrepancies -->
+                        @if (_qualityMetricsData.Discrepancies.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Audit Discrepancies</MudText>
+                            <MudTable Items="@_qualityMetricsData.Discrepancies" Dense="true" Hover="true" Bordered="true">
+                                <HeaderContent>
+                                    <MudTh>Container</MudTh>
+                                    <MudTh>Group</MudTh>
+                                    <MudTh>Analyst Decision</MudTh>
+                                    <MudTh>Audit Decision</MudTh>
+                                    <MudTh>Analyst</MudTh>
+                                    <MudTh>Auditor</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.ContainerNumber</MudTd>
+                                    <MudTd>@context.GroupIdentifier</MudTd>
+                                    <MudTd><MudChip T="string" Color="Color.Warning" Size="Size.Small">@context.AnalystDecision</MudChip></MudTd>
+                                    <MudTd><MudChip T="string" Color="Color.Error" Size="Size.Small">@context.AuditDecision</MudChip></MudTd>
+                                    <MudTd>@context.AnalystUsername</MudTd>
+                                    <MudTd>@context.AuditorUsername</MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadQualityMetricsData">
+                            Load Quality Metrics Data
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 6: Bottleneck Analysis (Phase 2) -->
+        @if (_showBottlenecks)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Warning" Class="mr-2" />
+                        Bottleneck Analysis
+                    </MudText>
+
+                    @if (_bottleneckData != null)
+                    {
+                        @if (_bottleneckData.DetectedBottlenecks.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Detected Bottlenecks</MudText>
+                            <MudGrid Spacing="2" Class="mb-4">
+                                @foreach (var bottleneck in _bottleneckData.DetectedBottlenecks)
+                                {
+                                    var severityColor = bottleneck.Severity == "Critical" ? Color.Error :
+                                                         bottleneck.Severity == "High" ? Color.Warning :
+                                                         bottleneck.Severity == "Medium" ? Color.Info : Color.Default;
+
+                                    <MudItem xs="12" md="6">
+                                        <MudCard Elevation="1" Style="@($"border-left: 4px solid {GetSeverityColorHex(bottleneck.Severity)};")">
+                                            <MudCardContent>
+                                                <MudStack Spacing="2">
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                        <MudText Typo="Typo.h6">@bottleneck.StageName</MudText>
+                                                        <MudChip T="string" Color="@severityColor" Size="Size.Small">@bottleneck.Severity</MudChip>
+                                                    </MudStack>
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Queue Size:</MudText>
+                                                        <MudText Typo="Typo.body1">@bottleneck.QueueSize</MudText>
+                                                    </MudStack>
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Wait:</MudText>
+                                                        <MudText Typo="Typo.body1">@FormatTimeSpan(bottleneck.AverageWaitTime)</MudText>
+                                                    </MudStack>
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Longest Wait:</MudText>
+                                                        <MudText Typo="Typo.body1">@FormatTimeSpan(bottleneck.LongestWait)</MudText>
+                                                    </MudStack>
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Throughput Impact:</MudText>
+                                                        <MudText Typo="Typo.body1" Color="Color.Error">-@bottleneck.ThroughputImpact.ToString("F1")%</MudText>
+                                                    </MudStack>
+                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Root Cause: @bottleneck.RootCause</MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudItem>
+                                }
+                            </MudGrid>
+
+                            <!-- Resolution Suggestions -->
+                            @if (_bottleneckData.SuggestedResolutions.Any())
+                            {
+                                <MudText Typo="Typo.h6" Class="mb-2">Suggested Resolutions</MudText>
+                                <MudList T="string">
+                                    @foreach (var resolution in _bottleneckData.SuggestedResolutions)
+                                    {
+                                        <MudListItem T="string">
+                                            <MudStack Spacing="1">
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                    <MudText Typo="Typo.body1">@resolution.Description</MudText>
+                                                    <MudChip T="string" Color="Color.Info" Size="Size.Small">@resolution.Priority Priority</MudChip>
+                                                </MudStack>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                    Expected Impact: +@resolution.ExpectedImpact.ToString("F1")% improvement
+                                                </MudText>
+                                            </MudStack>
+                                        </MudListItem>
+                                    }
+                                </MudList>
+                            }
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Success" Class="mb-4">
+                                <MudText>✅ No bottlenecks detected. System is operating smoothly.</MudText>
+                            </MudAlert>
+                        }
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadBottleneckData">
+                            Load Bottleneck Analysis
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 7: Predictive Analytics (Phase 3) -->
+        @if (_showPredictive)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.TrendingUp" Class="mr-2" />
+                        Predictive Analytics
+                    </MudText>
+
+                    @if (_predictiveData != null)
+                    {
+                        <!-- Workload Forecast -->
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" md="6">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Workload Forecast</MudText>
+                                        <MudStack Spacing="2">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Expected Peak Load:</MudText>
+                                                <MudText Typo="Typo.body1" Color="Color.Primary">@_predictiveData.WorkloadForecast.ExpectedPeakLoad.ToString("F1") containers/hr</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Peak Time:</MudText>
+                                                <MudText Typo="Typo.body1">@(_predictiveData.WorkloadForecast.ExpectedPeakTime?.ToString("HH:mm") ?? "N/A")</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Confidence:</MudText>
+                                                <MudText Typo="Typo.body1">@_predictiveData.WorkloadForecast.ConfidenceLevel.ToString("F0")%</MudText>
+                                            </MudStack>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+
+                            <!-- Capacity Planning -->
+                            <MudItem xs="12" md="6">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.h6" Class="mb-2">Capacity Planning</MudText>
+                                        <MudStack Spacing="2">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Current Capacity:</MudText>
+                                                <MudText Typo="Typo.body1">@_predictiveData.CapacityPlanning.CurrentCapacity containers/hr</MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Required Capacity:</MudText>
+                                                <MudText Typo="Typo.body1" Color="@(_predictiveData.CapacityPlanning.CapacityGap > 0 ? Color.Warning : Color.Success)">
+                                                    @_predictiveData.CapacityPlanning.RequiredCapacity containers/hr
+                                                </MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Capacity Gap:</MudText>
+                                                <MudText Typo="Typo.body1" Color="@(_predictiveData.CapacityPlanning.CapacityGap > 0 ? Color.Error : Color.Success)">
+                                                    @_predictiveData.CapacityPlanning.CapacityGap containers/hr
+                                                </MudText>
+                                            </MudStack>
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">Utilization:</MudText>
+                                                <MudText Typo="Typo.body1">@_predictiveData.CapacityPlanning.UtilizationRate.ToString("F1")%</MudText>
+                                            </MudStack>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Resource Needs -->
+                        <MudText Typo="Typo.h6" Class="mb-2">Resource Needs</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Required Analysts</MudText>
+                                            <MudText Typo="Typo.h5" Color="@(_predictiveData.ResourceNeeds.RequiredAnalysts > _predictiveData.ResourceNeeds.CurrentAnalysts ? Color.Warning : Color.Success)">
+                                                @_predictiveData.ResourceNeeds.RequiredAnalysts
+                                            </MudText>
+                                            <MudText Typo="Typo.caption">Current: @_predictiveData.ResourceNeeds.CurrentAnalysts</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Required Auditors</MudText>
+                                            <MudText Typo="Typo.h5" Color="@(_predictiveData.ResourceNeeds.RequiredAuditors > _predictiveData.ResourceNeeds.CurrentAuditors ? Color.Warning : Color.Success)">
+                                                @_predictiveData.ResourceNeeds.RequiredAuditors
+                                            </MudText>
+                                            <MudText Typo="Typo.caption">Current: @_predictiveData.ResourceNeeds.CurrentAuditors</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Analyst Utilization</MudText>
+                                            <MudText Typo="Typo.h5">@_predictiveData.ResourceNeeds.AnalystUtilization.ToString("F1")%</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Auditor Utilization</MudText>
+                                            <MudText Typo="Typo.h5">@_predictiveData.ResourceNeeds.AuditorUtilization.ToString("F1")%</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Bottleneck Predictions -->
+                        @if (_predictiveData.BottleneckPredictions.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Bottleneck Predictions</MudText>
+                            <MudTable Items="@_predictiveData.BottleneckPredictions" Dense="true" Hover="true" Bordered="true">
+                                <HeaderContent>
+                                    <MudTh>Stage</MudTh>
+                                    <MudTh>Predicted Time</MudTh>
+                                    <MudTh>Probability</MudTh>
+                                    <MudTh>Severity</MudTh>
+                                    <MudTh>Reason</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd>@context.StageName</MudTd>
+                                    <MudTd>@context.PredictedTime.ToString("g")</MudTd>
+                                    <MudTd>
+                                        <MudProgressLinear Color="@GetSeverityColor(context.Severity)" Value="@context.Probability" />
+                                        <MudText Typo="Typo.caption">@context.Probability.ToString("F0")%</MudText>
+                                    </MudTd>
+                                    <MudTd><MudChip T="string" Color="@GetSeverityColor(context.Severity)" Size="Size.Small">@context.Severity</MudChip></MudTd>
+                                    <MudTd>@context.Reason</MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadPredictiveData">
+                            Load Predictive Analytics
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 8: Alerts & Notifications (Phase 3) -->
+        @if (_showAlerts)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h5">
+                            <MudIcon Icon="@Icons.Material.Outlined.Notifications" Class="mr-2" />
+                            Alerts & Notifications
+                        </MudText>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="LoadAlertsData">
+                            Refresh Alerts
+                        </MudButton>
+                    </MudStack>
+
+                    @if (_alertsData != null)
+                    {
+                        @if (_alertsData.ActiveAlerts.Any())
+                        {
+                            <MudText Typo="Typo.h6" Class="mb-2">Active Alerts (@_alertsData.ActiveAlerts.Count)</MudText>
+                            <MudList T="string">
+                                @foreach (var alert in _alertsData.ActiveAlerts.OrderByDescending(a => a.CreatedAt))
+                                {
+                                    var severityColor = GetSeverityColor(alert.Severity);
+                                    <MudListItem T="string">
+                                        <MudCard Elevation="1" Style="@($"width: 100%; border-left: 4px solid {GetSeverityColorHex(alert.Severity)};")">
+                                            <MudCardContent>
+                                                <MudStack Spacing="2">
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                                            <MudChip T="string" Color="@severityColor" Size="Size.Small">@alert.Severity</MudChip>
+                                                            <MudChip T="string" Color="Color.Info" Size="Size.Small">@alert.AlertType</MudChip>
+                                                            <MudText Typo="Typo.h6">@alert.Title</MudText>
+                                                        </MudStack>
+                                                        @if (!alert.IsAcknowledged)
+                                                        {
+                                                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="@(() => AcknowledgeAlert(alert.Id))">
+                                                                Acknowledge
+                                                            </MudButton>
+                                                        }
+                                                    </MudStack>
+                                                    <MudText Typo="Typo.body2">@alert.Message</MudText>
+                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                        Created: @alert.CreatedAt.ToString("g")
+                                                        @if (alert.IsAcknowledged)
+                                                        {
+                                                            <span> | Acknowledged by @alert.AcknowledgedBy at @alert.AcknowledgedAt?.ToString("g")</span>
+                                                        }
+                                                    </MudText>
+                                                </MudStack>
+                                            </MudCardContent>
+                                        </MudCard>
+                                    </MudListItem>
+                                }
+                            </MudList>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Success" Class="mb-4">
+                                <MudText>✅ No active alerts. System is operating normally.</MudText>
+                            </MudAlert>
+                        }
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadAlertsData">
+                            Load Alerts
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+
+        <!-- SECTION 9: Export (Phase 3) -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudText Typo="Typo.h5" Class="mb-3">
+                        <MudIcon Icon="@Icons.Material.Outlined.FileDownload" Class="mr-2" />
+                        Export Dashboard Data
+                    </MudText>
+
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker @bind-Date="_exportStartDate" Label="Start Date" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12" md="4">
+                            <MudDatePicker @bind-Date="_exportEndDate" Label="End Date" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12" md="4" Class="d-flex align-center">
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ExportCsv" Disabled="_isExporting">
+                                    <MudIcon Icon="@Icons.Material.Outlined.FileDownload" Class="mr-2" />
+                                    Export CSV
+                                </MudButton>
+                                <MudButton Variant="Variant.Filled" Color="Color.Secondary" OnClick="ExportPdf" Disabled="_isExporting">
+                                    <MudIcon Icon="@Icons.Material.Outlined.PictureAsPdf" Class="mr-2" />
+                                    Export PDF
+                                </MudButton>
+                            </MudStack>
+                        </MudItem>
+                    </MudGrid>
+
+                    @if (_isExporting)
+                    {
+                        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mt-2" />
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">Generating export...</MudText>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- SECTION 10: System Health (Phase 4) -->
+        @if (_showSystemHealth)
+        {
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12">
+                <MudPaper Elevation="2" Class="pa-4">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudText Typo="Typo.h5">
+                            <MudIcon Icon="@Icons.Material.Outlined.MonitorHeart" Class="mr-2" />
+                            System Health
+                        </MudText>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="LoadSystemHealthData">
+                            Refresh
+                        </MudButton>
+                    </MudStack>
+
+                    @if (_systemHealthData != null)
+                    {
+                        <!-- AssignmentWorker Status -->
+                        <MudText Typo="Typo.h6" Class="mb-2">AssignmentWorker Status</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Status</MudText>
+                                            <MudChip T="string" Color="@(_systemHealthData.AssignmentWorker.IsRunning ? Color.Success : Color.Error)" Size="Size.Medium">
+                                                @_systemHealthData.AssignmentWorker.Status
+                                            </MudChip>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Last Cycle</MudText>
+                                            <MudText Typo="Typo.body1">@(_systemHealthData.AssignmentWorker.LastCycleTime?.ToString("HH:mm:ss") ?? "N/A")</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Cycle Time</MudText>
+                                            <MudText Typo="Typo.body1">@FormatTimeSpan(_systemHealthData.AssignmentWorker.AverageCycleTime ?? TimeSpan.Zero)</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Cycles (24h)</MudText>
+                                            <MudText Typo="Typo.body1">@_systemHealthData.AssignmentWorker.CyclesCompleted24h</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Database Performance -->
+                        <MudText Typo="Typo.h6" Class="mb-2">Database Performance</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Query Time</MudText>
+                                            <MudText Typo="Typo.body1" Color="@(_systemHealthData.DatabasePerformance.AverageQueryTime.TotalMilliseconds > 100 ? Color.Warning : Color.Success)">
+                                                @FormatTimeSpan(_systemHealthData.DatabasePerformance.AverageQueryTime)
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Active Connections</MudText>
+                                            <MudText Typo="Typo.body1">@_systemHealthData.DatabasePerformance.ActiveConnections / @_systemHealthData.DatabasePerformance.MaxConnections</MudText>
+                                            <MudProgressLinear Color="Color.Info" Value="@_systemHealthData.DatabasePerformance.ConnectionPoolUtilization" Class="mt-1" />
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Queries/Second</MudText>
+                                            <MudText Typo="Typo.body1">@_systemHealthData.DatabasePerformance.QueriesPerSecond</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Health Status</MudText>
+                                            <MudChip T="string" Color="@(_systemHealthData.DatabasePerformance.IsHealthy ? Color.Success : Color.Error)" Size="Size.Medium">
+                                                @(_systemHealthData.DatabasePerformance.IsHealthy ? "Healthy" : "Unhealthy")
+                                            </MudChip>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- API Performance -->
+                        <MudText Typo="Typo.h6" Class="mb-2">API Performance</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Response Time</MudText>
+                                            <MudText Typo="Typo.body1">@FormatTimeSpan(_systemHealthData.ApiPerformance.AverageResponseTime)</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">P95 Response Time</MudText>
+                                            <MudText Typo="Typo.body1">@FormatTimeSpan(_systemHealthData.ApiPerformance.P95ResponseTime)</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Requests/Second</MudText>
+                                            <MudText Typo="Typo.body1">@_systemHealthData.ApiPerformance.RequestsPerSecond</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Error Rate</MudText>
+                                            <MudText Typo="Typo.body1" Color="@(_systemHealthData.ApiPerformance.ErrorRate > 1 ? Color.Error : Color.Success)">
+                                                @_systemHealthData.ApiPerformance.ErrorRate.ToString("F2")%
+                                            </MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+
+                        <!-- Resource Utilization -->
+                        <MudText Typo="Typo.h6" Class="mb-2">Resource Utilization</MudText>
+                        <MudGrid Spacing="2" Class="mb-4">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">CPU Usage</MudText>
+                                            <MudText Typo="Typo.h6" Color="@(_systemHealthData.ResourceUtilization.CpuUsage > 80 ? Color.Error : _systemHealthData.ResourceUtilization.CpuUsage > 60 ? Color.Warning : Color.Success)">
+                                                @_systemHealthData.ResourceUtilization.CpuUsage.ToString("F1")%
+                                            </MudText>
+                                            <MudProgressLinear Color="@(_systemHealthData.ResourceUtilization.CpuUsage > 80 ? Color.Error : _systemHealthData.ResourceUtilization.CpuUsage > 60 ? Color.Warning : Color.Success)" 
+                                                              Value="@_systemHealthData.ResourceUtilization.CpuUsage" Class="mt-1" />
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Memory Usage</MudText>
+                                            <MudText Typo="Typo.h6" Color="@(_systemHealthData.ResourceUtilization.MemoryUsage > 80 ? Color.Error : _systemHealthData.ResourceUtilization.MemoryUsage > 60 ? Color.Warning : Color.Success)">
+                                                @_systemHealthData.ResourceUtilization.MemoryUsage.ToString("F1")%
+                                            </MudText>
+                                            <MudText Typo="Typo.caption">@_systemHealthData.ResourceUtilization.MemoryUsedMB MB / @(_systemHealthData.ResourceUtilization.MemoryUsedMB + _systemHealthData.ResourceUtilization.MemoryAvailableMB) MB</MudText>
+                                            <MudProgressLinear Color="@(_systemHealthData.ResourceUtilization.MemoryUsage > 80 ? Color.Error : _systemHealthData.ResourceUtilization.MemoryUsage > 60 ? Color.Warning : Color.Success)" 
+                                                              Value="@_systemHealthData.ResourceUtilization.MemoryUsage" Class="mt-1" />
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">Thread Count</MudText>
+                                            <MudText Typo="Typo.body1">@_systemHealthData.ResourceUtilization.ThreadCount</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudCard Elevation="1">
+                                    <MudCardContent>
+                                        <MudStack Spacing="1">
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">GC Collections</MudText>
+                                            <MudText Typo="Typo.body1">Gen0: @_systemHealthData.ResourceUtilization.GcGen0Collections | Gen1: @_systemHealthData.ResourceUtilization.GcGen1Collections | Gen2: @_systemHealthData.ResourceUtilization.GcGen2Collections</MudText>
+                                        </MudStack>
+                                    </MudCardContent>
+                                </MudCard>
+                            </MudItem>
+                        </MudGrid>
+                    }
+                    else
+                    {
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadSystemHealthData">
+                            Load System Health Data
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+        }
+    }
+</MudContainer>
+
+@code {
+    private ImageAnalysisDashboardData? _dashboardData;
+    private UserActivityData? _userActivityData;
+    private QualityMetricsData? _qualityMetricsData;
+    private BottleneckAnalysisData? _bottleneckData;
+    private PredictiveAnalyticsData? _predictiveData;
+    private DashboardAlertsData? _alertsData;
+    private SystemHealthData? _systemHealthData;
+    private HistoricalTrendsData? _trendsData;
+    private SafeguardSummaryData? _safeguardData;
+    private bool _isLoading = false;
+    private bool _isConnected = false;
+    private bool _isExporting = false;
+    private bool _autoRefreshEnabled = false;
+    private System.Threading.Timer? _autoRefreshTimer;
+    private string _trendsPeriod = "24h";
+    
+    // Section visibility toggles for customization
+    private bool _showWorkflowStatus = true;
+    private bool _showAssignments = true;
+    private bool _showPerformance = true;
+    private bool _showUserActivity = true;
+    private bool _showQuality = true;
+    private bool _showBottlenecks = true;
+    private bool _showPredictive = true;
+    private bool _showAlerts = true;
+    private bool _showSystemHealth = true;
+    private HubConnection? _hubConnection;
+    private DateTime? _exportStartDate = DateTime.UtcNow.AddDays(-7);
+    private DateTime? _exportEndDate = DateTime.UtcNow;
+    
+    private readonly string[] _workflowStages = new[]
+    {
+        "Ready",
+        "AnalystAssigned",
+        "AnalystCompleted",
+        "AuditAssigned",
+        "AuditCompleted",
+        "PartiallyCompleted",
+        "Submitted",
+        "Completed"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardData();
+        await InitializeSignalR();
+        
+        await Task.WhenAll(
+            LoadUserActivityData(),
+            LoadQualityMetricsData(),
+            LoadBottleneckData(),
+            LoadPredictiveData(),
+            LoadAlertsData(),
+            LoadSystemHealthData(),
+            LoadTrendsData(),
+            LoadSafeguardData()
+        );
+    }
+
+    private async Task LoadDashboardData()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            var response = await ApiService.GetAsync<ImageAnalysisDashboardData>(
+                "/api/image-analysis/dashboard/overview");
+
+            if (response != null)
+            {
+                _dashboardData = response;
+                Logger.LogInformation("Dashboard data loaded successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading dashboard data");
+            Snackbar.Add($"Error loading dashboard: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/imageAnalysisDashboard";
+
+            // Get token for SignalR authentication
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null)
+                    {
+                        token = await task;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
+            }
+
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    }
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<ImageAnalysisDashboardData>("DashboardUpdate", (data) =>
+            {
+                _dashboardData = data;
+                StateHasChanged();
+            });
+
+            // Listen for real-time alert notifications
+            _hubConnection.On<DashboardAlert>("NewAlert", (alert) =>
+            {
+                // Add to alerts list if not already present
+                if (_alertsData != null && !_alertsData.ActiveAlerts.Any(a => a.Id == alert.Id))
+                {
+                    _alertsData.ActiveAlerts.Add(alert);
+                    StateHasChanged();
+                    
+                    // Show notification snackbar
+                    var severity = alert.Severity switch
+                    {
+                        "Critical" => Severity.Error,
+                        "High" => Severity.Warning,
+                        "Medium" => Severity.Info,
+                        _ => Severity.Info
+                    };
+                    Snackbar.Add($"🚨 {alert.Title}: {alert.Message}", severity);
+                }
+            });
+
+            // Listen for alert updates (acknowledgment, resolution)
+            _hubConnection.On<int>("AlertAcknowledged", (alertId) =>
+            {
+                if (_alertsData != null)
+                {
+                    var alert = _alertsData.ActiveAlerts.FirstOrDefault(a => a.Id == alertId);
+                    if (alert != null)
+                    {
+                        alert.IsAcknowledged = true;
+                        StateHasChanged();
+                    }
+                }
+            });
+
+            _hubConnection.Reconnecting += error =>
+            {
+                _isConnected = false;
+                StateHasChanged();
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Reconnected += connectionId =>
+            {
+                _isConnected = true;
+                StateHasChanged();
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Closed += error =>
+            {
+                _isConnected = false;
+                StateHasChanged();
+                return Task.CompletedTask;
+            };
+
+            await _hubConnection.StartAsync();
+            _isConnected = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing SignalR connection");
+            _isConnected = false;
+        }
+    }
+
+    private Color GetStatusColor(string? status)
+    {
+        return status switch
+        {
+            "Normal" => Color.Success,
+            "Warning" => Color.Warning,
+            "Critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetAssignmentModeColor(string mode)
+    {
+        return mode switch
+        {
+            "Auto" => Color.Success,
+            "Manual" => Color.Warning,
+            "UserClaim" => Color.Info,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetBalanceScoreColor(double score)
+    {
+        if (score >= 80) return Color.Success;
+        if (score >= 50) return Color.Warning;
+        return Color.Error;
+    }
+
+    private Color GetUtilizationColor(double utilization)
+    {
+        if (utilization >= 90) return Color.Error;
+        if (utilization >= 70) return Color.Warning;
+        return Color.Success;
+    }
+
+    private Color GetPerformanceColor(double performance)
+    {
+        if (performance >= 100) return Color.Success;
+        if (performance >= 80) return Color.Warning;
+        return Color.Error;
+    }
+
+    private string FormatTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan.TotalDays >= 1)
+            return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h";
+        if (timeSpan.TotalHours >= 1)
+            return $"{(int)timeSpan.TotalHours}h {timeSpan.Minutes}m";
+        if (timeSpan.TotalMinutes >= 1)
+            return $"{(int)timeSpan.TotalMinutes}m {timeSpan.Seconds}s";
+        return $"{timeSpan.TotalSeconds:F0}s";
+    }
+
+    private Color GetIntegrityStatusColor(string status)
+    {
+        return status switch
+        {
+            "Healthy" => Color.Success,
+            "Warning" => Color.Warning,
+            "Critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private string GetIntegrityStatusIcon(string status)
+    {
+        return status switch
+        {
+            "Healthy" => Icons.Material.Outlined.CheckCircle,
+            "Warning" => Icons.Material.Outlined.Warning,
+            "Critical" => Icons.Material.Outlined.Error,
+            _ => Icons.Material.Outlined.Info
+        };
+    }
+
+    private async Task ShowStageDetails(string stage)
+    {
+        if (_dashboardData?.WorkflowStatus?.Stages == null)
+            return;
+
+        var stageData = _dashboardData.WorkflowStatus.Stages.GetValueOrDefault(stage);
+        if (stageData == null)
+        {
+            Snackbar.Add($"No data available for stage: {stage}", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["StageName"] = stage,
+            ["StageData"] = stageData
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Medium,
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        await DialogService.ShowAsync<StageDetailsDialog>("Stage Details", parameters, options);
+    }
+
+    private async Task LoadUserActivityData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<UserActivityData>(
+                "/api/image-analysis/dashboard/user-productivity");
+
+            if (response != null)
+            {
+                _userActivityData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading user activity data");
+            Snackbar.Add($"Error loading user activity: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadQualityMetricsData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<QualityMetricsData>(
+                "/api/image-analysis/dashboard/quality");
+
+            if (response != null)
+            {
+                _qualityMetricsData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading quality metrics data");
+            Snackbar.Add($"Error loading quality metrics: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadBottleneckData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<BottleneckAnalysisData>(
+                "/api/image-analysis/dashboard/bottlenecks");
+
+            if (response != null)
+            {
+                _bottleneckData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading bottleneck data");
+            Snackbar.Add($"Error loading bottleneck analysis: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadTrendsData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<HistoricalTrendsData>(
+                $"/api/image-analysis/dashboard/trends?period={_trendsPeriod}");
+
+            if (response != null)
+            {
+                _trendsData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading trends data");
+        }
+    }
+
+    private async Task LoadSafeguardData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<SafeguardSummaryData>(
+                "/api/image-analysis/dashboard/safeguard-summary");
+
+            if (response != null)
+            {
+                _safeguardData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading safeguard data");
+        }
+    }
+
+    private record SafeguardSummaryData
+    {
+        public int ExportPendingCount { get; init; }
+        public int LocationMismatchCount { get; init; }
+        public int MissingCount { get; init; }
+        public int CompleteCount { get; init; }
+        public int FlaggedForReviewCount { get; init; }
+        public int TotalCount { get; init; }
+        public List<StatusBreakdownItem> StatusBreakdown { get; init; } = new();
+    }
+
+    private record StatusBreakdownItem
+    {
+        public string Status { get; init; } = "";
+        public int Count { get; init; }
+    }
+
+    private Color GetQualityColor(double score)
+    {
+        if (score >= 90) return Color.Success;
+        if (score >= 70) return Color.Warning;
+        return Color.Error;
+    }
+
+    private string GetSeverityColorHex(string severity)
+    {
+        return severity switch
+        {
+            "Critical" => "#f44336", // Red
+            "High" => "#ff9800",     // Orange
+            "Medium" => "#2196f3",   // Blue
+            "Low" => "#4caf50",      // Green
+            _ => "#757575"           // Gray
+        };
+    }
+
+    private Color GetSeverityColor(string severity)
+    {
+        return severity switch
+        {
+            "Critical" => Color.Error,
+            "High" => Color.Warning,
+            "Medium" => Color.Info,
+            "Low" => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    private async Task LoadPredictiveData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<PredictiveAnalyticsData>(
+                "/api/image-analysis/dashboard/predictions");
+
+            if (response != null)
+            {
+                _predictiveData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading predictive analytics data");
+            Snackbar.Add($"Error loading predictive analytics: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadAlertsData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<DashboardAlertsData>(
+                "/api/image-analysis/dashboard/alerts");
+
+            if (response != null)
+            {
+                _alertsData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading alerts data");
+            Snackbar.Add($"Error loading alerts: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task AcknowledgeAlert(int alertId)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>(
+                $"/api/image-analysis/dashboard/alerts/{alertId}/acknowledge",
+                new { });
+
+            Snackbar.Add("Alert acknowledged", Severity.Success);
+            await LoadAlertsData(); // Refresh alerts
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error acknowledging alert");
+            Snackbar.Add($"Error acknowledging alert: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ExportCsv()
+    {
+        await ExportDashboard("csv", "text/csv");
+    }
+
+    private async Task ExportPdf()
+    {
+        await ExportDashboard("pdf", "application/pdf");
+    }
+
+    private async Task ExportDashboard(string format, string contentType)
+    {
+        try
+        {
+            _isExporting = true;
+            StateHasChanged();
+
+            var startDate = _exportStartDate?.ToString("yyyy-MM-dd") ?? DateTime.UtcNow.AddDays(-7).ToString("yyyy-MM-dd");
+            var endDate = _exportEndDate?.ToString("yyyy-MM-dd") ?? DateTime.UtcNow.ToString("yyyy-MM-dd");
+
+            var csvText = await ApiService.GetAsync<string>(
+                $"/api/image-analysis/dashboard/export/{format}?startDate={startDate}&endDate={endDate}");
+
+            if (!string.IsNullOrEmpty(csvText))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(csvText);
+                var base64 = Convert.ToBase64String(bytes);
+                var fileName = $"dashboard-export-{DateTime.UtcNow:yyyyMMdd-HHmmss}.{format}";
+                await JSRuntime.InvokeVoidAsync("downloadFile", fileName, base64, contentType);
+                Snackbar.Add($"{format.ToUpper()} export downloaded", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"Failed to export {format.ToUpper()}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error exporting {Format}", format);
+            Snackbar.Add($"Error exporting {format.ToUpper()}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isExporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadSystemHealthData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<SystemHealthData>(
+                "/api/image-analysis/dashboard/system-health");
+
+            if (response != null)
+            {
+                _systemHealthData = response;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading system health data");
+            Snackbar.Add($"Error loading system health: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        _autoRefreshEnabled = !_autoRefreshEnabled;
+        if (_autoRefreshEnabled)
+        {
+            _autoRefreshTimer = new System.Threading.Timer(async _ =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAllSections();
+                    StateHasChanged();
+                });
+            }, null, TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60));
+        }
+        else
+        {
+            _autoRefreshTimer?.Dispose();
+            _autoRefreshTimer = null;
+        }
+    }
+
+    private async Task RefreshAllSections()
+    {
+        await Task.WhenAll(
+            LoadDashboardData(),
+            LoadUserActivityData(),
+            LoadQualityMetricsData(),
+            LoadBottleneckData(),
+            LoadPredictiveData(),
+            LoadAlertsData(),
+            LoadSystemHealthData(),
+            LoadTrendsData(),
+            LoadSafeguardData()
+        );
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _autoRefreshTimer?.Dispose();
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}

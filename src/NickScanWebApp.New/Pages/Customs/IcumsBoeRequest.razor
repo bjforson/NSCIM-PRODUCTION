@@ -1,0 +1,434 @@
+@page "/icums/boe-request"
+@page "/customs/icums/boe-request"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsBoeRequest)]
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.New.Services.ApiService ApiService
+
+<PageTitle>BOE Manual Request - ICUMS</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="pa-4">
+    
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudText Typo="Typo.h4">
+            <MudIcon Icon="@Icons.Material.Outlined.Search" Class="mr-2" />
+            Manual BOE Request
+        </MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            Manually request Bill of Entry data from ICUMS
+        </MudText>
+    </MudPaper>
+    
+    <!-- Request Form -->
+    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+        <MudGrid>
+            <MudItem xs="12">
+                <MudText Typo="Typo.h6" Class="mb-4">Request Information</MudText>
+            </MudItem>
+            
+            <!-- Search Type -->
+            <MudItem xs="12" md="6">
+                <MudRadioGroup @bind-Value="searchType">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Search By:</MudText>
+                    <MudRadio Value="@("container")" Color="Color.Primary">Container Number</MudRadio>
+                    <MudRadio Value="@("boe")" Color="Color.Primary">BOE Number</MudRadio>
+                    <MudRadio Value="@("bl")" Color="Color.Primary">Bill of Lading</MudRadio>
+                </MudRadioGroup>
+            </MudItem>
+            
+            <!-- Priority -->
+            <MudItem xs="12" md="6">
+                <MudSelect @bind-Value="priority"
+                          Label="Priority"
+                          Variant="Variant.Outlined"
+                          AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem Value="@("High")">High Priority</MudSelectItem>
+                    <MudSelectItem Value="@("Normal")">Normal Priority</MudSelectItem>
+                    <MudSelectItem Value="@("Low")">Low Priority</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            
+            <!-- Search Value -->
+            <MudItem xs="12">
+                <MudTextField @bind-Value="searchValue"
+                             Label="@GetSearchLabel()"
+                             Placeholder="@GetSearchPlaceholder()"
+                             Variant="Variant.Outlined"
+                             Adornment="Adornment.Start"
+                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                             Required="true"
+                             FullWidth="true" />
+            </MudItem>
+            
+            <!-- Optional Fields -->
+            <MudItem xs="12">
+                <MudDivider Class="my-4" />
+                <MudText Typo="Typo.subtitle2" Class="mb-3">Optional Information</MudText>
+            </MudItem>
+            
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="consignee"
+                             Label="Consignee (Optional)"
+                             Variant="Variant.Outlined" />
+            </MudItem>
+            
+            <MudItem xs="12" md="6">
+                <MudTextField @bind-Value="originPort"
+                             Label="Origin Port (Optional)"
+                             Variant="Variant.Outlined" />
+            </MudItem>
+            
+            <MudItem xs="12" md="6">
+                <MudDatePicker @bind-Date="dateFrom"
+                              Label="Date From (Optional)"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+            
+            <MudItem xs="12" md="6">
+                <MudDatePicker @bind-Date="dateTo"
+                              Label="Date To (Optional)"
+                              Variant="Variant.Outlined" />
+            </MudItem>
+            
+            <!-- Notes -->
+            <MudItem xs="12">
+                <MudTextField @bind-Value="notes"
+                             Label="Notes (Optional)"
+                             Variant="Variant.Outlined"
+                             Lines="3" />
+            </MudItem>
+            
+            <!-- Actions -->
+            <MudItem xs="12" Class="mt-4">
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="Variant.Filled" 
+                              Color="Color.Primary"
+                              StartIcon="@(isSubmitting ? Icons.Material.Outlined.HourglassTop : Icons.Material.Outlined.Send)"
+                              OnClick="@SubmitRequest"
+                              Disabled="@(isSubmitting || string.IsNullOrWhiteSpace(searchValue))">
+                        @(isSubmitting ? "Submitting..." : "Submit Request")
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Default"
+                              StartIcon="@Icons.Material.Outlined.Clear"
+                              OnClick="@ClearForm">
+                        Clear
+                    </MudButton>
+                    <MudButton Variant="Variant.Text" 
+                              Color="Color.Default"
+                              StartIcon="@Icons.Material.Outlined.ArrowBack"
+                              Href="/icums">
+                        Back to Dashboard
+                    </MudButton>
+                </MudStack>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+    
+    <!-- Recent Requests -->
+    <MudPaper Elevation="2" Class="pa-4 rounded-lg mt-4">
+        <MudText Typo="Typo.h6" Class="mb-4">
+            <MudIcon Icon="@Icons.Material.Outlined.History" Class="mr-2" />
+            Recent Manual Requests
+        </MudText>
+        
+        <MudTable Items="@recentRequests" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@isLoading">
+            <HeaderContent>
+                <MudTh>Time</MudTh>
+                <MudTh>Search Type</MudTh>
+                <MudTh>Search Value</MudTh>
+                <MudTh>Priority</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Time">
+                    <MudText Typo="Typo.caption">@context.RequestTime.ToString("dd MMM HH:mm")</MudText>
+                </MudTd>
+                <MudTd DataLabel="Type">
+                    <MudChip T="string" Size="Size.Small">@context.SearchType</MudChip>
+                </MudTd>
+                <MudTd DataLabel="Value">@context.SearchValue</MudTd>
+                <MudTd DataLabel="Priority">
+                    <MudChip T="string" Size="Size.Small" Color="@GetPriorityColor(context.Priority)">
+                        @context.Priority
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Status">
+                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.Status)">
+                        @context.Status
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="Actions">
+                    @if (context.Status == "Failed")
+                    {
+                        <MudIconButton Icon="@Icons.Material.Outlined.Replay"
+                                      Size="Size.Small"
+                                      Color="Color.Primary"
+                                      OnClick="@(() => RetryRequest(context))"
+                                      Title="Retry Request" />
+                    }
+                    @if (context.Status is "Pending" or "Failed")
+                    {
+                        <MudIconButton Icon="@Icons.Material.Outlined.Cancel"
+                                      Size="Size.Small"
+                                      Color="Color.Error"
+                                      OnClick="@(() => CancelRequest(context))"
+                                      Title="Cancel Request" />
+                    }
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <EmptyState Icon="@Icons.Material.Outlined.SearchOff"
+                           Message="No recent requests"
+                           SubMessage="Your manual BOE requests will appear here"
+                           Height="200" />
+            </NoRecordsContent>
+        </MudTable>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> breadcrumbs = new();
+
+    private string searchType = "container";
+    private string priority = "Normal";
+    private string searchValue = "";
+    private string consignee = "";
+    private string originPort = "";
+    private DateTime? dateFrom;
+    private DateTime? dateTo;
+    private string notes = "";
+
+    private List<BOERequestRecord> recentRequests = new();
+    private bool isLoading;
+    private bool isSubmitting;
+
+    protected override async Task OnInitializedAsync()
+    {
+        breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("ICUMS", href: "/icums", icon: Icons.Material.Outlined.Cloud),
+            new BreadcrumbItem("BOE Request", href: null, disabled: true)
+        };
+
+        await LoadRecentRequestsAsync();
+    }
+
+    private async Task LoadRecentRequestsAsync()
+    {
+        try
+        {
+            isLoading = true;
+            StateHasChanged();
+
+            var items = await ApiService.GetAsync<List<QueueItemDto>>("/api/ICUMSDownloadQueue?limit=50");
+
+            if (items != null)
+            {
+                recentRequests = items
+                    .Where(i => string.Equals(i.RequestSource, "Manual", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(i => i.QueuedAt)
+                    .Take(20)
+                    .Select(i => new BOERequestRecord
+                    {
+                        Id = i.Id,
+                        SearchType = "Container",
+                        SearchValue = i.ContainerNumber ?? "",
+                        Priority = MapPriorityToLabel(i.Priority),
+                        Status = i.Status ?? "Unknown",
+                        RequestTime = i.QueuedAt.ToLocalTime()
+                    })
+                    .ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not load recent requests: {ex.Message}", Severity.Warning);
+            recentRequests = new();
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SubmitRequest()
+    {
+        if (string.IsNullOrWhiteSpace(searchValue))
+        {
+            Snackbar.Add("Please enter a search value", Severity.Warning);
+            return;
+        }
+
+        if (searchType != "container")
+        {
+            Snackbar.Add("BOE and BL number requests are not yet supported. Please use Container Number.", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            isSubmitting = true;
+            StateHasChanged();
+
+            int priorityValue = priority switch
+            {
+                "High" => 10,
+                "Normal" => 1,
+                "Low" => 0,
+                _ => 1
+            };
+
+            var request = new
+            {
+                ContainerNumber = searchValue.Trim().ToUpper(),
+                Priority = priorityValue,
+                RequestedBy = "Manual UI Request"
+            };
+
+            var response = await ApiService.PostAsync<object, EnqueueResponse>("/api/ICUMSDownloadQueue/enqueue", request);
+
+            if (response != null)
+            {
+                Snackbar.Add($"✅ {response.Message}", Severity.Success);
+                searchValue = "";
+                await LoadRecentRequestsAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error submitting request: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            isSubmitting = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ClearForm()
+    {
+        searchValue = "";
+        consignee = "";
+        originPort = "";
+        dateFrom = null;
+        dateTo = null;
+        notes = "";
+        searchType = "container";
+        priority = "Normal";
+
+        Snackbar.Add("Form cleared", Severity.Info);
+    }
+
+    private async Task RetryRequest(BOERequestRecord request)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, ApiMessageResponse>(
+                $"/api/ICUMSDownloadQueue/retry/{request.Id}", new { });
+            Snackbar.Add($"Retry initiated for {request.SearchValue}", Severity.Success);
+            await LoadRecentRequestsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error retrying request: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task CancelRequest(BOERequestRecord request)
+    {
+        try
+        {
+            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{request.Id}");
+            Snackbar.Add($"Request cancelled for {request.SearchValue}", Severity.Success);
+            await LoadRecentRequestsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error cancelling request: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string GetSearchLabel() => searchType switch
+    {
+        "container" => "Container Number",
+        "boe" => "BOE Number",
+        "bl" => "Bill of Lading",
+        _ => "Search Value"
+    };
+
+    private string GetSearchPlaceholder() => searchType switch
+    {
+        "container" => "e.g., MSDU7000123",
+        "boe" => "e.g., BOE-2025-001234",
+        "bl" => "e.g., BL-2025-123456",
+        _ => "Enter value"
+    };
+
+    private static string MapPriorityToLabel(int priority) => priority switch
+    {
+        >= 10 => "High",
+        >= 1 => "Normal",
+        _ => "Low"
+    };
+
+    private Color GetPriorityColor(string prio) => prio switch
+    {
+        "High" => Color.Error,
+        "Normal" => Color.Warning,
+        "Low" => Color.Info,
+        _ => Color.Default
+    };
+
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Completed" => Color.Success,
+        "Processing" or "Queued" => Color.Info,
+        "Pending" => Color.Warning,
+        "Failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    public class BOERequestRecord
+    {
+        public int Id { get; set; }
+        public string SearchType { get; set; } = "";
+        public string SearchValue { get; set; } = "";
+        public string Priority { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime RequestTime { get; set; }
+    }
+
+    public class QueueItemDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int Priority { get; set; }
+        public DateTime QueuedAt { get; set; }
+        public string? RequestedBy { get; set; }
+        public string? RequestSource { get; set; }
+        public int RetryCount { get; set; }
+        public string? LastErrorMessage { get; set; }
+    }
+
+    public class EnqueueResponse
+    {
+        public string Message { get; set; } = "";
+        public string ContainerNumber { get; set; } = "";
+        public bool CompletenessStatusCreated { get; set; }
+    }
+
+    public class ApiMessageResponse
+    {
+        public string? Message { get; set; }
+    }
+}
+

@@ -1,0 +1,42 @@
+<!-- ValidationStatusBadge Component - Shows container validation status -->
+
+<MudChip T="string"
+         Size="@Size" 
+         Color="@GetStatusColor()" 
+         Icon="@GetStatusIcon()"
+         Variant="@Variant">
+    @Status
+</MudChip>
+
+@code {
+    [Parameter] public string Status { get; set; } = "Unknown";
+    [Parameter] public Size Size { get; set; } = Size.Small;
+    [Parameter] public Variant Variant { get; set; } = Variant.Filled;
+    
+    private Color GetStatusColor()
+    {
+        return Status?.ToUpper() switch
+        {
+            "VALIDATED" or "APPROVED" or "COMPLETE" => Color.Success,
+            "PENDING" or "IN PROGRESS" or "PROCESSING" => Color.Warning,
+            "ERROR" or "FAILED" or "REJECTED" => Color.Error,
+            "SUBMITTED" or "SENT" => Color.Info,
+            "DRAFT" => Color.Default,
+            _ => Color.Default
+        };
+    }
+    
+    private string GetStatusIcon()
+    {
+        return Status?.ToUpper() switch
+        {
+            "VALIDATED" or "APPROVED" or "COMPLETE" => Icons.Material.Outlined.CheckCircle,
+            "PENDING" or "IN PROGRESS" or "PROCESSING" => Icons.Material.Outlined.PendingActions,
+            "ERROR" or "FAILED" or "REJECTED" => Icons.Material.Outlined.Error,
+            "SUBMITTED" or "SENT" => Icons.Material.Outlined.CloudDone,
+            "DRAFT" => Icons.Material.Outlined.Edit,
+            _ => Icons.Material.Outlined.Circle
+        };
+    }
+}
+

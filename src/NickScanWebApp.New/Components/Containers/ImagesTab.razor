@@ -1,0 +1,454 @@
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.New.Components.Containers
+@using NickScanWebApp.New.Components.Operations
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject ISnackbar Snackbar
+@inject ILogger<ImagesTab> Logger
+@inject IDialogService DialogService
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
+    @if (isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading images from Image Processing Pipeline...</MudText>
+        </MudStack>
+    }
+    else if (images?.Any() == true)
+    {
+        <MudStack Spacing="3" Class="pa-2">
+            @foreach (var image in images)
+            {
+                <MudPaper Elevation="3" Class="pa-0" Style="overflow: hidden;">
+                    <!-- Image Header -->
+                    <MudToolBar Dense="true" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                        <MudIcon Icon="@GetScannerIcon(image.ImageType)" />
+                        <MudText Typo="Typo.subtitle1" Class="ml-2">
+                            <strong>@image.ImageType Scanner Image</strong>
+                        </MudText>
+                        <MudSpacer />
+                        <MudChip T="string" Size="Size.Small" Style="background: rgba(255,255,255,0.2); color: white;">
+                            @FormatFileSize(image.FileSizeBytes)
+                        </MudChip>
+                        <MudTooltip Text="Refresh Image">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Refresh" 
+                                          Color="Color.Default"
+                                          Size="Size.Small"
+                                          Style="color: white;"
+                                          OnClick="@(async () => await RefreshImages())" />
+                        </MudTooltip>
+                    </MudToolBar>
+
+                    <!-- Image Display Area -->
+                    <MudCardContent Class="pa-0">
+                        <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 400px;">
+                            @if (imageLoadError.ContainsKey(image.Id) && imageLoadError[image.Id])
+                            {
+                                <!-- Error State -->
+                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                    <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Color="Color.Error" Size="Size.Large" />
+                                    <MudText Typo="Typo.body2" Color="Color.Error">Image failed to load</MudText>
+                                    @if (imageErrorMessages.ContainsKey(image.Id) && !string.IsNullOrEmpty(imageErrorMessages[image.Id]))
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 500px; text-align: center; word-break: break-all;">
+                                            @imageErrorMessages[image.Id]
+                                        </MudText>
+                                    }
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 500px; text-align: center; word-break: break-all;">
+                                        URL: @image.ThumbnailUrl
+                                    </MudText>
+                                    @if (imageRetryCount.ContainsKey(image.Id) && imageRetryCount[image.Id] > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                            Retry attempt: @imageRetryCount[image.Id]
+                                        </MudChip>
+                                    }
+                                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="@(() => RetryImageLoad(image))">
+                                            Retry
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Default" StartIcon="@Icons.Material.Outlined.Clear" OnClick="@(() => ClearImageError(image.Id))">
+                                            Dismiss
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            }
+                            else if (!imageLoaded.ContainsKey(image.Id) || !imageLoaded[image.Id])
+                            {
+                                <!-- Loading State -->
+                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                    <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Loading image from @image.ImageType scanner...
+                                    </MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @FormatFileSize(image.FileSizeBytes)
+                                    </MudText>
+                                </MudStack>
+                            }
+                            
+                            <img src="@image.FullImageUrl" 
+                                 alt="@GetImageDisplayName(image)"
+                                 style="@GetImageStyle(image.Id); max-width: 100%; max-height: 500px; cursor: pointer; object-fit: contain;"
+                                 @onclick="@(() => ViewFullImage(image))"
+                                 @onload="@(() => OnImageLoaded(image.Id))"
+                                 @onerror="@(() => OnImageError(image.Id))" />
+                            
+                            <!-- Overlay Info -->
+                            <div style="position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 8px 12px; border-radius: 4px;">
+                                <MudText Typo="Typo.caption">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Schedule" Size="Size.Small" Style="vertical-align: middle;" />
+                                    @image.CreatedAt.ToString("MMM dd, yyyy HH:mm")
+                                </MudText>
+                            </div>
+                            
+                            <!-- Click to Fullscreen Hint -->
+                            @if (imageLoaded.ContainsKey(image.Id) && imageLoaded[image.Id])
+                            {
+                                <div style="position: absolute; top: 10px; right: 10px; background: rgba(103, 126, 234, 0.9); color: white; padding: 6px 10px; border-radius: 20px;">
+                                    <MudText Typo="Typo.caption">
+                                        <MudIcon Icon="@Icons.Material.Outlined.TouchApp" Size="Size.Small" Style="vertical-align: middle;" />
+                                        Click for Fullscreen
+                                    </MudText>
+                                </div>
+                            }
+                        </div>
+                    </MudCardContent>
+
+                    <!-- Image Actions -->
+                    <MudCardActions Class="justify-space-between pa-3">
+                        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                            <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Primary" Size="Size.Small" />
+                            <MudText Typo="Typo.body2">
+                                <strong>@GetImageDisplayName(image)</strong>
+                            </MudText>
+                        </MudStack>
+                        
+                        <MudStack Row="true" Spacing="1">
+                            <MudButton Size="Size.Medium" 
+                                      Variant="Variant.Filled" 
+                                      Color="Color.Primary"
+                                      StartIcon="@Icons.Material.Outlined.Fullscreen"
+                                      OnClick="@(() => ViewFullImage(image))">
+                                View Fullscreen
+                            </MudButton>
+                            <MudTooltip Text="Download original image">
+                                <MudIconButton Icon="@Icons.Material.Outlined.Download" 
+                                              Color="Color.Success" 
+                                              Size="Size.Medium"
+                                              aria-label="Download original image"
+                                              Href="@image.FullImageUrl"
+                                              Target="_blank" />
+                            </MudTooltip>
+                        </MudStack>
+                    </MudCardActions>
+
+                    <!-- Technical Details -->
+                    <MudDivider />
+                    <MudCardContent Class="pa-3" Style="background: #fafafa;">
+                        <MudGrid Spacing="1">
+                            <MudItem xs="6" sm="4">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Scanner Type</MudText>
+                                <MudText Typo="Typo.body2"><strong>@image.ImageType</strong></MudText>
+                            </MudItem>
+                            <MudItem xs="6" sm="4">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">File Size</MudText>
+                                <MudText Typo="Typo.body2"><strong>@FormatFileSize(image.FileSizeBytes)</strong></MudText>
+                            </MudItem>
+                            <MudItem xs="12" sm="4">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Scan Date</MudText>
+                                <MudText Typo="Typo.body2"><strong>@image.CreatedAt.ToString("MMM dd, yyyy")</strong></MudText>
+                            </MudItem>
+                        </MudGrid>
+                    </MudCardContent>
+                </MudPaper>
+            }
+            
+            <!-- Info Alert -->
+            <MudAlert Severity="Severity.Info" Variant="Variant.Text" Dense="true" Icon="@Icons.Material.Outlined.Info">
+                <MudText Typo="Typo.caption">
+                    <strong>Image Processing Pipeline Active:</strong> Images are automatically detected from @(images.First().ImageType) scanner 
+                    and converted to JPEG format when needed. Click "View Fullscreen" to access image manipulation tools (zoom, rotate, brightness, contrast).
+                </MudText>
+            </MudAlert>
+        </MudStack>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Text" Class="ma-4">
+            <MudText Typo="Typo.body1">No images available for this container</MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                The Image Processing Pipeline checks ASE, FS6000, and other scanner sources automatically.
+            </MudText>
+        </MudAlert>
+    }
+</MudContainer>
+
+@* Fullscreen Image Viewer - Using advanced ImageAnalysisViewer with all tools *@
+
+@code {
+    [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public int ImageCount { get; set; }
+    /// <summary>
+    /// Optional preloaded image metadata for this container. When provided, the tab will render from this
+    /// data instead of issuing its own API call.
+    /// </summary>
+    [Parameter] public List<NickScanWebApp.Shared.Models.ImageMetadata>? PreloadedImages { get; set; }
+
+    private List<NickScanWebApp.Shared.Models.ImageMetadata>? images;
+    private bool isLoading = false;
+    
+    // Image loading state tracking
+    private Dictionary<int, bool> imageLoaded = new();
+    private Dictionary<int, bool> imageLoadError = new();
+    private Dictionary<int, int> imageRetryCount = new(); // ✅ Track retry attempts
+    private Dictionary<int, string> imageErrorMessages = new(); // ✅ Store error messages
+    
+    // Fullscreen viewer state (removed - using dialog instead)
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Prefer preloaded images when available (from ContainerDetailsModal / view context)
+        if (PreloadedImages != null)
+        {
+            images = PreloadedImages;
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        await LoadImages();
+    }
+
+    private async Task LoadImages()
+    {
+        isLoading = true;
+        try
+        {
+            Logger.LogInformation("Loading images for container: {ContainerNumber}", ContainerNumber);
+            images = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            
+            if (images != null && images.Any())
+            {
+                // ✅ FIX: Normalize image URLs to ensure they're full URLs
+                var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                foreach (var img in images)
+                {
+                    // Normalize ThumbnailUrl
+                    img.ThumbnailUrl = NormalizeImageUrl(img.ThumbnailUrl, apiBaseUrl);
+                    // Normalize FullImageUrl
+                    img.FullImageUrl = NormalizeImageUrl(img.FullImageUrl, apiBaseUrl);
+                }
+                
+                Logger.LogDebug("Loaded {Count} image(s) for container {ContainerNumber}", images.Count, ContainerNumber);
+                var firstImage = images.First();
+                Logger.LogTrace("First image: {FileName} ({ImageType}), Thumbnail: {ThumbnailUrl}, Full: {FullImageUrl}", 
+                    firstImage.FileName, firstImage.ImageType, firstImage.ThumbnailUrl, firstImage.FullImageUrl);
+            }
+            else
+            {
+                Logger.LogWarning("No images found for container {ContainerNumber} (images is {NullStatus})", 
+                    ContainerNumber, images == null ? "NULL" : "empty");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading images for container {ContainerNumber}", ContainerNumber);
+            Snackbar.Add("Could not load images", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    /// <summary>
+    /// Normalize image URL to ensure it's a full URL (not relative)
+    /// </summary>
+    private string NormalizeImageUrl(string url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url))
+            return string.Empty;
+        
+        // Already a full URL
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+            return url;
+        
+        // Relative URL with leading slash
+        if (url.StartsWith("/"))
+            return $"{apiBaseUrl}{url}";
+        
+        // Relative URL without leading slash
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private async Task RefreshImages()
+    {
+        try
+        {
+            Logger.LogInformation("Refreshing images for container: {ContainerNumber}", ContainerNumber);
+            
+            // Clear cache for this container
+            ContainerDetailsService.ClearContainerCache(ContainerNumber);
+            
+            // Clear image loading state
+            imageLoaded.Clear();
+            imageLoadError.Clear();
+            
+            // Reload images
+            await LoadImages();
+            
+            Snackbar.Add("Images refreshed successfully", Severity.Success);
+            Logger.LogDebug("Images refreshed successfully for container {ContainerNumber}", ContainerNumber);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing images for container {ContainerNumber}", ContainerNumber);
+            Snackbar.Add($"Failed to refresh images: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ViewFullImage(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        Logger.LogDebug("Opening advanced image viewer for {ImageType} image of container {ContainerNumber}", image.ImageType, ContainerNumber);
+        
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = image.FullImageUrl,
+            ["ContainerNumber"] = ContainerNumber,
+            ["ScannerType"] = image.ImageType,
+            ["ScanDate"] = image.CreatedAt
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"🔍 Advanced Image Analysis - {image.ImageType} Scanner - {ContainerNumber}", 
+            parameters, 
+            options);
+    }
+
+    private string GetImageDisplayName(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        if (!string.IsNullOrEmpty(image.FileName))
+            return image.FileName;
+            
+        return $"{image.ImageType}_Scan_{ContainerNumber}_{image.CreatedAt:yyyyMMdd_HHmmss}.jpg";
+    }
+
+    private void OnImageLoaded(int imageId)
+    {
+        imageLoaded[imageId] = true;
+        imageLoadError[imageId] = false;
+        Logger.LogDebug("Image {ImageId} loaded successfully for container {ContainerNumber}", imageId, ContainerNumber);
+        StateHasChanged();
+    }
+
+    private void OnImageError(int imageId)
+    {
+        var retries = imageRetryCount.GetValueOrDefault(imageId, 0);
+        if (retries == 0)
+        {
+            imageRetryCount[imageId] = 1;
+            StateHasChanged();
+            return;
+        }
+        imageLoaded[imageId] = false;
+        imageLoadError[imageId] = true;
+        var image = images?.FirstOrDefault(i => i.Id == imageId);
+        if (image != null)
+        {
+            imageErrorMessages[imageId] = "Image data unavailable — scan may be missing or corrupted.";
+            Logger.LogWarning("Image {ImageId} failed after retry for container {ContainerNumber}", imageId, ContainerNumber);
+        }
+        Snackbar.Add("Image unavailable for this container.", Severity.Info);
+        StateHasChanged();
+    }
+
+    private async Task RetryImageLoad(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        // ✅ Increment retry count
+        if (!imageRetryCount.ContainsKey(image.Id))
+            imageRetryCount[image.Id] = 0;
+        imageRetryCount[image.Id]++;
+
+        // ✅ Clear error state
+        imageLoaded[image.Id] = false;
+        imageLoadError[image.Id] = false;
+        imageErrorMessages.Remove(image.Id);
+
+        // ✅ Clear cache for this container to force fresh load
+        ContainerDetailsService.ClearContainerCache(ContainerNumber);
+
+        // ✅ Add cache buster to URL — preserve existing query params (imageType, size, etc.)
+        image.ThumbnailUrl = AppendCacheBuster(image.ThumbnailUrl, imageRetryCount[image.Id]);
+        image.FullImageUrl = AppendCacheBuster(image.FullImageUrl, imageRetryCount[image.Id]);
+
+        Logger.LogInformation("Retrying image {ImageId} load for container {ContainerNumber} (attempt {RetryCount}): {ImageUrl}", 
+            image.Id, ContainerNumber, imageRetryCount[image.Id], image.ThumbnailUrl);
+        
+        Snackbar.Add($"Retrying image load (attempt {imageRetryCount[image.Id]})...", Severity.Info);
+        StateHasChanged();
+
+        // ✅ Small delay to allow UI to update
+        await Task.Delay(100);
+    }
+
+    private void ClearImageError(int imageId)
+    {
+        imageLoaded[imageId] = false;
+        imageLoadError[imageId] = false;
+        imageErrorMessages.Remove(imageId);
+        imageRetryCount.Remove(imageId);
+        StateHasChanged();
+    }
+
+    private static string AppendCacheBuster(string url, int retryCount)
+    {
+        var cacheBuster = $"retry={retryCount}&t={DateTime.UtcNow.Ticks}";
+
+        url = System.Text.RegularExpressions.Regex.Replace(url, @"[&?]retry=\d+", "");
+        url = System.Text.RegularExpressions.Regex.Replace(url, @"[&?]t=\d+", "");
+        url = url.Replace("&&", "&").Replace("?&", "?").TrimEnd('&', '?');
+
+        return url.Contains('?') ? $"{url}&{cacheBuster}" : $"{url}?{cacheBuster}";
+    }
+
+    private string GetImageStyle(int imageId)
+    {
+        if (imageLoaded.ContainsKey(imageId) && imageLoaded[imageId])
+        {
+            return "display: block;";
+        }
+        return "display: none;";
+    }
+
+    private string GetScannerIcon(string scannerType)
+    {
+        return scannerType switch
+        {
+            "ASE" => Icons.Material.Outlined.CameraAlt,
+            "FS6000" => Icons.Material.Outlined.PhotoCamera,
+            "HeimannSmith" => Icons.Material.Outlined.Videocam,
+            "Nuctech" => Icons.Material.Outlined.Scanner,
+            _ => Icons.Material.Outlined.Image
+        };
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024 * 1024):F1} MB";
+        return $"{bytes / (1024 * 1024 * 1024):F1} GB";
+    }
+}

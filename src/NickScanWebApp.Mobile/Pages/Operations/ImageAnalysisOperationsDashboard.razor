@@ -1,0 +1,698 @@
+@page "/operations/image-analysis-dashboard"
+@page "/image-analysis/operations-dashboard"
+@attribute [Authorize]
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@using NickScanWebApp.Mobile.Services
+@using NickScanCentralImagingPortal.Core.Models
+@using MudBlazor
+@inject ApiService ApiService
+@inject NavigationManager Navigation
+@inject ILogger<ImageAnalysisOperationsDashboard> Logger
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+@inject IDialogService DialogService
+@inject IJSRuntime JSRuntime
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IAsyncDisposable
+
+<PageTitle>Image Analysis Operations Dashboard - Mobile</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pt-2 pb-8 px-2">
+    <!-- Header Section -->
+    <MudStack Spacing="2" Class="mb-3">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h6">
+                    <MudIcon Icon="@Icons.Material.Filled.Dashboard" Class="mr-2" />
+                    Image Analysis Dashboard
+                </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Real-time workflow monitoring
+                </MudText>
+            </MudStack>
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                <MudChip T="string" 
+                         Size="Size.Small" 
+                         Color="@(_isConnected ? Color.Success : Color.Error)" 
+                         Icon="@(_isConnected ? Icons.Material.Filled.Cloud : Icons.Material.Filled.CloudOff)">
+                    @(_isConnected ? "Live" : "Offline")
+                </MudChip>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" 
+                              Size="Size.Small"
+                              OnClick="LoadDashboardData"
+                              Disabled="_isLoading" />
+            </MudStack>
+        </MudStack>
+    </MudStack>
+
+    @if (_isLoading && _dashboardData == null)
+    {
+        <MudStack Spacing="2" AlignItems="AlignItems.Center" Justify="Justify.Center" Style="min-height: 200px;">
+            <MudProgressCircular Color="Color.Primary" Size="Size.Large" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Loading dashboard data...</MudText>
+        </MudStack>
+    }
+    else if (_dashboardData != null)
+    {
+        <!-- Mobile-Optimized Tabs -->
+        <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2">
+            <!-- Workflow Status Tab -->
+            <MudTabPanel Text="Workflow" Icon="@Icons.Material.Filled.Timeline">
+                @if (_dashboardData?.WorkflowStatus != null)
+                {
+                    <!-- Workflow Pipeline - Mobile Horizontal Scroll -->
+                    <div style="overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 16px;">
+                        <div style="display: flex; gap: 8px; padding: 8px 0;">
+                            @foreach (var stage in _workflowStages)
+                            {
+                                var stageData = _dashboardData.WorkflowStatus.Stages.GetValueOrDefault(stage);
+                                var count = stageData?.Count ?? 0;
+                                var statusColor = GetStatusColor(stageData?.Status ?? "Normal");
+                                
+                                <MudCard Elevation="1" Style="min-width: 100px; text-align: center;" OnClick="@(() => ShowStageDetails(stage))">
+                                    <MudCardContent>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@stage</MudText>
+                                        <MudText Typo="Typo.h6" Color="@statusColor">@count</MudText>
+                                        @if (stageData != null)
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                Avg: @FormatTimeSpan(stageData.AverageAge)
+                                            </MudText>
+                                        }
+                                    </MudCardContent>
+                                </MudCard>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Stage Breakdown - Mobile Cards -->
+                    <MudGrid Spacing="2">
+                        @foreach (var stage in _workflowStages)
+                        {
+                            var stageData = _dashboardData.WorkflowStatus.Stages.GetValueOrDefault(stage);
+                            if (stageData != null)
+                            {
+                                <MudItem xs="12">
+                                    <MudPaper Elevation="1" Class="pa-3">
+                                        <MudText Typo="Typo.h6" Class="mb-2">@stage</MudText>
+                                        <MudSimpleTable Dense="true">
+                                            <tbody>
+                                                <tr>
+                                                    <td>Count:</td>
+                                                    <td>@stageData.Count</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Avg Age:</td>
+                                                    <td>@FormatTimeSpan(stageData.AverageAge)</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Oldest:</td>
+                                                    <td>@FormatTimeSpan(stageData.OldestAge)</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Incoming:</td>
+                                                    <td>@stageData.IncomingRate.ToString("F1")/hr</td>
+                                                </tr>
+                                                <tr>
+                                                    <td>Outgoing:</td>
+                                                    <td>@stageData.OutgoingRate.ToString("F1")/hr</td>
+                                                </tr>
+                                            </tbody>
+                                        </MudSimpleTable>
+                                    </MudPaper>
+                                </MudItem>
+                            }
+                        }
+                    </MudGrid>
+                }
+            </MudTabPanel>
+
+            <!-- Assignments Tab -->
+            <MudTabPanel Text="Assignments" Icon="@Icons.Material.Filled.Assignment">
+                @if (_dashboardData?.Assignments != null)
+                {
+                    <!-- Assignment Mode Status Cards -->
+                    <MudGrid Spacing="2" Class="mb-3">
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Mode</MudText>
+                                <MudChip T="string" Color="@GetAssignmentModeColor(_dashboardData.Assignments.AssignmentMode)" Size="Size.Small">
+                                    @_dashboardData.Assignments.AssignmentMode
+                                </MudChip>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Service</MudText>
+                                <MudChip T="string" Color="@(_dashboardData.Assignments.ServiceEnabled ? Color.Success : Color.Error)" Size="Size.Small">
+                                    @(_dashboardData.Assignments.ServiceEnabled ? "Enabled" : "Disabled")
+                                </MudChip>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Strategy</MudText>
+                                <MudText Typo="Typo.body2">@_dashboardData.Assignments.CurrentStrategy</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Balance Score</MudText>
+                                <MudText Typo="Typo.h6" Color="@GetBalanceScoreColor(_dashboardData.Assignments.BalanceScore)">
+                                    @_dashboardData.Assignments.BalanceScore.ToString("F1")%
+                                </MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- Active Assignments Table -->
+                    @if (_dashboardData.Assignments.UserAssignments != null && _dashboardData.Assignments.UserAssignments.Any())
+                    {
+                        <MudText Typo="Typo.h6" Class="mb-2">Active Assignments</MudText>
+                        <MudTable Items="@_dashboardData.Assignments.UserAssignments" Dense="true" Hover="true" Bordered="true">
+                            <HeaderContent>
+                                <MudTh>User</MudTh>
+                                <MudTh>Role</MudTh>
+                                <MudTh>Active</MudTh>
+                                <MudTh>Util</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.Username</MudTd>
+                                <MudTd>@context.Role</MudTd>
+                                <MudTd>@context.ActiveAssignments</MudTd>
+                                <MudTd>@context.Utilization.ToString("F1")%</MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                    else
+                    {
+                        <MudAlert Severity="Severity.Info">No active assignments found.</MudAlert>
+                    }
+
+                    <!-- Queue Status -->
+                    <MudGrid Spacing="2" Class="mt-3">
+                        <MudItem xs="12">
+                            <MudPaper Elevation="1" Class="pa-3">
+                                <MudText Typo="Typo.h6" Class="mb-2">Analyst Queue</MudText>
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Ready:</MudText>
+                                        <MudText Typo="Typo.h6" Color="Color.Primary">@_dashboardData.Assignments.AnalystQueue.ReadyForAssignment</MudText>
+                                    </MudStack>
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Rate:</MudText>
+                                        <MudText Typo="Typo.body1">@_dashboardData.Assignments.AnalystQueue.AssignmentRate.ToString("F1")/hr</MudText>
+                                    </MudStack>
+                                </MudStack>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudPaper Elevation="1" Class="pa-3">
+                                <MudText Typo="Typo.h6" Class="mb-2">Audit Queue</MudText>
+                                <MudStack Spacing="1">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Ready:</MudText>
+                                        <MudText Typo="Typo.h6" Color="Color.Primary">@_dashboardData.Assignments.AuditQueue.ReadyForAssignment</MudText>
+                                    </MudStack>
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.body2" Color="Color.Secondary">Rate:</MudText>
+                                        <MudText Typo="Typo.body1">@_dashboardData.Assignments.AuditQueue.AssignmentRate.ToString("F1")/hr</MudText>
+                                    </MudStack>
+                                </MudStack>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                }
+            </MudTabPanel>
+
+            <!-- Performance Tab -->
+            <MudTabPanel Text="Performance" Icon="@Icons.Material.Filled.Speed">
+                @if (_dashboardData?.Performance != null)
+                {
+                    <!-- Throughput Metrics -->
+                    <MudGrid Spacing="2" Class="mb-3">
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Containers/Hr</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Primary">
+                                    @_dashboardData.Performance.Throughput.ContainersPerHour.ToString("F1")
+                                </MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Decisions/Hr</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Primary">
+                                    @_dashboardData.Performance.Throughput.DecisionsPerHour.ToString("F1")
+                                </MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Groups/Hr</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Primary">
+                                    @_dashboardData.Performance.Throughput.GroupsPerHour.ToString("F1")
+                                </MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Performance</MudText>
+                                <MudText Typo="Typo.h6" Color="@GetPerformanceColor(_dashboardData.Performance.Throughput.PerformanceVsTarget)">
+                                    @_dashboardData.Performance.Throughput.PerformanceVsTarget.ToString("F1")%
+                                </MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+
+                    <!-- Processing Times -->
+                    <MudText Typo="Typo.h6" Class="mb-2">Processing Times</MudText>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Ready → Analyst</MudText>
+                                <MudText Typo="Typo.body1">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.ReadyToAnalystAssigned)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Analyst → Completed</MudText>
+                                <MudText Typo="Typo.body1">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.AnalystAssignedToCompleted)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudPaper Elevation="1" Class="pa-2">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Total End-to-End</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Primary">@FormatTimeSpan(_dashboardData.Performance.ProcessingTimes.TotalEndToEnd)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                }
+            </MudTabPanel>
+
+            <!-- Users Tab -->
+            <MudTabPanel Text="Users" Icon="@Icons.Material.Filled.People">
+                @if (_userActivityData != null)
+                {
+                    @if (_userActivityData.ActiveUsers != null && _userActivityData.ActiveUsers.Any())
+                    {
+                        <MudText Typo="Typo.h6" Class="mb-2">Active Users</MudText>
+                        <MudTable Items="@_userActivityData.ActiveUsers" Dense="true" Hover="true">
+                            <HeaderContent>
+                                <MudTh>User</MudTh>
+                                <MudTh>Role</MudTh>
+                                <MudTh>Last Activity</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>@context.Username</MudTd>
+                                <MudTd>@context.Role</MudTd>
+                                <MudTd>@FormatTimeSpan(context.TimeSinceLastActivity)</MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                    else
+                    {
+                        <MudAlert Severity="Severity.Info">No active users data available.</MudAlert>
+                    }
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info">Loading user activity data...</MudAlert>
+                }
+            </MudTabPanel>
+
+            <!-- Alerts Tab -->
+            <MudTabPanel Text="Alerts" Icon="@Icons.Material.Filled.Notifications">
+                @if (_alertsData?.ActiveAlerts != null && _alertsData.ActiveAlerts.Any())
+                {
+                    @foreach (var alert in _alertsData.ActiveAlerts)
+                    {
+                        <MudAlert Severity="@GetSeverityColor(alert.Severity)" Class="mb-2">
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@alert.Title</MudText>
+                            <MudText Typo="Typo.caption">@alert.Message</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-1">
+                                @alert.CreatedAt.ToString("g")
+                            </MudText>
+                        </MudAlert>
+                    }
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success">✅ No active alerts. System is operating normally.</MudAlert>
+                }
+            </MudTabPanel>
+        </MudTabs>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Warning">
+            Unable to load dashboard data. Please refresh.
+        </MudAlert>
+    }
+</MudContainer>
+
+@code {
+    private ImageAnalysisDashboardData? _dashboardData;
+    private UserActivityData? _userActivityData;
+    private QualityMetricsData? _qualityMetricsData;
+    private BottleneckAnalysisData? _bottleneckData;
+    private PredictiveAnalyticsData? _predictiveData;
+    private DashboardAlertsData? _alertsData;
+    private SystemHealthData? _systemHealthData;
+    private bool _isLoading = false;
+    private bool _isConnected = false;
+    private HubConnection? _hubConnection;
+    
+    private readonly string[] _workflowStages = new[]
+    {
+        "Ready",
+        "AnalystAssigned",
+        "AnalystCompleted",
+        "AuditAssigned",
+        "AuditCompleted",
+        "Completed"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardData();
+        await InitializeSignalR();
+        
+        // Load additional data in background
+        _ = Task.Run(async () =>
+        {
+            await Task.WhenAll(
+                LoadUserActivityData(),
+                LoadQualityMetricsData(),
+                LoadBottleneckData(),
+                LoadPredictiveData(),
+                LoadAlertsData(),
+                LoadSystemHealthData()
+            );
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    private async Task LoadDashboardData()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            var response = await ApiService.GetAsync<ImageAnalysisDashboardData>(
+                "/api/image-analysis/dashboard/overview");
+
+            if (response != null)
+            {
+                _dashboardData = response;
+                Logger.LogInformation("Dashboard data loaded successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading dashboard data");
+            Snackbar.Add($"Error loading dashboard: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://10.0.1.254:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/imageAnalysisDashboard";
+
+            // Get token for SignalR authentication
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null)
+                    {
+                        token = await task;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
+            }
+
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    }
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<ImageAnalysisDashboardData>("DashboardUpdate", (data) =>
+            {
+                _dashboardData = data;
+                InvokeAsync(StateHasChanged);
+            });
+
+            _hubConnection.On<DashboardAlert>("NewAlert", (alert) =>
+            {
+                if (_alertsData != null && !_alertsData.ActiveAlerts.Any(a => a.Id == alert.Id))
+                {
+                    _alertsData.ActiveAlerts.Add(alert);
+                    InvokeAsync(StateHasChanged);
+                    
+                    var severity = alert.Severity switch
+                    {
+                        "Critical" => Severity.Error,
+                        "High" => Severity.Warning,
+                        "Medium" => Severity.Info,
+                        _ => Severity.Info
+                    };
+                    Snackbar.Add($"🚨 {alert.Title}: {alert.Message}", severity);
+                }
+            });
+
+            _hubConnection.Reconnecting += error =>
+            {
+                _isConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Reconnected += connectionId =>
+            {
+                _isConnected = true;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Closed += error =>
+            {
+                _isConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            await _hubConnection.StartAsync();
+            _isConnected = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing SignalR connection");
+            _isConnected = false;
+        }
+    }
+
+    // Helper methods
+    private Color GetStatusColor(string? status)
+    {
+        return status switch
+        {
+            "Normal" => Color.Success,
+            "Warning" => Color.Warning,
+            "Critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Color GetAssignmentModeColor(string mode)
+    {
+        return mode switch
+        {
+            "Automatic" => Color.Success,
+            "Manual" => Color.Info,
+            "Disabled" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private Severity GetSeverityColor(string severity)
+    {
+        return severity switch
+        {
+            "Critical" => Severity.Error,
+            "High" => Severity.Warning,
+            "Medium" => Severity.Info,
+            _ => Severity.Info
+        };
+    }
+
+    private Color GetBalanceScoreColor(double score)
+    {
+        return score switch
+        {
+            >= 80 => Color.Success,
+            >= 60 => Color.Warning,
+            _ => Color.Error
+        };
+    }
+
+    private Color GetPerformanceColor(double performance)
+    {
+        return performance switch
+        {
+            >= 100 => Color.Success,
+            >= 80 => Color.Warning,
+            _ => Color.Error
+        };
+    }
+
+    private string FormatTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan.TotalDays >= 1)
+            return $"{(int)timeSpan.TotalDays}d {timeSpan.Hours}h";
+        if (timeSpan.TotalHours >= 1)
+            return $"{(int)timeSpan.TotalHours}h {timeSpan.Minutes}m";
+        if (timeSpan.TotalMinutes >= 1)
+            return $"{(int)timeSpan.TotalMinutes}m {timeSpan.Seconds}s";
+        return $"{timeSpan.Seconds}s";
+    }
+
+    private async Task ShowStageDetails(string stage)
+    {
+        // Show stage details dialog
+        Snackbar.Add($"Stage: {stage}", Severity.Info);
+    }
+
+    private async Task LoadUserActivityData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<UserActivityData>(
+                "/api/image-analysis/dashboard/user-activity");
+            if (response != null)
+            {
+                _userActivityData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading user activity data");
+        }
+    }
+
+    private async Task LoadQualityMetricsData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<QualityMetricsData>(
+                "/api/image-analysis/dashboard/quality-metrics");
+            if (response != null)
+            {
+                _qualityMetricsData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading quality metrics data");
+        }
+    }
+
+    private async Task LoadBottleneckData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<BottleneckAnalysisData>(
+                "/api/image-analysis/dashboard/bottlenecks");
+            if (response != null)
+            {
+                _bottleneckData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading bottleneck data");
+        }
+    }
+
+    private async Task LoadPredictiveData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<PredictiveAnalyticsData>(
+                "/api/image-analysis/dashboard/predictive");
+            if (response != null)
+            {
+                _predictiveData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading predictive data");
+        }
+    }
+
+    private async Task LoadAlertsData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<DashboardAlertsData>(
+                "/api/image-analysis/dashboard/alerts");
+            if (response != null)
+            {
+                _alertsData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading alerts data");
+        }
+    }
+
+    private async Task LoadSystemHealthData()
+    {
+        try
+        {
+            var response = await ApiService.GetAsync<SystemHealthData>(
+                "/api/image-analysis/dashboard/system-health");
+            if (response != null)
+            {
+                _systemHealthData = response;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading system health data");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}

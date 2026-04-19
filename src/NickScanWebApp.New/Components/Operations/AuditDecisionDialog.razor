@@ -1,0 +1,296 @@
+@using MudBlazor
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Models
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<MudDialog>
+    <DialogContent>
+        <MudContainer Style="max-height: 70vh; overflow-y: auto;">
+            
+            <!-- Header Info -->
+            <MudPaper Class="pa-4 mb-4" Elevation="0" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                <MudText Typo="Typo.h5">
+                    <MudIcon Icon="@Icons.Material.Outlined.Verified" Class="mr-2" />
+                    Audit Review: @Record?.GroupIdentifier
+                </MudText>
+                <MudText Typo="Typo.body2">
+                    @Record?.TotalContainers container(s) | @Record?.ScannerType Scanner
+                </MudText>
+            </MudPaper>
+
+            <!-- Original Image Analysis Decisions -->
+            <MudPaper Class="pa-4 mb-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-3">
+                    <MudIcon Icon="@Icons.Material.Outlined.Assignment" Class="mr-2" />
+                    Original Image Analysis Decisions
+                </MudText>
+                
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                    Reviewed by: <strong>@Record?.ImageAnalysisDecisions.FirstOrDefault()?.ReviewedBy</strong> 
+                    on @Record?.SubmittedAt.ToString("MMM dd, yyyy HH:mm")
+                </MudAlert>
+
+                <MudSimpleTable Dense="true" Bordered="true" Striped="true">
+                    <thead>
+                        <tr>
+                            <th>Container Number</th>
+                            <th>Decision</th>
+                            <th>Comments</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (Record?.ImageAnalysisDecisions != null)
+                        {
+                            @foreach (var decision in Record.ImageAnalysisDecisions)
+                            {
+                                <tr>
+                                    <td>
+                                        <MudText Typo="Typo.body2"><strong>@decision.ContainerNumber</strong></MudText>
+                                    </td>
+                            <td>
+                                <MudChip T="string" Size="Size.Small" 
+                                        Color="@(decision.Decision == "Abnormal" ? Color.Error : Color.Success)">
+                                    @decision.Decision
+                                </MudChip>
+                            </td>
+                                    <td>
+                                        <MudText Typo="Typo.body2">@(decision.Comments ?? "-")</MudText>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </MudPaper>
+
+            <!-- Audit Decisions Form -->
+            <MudPaper Class="pa-4 mb-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-3">
+                    <MudIcon Icon="@Icons.Material.Outlined.RateReview" Color="Color.Primary" Class="mr-2" />
+                    Your Audit Decision
+                </MudText>
+
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
+                    Review each container and make your audit decision (Approve or Reject)
+                </MudAlert>
+
+                @if (_auditDecisions != null)
+                {
+                    @foreach (var auditDecision in _auditDecisions)
+                    {
+                        <MudPaper Class="pa-3 mb-3" Outlined="true">
+                            <MudGrid>
+                                <MudItem xs="12" md="4">
+                                    <MudText Typo="Typo.subtitle1"><strong>@auditDecision.ContainerNumber</strong></MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        Original: @auditDecision.OriginalDecision
+                                    </MudText>
+                                </MudItem>
+                                <MudItem xs="12" md="4">
+                                    <MudRadioGroup T="string" @bind-Value="auditDecision.Decision" Required="true">
+                                        <MudRadio T="string" Value="@ApprovedValue" Color="Color.Success">
+                                            <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Class="mr-1" />
+                                            Approve
+                                        </MudRadio>
+                                        <MudRadio T="string" Value="@RejectedValue" Color="Color.Error">
+                                            <MudIcon Icon="@Icons.Material.Outlined.Cancel" Size="Size.Small" Class="mr-1" />
+                                            Reject
+                                        </MudRadio>
+                                    </MudRadioGroup>
+                                </MudItem>
+                                <MudItem xs="12" md="4">
+                                    <MudTextField @bind-Value="auditDecision.Notes"
+                                                 Label="Audit Notes"
+                                                 Variant="Variant.Outlined"
+                                                 Lines="2"
+                                                 Margin="Margin.Dense" />
+                                </MudItem>
+                            </MudGrid>
+                        </MudPaper>
+                    }
+                }
+
+                <!-- Overall Decision Preview -->
+                <MudDivider Class="my-3" />
+                <MudAlert Severity="@GetOverallSeverity()" Dense="true">
+                    <MudText Typo="Typo.subtitle1">
+                        <strong>Overall Decision: @GetOverallDecision()</strong>
+                    </MudText>
+                    <MudText Typo="Typo.caption">
+                        @GetOverallMessage()
+                    </MudText>
+                </MudAlert>
+            </MudPaper>
+
+            <!-- Progress Indicator -->
+            @if (_submitting)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-3" />
+            }
+
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_submitting">Cancel</MudButton>
+        <MudButton Color="Color.Primary" 
+                  Variant="Variant.Filled" 
+                  OnClick="SubmitAudit" 
+                  Disabled="@(!AllDecisionsMade() || _submitting)"
+                  StartIcon="@Icons.Material.Outlined.Send">
+            @(_submitting ? "Submitting..." : "Submit Audit Decisions")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public AuditGroupDto? Record { get; set; }
+    [Parameter] public EventCallback<bool> OnAuditComplete { get; set; }
+    
+    private const string ApprovedValue = "Approved";
+    private const string RejectedValue = "Rejected";
+
+    private List<ContainerAuditDecision>? _auditDecisions;
+    private bool _submitting = false;
+    private string _currentUser = "Unknown";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get current user
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        _currentUser = authState.User?.Identity?.Name ?? "Unknown";
+
+        // Initialize audit decisions
+        if (Record?.ImageAnalysisDecisions != null)
+        {
+            _auditDecisions = Record.ImageAnalysisDecisions.Select(d => new ContainerAuditDecision
+            {
+                ContainerNumber = d.ContainerNumber,
+                OriginalDecision = d.Decision,
+                Decision = "", // User must choose
+                Notes = ""
+            }).ToList();
+        }
+    }
+
+    private bool AllDecisionsMade()
+    {
+        return _auditDecisions?.All(d => !string.IsNullOrEmpty(d.Decision)) ?? false;
+    }
+
+    private string GetOverallDecision()
+    {
+        if (!AllDecisionsMade()) return "Pending";
+        
+        var anyRejected = _auditDecisions?.Any(d => d.Decision == RejectedValue) ?? false;
+        return anyRejected ? "REJECTED" : "APPROVED";
+    }
+
+    private Severity GetOverallSeverity()
+    {
+        if (!AllDecisionsMade()) return Severity.Normal;
+        
+        var decision = GetOverallDecision();
+        return decision == "APPROVED" ? Severity.Success : Severity.Error;
+    }
+
+    private string GetOverallMessage()
+    {
+        if (!AllDecisionsMade())
+        {
+            var pending = _auditDecisions?.Count(d => string.IsNullOrEmpty(d.Decision)) ?? 0;
+            return $"{pending} container(s) pending decision";
+        }
+        
+        var decision = GetOverallDecision();
+        if (decision == "APPROVED")
+        {
+            return "All containers approved - Record will be marked as APPROVED";
+        }
+        else
+        {
+            var rejectedCount = _auditDecisions?.Count(d => d.Decision == RejectedValue) ?? 0;
+            return $"{rejectedCount} container(s) rejected - Record will be marked as REJECTED";
+        }
+    }
+
+    private async Task SubmitAudit()
+    {
+        if (!AllDecisionsMade())
+        {
+            Snackbar.Add("Please make decisions for all containers", Severity.Warning);
+            return;
+        }
+
+        _submitting = true;
+        try
+        {
+            var request = new AuditSubmissionRequest
+            {
+                GroupIdentifier = Record?.GroupIdentifier ?? "",
+                ScannerType = Record?.ScannerType,
+                AuditedBy = _currentUser,
+                IsConsolidated = Record?.IsConsolidated ?? false,
+                ContainerDecisions = _auditDecisions ?? new()
+            };
+
+            var response = await ApiService.PostAsync<AuditSubmissionRequest, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+
+            if (response?.Success == true)
+            {
+                Snackbar.Add($"Audit completed: {response.OverallDecision}", 
+                    response.OverallDecision == "Approved" ? Severity.Success : Severity.Warning);
+                await OnAuditComplete.InvokeAsync(true);
+            }
+            else
+            {
+                Snackbar.Add($"Error: {response?.Message ?? "Unknown error"}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error submitting audit: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task Cancel()
+    {
+        await OnAuditComplete.InvokeAsync(false);
+    }
+
+    // DTOs - Using shared types from parent Audit page via @using directive
+    // AuditGroupDto and ImageAnalysisDecisionSummary imported from Audit.razor
+    
+    private class ContainerAuditDecision
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string OriginalDecision { get; set; } = "";
+        public string Decision { get; set; } = "";
+        public string? Notes { get; set; }
+    }
+
+    private class AuditSubmissionRequest
+    {
+        public string GroupIdentifier { get; set; } = "";
+        public string? ScannerType { get; set; }
+        public string AuditedBy { get; set; } = "";
+        public bool IsConsolidated { get; set; }
+        public List<ContainerAuditDecision> ContainerDecisions { get; set; } = new();
+    }
+
+    private class AuditSubmissionResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public string? OverallDecision { get; set; }
+        public int AuditedCount { get; set; }
+        public string? NextContainerNumber { get; set; }
+        public bool AllContainersAudited { get; set; }
+    }
+}
+

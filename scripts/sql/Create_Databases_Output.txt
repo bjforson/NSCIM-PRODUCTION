@@ -1,0 +1,40 @@
+========================================
+Creating Databases for SQL Server 2014
+========================================
+ 
+Creating NS_CIS database...
+Changed database context to 'NS_CIS'.
+Msg 102, Level 15, State 6, Server TEST-SERVER, Line 7
+Incorrect syntax near 'RECOVERY_SIMPLE'.
+ 
+Creating ICUMS database...
+Changed database context to 'ICUMS'.
+Msg 102, Level 15, State 6, Server TEST-SERVER, Line 7
+Incorrect syntax near 'RECOVERY_SIMPLE'.
+ 
+Creating ICUMS_Downloads database...
+Changed database context to 'ICUMS_Downloads'.
+Msg 102, Level 15, State 6, Server TEST-SERVER, Line 7
+Incorrect syntax near 'RECOVERY_SIMPLE'.
+ 
+========================================
+Verification
+========================================
+ 
+DatabaseName                                                                                                                     CompatibilityLevel RecoveryModel                                                State                                                       
+-------------------------------------------------------------------------------------------------------------------------------- ------------------ ------------------------------------------------------------ ------------------------------------------------------------
+ICUMS                                                                                                                                           120 FULL                                                         ONLINE                                                      
+ICUMS_Downloads                                                                                                                                 120 FULL                                                         ONLINE                                                      
+NS_CIS                                                                                                                                          120 FULL                                                         ONLINE                                                      
+
+(3 rows affected)
+ 
+========================================
+Database Creation Complete!
+========================================
+ 
+Next Steps:
+1. Update connection strings in appsettings.json
+2. Run EF Core migrations using:
+   .\scripts\Run-DatabaseMigrations.ps1
+ 

@@ -1,0 +1,24 @@
+@page "/icums/loose-cargo"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsLooseCargo)]
+@using NickScanWebApp.Mobile.Services
+@inject ISnackbar Snackbar
+@inject ApiService ApiService
+
+<PageTitle>Loose Cargo - ICUMS</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Inventory2" Class="mr-2" />
+            Loose Cargo
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Loose cargo management interface. Use desktop version for full functionality.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

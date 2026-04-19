@@ -1,0 +1,279 @@
+@page "/validation/boe-lookup"
+@page "/customs/boe-lookup"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationBoeLookup)]
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject ILogger<BoeLookup> Logger
+
+@*
+    BOE Lookup — universal cargo / BOE search for analysts and above.
+
+    Searches the icums BOEDocuments table across container number, declaration
+    number, BL number, master BL, house BL, rotation number; falls back to
+    VIN matches via VehicleImports → BOEDocuments. Each result row shows the
+    field that matched and links through to the standard ContainerDetails view.
+
+    Backed by GET /api/cargogroup/lookup?q=...&limit=...
+*@
+
+<PageTitle>NICKSCAN ERP — BOE Lookup</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+        <div>
+            <MudText Typo="Typo.h4">
+                <MudIcon Icon="@Icons.Material.Outlined.ManageSearch" Class="mr-2" />
+                BOE Lookup
+            </MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                Find any cargo declaration by container, BL, master BL, house BL, declaration number, rotation, or VIN
+            </MudText>
+        </div>
+        <MudButton Variant="Variant.Outlined"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Outlined.RuleFolder"
+                   OnClick="@(() => Navigation.NavigateTo("/validation/match-corrections"))">
+            Match Corrections
+        </MudButton>
+    </MudStack>
+
+    <MudPaper Elevation="0" Class="pa-3 mb-3" Outlined="true">
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="9">
+                <MudTextField T="string"
+                              @bind-Value="_query"
+                              Label="Search term (min 3 characters)"
+                              Placeholder="Container, declaration, master BL, house BL, rotation, or VIN"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              Variant="Variant.Outlined"
+                              Immediate="true"
+                              OnKeyDown="OnQueryKeyDown" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Outlined.Search"
+                           Class="mt-1"
+                           FullWidth="true"
+                           Disabled="@(_loading || string.IsNullOrWhiteSpace(_query) || _query.Trim().Length < 3)"
+                           OnClick="DoSearchAsync">
+                    Search
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (_loading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Typo="Typo.body1">Searching…</MudText>
+        </MudStack>
+    }
+    else if (_results == null)
+    {
+        <MudPaper Elevation="0" Class="pa-8" Outlined="true">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.Search" Size="Size.Large" Color="Color.Tertiary" />
+                <MudText Typo="Typo.body1" Color="Color.Secondary">
+                    Type at least 3 characters and click Search.
+                </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    Tip: any partial container number, BL, declaration ID, or VIN works. Press Enter to search.
+                </MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (_results.Results.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+            No matches for <b>@_results.Query</b>. Try a shorter or different fragment.
+        </MudAlert>
+    }
+    else
+    {
+        <MudPaper Elevation="0" Outlined="true">
+            <MudToolBar Dense="true">
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    @_results.Results.Count match@(_results.Results.Count == 1 ? "" : "es") for
+                    <b>@_results.Query</b>
+                    @if (_results.Truncated)
+                    {
+                        <text> &nbsp;·&nbsp; <b>truncated</b> at @_results.Limit — refine your search to see more</text>
+                    }
+                </MudText>
+            </MudToolBar>
+            <MudTable Items="_results.Results"
+                      Hover="true"
+                      Dense="true"
+                      Striped="true"
+                      Bordered="false"
+                      Breakpoint="Breakpoint.Sm">
+                <HeaderContent>
+                    <MudTh>Matched on</MudTh>
+                    <MudTh>Container</MudTh>
+                    <MudTh>Master BL</MudTh>
+                    <MudTh>House BL</MudTh>
+                    <MudTh>Declaration</MudTh>
+                    <MudTh>Rotation</MudTh>
+                    <MudTh>Clearance</MudTh>
+                    <MudTh>Importer / Declarant</MudTh>
+                    <MudTh>Updated</MudTh>
+                    <MudTh></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <MudChip T="string" Size="Size.Small" Color="@MatchedFieldColor(context.MatchedField)" Variant="Variant.Filled">
+                            @context.MatchedField
+                        </MudChip>
+                        @if (!string.IsNullOrWhiteSpace(context.MatchedValue))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="ml-1">@context.MatchedValue</MudText>
+                        }
+                    </MudTd>
+                    <MudTd>@context.ContainerNumber</MudTd>
+                    <MudTd>@(context.MasterBlNumber ?? "—")</MudTd>
+                    <MudTd>@(context.HouseBl ?? context.BlNumber ?? "—")</MudTd>
+                    <MudTd>@(context.DeclarationNumber ?? "—")</MudTd>
+                    <MudTd>@(context.RotationNumber ?? "—")</MudTd>
+                    <MudTd>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                            @(context.ClearanceType ?? "—")
+                        </MudChip>
+                        @if (context.IsConsolidated)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Class="ml-1">CONS</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd>
+                        <MudText Typo="Typo.caption">@(context.ImpExpName ?? "—")</MudText>
+                        @if (!string.IsNullOrWhiteSpace(context.DeclarantName))
+                        {
+                            <br />
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@context.DeclarantName</MudText>
+                        }
+                    </MudTd>
+                    <MudTd>
+                        <MudText Typo="Typo.caption">@context.UpdatedAt.ToString("dd MMM yyyy")</MudText>
+                    </MudTd>
+                    <MudTd>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Primary"
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.OpenInNew"
+                                   OnClick="@(() => OpenContainer(context.ContainerNumber))">
+                            Open
+                        </MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    }
+</MudContainer>
+
+@code {
+    private string _query = string.Empty;
+    private bool _loading;
+    private CargoLookupResponse? _results;
+
+    protected override void OnInitialized()
+    {
+        // Allow deep-linking via ?q=...
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        var queryParams = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        if (queryParams.TryGetValue("q", out var qVal))
+        {
+            _query = qVal.ToString();
+            if (!string.IsNullOrWhiteSpace(_query) && _query.Trim().Length >= 3)
+            {
+                _ = DoSearchAsync();
+            }
+        }
+    }
+
+    private async Task OnQueryKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_loading && !string.IsNullOrWhiteSpace(_query) && _query.Trim().Length >= 3)
+        {
+            await DoSearchAsync();
+        }
+    }
+
+    private async Task DoSearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_query) || _query.Trim().Length < 3) return;
+        _loading = true;
+        StateHasChanged();
+        try
+        {
+            var encoded = Uri.EscapeDataString(_query.Trim());
+            var url = $"/api/cargogroup/lookup?q={encoded}&limit=50";
+            _results = await ApiService.GetAsync<CargoLookupResponse>(url);
+            if (_results == null)
+            {
+                Snackbar.Add("Lookup returned no response", Severity.Warning);
+                _results = new CargoLookupResponse { Query = _query.Trim() };
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "BOE lookup failed for {Q}", _query);
+            Snackbar.Add($"Lookup failed: {ex.Message}", Severity.Error);
+            _results = new CargoLookupResponse { Query = _query.Trim() };
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OpenContainer(string containerNumber)
+    {
+        if (string.IsNullOrWhiteSpace(containerNumber)) return;
+        Navigation.NavigateTo($"/containers/{Uri.EscapeDataString(containerNumber)}");
+    }
+
+    private static Color MatchedFieldColor(string field) => field switch
+    {
+        "ContainerNumber" => Color.Primary,
+        "MasterBl"        => Color.Success,
+        "HouseBl"         => Color.Success,
+        "BlNumber"        => Color.Success,
+        "DeclarationNumber" => Color.Info,
+        "RotationNumber"  => Color.Info,
+        "VIN"             => Color.Warning,
+        _                 => Color.Default,
+    };
+
+    public class CargoLookupResponse
+    {
+        public string Query { get; set; } = string.Empty;
+        public int TotalReturned { get; set; }
+        public int Limit { get; set; }
+        public bool Truncated { get; set; }
+        public List<CargoLookupRowDto> Results { get; set; } = new();
+    }
+
+    public class CargoLookupRowDto
+    {
+        public int BoeDocumentId { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string? BlNumber { get; set; }
+        public string? MasterBlNumber { get; set; }
+        public string? HouseBl { get; set; }
+        public string? DeclarationNumber { get; set; }
+        public string? RotationNumber { get; set; }
+        public string? ClearanceType { get; set; }
+        public bool IsConsolidated { get; set; }
+        public string? ImpExpName { get; set; }
+        public string? DeclarantName { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public string MatchedField { get; set; } = string.Empty;
+        public string? MatchedValue { get; set; }
+    }
+}

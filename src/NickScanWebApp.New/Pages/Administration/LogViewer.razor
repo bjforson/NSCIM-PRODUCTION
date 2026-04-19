@@ -1,0 +1,169 @@
+@page "/admin/logs"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminLogs)]
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+
+<PageTitle>NICKSCAN ERP — NSCIS — System Logs</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Description" Class="mr-2" />
+        System Logs
+    </MudText>
+    
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="3">
+                <MudSelect T="string" Label="Log Level" @bind-Value="logLevel" Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="string" Value="@("All")">All Levels</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Fatal")">Fatal</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Error")">Error</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Warning")">Warning</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudDateRangePicker Label="Date Range" @bind-DateRange="dateRange" Variant="Variant.Outlined" Dense />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" Label="Search" Placeholder="Search logs..." @bind-Value="searchTerm"
+                              Variant="Variant.Outlined" Dense Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search" />
+            </MudItem>
+            <MudItem xs="12" md="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth OnClick="LoadLogs"
+                           Disabled="loading" StartIcon="@Icons.Material.Outlined.FilterList">Apply</MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (loading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate />
+    }
+    
+    <MudPaper Elevation="2">
+        <MudTable Items="@logs" Dense Hover Breakpoint="Breakpoint.Sm" Loading="loading">
+            <HeaderContent>
+                <MudTh>Time</MudTh>
+                <MudTh>Level</MudTh>
+                <MudTh>Source</MudTh>
+                <MudTh>Message</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Time"><MudText Typo="Typo.caption" Style="font-family:monospace">@context.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</MudText></MudTd>
+                <MudTd DataLabel="Level"><MudChip T="string" Size="Size.Small" Color="@GetLevelColor(context.Level)">@context.Level</MudChip></MudTd>
+                <MudTd DataLabel="Source">@ShortenSource(context.ServiceId)</MudTd>
+                <MudTd DataLabel="Message">
+                    <MudText Typo="Typo.body2" Style="max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                             title="@context.Message">@context.Message</MudText>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudAlert Severity="Severity.Info" Dense Class="ma-4">No logs found for the selected filters.</MudAlert>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudStack Row AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="pa-2">
+                    <MudText Typo="Typo.caption">Total: @totalCount entries</MudText>
+                    <MudStack Row>
+                        <MudButton Size="Size.Small" Disabled="@(currentPage <= 1)" OnClick="PrevPage">Previous</MudButton>
+                        <MudText Typo="Typo.caption" Class="align-self-center">Page @currentPage of @totalPages</MudText>
+                        <MudButton Size="Size.Small" Disabled="@(currentPage >= totalPages)" OnClick="NextPage">Next</MudButton>
+                    </MudStack>
+                </MudStack>
+            </PagerContent>
+        </MudTable>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private string logLevel = "All";
+    private DateRange? dateRange;
+    private string searchTerm = "";
+    private List<LogEntryDto> logs = new();
+    private bool loading;
+    private int currentPage = 1;
+    private int pageSize = 100;
+    private int totalCount;
+    private int totalPages;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadLogs();
+    }
+
+    private async Task LoadLogs()
+    {
+        loading = true;
+        StateHasChanged();
+        try
+        {
+            var queryParams = new List<string> { $"page={currentPage}", $"pageSize={pageSize}" };
+            if (logLevel != "All") queryParams.Add($"level={logLevel}");
+            if (!string.IsNullOrEmpty(searchTerm)) queryParams.Add($"search={Uri.EscapeDataString(searchTerm)}");
+            if (dateRange?.Start != null) queryParams.Add($"fromDate={dateRange.Start.Value:yyyy-MM-dd}");
+            if (dateRange?.End != null) queryParams.Add($"toDate={dateRange.End.Value:yyyy-MM-dd}");
+
+            var url = $"/api/LogManagement/logs?{string.Join("&", queryParams)}";
+            var result = await ApiService.GetAsync<PagedResultDto>(url);
+            if (result != null)
+            {
+                logs = result.Data ?? new();
+                totalCount = result.TotalCount;
+                totalPages = result.TotalPages;
+                Snackbar.Add($"Loaded {logs.Count} log entries", Severity.Success);
+            }
+            else
+            {
+                logs = new();
+                Snackbar.Add("No logs available", Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading logs: {ex.Message}", Severity.Error);
+            logs = new();
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PrevPage() { if (currentPage > 1) { currentPage--; await LoadLogs(); } }
+    private async Task NextPage() { if (currentPage < totalPages) { currentPage++; await LoadLogs(); } }
+
+    private Color GetLevelColor(string? level) => level switch
+    {
+        "Fatal" => Color.Dark,
+        "Error" => Color.Error,
+        "Warning" => Color.Warning,
+        _ => Color.Info
+    };
+
+    private string ShortenSource(string? source)
+    {
+        if (string.IsNullOrEmpty(source)) return "System";
+        var parts = source.Split('.');
+        return parts.Length > 2 ? parts[^1] : source;
+    }
+
+    public class LogEntryDto
+    {
+        public long Id { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string? Level { get; set; }
+        public string? ServiceId { get; set; }
+        public string? Message { get; set; }
+        public string? Exception { get; set; }
+    }
+
+    public class PagedResultDto
+    {
+        public List<LogEntryDto>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+}

@@ -1,0 +1,112 @@
+@using NickScanCentralImagingPortal.Core.Constants
+@using MudBlazor
+
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h4">Heimann Smith Scanner</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Scanner integration and monitoring</MudText>
+            </MudStack>
+            <MudChip T="string" Size="Size.Large" Color="Color.Warning" Icon="@Icons.Material.Outlined.Pending">
+                Pending Integration
+            </MudChip>
+        </MudStack>
+    </MudPaper>
+
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-warning);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Today" Color="Color.Warning" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">--</MudText>
+                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">--</MudText>
+                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Speed" Color="Color.Info" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">--</MudText>
+                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Success Rate</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Info" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">--</MudText>
+                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <MudPaper Elevation="2" Class="pa-6" Style="text-align: center;">
+        <MudIcon Icon="@Icons.Material.Outlined.Sensors" Style="font-size: 4rem; opacity: 0.3;" Color="Color.Default" />
+        <MudText Typo="Typo.h5" Class="mt-4" Color="Color.Secondary">Heimann Smith Scanner Integration Pending</MudText>
+        <MudText Typo="Typo.body1" Class="mt-2" Style="max-width: 600px; margin: 0 auto;">
+            The Heimann Smith scanner backend is not yet connected to this portal. 
+            Once the scanner service is integrated, this page will display real-time scan data, 
+            statistics, and container image history.
+        </MudText>
+        <MudStack Row="true" Justify="Justify.Center" Spacing="3" Class="mt-4">
+            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Outlined.CloudQueue" Color="Color.Info" />
+                    <MudText Typo="Typo.caption">API Endpoint</MudText>
+                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
+                </MudStack>
+            </MudPaper>
+            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Outlined.Storage" Color="Color.Warning" />
+                    <MudText Typo="Typo.caption">Data Pipeline</MudText>
+                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
+                </MudStack>
+            </MudPaper>
+            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
+                <MudStack Spacing="1" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Warning" />
+                    <MudText Typo="Typo.caption">Image Processing</MudText>
+                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudStack>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new()
+    {
+        new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+        new BreadcrumbItem("Scanners", href: "/scanners", icon: Icons.Material.Outlined.Scanner),
+        new BreadcrumbItem("Heimann Smith", href: null, disabled: true)
+    };
+}

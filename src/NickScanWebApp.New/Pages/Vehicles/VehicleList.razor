@@ -1,0 +1,157 @@
+@page "/vehicles"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesVehiclesView)]
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+
+<PageTitle>NICKSCAN ERP — NSCIS — Vehicle Imports</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudText Typo="Typo.h4">
+            <MudIcon Icon="@Icons.Material.Outlined.DirectionsCar" Class="mr-2" />
+            Vehicle Import Tracking
+        </MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary">Track imported vehicles with VIN extraction</MudText>
+    </MudPaper>
+    
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Total Vehicles" Value="@_totalVehicles" Icon="@Icons.Material.Outlined.DirectionsCar" IconColor="@Color.Primary" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="This Month" Value="@_pendingReview" Icon="@Icons.Material.Outlined.CalendarMonth" IconColor="@Color.Info" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="With VIN" Value="@_cleared" Icon="@Icons.Material.Outlined.CheckCircle" IconColor="@Color.Success" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Missing VIN" Value="@_flagged" Icon="@Icons.Material.Outlined.Warning" IconColor="@Color.Warning" />
+        </MudItem>
+    </MudGrid>
+    
+    <MudPaper Elevation="2">
+        <MudTable Items="@vehicles" Dense Hover Breakpoint="Breakpoint.Sm">
+            <ToolBarContent>
+                <MudText Typo="Typo.h6">Vehicle List</MudText>
+                <MudSpacer />
+                <MudTextField T="string" Placeholder="Search VIN..." Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" IconSize="Size.Medium" />
+            </ToolBarContent>
+            <HeaderContent>
+                <MudTh>VIN</MudTh>
+                <MudTh>Container</MudTh>
+                <MudTh>Make/Model</MudTh>
+                <MudTh>Year</MudTh>
+                <MudTh>Scan Date</MudTh>
+                <MudTh>Status</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="VIN"><MudText Typo="Typo.body2" Style="font-family: monospace;">@context.VIN</MudText></MudTd>
+                <MudTd DataLabel="Container"><MudLink Href="@($"/containers/{context.ContainerNumber}")">@context.ContainerNumber</MudLink></MudTd>
+                <MudTd DataLabel="Make/Model">@context.Make @context.Model</MudTd>
+                <MudTd DataLabel="Year">@context.Year</MudTd>
+                <MudTd DataLabel="Scan Date"><MudText Typo="Typo.caption">@context.ScanDate.ToString("dd MMM yyyy")</MudText></MudTd>
+                <MudTd DataLabel="Status"><ValidationStatusBadge Status="@context.Status" Size="Size.Small" /></MudTd>
+            </RowTemplate>
+            <PagerContent><MudTablePager PageSizeOptions="new int[] { 10, 25, 50 }" /></PagerContent>
+        </MudTable>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<VehicleViewModel> vehicles = new();
+    
+    private string _totalVehicles = "...";
+    private string _pendingReview = "...";
+    private string _cleared = "...";
+    private string _flagged = "...";
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadVehicles();
+    }
+    
+    private async Task LoadVehicles()
+    {
+        try
+        {
+            Console.WriteLine("🔍 Loading vehicles from API...");
+            
+            // ✅ CONNECTED TO REAL API - Load reasonable amount for client-side paging
+            var response = await ApiService.GetAsync<PagedResult<VehicleImportDto>>("/api/vehicleimport/search?page=1&pageSize=200");
+            
+            if (response?.Data != null)
+            {
+                vehicles = response.Data.Select(v => new VehicleViewModel
+                {
+                    VIN = v.VIN ?? "",
+                    ContainerNumber = v.ContainerNumber ?? "",
+                    Make = v.Make ?? "Unknown",
+                    Model = v.Model ?? "",
+                    Year = int.TryParse(v.VehicleYear, out var year) ? year : 0,
+                    ScanDate = v.CreatedAt,
+                    Status = v.ProcessingStatus ?? "Pending"
+                }).ToList();
+                
+                Console.WriteLine($"✅ Loaded {vehicles.Count} vehicles (MudTablePager will handle paging)");
+                Snackbar.Add($"Loaded {vehicles.Count} vehicles", Severity.Success);
+                
+                _totalVehicles = (response.TotalCount > 0 ? response.TotalCount : vehicles.Count).ToString("N0");
+                var now = DateTime.Now;
+                _pendingReview = vehicles.Count(v => v.ScanDate.Year == now.Year && v.ScanDate.Month == now.Month).ToString("N0");
+                _cleared = vehicles.Count(v => !string.IsNullOrWhiteSpace(v.VIN)).ToString("N0");
+                _flagged = vehicles.Count(v => string.IsNullOrWhiteSpace(v.VIN)).ToString("N0");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading vehicles: {ex.Message}");
+            Console.WriteLine($"❌ Stack trace: {ex.StackTrace}");
+            vehicles = new List<VehicleViewModel>();
+            _totalVehicles = "N/A";
+            _pendingReview = "N/A";
+            _cleared = "N/A";
+            _flagged = "N/A";
+            Snackbar.Add($"Could not load vehicles from API: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            // Cleanup if needed
+        }
+    }
+    
+    // API Response DTOs - matches PagedResult<T> from API
+    public class PagedResult<T>
+    {
+        public List<T> Data { get; set; } = new();
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+    
+    public class VehicleImportDto
+    {
+        public int Id { get; set; }
+        public string? VIN { get; set; }
+        public string? ContainerNumber { get; set; }
+        public string? Make { get; set; }
+        public string? Model { get; set; }
+        public string? VehicleYear { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public string? ProcessingStatus { get; set; }
+    }
+    
+    public class VehicleViewModel
+    {
+        public string VIN { get; set; } = "";
+        public string ContainerNumber { get; set; } = "";
+        public string Make { get; set; } = "";
+        public string Model { get; set; } = "";
+        public int Year { get; set; }
+        public DateTime ScanDate { get; set; }
+        public string Status { get; set; } = "";
+    }
+}
+

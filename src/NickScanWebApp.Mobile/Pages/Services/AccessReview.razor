@@ -1,0 +1,22 @@
+@page "/services/access-review"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesAccessReview)]
+@using NickScanWebApp.Mobile.Services
+
+<PageTitle>Access Review Services - NickScan Portal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-2">
+    <MudPaper Elevation="2" Class="pa-4 mb-3 rounded-lg">
+        <MudText Typo="Typo.h5">
+            <MudIcon Icon="@Icons.Material.Filled.Security" Class="mr-2" />
+            Access Review Services
+        </MudText>
+    </MudPaper>
+    
+    <MudAlert Severity="Severity.Info">
+        Access review service monitoring. Use desktop version for detailed access logs.
+    </MudAlert>
+</MudContainer>
+
+@code {
+}
+

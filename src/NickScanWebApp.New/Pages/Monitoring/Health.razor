@@ -1,0 +1,474 @@
+@page "/services/monitoring"
+@page "/monitoring/health"
+@page "/monitoring"
+@page "/services/performance-metrics"
+@page "/monitoring/performance"
+@page "/monitoring/endpoint-usage"
+@page "/admin/service-control"
+@page "/administration/service-control"
+@page "/monitoring/service-control"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesMonitoring)]
+@using MudBlazor
+@using System.Text.Json
+@using NickScanWebApp.New.Components.Monitoring
+@implements IDisposable
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<Health> Logger
+@inject NavigationManager NavManager
+
+<PageTitle>NICKSCAN ERP — NSCIS — System Monitoring</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Health" Icon="@Icons.Material.Filled.MonitorHeart">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.MonitorHeart" Class="mr-2" />
+        System Monitoring
+    </MudText>
+
+    @if (_isLoading)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+        <MudText>Loading monitoring data...</MudText>
+    }
+    else
+    {
+        <!-- System Health Overview -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">System Status</MudText>
+                        <MudText Typo="Typo.h6">
+                            <MudChip T="string" Color="@GetHealthColor(_healthOverview?.SystemHealth?.OverallStatus)" Size="Size.Small">
+                                @(_healthOverview?.SystemHealth?.OverallStatus ?? "Unknown")
+                            </MudChip>
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Uptime</MudText>
+                        <MudText Typo="Typo.h6">@FormatUptime(_healthOverview?.Uptime)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Services Healthy</MudText>
+                        <MudText Typo="Typo.h6">
+                            @{
+                                var healthyCount = 0;
+                                if (_servicesHealth != null)
+                                {
+                                    foreach (var service in _servicesHealth.Values)
+                                    {
+                                        var status = GetServiceProperty(service, "Status")?.ToString() ?? "";
+                                        if (status.Equals("Healthy", StringComparison.OrdinalIgnoreCase) || status == "0")
+                                        {
+                                            healthyCount++;
+                                        }
+                                    }
+                                }
+                            }
+                            @healthyCount / @(_servicesHealth?.Count ?? 0)
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Last Updated</MudText>
+                        <MudText Typo="Typo.h6">@(_healthOverview?.Timestamp.ToString("HH:mm:ss") ?? "N/A")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Services Health Status -->
+        <MudPaper Class="pa-4 mb-4" Elevation="2">
+            <MudText Typo="Typo.h6" Class="mb-4">
+                <MudIcon Icon="@Icons.Material.Outlined.MiscellaneousServices" Class="mr-2" />
+                Services Health Status
+            </MudText>
+            <MudTable Items="@GetFilteredServices()" Hover="true" Dense="true">
+                <ToolBarContent>
+                    <MudText Typo="Typo.h6">Services</MudText>
+                    @if (!string.IsNullOrEmpty(StatusFilter))
+                    {
+                        <MudChip T="string" Color="@GetStatusColor(StatusFilter)" Size="Size.Small" Class="ml-2"
+                                 OnClose="ClearStatusFilter"
+                                 CloseIcon="@Icons.Material.Filled.Close">
+                            Filter: @StatusFilter
+                        </MudChip>
+                    }
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="RefreshData">
+                        Refresh
+                    </MudButton>
+                </ToolBarContent>
+                <HeaderContent>
+                    <MudTh>Service Name</MudTh>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Last Check</MudTh>
+                    <MudTh>Response Time</MudTh>
+                    <MudTh>Details</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    @{
+                        var serviceName = GetServiceProperty(context, "ServiceName") ?? GetServiceProperty(context, "Name") ?? "Unknown";
+                        var statusStr = GetServiceProperty(context, "Status")?.ToString() ?? "Unknown";
+                        var lastCheckedObj = GetServiceProperty(context, "LastChecked");
+                        DateTime? lastChecked = null;
+                        if (lastCheckedObj is JsonElement dateEl && dateEl.ValueKind == JsonValueKind.String)
+                        {
+                            if (DateTime.TryParse(dateEl.GetString(), out var parsedDate))
+                            {
+                                lastChecked = parsedDate;
+                            }
+                        }
+                        else if (lastCheckedObj is DateTime dt)
+                        {
+                            lastChecked = dt;
+                        }
+                        var responseTime = GetServiceProperty(context, "ResponseTimeMs") is JsonElement rtEl && rtEl.ValueKind == JsonValueKind.Number 
+                            ? rtEl.GetInt32() : 0;
+                        var message = GetServiceProperty(context, "ErrorMessage") ?? GetServiceProperty(context, "Message");
+                    }
+                    <MudTd DataLabel="Service Name">@serviceName</MudTd>
+                    <MudTd DataLabel="Status">
+                        <MudChip T="string" Color="@GetStatusColor(statusStr)" Size="Size.Small">
+                            @statusStr
+                        </MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Last Check">@FormatDateTime(lastChecked)</MudTd>
+                    <MudTd DataLabel="Response Time">@responseTime ms</MudTd>
+                    <MudTd DataLabel="Details">
+                        @if (!string.IsNullOrEmpty(message?.ToString()))
+                        {
+                            <MudTooltip Text="@(message?.ToString() ?? "")">
+                                <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" />
+                            </MudTooltip>
+                        }
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+
+        <!-- Database Statistics -->
+        @if (_dbStats != null)
+        {
+            <MudPaper Class="pa-4 mb-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Storage" Class="mr-2" />
+                    Database Statistics
+                </MudText>
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Containers</MudText>
+                            <MudText Typo="Typo.h5">@(_dbStats.TotalContainers?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Total Images</MudText>
+                            <MudText Typo="Typo.h5">@(_dbStats.TotalContainerImages?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">FS6000 Scans</MudText>
+                            <MudText Typo="Typo.h5">@(_dbStats.TotalFS6000Scans?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">ASE Scans</MudText>
+                            <MudText Typo="Typo.h5">@(_dbStats.TotalAseScans?.ToString("N0") ?? "0")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+                @if (_dbStats.TodayActivity != null)
+                {
+                    <MudDivider Class="my-3" />
+                    <MudText Typo="Typo.subtitle1" Class="mb-2">Today's Activity</MudText>
+                    <MudGrid Spacing="3">
+                        <MudItem xs="12" sm="4">
+                            <MudText>Containers: <strong>@(_dbStats.TodayActivity.Containers ?? 0)</strong></MudText>
+                        </MudItem>
+                        <MudItem xs="12" sm="4">
+                            <MudText>FS6000 Scans: <strong>@(_dbStats.TodayActivity.FS6000Scans ?? 0)</strong></MudText>
+                        </MudItem>
+                        <MudItem xs="12" sm="4">
+                            <MudText>ASE Scans: <strong>@(_dbStats.TodayActivity.AseScans ?? 0)</strong></MudText>
+                        </MudItem>
+                    </MudGrid>
+                }
+            </MudPaper>
+        }
+
+        <!-- System Information -->
+        @if (_healthOverview?.SystemInformation != null)
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Computer" Class="mr-2" />
+                    System Information
+                </MudText>
+                <MudSimpleTable>
+                    <tbody>
+                        <tr>
+                            <td><strong>Machine Name</strong></td>
+                            <td>@(_healthOverview.SystemInformation.MachineName ?? "N/A")</td>
+                        </tr>
+                        <tr>
+                            <td><strong>OS Version</strong></td>
+                            <td>@(_healthOverview.SystemInformation.OperatingSystem ?? _healthOverview.SystemInformation.OSVersion ?? "N/A")</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Processor Count</strong></td>
+                            <td>@(_healthOverview.SystemInformation.ProcessorCount ?? 0)</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Total Memory (GB)</strong></td>
+                            <td>@(_healthOverview.SystemInformation.TotalMemoryGB?.ToString("F2") ?? "N/A")</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Available Memory (GB)</strong></td>
+                            <td>@(_healthOverview.SystemInformation.AvailableMemoryGB?.ToString("F2") ?? "N/A")</td>
+                        </tr>
+                        @if (_healthOverview.SystemInformation.WorkingSetMB.HasValue)
+                        {
+                            <tr>
+                                <td><strong>Working Set Memory (MB)</strong></td>
+                                <td>@(_healthOverview.SystemInformation.WorkingSetMB.Value.ToString("F2"))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </MudPaper>
+        }
+    }
+    </MudTabPanel>
+
+    <MudTabPanel Text="Performance" Icon="@Icons.Material.Filled.Speed">
+        <PerformancePanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Endpoint Usage" Icon="@Icons.Material.Filled.Analytics">
+        <EndpointUsagePanel />
+    </MudTabPanel>
+
+    <MudTabPanel Text="Service Control" Icon="@Icons.Material.Filled.MiscellaneousServices">
+        <ServiceControlPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // Top-level hub tab: 0 = Health, 1 = Performance, 2 = Endpoint Usage, 3 = Service Control
+    private int _activeHubTab = 0;
+
+    private bool _isLoading = true;
+    private HealthOverviewDto? _healthOverview;
+    private Dictionary<string, object>? _servicesHealth;
+    private DatabaseStatsDto? _dbStats;
+    private System.Timers.Timer? _refreshTimer;
+
+    // Status filter from ?filter=healthy|degraded|unhealthy query string (from clickable dashboard cards)
+    [Microsoft.AspNetCore.Components.SupplyParameterFromQuery(Name = "filter")]
+    private string? StatusFilter { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab selection
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        _activeHubTab = path switch
+        {
+            "/services/performance-metrics"        => 1,
+            "/monitoring/performance"              => 1,
+            "/monitoring/endpoint-usage"           => 2,
+            "/admin/service-control"               => 3,
+            "/administration/service-control"      => 3,
+            "/monitoring/service-control"          => 3,
+            _                                      => 0
+        };
+
+        await LoadData();
+
+        // Auto-refresh every 30 seconds
+        _refreshTimer = new System.Timers.Timer(30000);
+        _refreshTimer.Elapsed += async (sender, e) => await RefreshData();
+        _refreshTimer.Start();
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            _isLoading = true;
+            
+            // Load health overview
+            _healthOverview = await ApiService.GetAsync<HealthOverviewDto>("/api/monitoring/health/overview");
+            
+            // Load services health
+            _servicesHealth = await ApiService.GetAsync<Dictionary<string, object>>("/api/monitoring/health/services");
+            
+            // Load database statistics
+            _dbStats = await ApiService.GetAsync<DatabaseStatsDto>("/api/monitoring/database/statistics");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading monitoring data");
+            Snackbar.Add($"Error loading monitoring data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshData()
+    {
+        await LoadData();
+    }
+
+    private Color GetHealthColor(string? status) => status?.ToLower() switch
+    {
+        "healthy" => Color.Success,
+        "degraded" => Color.Warning,
+        "unhealthy" => Color.Error,
+        _ => Color.Default
+    };
+
+    private Color GetStatusColor(string? status) => status?.ToLower() switch
+    {
+        "healthy" => Color.Success,
+        "degraded" => Color.Warning,
+        "unhealthy" => Color.Error,
+        _ => Color.Default
+    };
+
+    /// <summary>
+    /// Returns the service list filtered by the ?filter= query param (from dashboard drill-down).
+    /// Valid filter values: "healthy", "degraded", "unhealthy". If unset, returns all services.
+    /// </summary>
+    private List<object> GetFilteredServices()
+    {
+        var all = _servicesHealth?.Values.Cast<object>().ToList() ?? new List<object>();
+        if (string.IsNullOrEmpty(StatusFilter)) return all;
+        var needle = StatusFilter.Trim().ToLowerInvariant();
+        return all.Where(svc =>
+        {
+            var status = GetServiceProperty(svc, "Status")?.ToString()?.ToLowerInvariant();
+            return status == needle;
+        }).ToList();
+    }
+
+    private void ClearStatusFilter()
+    {
+        StatusFilter = null;
+        NavManager.NavigateTo("/monitoring/health", replace: true);
+    }
+
+    private string FormatUptime(string? uptime)
+    {
+        if (string.IsNullOrEmpty(uptime)) return "N/A";
+        return uptime; // API returns already formatted string
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    private object? GetServiceProperty(object? service, string propertyName)
+    {
+        if (service == null) return null;
+        
+        // If it's a JsonElement, extract the property
+        if (service is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Object)
+        {
+            if (jsonElement.TryGetProperty(propertyName, out var property))
+            {
+                return property.ValueKind switch
+                {
+                    JsonValueKind.String => property.GetString(),
+                    JsonValueKind.Number => property.GetInt32(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Null => null,
+                    JsonValueKind.Object => property,
+                    JsonValueKind.Array => property,
+                    _ => property
+                };
+            }
+        }
+        
+        // Fallback: try reflection
+        var type = service.GetType();
+        var propInfo = type.GetProperty(propertyName);
+        return propInfo?.GetValue(service);
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+    }
+
+    // DTOs
+    public class HealthOverviewDto
+    {
+        public SystemHealthDto? SystemHealth { get; set; }
+        public SystemInformationDto? SystemInformation { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string? Uptime { get; set; } // API returns as string
+    }
+
+    public class SystemHealthDto
+    {
+        public string? OverallStatus { get; set; } // API returns enum but JSON deserializes to string
+        public int TotalServices { get; set; }
+        public int HealthyServices { get; set; }
+        public int DegradedServices { get; set; }
+        public int UnhealthyServices { get; set; }
+    }
+
+    public class SystemInformationDto
+    {
+        public string? MachineName { get; set; }
+        public string? OperatingSystem { get; set; } // API uses OperatingSystem not OSVersion
+        public string? OSVersion { get; set; } // Fallback
+        public int? ProcessorCount { get; set; }
+        public double? TotalMemoryGB { get; set; }
+        public double? AvailableMemoryGB { get; set; }
+        public double? WorkingSetMB { get; set; } // API uses WorkingSetMB
+    }
+
+    public class DatabaseStatsDto
+    {
+        public int? TotalContainers { get; set; }
+        public int? TotalContainerImages { get; set; }
+        public int? TotalFS6000Scans { get; set; }
+        public int? TotalFS6000Images { get; set; }
+        public int? TotalAseScans { get; set; }
+        public TodayActivityDto? TodayActivity { get; set; }
+    }
+
+    public class TodayActivityDto
+    {
+        public int? Containers { get; set; }
+        public int? FS6000Scans { get; set; }
+        public int? AseScans { get; set; }
+    }
+}
+

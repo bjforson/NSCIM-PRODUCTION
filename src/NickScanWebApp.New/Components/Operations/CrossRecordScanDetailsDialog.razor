@@ -1,0 +1,565 @@
+@using MudBlazor
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Components.Operations
+@using NickScanWebApp.New.Models
+@using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.Shared.Models
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Outlined.Warning" Color="Color.Warning" Class="mr-2" />
+            Cross-Record Scan Details
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudContainer Style="max-height: 85vh; overflow-y: auto;">
+            
+            @if (_loading)
+            {
+                <MudStack AlignItems="AlignItems.Center" Spacing="3" Class="pa-8">
+                    <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+                    <MudText Typo="Typo.h6">Loading scan details...</MudText>
+                </MudStack>
+            }
+            else if (_scan == null)
+            {
+                <MudAlert Severity="Severity.Error" Class="my-4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Error" Class="mr-2" />
+                    Failed to load scan details
+                </MudAlert>
+            }
+            else
+            {
+                @* Header Banner *@
+                <MudPaper Class="pa-4 mb-4" Elevation="2" Style="background: linear-gradient(135deg, #ff9800 0%, #ffc107 100%); color: white;">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.h5">
+                            <MudIcon Icon="@Icons.Material.Outlined.Warning" Class="mr-2" />
+                            Cross-Record Scan Alert
+                        </MudText>
+                        <MudText Typo="Typo.body2">
+                            <strong>Scan Date:</strong> @_scan.ScanDateTime.ToString("dd-MMM-yyyy HH:mm:ss") | 
+                            <strong>Scanner:</strong> @_scan.ScannerType | 
+                            <strong>Original Record:</strong> @_scan.OriginalScanRecord
+                        </MudText>
+                        <MudDivider DividerType="DividerType.Middle" Style="background-color: rgba(255,255,255,0.3);" />
+                        <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center">
+                            <MudChip T="string" Size="Size.Small" Color="@GetSeverityColor(_scan.Severity)">
+                                @_scan.Severity Severity
+                            </MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="@GetIssueTypeColor(_scan.CrossRecordType)">
+                                @FormatIssueType(_scan.CrossRecordType)
+                            </MudChip>
+                            @if (_scan.RequiresReview)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                    Requires Review
+                                </MudChip>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+
+                @* Main Tabs *@
+                <MudTabs Elevation="2" Rounded="true" Color="Color.Primary" ApplyEffectsToContainer="true" PanelClass="pa-4">
+                    
+                    @* Comparison Tab *@
+                    <MudTabPanel Text="Container Comparison" Icon="@Icons.Material.Outlined.CompareArrows">
+                        <MudGrid Spacing="3">
+                            @* Container 1 *@
+                            <MudItem xs="12" md="6">
+                                <MudPaper Elevation="3" Class="pa-4" Style="border-left: 4px solid #1976d2;">
+                                    <MudText Typo="Typo.h6" Class="mb-3">
+                                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Primary" Class="mr-2" />
+                                        Container 1
+                                    </MudText>
+                                    <MudText Typo="Typo.h5" Class="mb-3">
+                                        <strong>@_scan.Container1</strong>
+                                    </MudText>
+                                    
+                                    <MudDivider Class="my-3" />
+                                    
+                                    <MudStack Spacing="2">
+                                        <MudText Typo="Typo.body2">
+                                            <strong>BOE/Declaration:</strong> @(_scan.Container1_BOE ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Consignee:</strong> @(_scan.Container1_Consignee ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Master BL:</strong> @(_scan.Container1_MasterBL ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Rotation:</strong> @(_scan.Container1_Rotation ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>CRMS Level:</strong> 
+                                            <MudChip T="string" Size="Size.Small" Color="@GetCRMSColor(_scan.Container1_CRMS)">
+                                                @(_scan.Container1_CRMS ?? "N/A")
+                                            </MudChip>
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Clearance Type:</strong> @(_scan.Container1_ClearanceType ?? "N/A")
+                                        </MudText>
+                                    </MudStack>
+                                </MudPaper>
+                            </MudItem>
+
+                            @* Container 2 *@
+                            <MudItem xs="12" md="6">
+                                <MudPaper Elevation="3" Class="pa-4" Style="border-left: 4px solid #d32f2f;">
+                                    <MudText Typo="Typo.h6" Class="mb-3">
+                                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Error" Class="mr-2" />
+                                        Container 2
+                                    </MudText>
+                                    <MudText Typo="Typo.h5" Class="mb-3">
+                                        <strong>@_scan.Container2</strong>
+                                    </MudText>
+                                    
+                                    <MudDivider Class="my-3" />
+                                    
+                                    <MudStack Spacing="2">
+                                        <MudText Typo="Typo.body2">
+                                            <strong>BOE/Declaration:</strong> @(_scan.Container2_BOE ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Consignee:</strong> @(_scan.Container2_Consignee ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Master BL:</strong> @(_scan.Container2_MasterBL ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Rotation:</strong> @(_scan.Container2_Rotation ?? "N/A")
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>CRMS Level:</strong> 
+                                            <MudChip T="string" Size="Size.Small" Color="@GetCRMSColor(_scan.Container2_CRMS)">
+                                                @(_scan.Container2_CRMS ?? "N/A")
+                                            </MudChip>
+                                        </MudText>
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Clearance Type:</strong> @(_scan.Container2_ClearanceType ?? "N/A")
+                                        </MudText>
+                                    </MudStack>
+                                </MudPaper>
+                            </MudItem>
+
+                            @* Comparison Summary *@
+                            <MudItem xs="12">
+                                <MudPaper Elevation="2" Class="pa-4" Outlined="true">
+                                    <MudText Typo="Typo.h6" Class="mb-3">
+                                        <MudIcon Icon="@Icons.Material.Outlined.Compare" Color="Color.Info" Class="mr-2" />
+                                        Comparison Summary
+                                    </MudText>
+                                    <MudGrid Spacing="2">
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameDeclaration ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameDeclaration ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same Declaration:</strong> @(_scan.SameDeclaration ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameConsignee ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameConsignee ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same Consignee:</strong> @(_scan.SameConsignee ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameMasterBL ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameMasterBL ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same Master BL:</strong> @(_scan.SameMasterBL ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameRotation ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameRotation ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same Rotation:</strong> @(_scan.SameRotation ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameCRMS ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameCRMS ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same CRMS:</strong> @(_scan.SameCRMS ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="4">
+                                            <MudText Typo="Typo.body2">
+                                                <MudIcon Icon="@(_scan.SameClearanceType ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)" 
+                                                         Color="@(_scan.SameClearanceType ? Color.Success : Color.Error)" 
+                                                         Size="Size.Small" Class="mr-1" />
+                                                <strong>Same Clearance Type:</strong> @(_scan.SameClearanceType ? "Yes" : "No")
+                                            </MudText>
+                                        </MudItem>
+                                    </MudGrid>
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+                    </MudTabPanel>
+
+                    @* Scanner Image Tab *@
+                    <MudTabPanel Text="Scanner Image" Icon="@Icons.Material.Outlined.Image">
+                        <MudStack Spacing="3">
+                            <MudAlert Severity="Severity.Info" Dense="true">
+                                <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" Class="mr-2" />
+                                This image contains both containers: <strong>@_scan.Container1</strong> and <strong>@_scan.Container2</strong>
+                            </MudAlert>
+                            
+                            @if (_loadingImages)
+                            {
+                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+                                    <MudText Typo="Typo.body2">Loading image...</MudText>
+                                </MudStack>
+                            }
+                            else if (_containerImages != null && _containerImages.Any())
+                            {
+                                @foreach (var image in _containerImages)
+                                {
+                                    <MudPaper Elevation="2" Class="pa-4">
+                                        <MudStack Spacing="2">
+                                            <MudText Typo="Typo.subtitle1">
+                                                <MudIcon Icon="@GetScannerIcon(image.ImageType)" Size="Size.Small" Class="mr-2" />
+                                                @image.ImageType Scanner Image
+                                            </MudText>
+                                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                                Scan Date: @_scan.ScanDateTime.ToString("dd-MMM-yyyy HH:mm:ss")
+                                            </MudText>
+                                            
+                                            @if (!string.IsNullOrEmpty(image.ThumbnailUrl))
+                                            {
+                                                <img src="@image.FullImageUrl" 
+                                                     alt="@image.ImageType" 
+                                                     style="max-width: 100%; max-height: 400px; border: 2px solid #ddd; border-radius: 8px; cursor: zoom-in; object-fit: contain;"
+                                                     @onclick="@(() => OpenImageViewerForImage(image))"
+                                                     @onerror="@(() => OnImageError(image.Id))" />
+                                            }
+                                            else
+                                            {
+                                                <MudAlert Severity="Severity.Warning" Dense="true">
+                                                    Image URL not available
+                                                </MudAlert>
+                                            }
+                                            
+                                            <MudButton Variant="Variant.Filled" 
+                                                       Color="Color.Primary" 
+                                                       StartIcon="@Icons.Material.Outlined.ZoomIn"
+                                                       OnClick="@(() => OpenImageViewerForImage(image))"
+                                                       Class="mt-2">
+                                                Open Fullscreen Image Viewer
+                                            </MudButton>
+                                        </MudStack>
+                                    </MudPaper>
+                                }
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Warning" Dense="true">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Warning" Size="Size.Small" Class="mr-2" />
+                                    No image found for container @_scan.Container1. The image may not be available yet.
+                                </MudAlert>
+                                
+                                <MudButton Variant="Variant.Filled" 
+                                           Color="Color.Primary" 
+                                           StartIcon="@Icons.Material.Outlined.ZoomIn"
+                                           OnClick="TryOpenImageViewer"
+                                           Class="mt-2">
+                                    Try Opening Image Viewer
+                                </MudButton>
+                            }
+                        </MudStack>
+                    </MudTabPanel>
+
+                    @* Review Status Tab *@
+                    <MudTabPanel Text="Review Status" Icon="@Icons.Material.Outlined.Assignment">
+                        <MudPaper Elevation="2" Class="pa-4">
+                            <MudStack Spacing="3">
+                                <MudText Typo="Typo.h6">
+                                    <MudIcon Icon="@Icons.Material.Outlined.RateReview" Color="Color.Primary" Class="mr-2" />
+                                    Review Information
+                                </MudText>
+                                
+                                <MudGrid Spacing="3">
+                                    <MudItem xs="12" md="6">
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Review Status:</strong>
+                                            <MudChip T="string" Size="Size.Small" Color="@GetReviewStatusColor(_scan.ReviewStatus)" Class="ml-2">
+                                                @_scan.ReviewStatus
+                                            </MudChip>
+                                        </MudText>
+                                    </MudItem>
+                                    <MudItem xs="12" md="6">
+                                        <MudText Typo="Typo.body2">
+                                            <strong>Requires Review:</strong>
+                                            <MudChip T="string" Size="Size.Small" Color="@(_scan.RequiresReview ? Color.Warning : Color.Success)" Class="ml-2">
+                                                @(_scan.RequiresReview ? "Yes" : "No")
+                                            </MudChip>
+                                        </MudText>
+                                    </MudItem>
+                                    @if (_scan.ReviewedAt.HasValue)
+                                    {
+                                        <MudItem xs="12" md="6">
+                                            <MudText Typo="Typo.body2">
+                                                <strong>Reviewed At:</strong> @_scan.ReviewedAt.Value.ToString("dd-MMM-yyyy HH:mm:ss")
+                                            </MudText>
+                                        </MudItem>
+                                    }
+                                    @if (!string.IsNullOrEmpty(_scan.ReviewedBy))
+                                    {
+                                        <MudItem xs="12" md="6">
+                                            <MudText Typo="Typo.body2">
+                                                <strong>Reviewed By:</strong> @_scan.ReviewedBy
+                                            </MudText>
+                                        </MudItem>
+                                    }
+                                </MudGrid>
+                            </MudStack>
+                        </MudPaper>
+                    </MudTabPanel>
+                    
+                </MudTabs>
+            }
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int ScanId { get; set; }
+
+    private CrossRecordScanDto? _scan;
+    private bool _loading = true;
+    private bool _loadingImages = false;
+    private List<NickScanWebApp.Shared.Models.ImageMetadata>? _containerImages;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadScanDetails();
+        if (_scan != null)
+        {
+            await LoadImages();
+        }
+    }
+
+    private async Task LoadScanDetails()
+    {
+        _loading = true;
+        try
+        {
+            _scan = await ApiService.GetAsync<CrossRecordScanDto>($"/api/CrossRecordScans/{ScanId}");
+            if (_scan == null)
+            {
+                Snackbar.Add("Failed to load scan details", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading scan details: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadImages()
+    {
+        if (_scan == null) return;
+
+        _loadingImages = true;
+        try
+        {
+            _containerImages = await ContainerDetailsService.GetImageMetadataAsync(_scan.Container1);
+            
+            if (_containerImages != null && _containerImages.Any())
+            {
+                // Normalize image URLs to ensure they're full URLs
+                var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                foreach (var img in _containerImages)
+                {
+                    // Normalize ThumbnailUrl
+                    img.ThumbnailUrl = NormalizeImageUrl(img.ThumbnailUrl, apiBaseUrl);
+                    // Normalize FullImageUrl
+                    img.FullImageUrl = NormalizeImageUrl(img.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading images: {ex.Message}", Severity.Warning);
+            Console.WriteLine($"Error loading images for container {_scan.Container1}: {ex.Message}");
+        }
+        finally
+        {
+            _loadingImages = false;
+            StateHasChanged();
+        }
+    }
+
+    private string NormalizeImageUrl(string? url, string apiBaseUrl)
+    {
+        if (string.IsNullOrEmpty(url)) return string.Empty;
+        
+        // If already a full URL, return as-is
+        if (url.StartsWith("http://") || url.StartsWith("https://"))
+        {
+            return url;
+        }
+        
+        // If relative URL with leading slash, prepend base URL
+        if (url.StartsWith("/"))
+        {
+            return $"{apiBaseUrl}{url}";
+        }
+        
+        // Relative URL without leading slash
+        return $"{apiBaseUrl}/{url}";
+    }
+
+    private async Task OpenImageViewerForImage(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        if (_scan == null) return;
+
+        var imageUrl = image.FullImageUrl;
+
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = imageUrl,
+            ["ContainerNumber"] = _scan.Container1,
+            ["ScannerType"] = image.ImageType ?? _scan.ScannerType,
+            ["ScanDate"] = image.CreatedAt != default ? image.CreatedAt : _scan.ScanDateTime,
+            ["IsConsolidated"] = false
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            FullScreen = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"🔍 Scanner Image - {image.ImageType ?? _scan.ScannerType} - {_scan.Container1} & {_scan.Container2}",
+            parameters,
+            options);
+    }
+
+    private Dictionary<int, int> _imageRetryCount = new();
+    private void OnImageError(int imageId)
+    {
+        var retries = _imageRetryCount.GetValueOrDefault(imageId, 0);
+        if (retries == 0)
+        {
+            _imageRetryCount[imageId] = 1;
+            StateHasChanged();
+            return;
+        }
+        Console.WriteLine($"[CrossRecordScanDetailsDialog] Image {imageId} failed after retry for container {_scan?.Container1}");
+        Snackbar.Add("Image unavailable for this container.", Severity.Info);
+    }
+
+    private async Task TryOpenImageViewer()
+    {
+        if (_scan == null) return;
+
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        var imageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(_scan.Container1)}/complete/image?size=full";
+
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = imageUrl,
+            ["ContainerNumber"] = _scan.Container1,
+            ["ScannerType"] = _scan.ScannerType,
+            ["ScanDate"] = _scan.ScanDateTime,
+            ["IsConsolidated"] = false
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            FullScreen = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"🔍 Scanner Image - {_scan.ScannerType} - {_scan.Container1} & {_scan.Container2}",
+            parameters,
+            options);
+    }
+
+    private string GetScannerIcon(string scannerType) => scannerType switch
+    {
+        "FS6000" => Icons.Material.Outlined.CameraAlt,
+        "ASE" => Icons.Material.Outlined.Scanner,
+        _ => Icons.Material.Outlined.Image
+    };
+
+    private Task Close()
+    {
+        return Task.CompletedTask;
+    }
+
+    private Color GetSeverityColor(string? severity) => severity?.ToUpper() switch
+    {
+        "HIGH" => Color.Error,
+        "MEDIUM" => Color.Warning,
+        "LOW" => Color.Info,
+        _ => Color.Default
+    };
+
+    private Color GetIssueTypeColor(string type) => type switch
+    {
+        "DifferentImporters" => Color.Default,
+        "DifferentRiskLevels" => Color.Warning,
+        "DifferentClearanceTypes" => Color.Info,
+        "DifferentBOEs" => Color.Default,
+        _ => Color.Default
+    };
+
+    private string FormatIssueType(string type) => type switch
+    {
+        "DifferentImporters" => "Different Importers",
+        "DifferentRiskLevels" => "Mixed CRMS",
+        "DifferentClearanceTypes" => "Import/Export Mix",
+        "DifferentBOEs" => "Different BOEs",
+        _ => type
+    };
+
+    private Color GetCRMSColor(string? crms) => crms?.ToUpper() switch
+    {
+        "RED" or "H" or "HIGH" => Color.Error,
+        "YELLOW" or "M" or "MEDIUM" => Color.Warning,
+        "GREEN" or "L" or "LOW" => Color.Success,
+        _ => Color.Default
+    };
+
+    private Color GetReviewStatusColor(string status) => status switch
+    {
+        "Reviewed" => Color.Success,
+        "Pending" => Color.Warning,
+        "Rejected" => Color.Error,
+        _ => Color.Default
+    };
+}
+

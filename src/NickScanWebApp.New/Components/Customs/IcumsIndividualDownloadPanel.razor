@@ -1,0 +1,1274 @@
+@using MudBlazor
+@implements IDisposable
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Navigation
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    
+    <MudBreadcrumbs Items="@_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Download" Class="mr-2" />
+                    ICUMS Individual Download Management
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Control, monitor, and manage per-container ICUMS data downloads
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Outlined" 
+                          Color="Color.Default"
+                          StartIcon="@Icons.Material.Outlined.Refresh"
+                          OnClick="@RefreshAll"
+                          Disabled="@_isLoading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+    
+    <!-- Quick Enqueue Section -->
+    <MudPaper Elevation="2" Class="mb-4 pa-4 rounded-lg">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Outlined.AddCircle" Class="mr-2" />
+                Quick Enqueue Container
+            </MudText>
+        </MudStack>
+        
+        <MudGrid>
+            <MudItem xs="12" sm="6" md="4">
+                <MudTextField @bind-Value="@_enqueueContainerNumber" 
+                              Label="Container Number" 
+                              Variant="Variant.Outlined"
+                              Placeholder="e.g. MSCU1234567"
+                              HelperText="Enter container number to download from ICUMS"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              Class="mb-2"
+                              OnKeyDown="@OnEnqueueKeyDown" />
+            </MudItem>
+            <MudItem xs="12" sm="3" md="2">
+                <MudSelect @bind-Value="@_enqueuePriority" 
+                          Label="Priority" 
+                          Variant="Variant.Outlined"
+                          HelperText="Download priority"
+                          Class="mb-2">
+                    <MudSelectItem Value="3">High</MudSelectItem>
+                    <MudSelectItem Value="2">Normal</MudSelectItem>
+                    <MudSelectItem Value="1">Low</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="3" md="2">
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.End" Style="height: 100%;">
+                    <MudButton Variant="Variant.Filled" 
+                              Color="Color.Primary"
+                              StartIcon="@Icons.Material.Outlined.CloudDownload"
+                              OnClick="@EnqueueContainer"
+                              Disabled="@(_isEnqueuing || string.IsNullOrWhiteSpace(_enqueueContainerNumber))"
+                              Size="Size.Medium">
+                        @if (_isEnqueuing)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                            @:Queuing...
+                        }
+                        else
+                        {
+                            @:Enqueue
+                        }
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" 
+                              Color="Color.Info"
+                              StartIcon="@Icons.Material.Outlined.ContentPaste"
+                              OnClick="@ShowBulkEnqueueDialog"
+                              Size="Size.Medium">
+                        Bulk
+                    </MudButton>
+                </MudStack>
+            </MudItem>
+            <MudItem xs="12" sm="12" md="4">
+                @if (!string.IsNullOrEmpty(_enqueueStatus))
+                {
+                    <MudAlert Severity="@_enqueueStatusSeverity" Dense="true" Class="mt-2">
+                        @_enqueueStatus
+                    </MudAlert>
+                }
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+    
+    <!-- Statistics Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="High Priority"
+                     Value="@_queueStats.HighPriority.ToString()"
+                     Icon="@Icons.Material.Outlined.PriorityHigh"
+                     Color="@Color.Error"
+                     Trend="Urgent" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Normal Priority"
+                     Value="@_queueStats.NormalPriority.ToString()"
+                     Icon="@Icons.Material.Outlined.List"
+                     Color="@Color.Warning"
+                     Trend="Queued" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Completed"
+                     Value="@_queueStats.Completed.ToString()"
+                     Icon="@Icons.Material.Outlined.CheckCircle"
+                     Color="@Color.Success"
+                     Trend="@($"Success rate: {_queueStats.SuccessRate:F1}%")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Failed"
+                     Value="@_queueStats.Failed.ToString()"
+                     Icon="@Icons.Material.Outlined.Error"
+                     Color="@(_queueStats.Failed > 0 ? Color.Error : Color.Success)"
+                     Trend="@(_queueStats.Failed > 0 ? "Review required" : "All successful")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Pending"
+                     Value="@_queueStats.Pending.ToString()"
+                     Icon="@Icons.Material.Outlined.PendingActions"
+                     Color="@(_queueStats.Pending > 0 ? Color.Warning : Color.Success)"
+                     Trend="@(_queueStats.Pending > 0 ? "Awaiting download" : "Queue empty")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Processing"
+                     Value="@_queueStats.Processing.ToString()"
+                     Icon="@Icons.Material.Outlined.Downloading"
+                     Color="@Color.Info"
+                     Trend="@(_queueStats.Processing > 0 ? "In progress" : "Idle")" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Avg Wait Time"
+                     Value="@($"{_queueStats.AverageWaitTimeMinutes:F1} min")"
+                     Icon="@Icons.Material.Outlined.Timer"
+                     Color="@Color.Info"
+                     Trend="Average queue wait" />
+        </MudItem>
+        <MudItem xs="12" sm="6" md="3">
+            <StatCard Title="Archived"
+                     Value="@_archiveStats.TotalArchived.ToString()"
+                     Icon="@Icons.Material.Outlined.Archive"
+                     Color="@Color.Secondary"
+                     Trend="@($"{_archiveStats.Failed} failed, {_archiveStats.Completed} completed")" />
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Main Content Tabs -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="@_activeTab">
+            
+            <!-- Queue Items Tab (All) -->
+            <MudTabPanel Text="All Queue Items" Icon="@Icons.Material.Outlined.List" BadgeData="@_queueItems.Count">
+                <QueueTable Items="@_queueItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedAll"
+                            OnBulkDelete="@BulkDeleteItems"
+                            OnBulkPriorityChange="@BulkChangePriority" />
+            </MudTabPanel>
+            
+            <!-- Pending Tab -->
+            <MudTabPanel Text="Pending" Icon="@Icons.Material.Outlined.PendingActions" BadgeData="@_pendingItems.Count" BadgeColor="Color.Warning">
+                @if (_pendingItems.Any())
+                {
+                    <MudStack Row="true" Spacing="2" Class="mb-4">
+                        <MudButton Variant="Variant.Filled" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.Replay"
+                                  OnClick="@ShowRequeuePendingDialog"
+                                  Size="Size.Small">
+                            Requeue All Pending (@_pendingItems.Count)
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Warning"
+                                  StartIcon="@Icons.Material.Outlined.PriorityHigh"
+                                  OnClick="@RequeueHighPriorityPending"
+                                  Size="Size.Small"
+                                  Disabled="@(!_pendingItems.Any(x => x.Priority >= 2))">
+                            Requeue High Priority (@_pendingItems.Count(x => x.Priority >= 2))
+                        </MudButton>
+                    </MudStack>
+                }
+                <QueueTable Items="@_pendingItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedPending"
+                            OnBulkDelete="@BulkDeleteItems"
+                            OnBulkPriorityChange="@BulkChangePriority" />
+            </MudTabPanel>
+            
+            <!-- Processing Tab -->
+            <MudTabPanel Text="Processing" Icon="@Icons.Material.Outlined.Downloading" BadgeData="@_processingItems.Count" BadgeColor="Color.Info">
+                <QueueTable Items="@_processingItems" OnRetry="@RetryDownload" OnDelete="@DeleteDownload" />
+            </MudTabPanel>
+            
+            <!-- Completed Tab -->
+            <MudTabPanel Text="Completed" Icon="@Icons.Material.Outlined.CheckCircle" BadgeData="@_completedItems.Count" BadgeColor="Color.Success">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                    <MudText Typo="Typo.h6">Completed Downloads</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudButton Variant="Variant.Outlined" 
+                                  Color="Color.Primary"
+                                  StartIcon="@Icons.Material.Outlined.FileDownload"
+                                  OnClick="@ExportCompletedList"
+                                  Size="Size.Small">
+                            Export
+                        </MudButton>
+                    </MudStack>
+                </MudStack>
+                <QueueTable Items="@_completedItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedCompleted"
+                            OnBulkDelete="@BulkDeleteItems" />
+            </MudTabPanel>
+            
+            <!-- Failed Tab -->
+            <MudTabPanel Text="Failed" Icon="@Icons.Material.Outlined.Error" BadgeData="@_failedItems.Count" BadgeColor="Color.Error">
+                <MudAlert Severity="Severity.Warning" Class="mb-4" Dense="true">
+                    @_failedItems.Count failed download(s). Click "Retry All" to attempt again.
+                </MudAlert>
+                <MudButton Variant="Variant.Filled" 
+                          Color="Color.Primary"
+                          StartIcon="@(_isRetryingAll ? Icons.Material.Outlined.HourglassTop : Icons.Material.Outlined.Replay)"
+                          OnClick="@RetryAllFailed"
+                          Class="mb-4"
+                          Disabled="@(!_failedItems.Any() || _isRetryingAll)">
+                    @if (_isRetryingAll)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        @:Retrying...
+                    }
+                    else
+                    {
+                        @:Retry All Failed (@_failedItems.Count)
+                    }
+                </MudButton>
+                <QueueTable Items="@_failedItems" 
+                            OnRetry="@RetryDownload" 
+                            OnDelete="@DeleteDownload" 
+                            ShowError="true"
+                            EnableBulkActions="true"
+                            @bind-SelectedItems="@_selectedFailed"
+                            OnBulkDelete="@BulkDeleteItems" />
+            </MudTabPanel>
+            
+            <!-- Data Transfer Tab -->
+            <MudTabPanel Text="Data Transfer" Icon="@Icons.Material.Outlined.SwapHoriz">
+                <MudStack Spacing="3">
+                    <MudPaper Elevation="1" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+                            <MudText Typo="Typo.h6">
+                                <MudIcon Icon="@Icons.Material.Outlined.SwapHoriz" Class="mr-2" />
+                                Transfer Service Status
+                            </MudText>
+                            <MudChip T="string" 
+                                    Size="Size.Medium" 
+                                    Color="@(_transferStatus.IsEnabled ? Color.Success : Color.Error)"
+                                    Icon="@(_transferStatus.IsEnabled ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Cancel)">
+                                @(_transferStatus.IsEnabled ? "Running" : "Stopped")
+                            </MudChip>
+                        </MudStack>
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@_transferStatus.TransferIntervalMinutes.ToString()" 
+                                            Label="Transfer Interval (Minutes)" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true"
+                                            HelperText="Time between transfer cycles" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@(_transferStatus.LastTransferTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never")" 
+                                            Label="Last Transfer Time" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField Value="@(_transferStatus.NextScheduledTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "N/A")" 
+                                            Label="Next Scheduled" 
+                                            Variant="Variant.Outlined"
+                                            ReadOnly="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.PlayArrow"
+                                          OnClick="@TriggerManualTransfer"
+                                          Disabled="@(_isLoading || !_transferStatus.IsEnabled)"
+                                          Size="Size.Small"
+                                          FullWidth="true">
+                                    Trigger Transfer
+                                </MudButton>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+
+                    <MudGrid>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Pending Transfers"
+                                     Value="@_transferStats.PendingTransfers.ToString()"
+                                     Icon="@Icons.Material.Outlined.PendingActions"
+                                     Color="@(_transferStats.PendingTransfers > 0 ? Color.Warning : Color.Success)"
+                                     Trend="@(_transferStats.PendingTransfers > 0 ? "Ready to transfer" : "All transferred")" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Total Transferred"
+                                     Value="@_transferStats.TotalTransferred.ToString()"
+                                     Icon="@Icons.Material.Outlined.CheckCircle"
+                                     Color="@Color.Success"
+                                     Trend="@($"Last 24h: {_transferStats.TransferredLast24h}")" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Transfer Rate"
+                                     Value="@_transferStats.TransferRatePerHour.ToString("F1")"
+                                     Icon="@Icons.Material.Outlined.Speed"
+                                     Color="@Color.Info"
+                                     Trend="per hour" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6" md="3">
+                            <StatCard Title="Failed Transfers"
+                                     Value="@_transferStats.FailedTransfers.ToString()"
+                                     Icon="@Icons.Material.Outlined.Error"
+                                     Color="@(_transferStats.FailedTransfers > 0 ? Color.Error : Color.Success)"
+                                     Trend="@(_transferStats.FailedTransfers > 0 ? "Review required" : "All successful")" />
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudPaper Elevation="1" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                            <MudText Typo="Typo.h6">Transfer History</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudDatePicker Date="@_transferDateFrom" 
+                                              Label="From Date" 
+                                              Variant="Variant.Outlined"
+                                              Dense="true"
+                                              Style="width: 150px;"
+                                              DateChanged="@(async (DateTime? d) => { _transferDateFrom = d; await LoadTransferHistory(); })" />
+                                <MudDatePicker Date="@_transferDateTo" 
+                                              Label="To Date" 
+                                              Variant="Variant.Outlined"
+                                              Dense="true"
+                                              Style="width: 150px;"
+                                              DateChanged="@(async (DateTime? d) => { _transferDateTo = d; await LoadTransferHistory(); })" />
+                                <MudButton Variant="Variant.Outlined" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.Refresh"
+                                          OnClick="@LoadTransferHistory"
+                                          Disabled="@_isLoading"
+                                          Size="Size.Small">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                        <MudTable Items="@_transferHistory" 
+                                  Hover="true" 
+                                  Striped="true"
+                                  Loading="@_isLoading"
+                                  LoadingProgressColor="Color.Info">
+                            <HeaderContent>
+                                <MudTh>Container</MudTh>
+                                <MudTh>Declaration</MudTh>
+                                <MudTh>Status</MudTh>
+                                <MudTh>Transferred At</MudTh>
+                                <MudTh>Clearance Type</MudTh>
+                                <MudTh>Type</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Container">@context.ContainerNumber</MudTd>
+                                <MudTd DataLabel="Declaration">@context.DeclarationNumber</MudTd>
+                                <MudTd DataLabel="Status">
+                                    <MudChip T="string" 
+                                            Size="Size.Small" 
+                                            Color="@(context.Status == "Transferred" ? Color.Success : Color.Error)"
+                                            Variant="Variant.Filled">
+                                        @context.Status
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Transferred At">@context.TransferredAt.ToString("yyyy-MM-dd HH:mm:ss")</MudTd>
+                                <MudTd DataLabel="Clearance Type">@context.ClearanceType</MudTd>
+                                <MudTd DataLabel="Type">
+                                    <MudChip T="string" 
+                                            Size="Size.Small" 
+                                            Color="@(context.IsConsolidated ? Color.Primary : Color.Secondary)"
+                                            Variant="Variant.Outlined">
+                                        @(context.IsConsolidated ? "Consolidated" : "Non-Consolidated")
+                                    </MudChip>
+                                </MudTd>
+                                @if (!string.IsNullOrEmpty(context.ErrorMessage))
+                                {
+                                    <MudTd ColSpan="6">
+                                        <MudAlert Severity="Severity.Error" Dense="true">
+                                            <MudText Typo="Typo.caption">Error: @context.ErrorMessage</MudText>
+                                        </MudAlert>
+                                    </MudTd>
+                                }
+                            </RowTemplate>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                        </MudTable>
+                    </MudPaper>
+                </MudStack>
+            </MudTabPanel>
+            
+            <!-- Archive Tab -->
+            <MudTabPanel Text="Archive" Icon="@Icons.Material.Outlined.Archive" BadgeData="@_archiveStats.TotalArchived" BadgeColor="Color.Secondary">
+                <MudPaper Elevation="0" Class="mb-4 pa-4" Style="background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%);">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.h6">Archived Items</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                @_archiveStats.TotalArchived items archived (@_archiveStats.Failed failed, @_archiveStats.Completed completed)
+                            </MudText>
+                        </div>
+                        <MudStack Row="true" Spacing="2">
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary"
+                                      StartIcon="@Icons.Material.Outlined.Replay"
+                                      OnClick="@ShowRequeueFromArchiveDialog"
+                                      Disabled="@(_archiveStats.TotalArchived == 0)">
+                                Requeue from Archive
+                            </MudButton>
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Info"
+                                      StartIcon="@Icons.Material.Outlined.Refresh"
+                                      OnClick="@LoadArchiveStats">
+                                Refresh Stats
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+                
+                <MudAlert Severity="Severity.Info" Class="mb-4">
+                    <MudText Typo="Typo.body2">
+                        <strong>Archive Information:</strong><br/>
+                        Failed items: Containers that exceeded max retry attempts<br/>
+                        Completed items: Old downloads archived for cleanup<br/>
+                        Use "Requeue from Archive" to retry failed containers
+                    </MudText>
+                </MudAlert>
+                
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-4">
+                            <MudText Typo="Typo.h6" Color="Color.Error" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.Error" /> Failed Downloads
+                            </MudText>
+                            <MudText Typo="Typo.h4">@_archiveStats.Failed</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Containers that could not be downloaded from ICUMS
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-4">
+                            <MudText Typo="Typo.h6" Color="Color.Success" Class="mb-2">
+                                <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" /> Old Completed
+                            </MudText>
+                            <MudText Typo="Typo.h4">@_archiveStats.Completed</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                Successfully completed downloads (archived for cleanup)
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+            
+            <!-- Activity Log Tab -->
+            <MudTabPanel Text="Activity Log" Icon="@Icons.Material.Outlined.History">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-4">
+                    <MudText Typo="Typo.h6">Download Queue Activity Log</MudText>
+                    <MudStack Row="true" Spacing="2">
+                        <MudSelect T="string"
+                                  Value="@_logLevelFilter" 
+                                  Label="Log Level" 
+                                  Variant="Variant.Outlined"
+                                  Dense="true"
+                                  Style="width: 150px;"
+                                  ValueChanged="@(async (string? s) => { _logLevelFilter = s; await LoadActivityLogs(); })">
+                            <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
+                            <MudSelectItem Value="@("Info")">Info</MudSelectItem>
+                            <MudSelectItem Value="@("Warning")">Warning</MudSelectItem>
+                            <MudSelectItem Value="@("Error")">Error</MudSelectItem>
+                        </MudSelect>
+                        <MudDatePicker Date="@_logDateFrom" 
+                                      Label="From Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _logDateFrom = d; await LoadActivityLogs(); })" />
+                        <MudDatePicker Date="@_logDateTo" 
+                                      Label="To Date" 
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Style="width: 150px;"
+                                      DateChanged="@(async (DateTime? d) => { _logDateTo = d; await LoadActivityLogs(); })" />
+                    </MudStack>
+                </MudStack>
+                
+                <MudTable Items="@_activityLogs" 
+                          Hover="true" 
+                          Striped="true"
+                          Loading="@_isLoading"
+                          LoadingProgressColor="Color.Info"
+                          SortMode="SortMode.Multiple">
+                    <HeaderContent>
+                        <MudTh>Timestamp</MudTh>
+                        <MudTh>Level</MudTh>
+                        <MudTh>Message</MudTh>
+                        <MudTh>Details</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Timestamp">
+                            <MudText>@context.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Level">
+                            <MudChip T="string" 
+                                    Size="Size.Small" 
+                                    Color="@GetLogLevelColor(context.Level)"
+                                    Variant="Variant.Filled">
+                                @context.Level
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Message">
+                            <MudText>@context.Message</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Details">
+                            @if (!string.IsNullOrEmpty(context.Details))
+                            {
+                                <MudIconButton Icon="@Icons.Material.Outlined.Info" 
+                                             Size="Size.Small"
+                                             Color="Color.Info"
+                                             OnClick="@(() => ShowLogDetails(context))" />
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 25, 50, 100, 200 }" />
+                    </PagerContent>
+                </MudTable>
+            </MudTabPanel>
+            
+        </MudTabs>
+    </MudPaper>
+    
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> _breadcrumbs = new()
+    {
+        new BreadcrumbItem("Home", "/", icon: Icons.Material.Outlined.Home),
+        new BreadcrumbItem("ICUMS", "/icums", icon: Icons.Material.Outlined.Cloud),
+        new BreadcrumbItem("Individual Download Management", "/icums/individual-download", icon: Icons.Material.Outlined.Download)
+    };
+    
+    // Quick Enqueue
+    private string _enqueueContainerNumber = "";
+    private int _enqueuePriority = 2;
+    private bool _isEnqueuing = false;
+    private string _enqueueStatus = "";
+    private Severity _enqueueStatusSeverity = Severity.Info;
+    
+    // Queue Stats
+    private QueueStatsDto _queueStats = new();
+    
+    // Archive
+    private ArchiveStatsDto _archiveStats = new();
+    
+    // Queue Items
+    private List<DownloadQueueItem> _queueItems = new();
+    private List<DownloadQueueItem> _pendingItems => _queueItems.Where(x => x.Status == "Pending").ToList();
+    private List<DownloadQueueItem> _processingItems => _queueItems.Where(x => x.Status == "Processing").ToList();
+    private List<DownloadQueueItem> _completedItems => _queueItems.Where(x => x.Status == "Completed").ToList();
+    private List<DownloadQueueItem> _failedItems => _queueItems.Where(x => x.Status == "Failed").ToList();
+    
+    // Data Transfer
+    private TransferServiceStatusDto _transferStatus = new();
+    private TransferStatisticsDto _transferStats = new();
+    private List<TransferHistoryDto> _transferHistory = new();
+    private DateTime? _transferDateFrom;
+    private DateTime? _transferDateTo;
+    
+    // Activity Logs
+    private List<ActivityLogDto> _activityLogs = new();
+    private string? _logLevelFilter;
+    private DateTime? _logDateFrom;
+    private DateTime? _logDateTo;
+    
+    // Bulk selection
+    private HashSet<DownloadQueueItem> _selectedAll = new();
+    private HashSet<DownloadQueueItem> _selectedPending = new();
+    private HashSet<DownloadQueueItem> _selectedCompleted = new();
+    private HashSet<DownloadQueueItem> _selectedFailed = new();
+    
+    // UI State
+    private bool _isLoading = false;
+    private bool _isRetryingAll = false;
+    private int _activeTab = 0;
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllData();
+        
+        _refreshTimer = new System.Threading.Timer(async _ => await InvokeAsync(async () =>
+        {
+            await LoadQueueData();
+            await LoadStatistics();
+            StateHasChanged();
+        }), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+    
+    private async Task LoadAllData()
+    {
+        _isLoading = true;
+        try
+        {
+            await Task.WhenAll(
+                LoadQueueData(),
+                LoadStatistics(),
+                LoadArchiveStats(),
+                LoadTransferStatus(),
+                LoadTransferStatistics(),
+                LoadTransferHistory(),
+                LoadActivityLogs()
+            );
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+    
+    private async Task RefreshAll()
+    {
+        await LoadAllData();
+        Snackbar.Add("Data refreshed", Severity.Success);
+    }
+    
+    // --- Queue Data ---
+    
+    private async Task LoadQueueData()
+    {
+        try
+        {
+            var items = await ApiService.GetAsync<List<DownloadQueueItem>>("/api/ICUMSDownloadQueue?limit=500");
+            _queueItems = items ?? new List<DownloadQueueItem>();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading queue data: {ex.Message}", Severity.Error);
+            _queueItems = new List<DownloadQueueItem>();
+        }
+    }
+    
+    private async Task LoadStatistics()
+    {
+        try
+        {
+            _queueStats = await ApiService.GetAsync<QueueStatsDto>("/api/ICUMSDownloadQueue/stats") ?? new QueueStatsDto();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading statistics: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task LoadArchiveStats()
+    {
+        try
+        {
+            _archiveStats = await ApiService.GetAsync<ArchiveStatsDto>("/api/ICUMSDownloadQueue/archive/stats") ?? new ArchiveStatsDto();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading archive stats: {ex.Message}");
+        }
+    }
+    
+    // --- Enqueue ---
+    
+    private async Task OnEnqueueKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_enqueueContainerNumber))
+        {
+            await EnqueueContainer();
+        }
+    }
+    
+    private async Task EnqueueContainer()
+    {
+        if (string.IsNullOrWhiteSpace(_enqueueContainerNumber)) return;
+        
+        _isEnqueuing = true;
+        _enqueueStatus = "";
+        try
+        {
+            var request = new
+            {
+                containerNumber = _enqueueContainerNumber.Trim().ToUpper(),
+                priority = _enqueuePriority,
+                requestedBy = "Manual"
+            };
+            
+            var response = await ApiService.PostAsync<object, EnqueueResponseDto>("/api/ICUMSDownloadQueue/enqueue", request);
+            
+            if (response != null)
+            {
+                _enqueueStatus = response.Message;
+                _enqueueStatusSeverity = response.Message.Contains("queued") ? Severity.Success : Severity.Info;
+                Snackbar.Add(response.Message, _enqueueStatusSeverity == Severity.Success ? Severity.Success : Severity.Info);
+                _enqueueContainerNumber = "";
+                await LoadQueueData();
+                await LoadStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            _enqueueStatus = $"Error: {ex.Message}";
+            _enqueueStatusSeverity = Severity.Error;
+            Snackbar.Add($"Error enqueuing container: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isEnqueuing = false;
+        }
+    }
+    
+    private async Task ShowBulkEnqueueDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["Title"] = "Bulk Enqueue Containers",
+            ["ContentText"] = "Enter container numbers (one per line):"
+        };
+        
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true };
+        var dialog = await DialogService.ShowAsync<BulkEnqueueDialog>("Bulk Enqueue Containers", parameters, options);
+        var result = await dialog.Result;
+        
+        if (!result.Canceled && result.Data is List<string> containers)
+        {
+            int successCount = 0;
+            int failCount = 0;
+            
+            foreach (var container in containers.Where(c => !string.IsNullOrWhiteSpace(c)))
+            {
+                try
+                {
+                    var request = new
+                    {
+                        containerNumber = container.Trim().ToUpper(),
+                        priority = _enqueuePriority,
+                        requestedBy = "Manual-Bulk"
+                    };
+                    await ApiService.PostAsync<object, EnqueueResponseDto>("/api/ICUMSDownloadQueue/enqueue", request);
+                    successCount++;
+                }
+                catch
+                {
+                    failCount++;
+                }
+            }
+            
+            Snackbar.Add($"Enqueued {successCount} of {containers.Count} containers" + (failCount > 0 ? $" ({failCount} failed)" : ""), 
+                failCount > 0 ? Severity.Warning : Severity.Success);
+            await LoadQueueData();
+            await LoadStatistics();
+        }
+    }
+    
+    // --- Queue Actions ---
+    
+    private async Task RetryDownload(int id)
+    {
+        try
+        {
+            await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{id}", new { });
+            await LoadQueueData();
+            Snackbar.Add("Retry initiated", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error retrying download: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task DeleteDownload(int id)
+    {
+        try
+        {
+            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+            await LoadQueueData();
+            Snackbar.Add("Item removed from queue", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error deleting item: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RetryAllFailed()
+    {
+        var itemsToRetry = _failedItems.ToList();
+        if (!itemsToRetry.Any()) return;
+
+        _isRetryingAll = true;
+        StateHasChanged();
+
+        int successCount = 0;
+        int failCount = 0;
+
+        foreach (var item in itemsToRetry)
+        {
+            try
+            {
+                await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{item.Id}", new { });
+                successCount++;
+            }
+            catch
+            {
+                failCount++;
+            }
+        }
+
+        _isRetryingAll = false;
+
+        Snackbar.Add(failCount == 0 
+            ? $"Successfully retried all {successCount} failed download(s)" 
+            : $"Retried {successCount} of {itemsToRetry.Count} downloads ({failCount} failed)", 
+            failCount == 0 ? Severity.Success : Severity.Warning);
+
+        await LoadQueueData();
+        await LoadStatistics();
+    }
+    
+    private async Task BulkDeleteItems(List<int> ids)
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Confirm Bulk Delete",
+            $"Are you sure you want to delete {ids.Count} item(s) from the queue? This action cannot be undone.",
+            yesText: "Delete", cancelText: "Cancel",
+            options: new DialogOptions() { FullWidth = true });
+        
+        if (confirmed != true) return;
+        
+        try
+        {
+            int deletedCount = 0;
+            foreach (var id in ids)
+            {
+                await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+                deletedCount++;
+            }
+            
+            Snackbar.Add($"Successfully deleted {deletedCount} item(s)", Severity.Success);
+            await LoadQueueData();
+            await LoadStatistics();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error deleting items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task BulkChangePriority(List<int> ids, int newPriority)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ItemCount"] = ids.Count,
+            ["OnPrioritySelected"] = EventCallback.Factory.Create<int>(this, async (priority) => 
+            {
+                await ExecuteBulkPriorityChange(ids, priority);
+            })
+        };
+        
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        await DialogService.ShowAsync<BulkPriorityDialog>("Change Priority", parameters, options);
+    }
+    
+    private async Task ExecuteBulkPriorityChange(List<int> ids, int newPriority)
+    {
+        try
+        {
+            int updatedCount = 0;
+            foreach (var id in ids)
+            {
+                var item = _queueItems.FirstOrDefault(x => x.Id == id);
+                if (item != null)
+                {
+                    await ApiService.PutAsync<object, object>("/api/ICUMSDownloadQueue/priority", new 
+                    { 
+                        ContainerNumber = item.ContainerNumber, 
+                        Priority = newPriority 
+                    });
+                    updatedCount++;
+                }
+            }
+            
+            Snackbar.Add($"Successfully updated priority for {updatedCount} item(s)", Severity.Success);
+            await LoadQueueData();
+            await LoadStatistics();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error changing priority: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    // --- Requeue ---
+    
+    private async Task ShowRequeuePendingDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["PendingCount"] = _pendingItems.Count,
+            ["OnRequeue"] = EventCallback.Factory.Create<RequeuePendingDialog.RequeuePendingDialogResult>(this, ProcessRequeuePending)
+        };
+        
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true };
+        await DialogService.ShowAsync<RequeuePendingDialog>("Requeue Pending Containers", parameters, options);
+    }
+    
+    private async Task ProcessRequeuePending(RequeuePendingDialog.RequeuePendingDialogResult result)
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                RequeueAll = result.RequeueAll,
+                RequeueHighPriority = result.RequeueHighPriority,
+                ContainerNumbers = result.ContainerNumbers,
+                ResetRetryCount = result.ResetRetryCount,
+                NewPriority = result.NewPriority,
+                ResetTimestamps = result.ResetTimestamps
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeuePendingResponseDto>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"Successfully requeued {response.RequeuedCount} pending containers", Severity.Success);
+                await LoadQueueData();
+                await LoadStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error requeuing pending items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task RequeueHighPriorityPending()
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                RequeueAll = false,
+                RequeueHighPriority = true,
+                ResetRetryCount = true,
+                ResetTimestamps = true
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeuePendingResponseDto>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"Requeued {response.RequeuedCount} high priority containers", Severity.Success);
+                await LoadQueueData();
+                await LoadStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error requeuing: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    private async Task ShowRequeueFromArchiveDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["ArchiveCount"] = _archiveStats.TotalArchived,
+            ["ArchivedFailed"] = _archiveStats.Failed,
+            ["OnRequeue"] = EventCallback.Factory.Create<RequeueDialogResult>(this, ProcessRequeueFromArchive)
+        };
+        
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true };
+        await DialogService.ShowAsync<RequeueFromArchiveDialog>("Requeue from Archive", parameters, options);
+    }
+    
+    private async Task ProcessRequeueFromArchive(RequeueDialogResult result)
+    {
+        try
+        {
+            var requeueRequest = new
+            {
+                ContainerNumbers = result.ContainerNumbers,
+                Priority = result.Priority,
+                RequestedBy = "Admin"
+            };
+            
+            var response = await ApiService.PostAsync<object, RequeueResponseDto>("/api/ICUMSDownloadQueue/requeue", requeueRequest);
+            
+            if (response != null)
+            {
+                Snackbar.Add($"Successfully requeued {response.RequeuedCount} of {response.Total} containers", Severity.Success);
+                await LoadQueueData();
+                await LoadArchiveStats();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error requeuing items: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    // --- Data Transfer ---
+    
+    private async Task LoadTransferStatus()
+    {
+        try
+        {
+            _transferStatus = await ApiService.GetAsync<TransferServiceStatusDto>("/api/icums/transfer/status") ?? new TransferServiceStatusDto();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading transfer status: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadTransferStatistics()
+    {
+        try
+        {
+            _transferStats = await ApiService.GetAsync<TransferStatisticsDto>("/api/icums/transfer/statistics") ?? new TransferStatisticsDto();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading transfer statistics: {ex.Message}");
+        }
+    }
+    
+    private async Task LoadTransferHistory()
+    {
+        try
+        {
+            var queryParams = new List<string> { "page=1", "pageSize=100" };
+            if (_transferDateFrom.HasValue) queryParams.Add($"fromDate={_transferDateFrom.Value:yyyy-MM-dd}");
+            if (_transferDateTo.HasValue) queryParams.Add($"toDate={_transferDateTo.Value:yyyy-MM-dd}");
+            
+            var query = "?" + string.Join("&", queryParams);
+            _transferHistory = await ApiService.GetAsync<List<TransferHistoryDto>>($"/api/icums/transfer/history{query}") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading transfer history: {ex.Message}");
+        }
+    }
+    
+    private async Task TriggerManualTransfer()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Trigger Manual Transfer",
+            "Are you sure you want to trigger a manual transfer now?",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+        
+        try
+        {
+            var result = await ApiService.PostAsync<object, TransferTriggerResultDto>("/api/icums/transfer/trigger", new { });
+            if (result != null)
+            {
+                Snackbar.Add(result.Message, Severity.Success);
+                await LoadTransferStatus();
+                await LoadTransferStatistics();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error triggering transfer: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    // --- Activity Logs ---
+    
+    private async Task LoadActivityLogs()
+    {
+        try
+        {
+            var queryParams = new List<string>();
+            if (_logLevelFilter != null) queryParams.Add($"level={_logLevelFilter}");
+            if (_logDateFrom.HasValue) queryParams.Add($"fromDate={_logDateFrom.Value:yyyy-MM-dd}");
+            if (_logDateTo.HasValue) queryParams.Add($"toDate={_logDateTo.Value:yyyy-MM-dd}");
+            
+            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
+            _activityLogs = await ApiService.GetAsync<List<ActivityLogDto>>($"/api/icums/batch/logs{query}") ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading activity logs: {ex.Message}");
+        }
+    }
+    
+    // --- Export ---
+    
+    private async Task ExportCompletedList()
+    {
+        try
+        {
+            var csv = "ContainerNumber,Status,Priority,QueuedAt,ProcessedAt,RetryCount,Source\n";
+            foreach (var item in _completedItems)
+            {
+                csv += $"{item.ContainerNumber},{item.Status},{item.Priority},{item.QueuedAt:yyyy-MM-dd HH:mm:ss},{item.ProcessedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? ""},{item.RetryCount},{item.Source ?? ""}\n";
+            }
+            
+            var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"individual-downloads-completed-{DateTime.Now:yyyyMMddHHmmss}.csv";
+            await JSRuntime.InvokeVoidAsync("eval", $"var blob = new Blob([atob('{base64}')], {{type: 'text/csv'}}); var url = window.URL.createObjectURL(blob); var a = document.createElement('a'); a.href = url; a.download = '{fileName}'; a.click(); window.URL.revokeObjectURL(url);");
+            Snackbar.Add("Completed list exported", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error exporting: {ex.Message}", Severity.Error);
+        }
+    }
+    
+    // --- Log Details ---
+    
+    private async Task ShowLogDetails(ActivityLogDto log)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Log"] = log
+        };
+        
+        var options = new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Medium };
+        await DialogService.ShowAsync<LogDetailsDialog>("Log Details", parameters, options);
+    }
+    
+    // --- Helpers ---
+    
+    private Color GetLogLevelColor(string level) => level switch
+    {
+        "Info" => Color.Info,
+        "Warning" => Color.Warning,
+        "Error" => Color.Error,
+        _ => Color.Default
+    };
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    // --- DTOs ---
+    
+    public class QueueStatsDto
+    {
+        public int Pending { get; set; }
+        public int Processing { get; set; }
+        public int Completed { get; set; }
+        public int Failed { get; set; }
+        public int HighPriority { get; set; }
+        public int NormalPriority { get; set; }
+        public int LowPriority { get; set; }
+        public double AverageWaitTimeMinutes { get; set; }
+        public double SuccessRate { get; set; }
+    }
+    
+    public class ArchiveStatsDto
+    {
+        public int TotalArchived { get; set; }
+        public int Failed { get; set; }
+        public int Completed { get; set; }
+        public string? Message { get; set; }
+    }
+    
+    public class EnqueueResponseDto
+    {
+        public string Message { get; set; } = "";
+        public string? ContainerNumber { get; set; }
+        public bool CompletenessStatusCreated { get; set; }
+    }
+    
+    public class RequeueDialogResult
+    {
+        public List<string> ContainerNumbers { get; set; } = new();
+        public int Priority { get; set; } = 1;
+    }
+    
+    public class RequeueResponseDto
+    {
+        public string Message { get; set; } = "";
+        public int RequeuedCount { get; set; }
+        public int Total { get; set; }
+    }
+    
+    public class RequeuePendingResponseDto
+    {
+        public string Message { get; set; } = "";
+        public int RequeuedCount { get; set; }
+        public int Total { get; set; }
+    }
+    
+    public class TransferServiceStatusDto
+    {
+        public bool IsEnabled { get; set; }
+        public int TransferIntervalMinutes { get; set; }
+        public DateTime? LastTransferTime { get; set; }
+        public DateTime? NextScheduledTime { get; set; }
+    }
+    
+    public class TransferStatisticsDto
+    {
+        public int PendingTransfers { get; set; }
+        public int TotalTransferred { get; set; }
+        public int TransferredLast24h { get; set; }
+        public int FailedTransfers { get; set; }
+        public double TransferRatePerHour { get; set; }
+    }
+    
+    public class TransferHistoryDto
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string DeclarationNumber { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime TransferredAt { get; set; }
+        public string? ErrorMessage { get; set; }
+        public string ClearanceType { get; set; } = "";
+        public bool IsConsolidated { get; set; }
+    }
+    
+    public class TransferTriggerResultDto
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+    }
+    
+    public class ActivityLogDto
+    {
+        public DateTime Timestamp { get; set; }
+        public string Level { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string? Details { get; set; }
+    }
+}

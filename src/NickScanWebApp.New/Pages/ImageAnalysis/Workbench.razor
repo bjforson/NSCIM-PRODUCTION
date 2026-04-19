@@ -1,0 +1,919 @@
+@page "/operations/image-analysis"
+@page "/image-analysis/workbench"
+@page "/operations/image-analysis-dashboard"
+@page "/image-analysis/operations-dashboard"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisView)]
+@using NickScanWebApp.New.Components.ImageAnalysis
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager NavManager
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<Workbench> Logger
+@inject IConfiguration Configuration
+@implements IDisposable
+
+<PageTitle>NICKSCAN ERP — NSCIS — Image Analysis@(_myAssignments.Any() ? $" ({_myAssignments.Count})" : "")</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="mt-4">
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" @bind-ActivePanelIndex="_activeHubTab">
+    <MudTabPanel Text="Work Queue" Icon="@Icons.Material.Filled.Queue">
+    <!-- Header -->
+    <MudPaper Elevation="3" Class="pa-4 mb-4" Style="background: linear-gradient(135deg, #2563EB 0%, #3B82F6 50%, #60A5FA 100%); border-radius: 12px;">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudText Typo="Typo.h4" Style="color:white; font-weight:700;">
+                        <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Class="mr-2" />
+                        Image Analysis (Analyst)
+                    </MudText>
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Style="background:rgba(255,255,255,0.15); color:#66ff66;">
+                        <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#66ff66; margin-right:6px; animation:pulse 2s infinite;"></span>
+                        Live
+                    </MudChip>
+                    <MudButton Variant="Variant.Text"
+                               Color="Color.Primary"
+                               Size="Size.Small"
+                               StartIcon="@Icons.Material.Outlined.Dashboard"
+                               Href="/operations/image-analysis-dashboard"
+                               Target="_blank"
+                               Style="color:rgba(255,255,255,0.8);">
+                        Dashboard
+                    </MudButton>
+                </MudStack>
+                <MudText Typo="Typo.body2" Style="color:rgba(255,255,255,0.7);">
+                    Review your assigned groups and make analyst decisions
+                    @if (_assignmentMode == "UserClaim")
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-2">UserClaim Mode</MudChip>
+                    }
+                    else if (_assignmentMode == "Auto")
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Class="ml-2">Auto Mode</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Class="ml-2">Manual Mode</MudChip>
+                    }
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <!-- Ready for Assignment Toggle -->
+                <MudSwitch T="bool" @bind-Checked="_isReadyForAssignment" 
+                           Color="@(_isReadyForAssignment ? Color.Success : Color.Default)"
+                           Label="Ready for New Assignments"
+                           LabelPosition="LabelPosition.End"
+                           Disabled="@_isLoading"
+                           Changed="@OnReadyChanged" />
+                
+                <MudButton Variant="Variant.Outlined" 
+                           Color="Color.Default"
+                           StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="LoadData"
+                           Disabled="@_isLoading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Statistics Cards -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="4">
+            <MudCard Style="border-left: 4px solid #2563EB;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform:uppercase; letter-spacing:1px; color:#9e9e9e;">My Assignments</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight:700; color:#2563EB;">@_myAssignments.Count</MudText>
+                        </div>
+                        <MudTooltip Text="Number of groups currently assigned to you">
+                            <MudAvatar Color="Color.Primary" Size="Size.Medium" Style="background:#2563EB;"><MudIcon Icon="@Icons.Material.Outlined.Assignment" Size="Size.Small" /></MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" md="4">
+            <MudCard Style="border-left: 4px solid #e65100;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform:uppercase; letter-spacing:1px; color:#9e9e9e;">Available Queue</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight:700; color:#e65100;">@_availableGroups.Count</MudText>
+                            <MudText Typo="Typo.caption">(UserClaim mode only)</MudText>
+                        </div>
+                        <MudTooltip Text="Groups available to claim in UserClaim mode">
+                            <MudAvatar Color="Color.Warning" Size="Size.Medium" Style="background:#e65100;"><MudIcon Icon="@Icons.Material.Outlined.Queue" Size="Size.Small" /></MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+        <MudItem xs="12" md="4">
+            <MudCard Style="border-left: 4px solid #0277bd;">
+                <MudCardContent>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <div>
+                            <MudText Typo="Typo.overline" Style="text-transform:uppercase; letter-spacing:1px; color:#9e9e9e;">Total Containers</MudText>
+                            <MudText Typo="Typo.h3" Style="font-weight:700; color:#0277bd;">@_myAssignments.Sum(a => a.ContainerCount)</MudText>
+                        </div>
+                        <MudTooltip Text="Total containers across all your assignments">
+                            <MudAvatar Color="Color.Info" Size="Size.Medium" Style="background:#0277bd;"><MudIcon Icon="@Icons.Material.Outlined.Inventory" Size="Size.Small" /></MudAvatar>
+                        </MudTooltip>
+                    </MudStack>
+                </MudCardContent>
+            </MudCard>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Available Queue (UserClaim mode only) -->
+    @if (_assignmentMode == "UserClaim" && _availableGroups.Any())
+    {
+        <MudPaper Elevation="2" Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-3">
+                <MudIcon Icon="@Icons.Material.Outlined.Queue" Class="mr-2" />
+                Available Queue (Click "Claim" to assign to yourself)
+            </MudText>
+            <MudTable Items="@_availableGroups" Hover="true" Striped="true" Dense="true" Breakpoint="Breakpoint.Sm">
+                <HeaderContent>
+                    <MudTh>Group ID</MudTh>
+                    <MudTh>Scanner</MudTh>
+                    <MudTh>Containers</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Group ID">
+                        <MudText Typo="Typo.body2" Style="font-family: monospace; font-weight: 600;">
+                            @context.GroupIdentifier
+                        </MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Scanner">
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.ScannerType</MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Containers">@context.ContainerCount</MudTd>
+                    <MudTd DataLabel="Type">
+                        @if (context.IsConsolidated)
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" Size="Size.Small">Consolidated</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Description" Color="Color.Success" Size="Size.Small">Non-Consolidated</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudButton Variant="Variant.Filled" 
+                                   Color="Color.Primary" 
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Outlined.AddTask"
+                                   OnClick="@(() => ClaimGroup(context))"
+                                   Disabled="@_isLoading">
+                            Claim
+                        </MudButton>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+    }
+
+    <!-- Error Message -->
+    @if (!string.IsNullOrEmpty(_errorMessage))
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _errorMessage = null">
+            @_errorMessage
+        </MudAlert>
+    }
+
+    <!-- My Assignments -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Outlined.Assignment" Class="mr-2" />
+                My Assignments (@_myAssignments.Count)
+            </MudText>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <!-- Filter by Status -->
+                <MudSelect T="string" @bind-Value="_statusFilter" Label="Status" Variant="Variant.Outlined" Dense="true" Style="min-width: 150px;">
+                    <MudSelectItem Value="@((string?)null)">All Statuses</MudSelectItem>
+                    <MudSelectItem Value="@("Ready")">Ready</MudSelectItem>
+                    <MudSelectItem Value="@("AnalystAssigned")">Analyst Assigned</MudSelectItem>
+                    <MudSelectItem Value="@("AnalystCompleted")">Analyst Completed</MudSelectItem>
+                    <MudSelectItem Value="@("PartiallyCompleted")">Partially Completed</MudSelectItem>
+                </MudSelect>
+                <!-- Filter by Scanner -->
+                <MudSelect T="string" @bind-Value="_scannerFilter" Label="Scanner" Variant="Variant.Outlined" Dense="true" Style="min-width: 120px;">
+                    <MudSelectItem Value="@((string?)null)">All Scanners</MudSelectItem>
+                    <MudSelectItem Value="@("FS6000")">FS6000</MudSelectItem>
+                    <MudSelectItem Value="@("ASE")">ASE</MudSelectItem>
+                    <MudSelectItem Value="@("Nuctech")">Nuctech</MudSelectItem>
+                </MudSelect>
+            </MudStack>
+        </MudStack>
+        @if (_isLoading)
+        {
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Size="Size.Medium" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.body2">Loading assignments...</MudText>
+            </MudStack>
+        }
+        else if (!_myAssignments.Any())
+        {
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.AssignmentLate" Size="Size.Large" Color="Color.Secondary" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">No assignments</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    @if (_assignmentMode == "UserClaim")
+                    {
+                        <text>Click "Claim" above to assign groups to yourself, or wait for Admin/Lead to assign groups to you.</text>
+                    }
+                    else
+                    {
+                        <text>Wait for Admin/Lead to assign groups to you, or groups will be auto-assigned if Auto mode is enabled.</text>
+                    }
+                </MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                    Assignment Mode: <strong>@_assignmentMode</strong>
+                </MudText>
+            </MudStack>
+        }
+        else
+        {
+            var filteredAssignments = _myAssignments
+                .Where(a => _statusFilter == null || a.Status == _statusFilter)
+                .Where(a => _scannerFilter == null || a.ScannerType == _scannerFilter)
+                .ToList();
+            <MudTable Items="@filteredAssignments" Hover="true" Striped="true" Dense="true" Breakpoint="Breakpoint.Sm" @bind-SelectedItem="_selectedAssignment">
+                <HeaderContent>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Group ID</MudTh>
+                    <MudTh>Scanner</MudTh>
+                    <MudTh>Containers</MudTh>
+                    <MudTh>Progress</MudTh>
+                    <MudTh>Type</MudTh>
+                    <MudTh>Created</MudTh>
+                    <MudTh>Lease Expires</MudTh>
+                    <MudTh>Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    @{
+                        var assignment = context ?? new MyAssignmentDto();
+                        var progressPercent = assignment.ContainerCount > 0 ? (assignment.DecidedCount * 100.0 / assignment.ContainerCount) : 0;
+                    }
+                    <MudTd DataLabel="Status">
+                        <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(assignment.Status)" Variant="Variant.Filled">
+                            <MudIcon Icon="@GetStatusIcon(assignment.Status)" Size="Size.Small" Class="mr-1" />
+                            @assignment.Status
+                        </MudChip>
+                        @if (assignment.Status == "PartiallyCompleted")
+                        {
+                            <MudTooltip Text="Partially completed: Some containers are missing images">
+                                <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" Color="Color.Warning" Class="ml-1" />
+                            </MudTooltip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Group ID">
+                        <MudText Typo="Typo.body2" Style="font-family: monospace; font-weight: 600;">
+                            @assignment.GroupIdentifier
+                        </MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Scanner">
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@assignment.ScannerType</MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Containers">
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.body2"><strong>@assignment.ContainerCount</strong> total</MudText>
+                            @if (assignment.ContainersWithImages.HasValue || assignment.ContainersWithoutImages.HasValue)
+                            {
+                                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                    @if (assignment.ContainersWithImages.HasValue && assignment.ContainersWithImages > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">
+                                            @assignment.ContainersWithImages with images
+                                        </MudChip>
+                                    }
+                                    @if (assignment.ContainersWithoutImages.HasValue && assignment.ContainersWithoutImages > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">
+                                            @assignment.ContainersWithoutImages pending
+                                        </MudChip>
+                                    }
+                                </MudStack>
+                            }
+                            @if (assignment.Status == "PartiallyCompleted" && assignment.SubmittedContainerCount.HasValue && assignment.PendingContainerCount.HasValue)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @assignment.SubmittedContainerCount submitted, @assignment.PendingContainerCount pending
+                                </MudText>
+                            }
+                        </MudStack>
+                    </MudTd>
+                    <MudTd DataLabel="Progress">
+                        <MudStack Spacing="1">
+                            <MudProgressLinear Value="@progressPercent" Color="@GetProgressColor(progressPercent)" Variant="Variant.Filled" />
+                            <MudText Typo="Typo.caption">
+                                @assignment.DecidedCount / @assignment.ContainerCount decided
+                            </MudText>
+                        </MudStack>
+                    </MudTd>
+                    <MudTd DataLabel="Type">
+                        @if (assignment.IsConsolidated)
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" Size="Size.Small">Consolidated</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Icon="@Icons.Material.Outlined.Description" Color="Color.Success" Size="Size.Small">Non-Consolidated</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Created">
+                        <MudText Typo="Typo.body2">@assignment.CreatedAtUtc.ToLocalTime().ToString("MMM dd, HH:mm")</MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Lease Expires">
+                        @if (assignment.LeaseUntilUtc.HasValue)
+                        {
+                            var timeRemaining = assignment.LeaseUntilUtc.Value.ToLocalTime() - DateTime.Now;
+                            if (timeRemaining.TotalMinutes < 5)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error">
+                                    @timeRemaining.ToString(@"mm\:ss") remaining
+                                </MudChip>
+                            }
+                            else if (timeRemaining.TotalMinutes < 10)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                    @timeRemaining.ToString(@"mm\:ss") remaining
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.body2">@assignment.LeaseUntilUtc.Value.ToLocalTime().ToString("MMM dd, HH:mm")</MudText>
+                            }
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">No lease</MudText>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudStack Row="true" Spacing="1">
+                            <MudButton Variant="Variant.Filled" 
+                                       Color="Color.Primary" 
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Outlined.Visibility"
+                                       OnClick="@(() => ViewDetails(assignment))">
+                                View
+                            </MudButton>
+                            @if (assignment.LeaseUntilUtc.HasValue && (assignment.LeaseUntilUtc.Value.ToLocalTime() - DateTime.Now).TotalMinutes < 10)
+                            {
+                                <MudButton Variant="Variant.Outlined" 
+                                           Color="Color.Warning" 
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Outlined.Refresh"
+                                           OnClick="@(() => RenewLease(assignment))"
+                                           Disabled="@_isLoading">
+                                    Renew
+                                </MudButton>
+                            }
+                        </MudStack>
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudPaper>
+    </MudTabPanel>
+    <MudTabPanel Text="Operations Dashboard" Icon="@Icons.Material.Filled.Dashboard">
+        <OperationsDashboardPanel />
+    </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // Top-level hub tab: 0 = Work Queue, 1 = Operations Dashboard
+    private int _activeHubTab = 0;
+
+    private bool _isLoading = false;
+    private List<MyAssignmentDto> _myAssignments = new();
+    private List<MyAssignmentDto> _availableGroups = new();
+    private MyAssignmentDto? _selectedAssignment = null;
+    private string _assignmentMode = "Manual";
+    private System.Threading.Timer? _refreshTimer;
+    private System.Threading.Timer? _heartbeatTimer;
+    private string? _errorMessage = null;
+    private bool _isReadyForAssignment = false;
+    private HubConnection? _readinessHub;
+    private string _userRole = "Analyst"; // Default role, will be detected from user
+    private string? _statusFilter;
+    private string? _scannerFilter;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab: dashboard routes open Operations Dashboard tab
+        var path = new Uri(NavManager.Uri).AbsolutePath.TrimEnd('/').ToLowerInvariant();
+        if (path == "/operations/image-analysis-dashboard" || path == "/image-analysis/operations-dashboard")
+        {
+            _activeHubTab = 1;
+        }
+
+        Console.WriteLine("🚀 [ImageAnalysis] OnInitializedAsync START");
+        Logger?.LogInformation("🚀 [ImageAnalysis] OnInitializedAsync START");
+        
+        try
+        {
+            await LoadData();
+            Console.WriteLine("✅ [ImageAnalysis] LoadData completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageAnalysis] Error in OnInitializedAsync: {ex.Message}");
+            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
+            Logger?.LogError(ex, "❌ [ImageAnalysis] Error in OnInitializedAsync");
+            _errorMessage = $"Initialization error: {ex.Message}";
+        }
+        
+        // Detect user role and initialize readiness tracking
+        await DetectUserRole();
+        await InitializeReadinessHub();
+        await SetReadyForAssignment(true); // Auto-ready on page load
+        
+        var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(refreshSeconds), TimeSpan.FromSeconds(refreshSeconds));
+        
+        Console.WriteLine("✅ [ImageAnalysis] OnInitializedAsync COMPLETE");
+        Logger?.LogInformation("✅ [ImageAnalysis] OnInitializedAsync COMPLETE");
+    }
+    
+    private async Task DetectUserRole()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            
+            // Try to get role from claims
+            var roleClaim = user.Claims.FirstOrDefault(c => c.Type == "role" || c.Type == "http://schemas.microsoft.com/ws/2008/06/identity/claims/role");
+            if (roleClaim != null)
+            {
+                var role = roleClaim.Value;
+                if (role.Contains("Analyst", StringComparison.OrdinalIgnoreCase))
+                    _userRole = "Analyst";
+                else if (role.Contains("Audit", StringComparison.OrdinalIgnoreCase))
+                    _userRole = "Audit";
+            }
+            Logger.LogInformation("Detected user role: {Role}", _userRole);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Error detecting user role, defaulting to Analyst");
+            _userRole = "Analyst";
+        }
+    }
+
+    private async Task InitializeReadinessHub()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/userReadiness";
+
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null) token = await task;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
+            }
+
+            _readinessHub = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _readinessHub.Reconnected += async _ =>
+            {
+                Logger.LogInformation("UserReadinessHub reconnected");
+                await SetReadyForAssignment(_isReadyForAssignment);
+            };
+
+            await _readinessHub.StartAsync();
+            Logger.LogInformation("UserReadinessHub connected successfully");
+            
+            // Start heartbeat timer (every 30 seconds)
+            // ✅ IMPORTANT: Send heartbeat even if not ready, to keep connection alive
+            _heartbeatTimer = new System.Threading.Timer(async _ =>
+            {
+                try
+                {
+                    // Check if user is authenticated before sending heartbeat
+                    var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+                    if (authState?.User?.Identity?.IsAuthenticated != true)
+                    {
+                        // User is not authenticated - skip heartbeat silently
+                        Logger.LogDebug("⚠️ [FRONTEND] Skipping heartbeat - user not authenticated");
+                        return;
+                    }
+                    
+                    // Always send heartbeat via API to keep record alive
+                    await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
+                    
+                    // Also send via SignalR if connected and ready
+                    if (_readinessHub?.State == HubConnectionState.Connected && _isReadyForAssignment)
+                    {
+                        await _readinessHub.SendAsync("SendHeartbeat", _userRole);
+                    }
+                }
+                catch (NickScanWebApp.Shared.Services.ApiException apiEx) when (apiEx.Message.Contains("401") || apiEx.Message.Contains("Unauthorized"))
+                {
+                    // 401 errors are expected when user is not authenticated - log at debug level
+                    Logger.LogDebug("⚠️ [FRONTEND] Heartbeat failed - user not authenticated (401)");
+                }
+                catch (Exception ex)
+                {
+                    // Only log non-auth errors as warnings
+                    Logger.LogWarning(ex, "⚠️ [FRONTEND] Error sending heartbeat: {Message}", ex.Message);
+                }
+            }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+            
+            Logger.LogInformation("✅ [FRONTEND] Heartbeat timer started (30 second interval)");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error initializing UserReadinessHub");
+            Snackbar.Add("Warning: Could not connect to readiness service", Severity.Warning);
+        }
+    }
+
+    private async Task OnReadyChanged(bool isReady)
+    {
+        _isReadyForAssignment = isReady;
+        await SetReadyForAssignment(isReady);
+    }
+
+    private async Task SetReadyForAssignment(bool ready)
+    {
+        try
+        {
+            Logger.LogInformation("🔔 [FRONTEND] Setting readiness to {Ready} for role {Role}", ready, _userRole);
+            
+            // Send via SignalR if connected
+            if (_readinessHub?.State == HubConnectionState.Connected)
+            {
+                try
+                {
+                    await _readinessHub.SendAsync("SetReadyForAssignment", _userRole, ready, null);
+                    Logger.LogInformation("🔔 [FRONTEND] SignalR readiness sent successfully");
+                }
+                catch (Exception hubEx)
+                {
+                    Logger.LogWarning(hubEx, "⚠️ [FRONTEND] SignalR readiness send failed, but continuing with API call");
+                }
+            }
+            else
+            {
+                Logger.LogWarning("⚠️ [FRONTEND] SignalR hub not connected (State: {State}), skipping SignalR call", _readinessHub?.State);
+            }
+            
+            // Always send via API for persistence
+            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
+            {
+                Role = _userRole,
+                IsReady = ready,
+                SessionId = (string?)null
+            });
+            
+            Logger.LogInformation("✅ [FRONTEND] API readiness call succeeded");
+            
+            if (ready)
+                Snackbar.Add($"✅ You are now ready to receive new {_userRole} assignments", Severity.Success);
+            else
+                Snackbar.Add($"⏸️ You are no longer ready for new {_userRole} assignments", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "❌ [FRONTEND] Error setting readiness status via API");
+            Snackbar.Add($"❌ Error updating readiness: {ex.Message}", Severity.Error);
+            
+            // Try to show more detailed error
+            if (ex.Message.Contains("401") || ex.Message.Contains("Unauthorized"))
+            {
+                Snackbar.Add("Authentication error - please refresh the page", Severity.Warning);
+            }
+            else if (ex.Message.Contains("500") || ex.Message.Contains("Internal"))
+            {
+                Snackbar.Add("Server error - check logs or contact administrator", Severity.Error);
+            }
+        }
+    }
+    
+    public void Dispose()
+    {
+        if (_isReadyForAssignment)
+        {
+            try { _ = SetReadyForAssignment(false); } catch { }
+        }
+        _heartbeatTimer?.Dispose();
+        _refreshTimer?.Dispose();
+        if (_readinessHub != null)
+        {
+            _ = _readinessHub.DisposeAsync();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+        try
+        {
+            Console.WriteLine("🔍 [ImageAnalysis] LoadData START");
+            Logger?.LogInformation("🔍 [ImageAnalysis] LoadData START - Loading image analysis data...");
+            
+            // Load settings to check AssignmentMode
+            Console.WriteLine("🔍 [ImageAnalysis] Calling GET /api/image-analysis-management/service-state");
+            var settings = await ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+            Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
+            if (settings != null)
+            {
+                var newMode = settings.AssignmentMode ?? "Manual";
+                if (_assignmentMode != newMode)
+                {
+                    Logger?.LogInformation("Assignment mode changed: {OldMode} -> {NewMode}", _assignmentMode, newMode);
+                    _assignmentMode = newMode;
+                }
+                else
+                {
+                    Logger?.LogInformation("Assignment mode: {Mode}", _assignmentMode);
+                }
+            }
+            else
+            {
+                Logger?.LogWarning("Could not load analysis settings");
+            }
+
+            // Load my assignments
+            Console.WriteLine("🔍 [ImageAnalysis] Calling GET /api/image-analysis/my-assignments?role=Analyst");
+            Logger?.LogInformation("🔍 [ImageAnalysis] Loading my assignments...");
+            var assignments = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
+            Console.WriteLine($"✅ [ImageAnalysis] Assignments loaded: {assignments?.Count ?? 0} items");
+            if (assignments != null && assignments.Any())
+            {
+                Console.WriteLine($"✅ [ImageAnalysis] Assignment details:");
+                foreach (var assignment in assignments)
+                {
+                    Console.WriteLine($"  - Group: {assignment.GroupIdentifier}, Status: {assignment.Status}, Containers: {assignment.ContainerCount}, LeaseUntil: {assignment.LeaseUntilUtc}");
+                }
+                _myAssignments = assignments;
+                Logger?.LogInformation("Loaded {Count} assignments", assignments.Count);
+            }
+            else
+            {
+                Console.WriteLine($"⚠️ [ImageAnalysis] No assignments returned from API (assignments is null: {assignments == null}, count: {assignments?.Count ?? 0})");
+                _myAssignments = new();
+                Logger?.LogWarning("No assignments returned from API");
+            }
+
+            // Load available groups if UserClaim mode
+            if (_assignmentMode == "UserClaim")
+            {
+                Logger?.LogInformation("Loading available groups (UserClaim mode)...");
+                try
+                {
+                    var available = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Analyst");
+                    if (available != null)
+                    {
+                        _availableGroups = available;
+                        Logger?.LogInformation("Loaded {Count} available groups", available.Count);
+                    }
+                    else
+                    {
+                        _availableGroups = new();
+                        Logger?.LogWarning("No available groups returned from API");
+                    }
+                }
+                catch (Exception ex2)
+                {
+                    Logger?.LogError(ex2, "Error loading available groups");
+                    _availableGroups = new();
+                    // Don't show error to user if it's just a mode issue
+                    if (!ex2.Message.Contains("UserClaim"))
+                    {
+                        Snackbar.Add($"Error loading available groups: {ex2.Message}", Severity.Warning);
+                    }
+                }
+            }
+            else
+            {
+                _availableGroups = new();
+                Logger?.LogInformation("Not loading available groups (mode: {Mode})", _assignmentMode);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger?.LogError(ex, "❌ [ImageAnalysis] Error loading image analysis data");
+            Console.WriteLine($"❌ [ImageAnalysis] Error loading data: {ex.Message}");
+            Console.WriteLine($"❌ [ImageAnalysis] Error type: {ex.GetType().Name}");
+            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"❌ [ImageAnalysis] Inner exception: {ex.InnerException.Message}");
+            }
+            _errorMessage = $"Error loading data: {ex.Message}";
+            Snackbar.Add($"Error loading data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ClaimGroup(MyAssignmentDto group)
+    {
+        try
+        {
+            _isLoading = true;
+            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{group.GroupId}/claim", new { });
+            
+            if (response != null)
+            {
+                Snackbar.Add($"Successfully claimed group {group.GroupIdentifier}", Severity.Success);
+                await LoadData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error claiming group: {ex.Message}");
+            Snackbar.Add($"Error claiming group: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task RenewLease(MyAssignmentDto assignment)
+    {
+        try
+        {
+            _isLoading = true;
+            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{assignment.GroupIdentifier}/lease/renew", new { });
+            
+            if (response != null)
+            {
+                Snackbar.Add("Lease renewed successfully", Severity.Success);
+                await LoadData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error renewing lease: {ex.Message}");
+            Snackbar.Add($"Error renewing lease: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ViewDetails(MyAssignmentDto assignment)
+    {
+        Console.WriteLine($"🔵 [ImageAnalysis.ViewDetails] Opening dialog for {assignment.GroupIdentifier}");
+        
+        IDialogReference? dialogRef = null;
+        var parameters = new DialogParameters
+        {
+            ["GroupIdentifier"] = assignment.GroupIdentifier,
+            ["IsConsolidated"] = assignment.IsConsolidated,
+            ["Containers"] = assignment.Containers,
+            ["OnDecisionSaved"] = EventCallback.Factory.Create(this, async () =>
+            {
+                // ✅ Close dialog after decision is saved
+                Console.WriteLine("🔄 [ImageAnalysis] OnDecisionSaved called - refreshing assignments list");
+                if (dialogRef != null)
+                {
+                    dialogRef.Close(DialogResult.Ok(true));
+                    // Add small delay to ensure backend immediate assignment completes
+                    await Task.Delay(500);
+                    await LoadData(); // Refresh the list
+                    Console.WriteLine("✅ [ImageAnalysis] Assignments list refreshed after decision saved");
+                }
+            }),
+            ["OnAllContainersDecided"] = EventCallback.Factory.Create(this, async () =>
+            {
+                Console.WriteLine("✅ [ImageAnalysis] OnAllContainersDecided called - all containers in group completed");
+                // Refresh assignments after a short delay to allow immediate assignment to complete
+                await Task.Delay(1000);
+                await LoadData();
+                Console.WriteLine("✅ [ImageAnalysis] Assignments list refreshed after all containers decided");
+            })
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.ExtraLarge, 
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        dialogRef = await DialogService.ShowAsync<Components.Operations.ImageAnalysisViewDialog>(
+            $"{(assignment.IsConsolidated ? "Container" : "BOE")}: {assignment.GroupIdentifier}", 
+            parameters, 
+            options);
+        
+        await dialogRef.Result;
+    }
+
+    // ✅ NEW: Helper methods for status display
+    private Color GetStatusColor(string status)
+    {
+        return status switch
+        {
+            "Ready" => Color.Info,
+            "AnalystAssigned" => Color.Warning,
+            "AnalystCompleted" => Color.Success,
+            "AuditAssigned" => Color.Secondary,
+            "AuditCompleted" => Color.Tertiary,
+            "PartiallyCompleted" => Color.Warning,
+            "Submitted" => Color.Dark,
+            "Completed" => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    private string GetStatusIcon(string status)
+    {
+        return status switch
+        {
+            "Ready" => Icons.Material.Outlined.Assignment,
+            "AnalystAssigned" => Icons.Material.Outlined.Person,
+            "AnalystCompleted" => Icons.Material.Outlined.CheckCircle,
+            "AuditAssigned" => Icons.Material.Outlined.VerifiedUser,
+            "AuditCompleted" => Icons.Material.Outlined.Verified,
+            "PartiallyCompleted" => Icons.Material.Outlined.HourglassEmpty,
+            "Submitted" => Icons.Material.Outlined.Send,
+            "Completed" => Icons.Material.Outlined.Done,
+            _ => Icons.Material.Outlined.Help
+        };
+    }
+
+    private Color GetProgressColor(double percent)
+    {
+        if (percent >= 100) return Color.Success;
+        if (percent >= 75) return Color.Info;
+        if (percent >= 50) return Color.Warning;
+        return Color.Error;
+    }
+
+    // DTOs
+    public class MyAssignmentDto
+    {
+        public Guid GroupId { get; set; }
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public int ContainerCount { get; set; }
+        public List<string> Containers { get; set; } = new();
+        public DateTime? LeaseUntilUtc { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+        public bool IsConsolidated { get; set; }
+        
+        // ✅ NEW: Enhanced fields
+        public int? ContainersWithImages { get; set; }
+        public int? ContainersWithoutImages { get; set; }
+        public int DecidedCount { get; set; }
+        public int? TotalContainerCount { get; set; }
+        public int? SubmittedContainerCount { get; set; }
+        public int? PendingContainerCount { get; set; }
+        public DateTime? PartiallyCompletedDate { get; set; }
+        public DateTime? UpdatedAtUtc { get; set; }
+    }
+
+    public class AnalysisSettingsDto
+    {
+        public bool Enabled { get; set; }
+        public string? AssignmentMode { get; set; }
+        public string? AutoAssignStrategy { get; set; }
+        public bool AutoAssign { get; set; }
+        public int LeaseMinutes { get; set; }
+        public int MaxConcurrentPerUser { get; set; }
+    }
+}

@@ -1,0 +1,733 @@
+@page "/admin/icums-payloads"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsPayloads)]
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IConfiguration Configuration
+@using System.Text.Json
+
+<PageTitle>NICKSCAN ERP — NSCIS — ICUMS Payload Viewer</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.FactCheck" Class="mr-2" />
+        ICUMS Payload Verification
+    </MudText>
+
+    @* Summary Cards *@
+    @if (hasSummary)
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" md="3">
+                <MudPaper Elevation="2" Class="pa-4 d-flex flex-column align-center">
+                    <MudIcon Icon="@Icons.Material.Outlined.Folder" Color="Color.Primary" Size="Size.Large" />
+                    <MudText Typo="Typo.h5" Class="mt-2">@GetProp(summary, "internalPayloads.count", "0")</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Internal Submissions</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Elevation="2" Class="pa-4 d-flex flex-column align-center">
+                    <MudIcon Icon="@Icons.Material.Outlined.Send" Color="Color.Info" Size="Size.Large" />
+                    <MudText Typo="Typo.h5" Class="mt-2">@GetProp(summary, "icumsPayloads.count", "0")</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">ICUMS Payloads</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Elevation="2" Class="pa-4 d-flex flex-column align-center">
+                    <MudIcon Icon="@(GetProp(summary, "liveSubmitEnabled", "false") == "True" ? Icons.Material.Outlined.CloudDone : Icons.Material.Outlined.CloudOff)"
+                             Color="@(GetProp(summary, "liveSubmitEnabled", "false") == "True" ? Color.Success : Color.Warning)" Size="Size.Large" />
+                    <MudText Typo="Typo.h6" Class="mt-2">@(GetProp(summary, "liveSubmitEnabled", "false") == "True" ? "LIVE" : "DISABLED")</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Live Submit</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudPaper Elevation="2" Class="pa-4 d-flex flex-column align-center">
+                    <MudIcon Icon="@Icons.Material.Outlined.VerifiedUser" Color="Color.Success" Size="Size.Large" />
+                    <MudText Typo="Typo.h5" Class="mt-2">@GetProp(summary, "acknowledgedPayloads.count", "0")</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Acknowledged by ICUMS</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        @if (NullDeliveryPlaceCount > 0)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mb-4" Icon="@Icons.Material.Outlined.LocationOff">
+                <strong>@NullDeliveryPlaceCount</strong> BOE record@(NullDeliveryPlaceCount != 1 ? "s have" : " has") no DeliveryPlace — location matching cannot be verified for these records
+            </MudAlert>
+        }
+    }
+
+    @* Tab Navigation *@
+    <MudTabs Elevation="2" Rounded ApplyEffectsToContainer @bind-ActivePanelIndex="activeTab" Class="mb-4">
+        <MudTabPanel Text="ICUMS Payloads (ScanData)" Icon="@Icons.Material.Outlined.Send" BadgeData="@icumsFileCount" BadgeColor="Color.Info">
+            @RenderFileList(icumsFiles, "ICUMS")
+        </MudTabPanel>
+        <MudTabPanel Text="Acknowledged" Icon="@Icons.Material.Outlined.VerifiedUser" BadgeData="@acknowledgedFileCount" BadgeColor="Color.Success">
+            @RenderFileList(acknowledgedFiles, "ICUMS/Acknowledged")
+        </MudTabPanel>
+        <MudTabPanel Text="Internal Submissions" Icon="@Icons.Material.Outlined.Folder" BadgeData="@internalFileCount" BadgeColor="Color.Primary">
+            @RenderFileList(internalFiles, null)
+        </MudTabPanel>
+        <MudTabPanel Text="Verify Receipt" Icon="@Icons.Material.Outlined.Verified">
+            <MudPaper Elevation="0" Class="pa-4">
+                <MudText Typo="Typo.subtitle1" Class="mb-2 font-weight-bold">Verify ICUMS Receipt (readStatus)</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                    Query the ICUMS readStatus API to confirm that submitted reports were received and processed.
+                </MudText>
+                <MudStack Row AlignItems="AlignItems.End" Class="mb-3" Spacing="2">
+                    <MudTextField @bind-Value="verifyContainerNumber" Label="Container Number" Variant="Variant.Outlined"
+                                  Placeholder="e.g. MSKU1234567" Style="max-width:300px;" />
+                    <MudTextField @bind-Value="verifyRotationNumber" Label="Rotation Number" Variant="Variant.Outlined"
+                                  Placeholder="e.g. 2024/12345" Style="max-width:250px;" />
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Search"
+                               OnClick="VerifyContainerStatus" Disabled="@(string.IsNullOrWhiteSpace(verifyContainerNumber) || verifyingStatus)">
+                        @if (verifyingStatus)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate Color="Color.Default" Class="mr-2" />
+                            <text>Checking...</text>
+                        }
+                        else
+                        {
+                            <text>Verify Status</text>
+                        }
+                    </MudButton>
+                </MudStack>
+
+                @if (verifyResults != null)
+                {
+                    @if (verifySuccess)
+                    {
+                        <MudAlert Severity="Severity.Success" Variant="Variant.Filled" Class="mb-3">
+                            ICUMS readStatus query successful
+                        </MudAlert>
+                        @if (verifyStatusItems.Any())
+                        {
+                            <MudSimpleTable Dense Hover Bordered>
+                                <thead>
+                                    <tr>
+                                        <th>Container Number</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var item in verifyStatusItems)
+                                    {
+                                        <tr>
+                                            <td><strong>@item.Container</strong></td>
+                                            <td>
+                                                @if (item.Status.Equals("received", StringComparison.OrdinalIgnoreCase) || item.Status.Equals("success", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    <MudChip T="string" Color="Color.Success" Size="Size.Small" Variant="Variant.Filled">@item.Status</MudChip>
+                                                }
+                                                else if (item.Status.Equals("pending", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    <MudChip T="string" Color="Color.Warning" Size="Size.Small" Variant="Variant.Filled">@item.Status</MudChip>
+                                                }
+                                                else
+                                                {
+                                                    <MudChip T="string" Color="Color.Default" Size="Size.Small" Variant="Variant.Filled">@item.Status</MudChip>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                                No status items returned — container may not yet be in the ICUMS system.
+                            </MudAlert>
+                        }
+                    }
+                    else
+                    {
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-3">
+                            ICUMS readStatus query failed — @verifyErrorMessage
+                        </MudAlert>
+                    }
+
+                    @if (!string.IsNullOrEmpty(verifyRawResponse))
+                    {
+                        <MudExpansionPanels Class="mt-3">
+                            <MudExpansionPanel Text="Raw API Response">
+                                <MudPaper Elevation="0" Class="pa-3" Style="background:#1e1e1e; border-radius:8px; max-height:300px; overflow:auto;">
+                                    <pre style="color:#d4d4d4; margin:0; font-size:12px; font-family:'Cascadia Code','Consolas',monospace; white-space:pre-wrap;">@verifyRawResponse</pre>
+                                </MudPaper>
+                            </MudExpansionPanel>
+                        </MudExpansionPanels>
+                    }
+                }
+            </MudPaper>
+        </MudTabPanel>
+    </MudTabs>
+
+    @* Payload Detail Dialog *@
+    <MudDialog @bind-Visible="showDetail" Options="dialogOptions">
+        <TitleContent>
+            <MudText Typo="Typo.h6">
+                <MudIcon Icon="@Icons.Material.Outlined.Code" Class="mr-2" />
+                @selectedFileName
+            </MudText>
+        </TitleContent>
+        <DialogContent>
+            @if (loadingDetail)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate />
+            }
+            else if (hasPayload)
+            {
+                <MudTabs Elevation="0" Rounded @bind-ActivePanelIndex="detailTab">
+                    <MudTabPanel Text="Scan Image" Icon="@Icons.Material.Outlined.Image">
+                        @if (hasImage)
+                        {
+                            <MudPaper Elevation="0" Class="pa-3 mt-2" Style="text-align:center; background:#111; border-radius:8px;">
+                                <img src="@imageUrl" alt="Scan Image" style="max-width:100%; max-height:600px; object-fit:contain; border-radius:4px;" />
+                            </MudPaper>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-2">
+                                No image found in this payload.
+                            </MudAlert>
+                        }
+                    </MudTabPanel>
+                    <MudTabPanel Text="Field Validation" Icon="@Icons.Material.Outlined.Checklist">
+                        @if (selectedSubfolder == "ICUMS" || selectedSubfolder == "ICUMS/Acknowledged")
+                        {
+                            <MudSimpleTable Dense Hover Bordered Class="mt-2">
+                                <thead>
+                                    <tr>
+                                        <th>Field</th>
+                                        <th>Value</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var field in ValidateIcumsFields(selectedPayload, hasPayload))
+                                    {
+                                        <tr>
+                                            <td><strong>@field.Name</strong></td>
+                                            <td style="max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                                @if (field.Name == "ImageDocument" && !string.IsNullOrEmpty(field.Value) && field.Value.Length > 50)
+                                                {
+                                                    <MudTooltip Text="Base64 image data present">
+                                                        <MudText Typo="Typo.body2" Color="Color.Success">[@(field.Value.Length) chars base64]</MudText>
+                                                    </MudTooltip>
+                                                }
+                                                else
+                                                {
+                                                    @(string.IsNullOrEmpty(field.Value) ? "(empty)" : field.Value)
+                                                }
+                                            </td>
+                                            <td>
+                                                @if (field.Status == "ok")
+                                                {
+                                                    <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Success" Size="Size.Small" />
+                                                }
+                                                else if (field.Status == "warning")
+                                                {
+                                                    <MudIcon Icon="@Icons.Material.Outlined.Warning" Color="Color.Warning" Size="Size.Small" />
+                                                }
+                                                else
+                                                {
+                                                    <MudIcon Icon="@Icons.Material.Outlined.Error" Color="Color.Error" Size="Size.Small" />
+                                                }
+                                                <MudText Typo="Typo.caption" Class="ml-1" Style="display:inline">@field.Reason</MudText>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-2">
+                                Field validation is only available for ICUMS ScanData payloads.
+                            </MudAlert>
+                        }
+                    </MudTabPanel>
+                    <MudTabPanel Text="Raw JSON" Icon="@Icons.Material.Outlined.Code">
+                        <MudPaper Elevation="0" Class="pa-3 mt-2" Style="background:#1e1e1e; border-radius:8px; max-height:500px; overflow:auto;">
+                            <pre style="color:#d4d4d4; margin:0; font-size:13px; font-family:'Cascadia Code','Consolas',monospace; white-space:pre-wrap; word-break:break-all;">@selectedPayloadRaw</pre>
+                        </MudPaper>
+                    </MudTabPanel>
+                </MudTabs>
+            }
+        </DialogContent>
+        <DialogActions>
+            <MudButton OnClick="@(() => showDetail = false)" Color="Color.Default">Close</MudButton>
+        </DialogActions>
+    </MudDialog>
+</MudContainer>
+
+@code {
+    private JsonElement summary;
+    private bool hasSummary = false;
+    private int NullDeliveryPlaceCount => hasSummary && int.TryParse(GetProp(summary, "nullDeliveryPlaceCount", "0"), out var n) ? n : 0;
+    private List<PayloadFileInfo> internalFiles = new();
+    private List<PayloadFileInfo> icumsFiles = new();
+    private List<PayloadFileInfo> acknowledgedFiles = new();
+    private int activeTab = 0;
+    private bool loading = true;
+
+    private bool showDetail = false;
+    private bool loadingDetail = false;
+    private string selectedFileName = "";
+    private string? selectedSubfolder;
+    private JsonElement selectedPayload;
+    private bool hasPayload = false;
+    private string selectedPayloadRaw = "";
+    private bool hasImage = false;
+    private string imageUrl = "";
+    private int detailTab = 0;
+
+    // Verify Status state
+    private string verifyContainerNumber = "";
+    private string verifyRotationNumber = "";
+    private bool verifyingStatus = false;
+    private JsonElement? verifyResults;
+    private bool verifySuccess = false;
+    private string verifyErrorMessage = "";
+    private string verifyRawResponse = "";
+    private List<StatusItem> verifyStatusItems = new();
+
+    private int internalFileCount => internalFiles.Count;
+    private int icumsFileCount => icumsFiles.Count;
+    private int acknowledgedFileCount => acknowledgedFiles.Count;
+
+    private DialogOptions dialogOptions = new()
+    {
+        MaxWidth = MaxWidth.Large,
+        FullWidth = true,
+        CloseOnEscapeKey = true
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        loading = true;
+        try
+        {
+            JsonElement? s = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/summary");
+            if (s != null) { summary = s.Value; hasSummary = true; }
+
+            JsonElement? internalResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?limit=100");
+            internalFiles = ParseFileList(internalResult);
+
+            JsonElement? icumsResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?subfolder=ICUMS&limit=100");
+            icumsFiles = ParseFileList(icumsResult);
+
+            JsonElement? ackResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?subfolder=ICUMS%2FAcknowledged&limit=100");
+            acknowledgedFiles = ParseFileList(ackResult);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading payloads: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private List<PayloadFileInfo> ParseFileList(JsonElement? result)
+    {
+        var list = new List<PayloadFileInfo>();
+        if (result == null) return list;
+
+        try
+        {
+            if (result.Value.TryGetProperty("files", out var filesArr) && filesArr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var f in filesArr.EnumerateArray())
+                {
+                    list.Add(new PayloadFileInfo
+                    {
+                        Name = f.GetProperty("name").GetString() ?? "",
+                        SizeBytes = f.GetProperty("sizeBytes").GetInt64(),
+                        LastModified = f.GetProperty("lastModified").GetDateTime(),
+                        Subfolder = f.TryGetProperty("subfolder", out var sf) ? sf.GetString() ?? "." : "."
+                    });
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private RenderFragment RenderFileList(List<PayloadFileInfo> files, string? subfolder) => __builder =>
+    {
+        if (loading)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate />;
+            return;
+        }
+
+        <MudPaper Elevation="0" Class="pa-2">
+            <MudStack Row AlignItems="AlignItems.Center" Class="mb-2">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="LoadData" Size="Size.Small">Refresh</MudButton>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">@files.Count file(s)</MudText>
+            </MudStack>
+
+            @if (!files.Any())
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-2">
+                    No payload files found in this folder. Payloads are generated when the submission workflow processes completed analysis groups.
+                </MudAlert>
+            }
+            else
+            {
+                <MudTable Items="@files" Dense Hover Breakpoint="Breakpoint.Sm" T="PayloadFileInfo"
+                          RowClassFunc="@((item, i) => "cursor-pointer")"
+                          OnRowClick="@((TableRowClickEventArgs<PayloadFileInfo> args) => ViewPayload(args.Item.Name, subfolder))">
+                    <HeaderContent>
+                        <MudTh>File Name</MudTh>
+                        <MudTh>Size</MudTh>
+                        <MudTh>Generated</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="File Name">
+                            <MudText Typo="Typo.body2" Style="font-family:monospace; font-size:12px;">@context.Name</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Size">@FormatSize(context.SizeBytes)</MudTd>
+                        <MudTd DataLabel="Generated">@context.LastModified.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</MudTd>
+                        <MudTd>
+                            <MudIconButton Icon="@Icons.Material.Outlined.Visibility" Color="Color.Primary" Size="Size.Small"
+                                           OnClick="@(() => ViewPayload(context.Name, subfolder))"
+                                           Title="View Payload" />
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>;
+    };
+
+    private async Task ViewPayload(string fileName, string? subfolder)
+    {
+        selectedFileName = fileName;
+        selectedSubfolder = subfolder;
+        hasPayload = false;
+        hasImage = false;
+        imageUrl = "";
+        selectedPayloadRaw = "";
+        detailTab = 0;
+        showDetail = true;
+        loadingDetail = true;
+        StateHasChanged();
+
+        try
+        {
+            var url = $"/api/IcumsPayload/read?fileName={Uri.EscapeDataString(fileName)}";
+            if (!string.IsNullOrEmpty(subfolder))
+                url += $"&subfolder={Uri.EscapeDataString(subfolder)}";
+
+            JsonElement? result = await ApiService.GetAsync<JsonElement>(url);
+            if (result != null && result.Value.TryGetProperty("content", out var content))
+            {
+                selectedPayload = content;
+                hasPayload = true;
+
+                // Try base64 from payload first — check if it's a real image (JPEG/PNG)
+                string? base64 = ExtractImageBase64(content);
+                if (!string.IsNullOrEmpty(base64) && IsRenderable(base64))
+                {
+                    hasImage = true;
+                    imageUrl = $"data:image/jpeg;base64,{base64}";
+                }
+                else
+                {
+                    // Base64 is raw scanner format — fall back to the image pipeline endpoint
+                    var containerNumber = ExtractContainerNumber(content);
+                    if (!string.IsNullOrEmpty(containerNumber))
+                    {
+                        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                        hasImage = true;
+                        imageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full";
+                    }
+                }
+
+                // Strip ImageDocument from the raw JSON display to keep it readable
+                selectedPayloadRaw = StripImageFromJson(content);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error reading payload: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loadingDetail = false;
+            StateHasChanged();
+        }
+    }
+
+    private bool IsRenderable(string base64)
+    {
+        try
+        {
+            // JPEG starts with /9j in base64, PNG starts with iVBOR
+            return base64.StartsWith("/9j") || base64.StartsWith("iVBOR");
+        }
+        catch { return false; }
+    }
+
+    private string? ExtractContainerNumber(JsonElement content)
+    {
+        if (content.TryGetProperty("scanData", out var sd) &&
+            sd.TryGetProperty("ContainerNumber", out var cn) &&
+            cn.ValueKind == JsonValueKind.String)
+            return cn.GetString();
+        if (content.TryGetProperty("ContainerNumber", out var cn2) &&
+            cn2.ValueKind == JsonValueKind.String)
+            return cn2.GetString();
+        return null;
+    }
+
+    private string? ExtractImageBase64(JsonElement content)
+    {
+        if (content.TryGetProperty("scanData", out var scanData) &&
+            scanData.TryGetProperty("ImageDocument", out var img) &&
+            img.ValueKind == JsonValueKind.String)
+        {
+            var val = img.GetString();
+            return string.IsNullOrEmpty(val) ? null : val;
+        }
+        if (content.TryGetProperty("ImageDocument", out var img2) &&
+            img2.ValueKind == JsonValueKind.String)
+        {
+            var val = img2.GetString();
+            return string.IsNullOrEmpty(val) ? null : val;
+        }
+        return null;
+    }
+
+    private string StripImageFromJson(JsonElement content)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(JsonSerializer.Serialize(content));
+            var dict = new Dictionary<string, object?>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Name == "scanData" && prop.Value.ValueKind == JsonValueKind.Object)
+                {
+                    var inner = new Dictionary<string, object?>();
+                    foreach (var innerProp in prop.Value.EnumerateObject())
+                    {
+                        if (innerProp.Name == "ImageDocument")
+                        {
+                            var len = innerProp.Value.GetString()?.Length ?? 0;
+                            inner[innerProp.Name] = len > 0 ? $"[{len} chars base64 — see Scan Image tab]" : "";
+                        }
+                        else
+                        {
+                            inner[innerProp.Name] = JsonSerializer.Deserialize<object>(innerProp.Value.GetRawText());
+                        }
+                    }
+                    dict[prop.Name] = inner;
+                }
+                else
+                {
+                    dict[prop.Name] = JsonSerializer.Deserialize<object>(prop.Value.GetRawText());
+                }
+            }
+            return JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return JsonSerializer.Serialize(content, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    private List<FieldValidation> ValidateIcumsFields(JsonElement payload, bool valid)
+    {
+        var fields = new List<FieldValidation>();
+        if (!valid) return fields;
+
+        JsonElement scanData;
+        if (payload.TryGetProperty("scanData", out scanData))
+        {
+            // use the inner scanData object
+        }
+        else
+        {
+            scanData = payload;
+        }
+
+        fields.Add(Validate(scanData, "DeclarationNumber", required: true));
+        fields.Add(Validate(scanData, "VersionNumber", required: true));
+        fields.Add(Validate(scanData, "RotationNumber", required: false));
+        fields.Add(Validate(scanData, "BlNumber", required: false, jsonName: "BLNumber"));
+        fields.Add(Validate(scanData, "HouseBl", required: false, jsonName: "HouseBL"));
+        fields.Add(Validate(scanData, "ContainerNumber", required: true));
+        fields.Add(Validate(scanData, "ScanReferenceNumber", required: true));
+        fields.Add(Validate(scanData, "ScanDate", required: true));
+        fields.Add(Validate(scanData, "ScanStartDate", required: true));
+        fields.Add(Validate(scanData, "ScanEndDate", required: true));
+        fields.Add(Validate(scanData, "ScanAnalysisStartDate", required: true));
+        fields.Add(Validate(scanData, "ScanAnalysisEndDate", required: true));
+        fields.Add(Validate(scanData, "TruckPlateNumber", required: false));
+        fields.Add(Validate(scanData, "Verdict", required: true, validValues: new[] { "clear", "suspicious" }));
+        fields.Add(Validate(scanData, "FindingsDescription", required: true));
+        fields.Add(Validate(scanData, "ImageAnalystName", required: true, invalidValues: new[] { "Unknown" }));
+        fields.Add(Validate(scanData, "CustomOfficerName", required: true, invalidValues: new[] { "Unknown" }));
+        fields.Add(Validate(scanData, "ImageDocument", required: false));
+
+        return fields;
+    }
+
+    private FieldValidation Validate(JsonElement el, string name, bool required, string? jsonName = null,
+        string[]? validValues = null, string[]? invalidValues = null)
+    {
+        var key = jsonName ?? name;
+        string? value = null;
+
+        if (el.TryGetProperty(key, out var prop))
+        {
+            if (prop.ValueKind == JsonValueKind.String)
+                value = prop.GetString();
+            else if (prop.ValueKind == JsonValueKind.Number)
+                value = prop.GetRawText();
+            else if (prop.ValueKind == JsonValueKind.Null)
+                value = null;
+            else
+                value = prop.GetRawText();
+        }
+
+        if (string.IsNullOrWhiteSpace(value) || value == "0")
+        {
+            if (required)
+                return new FieldValidation(name, value ?? "", "error", "Required field is empty");
+            else
+                return new FieldValidation(name, value ?? "", "warning", "Optional — not provided");
+        }
+
+        if (invalidValues != null && invalidValues.Contains(value, StringComparer.OrdinalIgnoreCase))
+            return new FieldValidation(name, value, "warning", "Placeholder/fallback value");
+
+        if (validValues != null && !validValues.Contains(value, StringComparer.OrdinalIgnoreCase))
+            return new FieldValidation(name, value, "warning", $"Expected: {string.Join(" or ", validValues)}");
+
+        return new FieldValidation(name, value, "ok", "Valid");
+    }
+
+    private string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024.0):F1} MB";
+    }
+
+    private string GetProp(JsonElement el, string path, string fallback)
+    {
+        if (!hasSummary) return fallback;
+        try
+        {
+            var current = el;
+            foreach (var part in path.Split('.'))
+            {
+                if (!current.TryGetProperty(part, out current))
+                    return fallback;
+            }
+            return current.ValueKind switch
+            {
+                JsonValueKind.String => current.GetString() ?? fallback,
+                JsonValueKind.Number => current.GetRawText(),
+                JsonValueKind.True => "True",
+                JsonValueKind.False => "False",
+                _ => current.GetRawText()
+            };
+        }
+        catch { return fallback; }
+    }
+
+    private async Task VerifyContainerStatus()
+    {
+        if (string.IsNullOrWhiteSpace(verifyContainerNumber)) return;
+
+        verifyingStatus = true;
+        verifyResults = null;
+        verifySuccess = false;
+        verifyErrorMessage = "";
+        verifyRawResponse = "";
+        verifyStatusItems.Clear();
+        StateHasChanged();
+
+        try
+        {
+            var payload = new
+            {
+                containerNumbers = new[]
+                {
+                    new
+                    {
+                        rotationNumber = verifyRotationNumber ?? "",
+                        blNumber = (string?)null,
+                        containerNumber = verifyContainerNumber.Trim()
+                    }
+                }
+            };
+
+            var result = await ApiService.PostAsync<object, JsonElement?>("/api/IcumsPayload/verify-status", payload);
+            if (result.HasValue)
+            {
+                verifyResults = result;
+                var r = result.Value;
+
+                if (r.TryGetProperty("success", out var successProp) && successProp.GetBoolean())
+                {
+                    verifySuccess = true;
+                    if (r.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in results.EnumerateArray())
+                        {
+                            verifyStatusItems.Add(new StatusItem
+                            {
+                                Container = item.TryGetProperty("ContainerNumber", out var cn) ? cn.GetString() ?? "" :
+                                            item.TryGetProperty("containerNumber", out var cn2) ? cn2.GetString() ?? "" : "",
+                                Status = item.TryGetProperty("Status", out var st) ? st.GetString() ?? "unknown" :
+                                         item.TryGetProperty("status", out var st2) ? st2.GetString() ?? "unknown" : "unknown"
+                            });
+                        }
+                    }
+                    verifyRawResponse = r.TryGetProperty("rawResponse", out var raw) ? raw.GetString() ?? "" : "";
+                }
+                else
+                {
+                    verifyErrorMessage = r.TryGetProperty("error", out var err) ? err.GetString() ?? "Unknown error" : "Unknown error";
+                    verifyRawResponse = verifyErrorMessage;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            verifyErrorMessage = ex.Message;
+        }
+        finally
+        {
+            verifyingStatus = false;
+            StateHasChanged();
+        }
+    }
+
+    private record FieldValidation(string Name, string Value, string Status, string Reason);
+    private record StatusItem
+    {
+        public string Container { get; set; } = "";
+        public string Status { get; set; } = "";
+    }
+
+    private class PayloadFileInfo
+    {
+        public string Name { get; set; } = "";
+        public long SizeBytes { get; set; }
+        public DateTime LastModified { get; set; }
+        public string Subfolder { get; set; } = ".";
+    }
+}

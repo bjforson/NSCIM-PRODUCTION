@@ -1,0 +1,87 @@
+@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body1" Class="mb-4">
+            Select a new priority level for <strong>@ItemCount</strong> selected item(s):
+        </MudText>
+        
+        <MudRadioGroup T="int" @bind-Value="_selectedPriority">
+            <MudRadio T="int" Value="0" Color="Color.Default">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Low</MudChip>
+                    <MudText Typo="Typo.body2">Low Priority (0)</MudText>
+                </MudStack>
+            </MudRadio>
+            
+            <MudRadio T="int" Value="1" Color="Color.Primary" Class="mt-2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">Normal</MudChip>
+                    <MudText Typo="Typo.body2">Normal Priority (1)</MudText>
+                </MudStack>
+            </MudRadio>
+            
+            <MudRadio T="int" Value="2" Color="Color.Warning" Class="mt-2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">High</MudChip>
+                    <MudText Typo="Typo.body2">High Priority (2)</MudText>
+                </MudStack>
+            </MudRadio>
+            
+            <MudRadio T="int" Value="3" Color="Color.Error" Class="mt-2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">Urgent</MudChip>
+                    <MudText Typo="Typo.body2">Urgent Priority (3)</MudText>
+                </MudStack>
+            </MudRadio>
+        </MudRadioGroup>
+        
+        <MudAlert Severity="Severity.Info" Class="mt-4" Dense="true">
+            Higher priority items are processed first by the background service.
+        </MudAlert>
+    </DialogContent>
+    
+    <DialogActions>
+        <MudButton OnClick="Cancel" Size="Size.Small">Cancel</MudButton>
+        <MudButton Color="Color.Primary" 
+                   Variant="Variant.Filled" 
+                   Size="Size.Small"
+                   OnClick="Submit"
+                   Disabled="@_isSubmitting">
+            @if (_isSubmitting)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Updating...</span>
+            }
+            else
+            {
+                <span>Update Priority</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public int ItemCount { get; set; }
+    [Parameter] public EventCallback<int> OnPrioritySelected { get; set; }
+    
+    private int _selectedPriority = 1; // Default to Normal
+    private bool _isSubmitting = false;
+
+    private async Task Submit()
+    {
+        _isSubmitting = true;
+        
+        try
+        {
+            await OnPrioritySelected.InvokeAsync(_selectedPriority);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private Task Cancel() => Task.CompletedTask;
+}
+

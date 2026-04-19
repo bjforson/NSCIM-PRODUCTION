@@ -1,0 +1,428 @@
+@page "/notifications"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesNotifications)]
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>NICKSCAN ERP — NSCIS — Notifications</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.Notifications" Class="mr-2" />
+                    Notifications
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Manage your system notifications</MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Filled" 
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Outlined.DoneAll"
+                           OnClick="MarkAllAsRead"
+                           Disabled="@(_isLoading || !_notifications.Any(n => !n.IsRead))">
+                    Mark All Read
+                </MudButton>
+                <MudButton Variant="Variant.Filled" 
+                           Color="Color.Warning"
+                           StartIcon="@Icons.Material.Outlined.DeleteSweep"
+                           OnClick="ClearReadNotifications"
+                           Disabled="@(_isLoading || !_notifications.Any(n => n.IsRead))">
+                    Clear Read
+                </MudButton>
+                <MudButton Variant="Variant.Filled" 
+                           Color="Color.Error"
+                           StartIcon="@Icons.Material.Outlined.DeleteForever"
+                           OnClick="ClearAllNotifications"
+                           Disabled="@(_isLoading || !_notifications.Any())">
+                    Clear All
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" 
+                           Color="Color.Default"
+                           StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="LoadNotifications"
+                           Disabled="@_isLoading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <!-- Filters -->
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudTextField @bind-Value="_searchText" 
+                              Label="Search" 
+                              Variant="Variant.Outlined"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Outlined.Search"
+                              DebounceInterval="300"
+                              OnDebounceIntervalElapsed="ApplyFilters"
+                              Immediate="false" />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect Value="_filterType" 
+                           Label="Type" 
+                           Variant="Variant.Outlined"
+                           T="string"
+                           ValueChanged="@((string val) => { _filterType = val; ApplyFilters(); })">
+                    <MudSelectItem Value="@("All")">All Types</MudSelectItem>
+                    <MudSelectItem Value="@("System")">System</MudSelectItem>
+                    <MudSelectItem Value="@("User")">User</MudSelectItem>
+                    <MudSelectItem Value="@("Alert")">Alert</MudSelectItem>
+                    <MudSelectItem Value="@("Maintenance")">Maintenance</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudSelect Value="_filterStatus" 
+                           Label="Status" 
+                           Variant="Variant.Outlined"
+                           T="string"
+                           ValueChanged="@((string val) => { _filterStatus = val; ApplyFilters(); })">
+                    <MudSelectItem Value="@("All")">All</MudSelectItem>
+                    <MudSelectItem Value="@("Unread")">Unread</MudSelectItem>
+                    <MudSelectItem Value="@("Read")">Read</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="2">
+                <MudButton Variant="Variant.Text" 
+                           Color="Color.Secondary"
+                           FullWidth="true"
+                           OnClick="ClearFilters">
+                    Clear Filters
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    <!-- Notifications List -->
+    @if (_isLoading)
+    {
+        <MudPaper Elevation="2" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                <MudProgressCircular Size="Size.Large" Indeterminate="true" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Loading notifications...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else if (!_filteredNotifications.Any())
+    {
+        <MudPaper Elevation="2" Class="pa-8">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.NotificationsNone" Size="Size.Large" Color="Color.Secondary" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">No notifications found</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    @if (_notifications.Any())
+                    {
+                        <span>Try adjusting your filters</span>
+                    }
+                    else
+                    {
+                        <span>You don't have any notifications yet</span>
+                    }
+                </MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else
+    {
+        <MudStack Spacing="2">
+            @foreach (var notification in _filteredNotifications)
+            {
+                <MudPaper Elevation="2" Class="pa-4" Style="@(notification.IsRead ? "" : "border-left: 4px solid var(--mud-palette-primary); background-color: rgba(var(--mud-palette-primary-rgb), 0.05);")">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudStack Spacing="1" Style="flex: 1;">
+                            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                <MudIcon Icon="@GetNotificationIcon(notification.NotificationType)" 
+                                         Color="@GetNotificationColor(notification.NotificationType)" />
+                                <MudText Typo="Typo.h6" Style="@(!notification.IsRead ? "font-weight: bold;" : "")">
+                                    @notification.Title
+                                </MudText>
+                                @if (!notification.IsRead)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary">New</MudChip>
+                                }
+                            </MudStack>
+                            
+                            <MudText Typo="Typo.body2">@notification.Message</MudText>
+                            
+                            <MudStack Row="true" Spacing="3">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    <MudIcon Icon="@Icons.Material.Outlined.AccessTime" Size="Size.Small" />
+                                    @FormatTimeAgo(notification.CreatedAt)
+                                </MudText>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                    @notification.NotificationType
+                                </MudChip>
+                            </MudStack>
+                        </MudStack>
+                        
+                        <MudStack Spacing="1">
+                            @if (!notification.IsRead)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Outlined.DoneAll" 
+                                               Color="Color.Success"
+                                               Size="Size.Small"
+                                               title="Mark as read"
+                                               OnClick="@(() => MarkAsRead(notification.Id))" />
+                            }
+                            else
+                            {
+                                <MudIconButton Icon="@Icons.Material.Outlined.Undo" 
+                                               Color="Color.Default"
+                                               Size="Size.Small"
+                                               title="Mark as unread"
+                                               OnClick="@(() => MarkAsUnread(notification.Id))" />
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+
+        <!-- Pagination info -->
+        <MudPaper Elevation="0" Class="pa-4 mt-4">
+            <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Secondary">
+                Showing @_filteredNotifications.Count of @_notifications.Count notifications
+            </MudText>
+        </MudPaper>
+    }
+</MudContainer>
+
+@code {
+    private List<NotificationDto> _notifications = new();
+    private List<NotificationDto> _filteredNotifications = new();
+    private bool _isLoading = false;
+    private string _currentUsername = "";
+    
+    // Filters
+    private string _searchText = "";
+    private string _filterType = "All";
+    private string _filterStatus = "All";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Get current username
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        _currentUsername = user.Identity?.Name ?? "";
+        
+        await LoadNotifications();
+    }
+
+    private async Task LoadNotifications()
+    {
+        _isLoading = true;
+        try
+        {
+            var includeRead = _filterStatus != "Unread";
+            var result = await ApiService.GetAsync<List<NotificationDto>>($"/api/Notifications/user/{_currentUsername}?includeRead={includeRead}&limit=100");
+            _notifications = result ?? new List<NotificationDto>();
+            ApplyFilters();
+            Snackbar.Add("✅ Notifications loaded", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error loading notifications: {ex.Message}");
+            Snackbar.Add($"❌ Error loading notifications: {ex.Message}", Severity.Error);
+            _notifications = new List<NotificationDto>();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        _filteredNotifications = _notifications.Where(n =>
+        {
+            // Search filter
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                var search = _searchText.ToLower();
+                if (!n.Title.ToLower().Contains(search) && !n.Message.ToLower().Contains(search))
+                    return false;
+            }
+
+            // Type filter
+            if (_filterType != "All" && n.NotificationType != _filterType)
+                return false;
+
+            // Status filter
+            if (_filterStatus == "Read" && !n.IsRead)
+                return false;
+            if (_filterStatus == "Unread" && n.IsRead)
+                return false;
+
+            return true;
+        }).ToList();
+        
+        StateHasChanged();
+    }
+
+    private void ClearFilters()
+    {
+        _searchText = "";
+        _filterType = "All";
+        _filterStatus = "All";
+        ApplyFilters();
+    }
+
+    private async Task MarkAsRead(int notificationId)
+    {
+        try
+        {
+            await ApiService.PutAsync<object, object>($"/api/Notifications/{notificationId}/read", new { });
+            var notification = _notifications.FirstOrDefault(n => n.Id == notificationId);
+            if (notification != null)
+            {
+                notification.IsRead = true;
+                notification.ReadAt = DateTime.UtcNow;
+                ApplyFilters();
+            }
+            Snackbar.Add("Marked as read", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task MarkAsUnread(int notificationId)
+    {
+        try
+        {
+            await ApiService.PutAsync<object, object>($"/api/Notifications/{notificationId}/unread", new { });
+            var notification = _notifications.FirstOrDefault(n => n.Id == notificationId);
+            if (notification != null)
+            {
+                notification.IsRead = false;
+                notification.ReadAt = null;
+                ApplyFilters();
+            }
+            Snackbar.Add("Marked as unread", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task MarkAllAsRead()
+    {
+        try
+        {
+            await ApiService.PutAsync<object, object>($"/api/Notifications/user/{_currentUsername}/read-all", new { });
+            await LoadNotifications();
+            Snackbar.Add("✅ All notifications marked as read", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ClearReadNotifications()
+    {
+        try
+        {
+            var result = await ApiService.DeleteAsync<ClearResponse>($"/api/Notifications/user/{_currentUsername}/clear-read");
+            await LoadNotifications();
+            Snackbar.Add($"✅ Cleared {result?.Count ?? 0} read notifications", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ClearAllNotifications()
+    {
+        try
+        {
+            var confirmed = await DialogService.ShowMessageBox(
+                "Clear All Notifications",
+                "Are you sure you want to permanently delete ALL notifications? This action cannot be undone.",
+                yesText: "Delete All",
+                cancelText: "Cancel");
+
+            if (confirmed == true)
+            {
+                var result = await ApiService.DeleteAsync<ClearResponse>($"/api/Notifications/user/{_currentUsername}/clear-all");
+                await LoadNotifications();
+                Snackbar.Add($"✅ Cleared {result?.Count ?? 0} notifications", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"❌ Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string GetNotificationIcon(string type)
+    {
+        return type switch
+        {
+            "System" => Icons.Material.Outlined.Settings,
+            "User" => Icons.Material.Outlined.Person,
+            "Alert" => Icons.Material.Outlined.Warning,
+            "Maintenance" => Icons.Material.Outlined.Build,
+            _ => Icons.Material.Outlined.Notifications
+        };
+    }
+
+    private Color GetNotificationColor(string type)
+    {
+        return type switch
+        {
+            "System" => Color.Info,
+            "User" => Color.Primary,
+            "Alert" => Color.Warning,
+            "Maintenance" => Color.Secondary,
+            _ => Color.Default
+        };
+    }
+
+    private string FormatTimeAgo(DateTime dateTime)
+    {
+        var timeSpan = DateTime.UtcNow - dateTime;
+        
+        if (timeSpan.TotalMinutes < 1)
+            return "Just now";
+        if (timeSpan.TotalMinutes < 60)
+            return $"{(int)timeSpan.TotalMinutes} minutes ago";
+        if (timeSpan.TotalHours < 24)
+            return $"{(int)timeSpan.TotalHours} hours ago";
+        if (timeSpan.TotalDays < 7)
+            return $"{(int)timeSpan.TotalDays} days ago";
+        
+        return dateTime.ToString("MMM dd, yyyy");
+    }
+
+    // DTOs
+    public class NotificationDto
+    {
+        public int Id { get; set; }
+        public string NotificationType { get; set; } = string.Empty;
+        public string Title { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string? TargetUser { get; set; }
+        public string? TargetRole { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        public bool IsRead { get; set; }
+        public DateTime? ReadAt { get; set; }
+    }
+
+    public class ClearResponse
+    {
+        public string Message { get; set; } = string.Empty;
+        public int Count { get; set; }
+    }
+}
+

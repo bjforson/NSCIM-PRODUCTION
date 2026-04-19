@@ -1,0 +1,1021 @@
+@page "/"
+@page "/login"
+@page "/authentication/login"
+@layout LoginLayout
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Authentication
+@using System.Security.Claims
+@using System.IdentityModel.Tokens.Jwt
+@using System.Net.Http.Headers
+@attribute [AllowAnonymous]
+@inject NavigationManager NavigationManager
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.New.Services.SimpleAuthStateProvider AuthProvider
+@inject NickScanWebApp.New.Services.CustomAuthStateProvider CustomAuthProvider
+@inject AuthBootstrapper AuthBootstrapper
+@inject IHttpClientFactory HttpClientFactory
+@inject IConfiguration Configuration
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<Login> Logger
+@inject IJSRuntime JSRuntime
+
+<PageTitle>NICKSCAN ERP — NSCIS — Login</PageTitle>
+
+<div class="login-split @(_loginLightMode ? "login-light" : "")">
+    @* Ambient blobs *@
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+
+    @* LEFT: Brand + Stats + Features *@
+    <div class="login-left">
+        <div class="ll-logo anim anim-1">
+            <div class="ll-logo-icon anim-logo">
+                <MudIcon Icon="@Icons.Material.Outlined.Security" Style="color:white;font-size:20px;" />
+            </div>
+            <span class="ll-logo-text">NSCIS</span>
+        </div>
+
+        <h1 class="ll-heading anim anim-2">NICKSCAN CENTRAL IMAGING SYSTEM</h1>
+        <p class="ll-sub anim anim-3">Advanced container scanning, customs management, and AI-powered cargo analysis — all in one secure platform.</p>
+
+        <div class="ll-stats anim anim-4">
+            <div class="ll-stat"><div class="ll-stat-val">3,174</div><div class="ll-stat-lbl">Containers</div></div>
+            <div class="ll-stat"><div class="ll-stat-val">130</div><div class="ll-stat-lbl">Today's Scans</div></div>
+            <div class="ll-stat"><div class="ll-stat-val">74.7%</div><div class="ll-stat-lbl">Completeness</div></div>
+            <div class="ll-stat"><div class="ll-stat-val">100%</div><div class="ll-stat-lbl">Success Rate</div></div>
+        </div>
+
+        <div class="ll-features anim anim-5">
+            <div class="ll-feature">
+                <div class="ll-feature-icon" style="background:rgba(79,172,254,0.1);color:#4facfe;"><MudIcon Icon="@Icons.Material.Outlined.Scanner" Size="Size.Small" /></div>
+                Real-time scanning from FS6000, ASE & Heimann scanners
+            </div>
+            <div class="ll-feature">
+                <div class="ll-feature-icon" style="background:rgba(28,200,138,0.1);color:#1cc88a;"><MudIcon Icon="@Icons.Material.Outlined.Hub" Size="Size.Small" /></div>
+                Integrated ICUMS data with automated BOE matching
+            </div>
+            <div class="ll-feature">
+                <div class="ll-feature-icon" style="background:rgba(111,66,193,0.1);color:#a78bfa;"><MudIcon Icon="@Icons.Material.Outlined.SmartToy" Size="Size.Small" /></div>
+                AI-powered image analysis & autonomous decision support
+            </div>
+        </div>
+
+        <div class="ll-pills anim anim-6">
+            <span class="ll-pill" style="background:rgba(79,172,254,0.12)"><MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Size="Size.Small" />Image Review</span>
+            <span class="ll-pill" style="background:rgba(28,200,138,0.12)"><MudIcon Icon="@Icons.Material.Outlined.FactCheck" Size="Size.Small" />Completeness</span>
+            <span class="ll-pill" style="background:rgba(246,194,62,0.12)"><MudIcon Icon="@Icons.Material.Outlined.Analytics" Size="Size.Small" />Analytics</span>
+            <span class="ll-pill" style="background:rgba(231,74,59,0.12)"><MudIcon Icon="@Icons.Material.Outlined.Gavel" Size="Size.Small" />Audit</span>
+            <span class="ll-pill" style="background:rgba(54,185,204,0.12)"><MudIcon Icon="@Icons.Material.Outlined.Download" Size="Size.Small" />ICUMS Sync</span>
+            <span class="ll-pill" style="background:rgba(111,66,193,0.12)"><MudIcon Icon="@Icons.Material.Outlined.LocalShipping" Size="Size.Small" />Vehicles</span>
+        </div>
+
+        <div class="ll-powered anim anim-7">Powered by Nick TC-Scan Ltd</div>
+    </div>
+
+    @* RIGHT: Glass Login Card *@
+    @* Theme toggle — fixed top-right *@
+    <button class="login-theme-toggle" @onclick="ToggleLoginTheme">
+        <MudIcon Icon="@(_loginLightMode ? Icons.Material.Outlined.DarkMode : Icons.Material.Outlined.LightMode)" Size="Size.Small" />
+    </button>
+
+    <div class="login-right">
+        <div class="login-glass-card anim-card">
+            <div class="lgc-head">
+                <h2>Welcome Back</h2>
+                <p>Sign in to continue to NSCIS</p>
+            </div>
+
+            <EditForm Model="@loginModel" OnSubmit="HandleLogin">
+                <div class="lgc-field">
+                    <MudTextField @ref="_usernameField"
+                                  @bind-Value="loginModel.Username"
+                                  Label="User ID"
+                                  Variant="Variant.Outlined"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Outlined.Person"
+                                  FullWidth="true"
+                                  Disabled="@isLoading"
+                                  Class="glass-input" />
+                </div>
+
+                <div class="lgc-field">
+                    <div style="position:relative;">
+                        <MudTextField @bind-Value="loginModel.Password"
+                                      Label="Password"
+                                      InputType="@passwordInputType"
+                                      Variant="Variant.Outlined"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Outlined.Lock"
+                                      FullWidth="true"
+                                      Disabled="@isLoading"
+                                      Class="glass-input" />
+                        <MudIconButton Icon="@(passwordInputType == InputType.Password ? Icons.Material.Outlined.Visibility : Icons.Material.Outlined.VisibilityOff)"
+                                       Size="Size.Small"
+                                       OnClick="TogglePasswordVisibility"
+                                       Style="position:absolute;right:8px;top:50%;transform:translateY(-50%);color:rgba(255,255,255,0.3);" />
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <MudAlert Severity="Severity.Error" Dense="true" Class="mb-3" Style="border-radius:10px;"
+                              CloseIconClicked="@(() => errorMessage = string.Empty)">
+                        @errorMessage
+                    </MudAlert>
+                }
+
+                <div class="lgc-options">
+                    <MudCheckBox @bind-Value="loginModel.RememberMe" Label="Remember me" Disabled="@isLoading"
+                                 Style="color:rgba(255,255,255,0.4);" />
+                    <a class="lgc-forgot" href="#">Forgot Password?</a>
+                </div>
+
+                <div class="lgc-ssl">
+                    <MudIcon Icon="@Icons.Material.Outlined.Https" Size="Size.Small" />
+                    SSL Secured Connection
+                </div>
+
+                <MudButton Variant="Variant.Filled"
+                           FullWidth="true"
+                           Size="Size.Large"
+                           ButtonType="ButtonType.Submit"
+                           Class="lgc-btn"
+                           Disabled="@isLoading">
+                    @if (isLoading)
+                    {
+                        <MudProgressCircular Class="mr-2" Size="Size.Small" Indeterminate="true" Color="Color.Surface" />
+                        <span>Authenticating...</span>
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Outlined.Login" Class="mr-2" />
+                        <span>Sign In</span>
+                    }
+                </MudButton>
+            </EditForm>
+
+            <div class="lgc-divider"></div>
+            <div class="lgc-footer">
+                Contact your administrator for account access<br/>
+                <span>+233 302 123456 · Version @(NickScanWebApp.New.DeploymentInfo.Version)</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* ===== NSCIS Login — Glassmorphism Split Layout ===== */
+    .login-split{min-height:100vh;display:grid;grid-template-columns:1fr 1fr;background:linear-gradient(135deg,#0f1a2e 0%,#1b2537 40%,#2d3b50 70%,#1a2740 100%);position:relative;overflow:hidden;align-items:center;align-content:center}
+
+    /* Ambient blobs */
+    .blob{position:fixed;border-radius:50%;pointer-events:none}
+    .blob-1{top:-180px;right:-120px;width:550px;height:550px;background:radial-gradient(circle,rgba(79,172,254,0.18) 0%,rgba(79,172,254,0.05) 50%,transparent 70%);animation:blobF 8s ease-in-out infinite alternate}
+    .blob-2{bottom:-140px;left:-100px;width:480px;height:480px;background:radial-gradient(circle,rgba(102,126,234,0.14) 0%,rgba(102,126,234,0.04) 50%,transparent 70%);animation:blobF 10s ease-in-out infinite alternate-reverse}
+    .blob-3{top:35%;left:42%;width:400px;height:400px;background:radial-gradient(circle,rgba(0,242,254,0.1) 0%,rgba(0,242,254,0.03) 50%,transparent 70%);animation:blobF 12s ease-in-out infinite alternate}
+    @@keyframes blobF{0%{transform:translate(0,0) scale(1)}50%{transform:translate(15px,-20px) scale(1.05)}100%{transform:translate(-10px,15px) scale(0.95)}}
+
+    /* LEFT SIDE */
+    .login-left{padding:48px 56px;position:relative;z-index:1;display:flex;flex-direction:column;justify-content:center}
+    .ll-logo{display:flex;align-items:center;gap:10px;margin-bottom:40px}
+    .ll-logo-icon{width:40px;height:40px;background:linear-gradient(135deg,#4facfe,#00f2fe);border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(79,172,254,0.25)}
+    .ll-logo-text{font-size:18px;font-weight:700;color:#fff}
+    .ll-heading{font-size:32px;font-weight:700;color:#fff;line-height:1.2;margin-bottom:10px;text-shadow:0 0 40px rgba(79,172,254,0.15)}
+    .ll-sub{font-size:15px;color:rgba(255,255,255,0.45);line-height:1.6;margin-bottom:28px;max-width:440px}
+    .ll-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:28px}
+    .ll-stat{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px 12px;text-align:center;transition:all 0.2s}
+    .ll-stat:hover{background:rgba(255,255,255,0.08);border-color:rgba(79,172,254,0.2);box-shadow:0 0 20px rgba(79,172,254,0.08)}
+    .ll-stat-val{font-size:20px;font-weight:700;color:#4facfe;line-height:1.1}
+    .ll-stat-lbl{font-size:9px;color:rgba(255,255,255,0.3);text-transform:uppercase;letter-spacing:0.06em;margin-top:4px}
+    .ll-features{display:flex;flex-direction:column;gap:12px;margin-bottom:28px}
+    .ll-feature{display:flex;align-items:center;gap:12px;font-size:13px;color:rgba(255,255,255,0.55)}
+    .ll-feature-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .ll-pills{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+    .ll-pill{padding:7px 14px;border-radius:50px;font-size:11px;font-weight:500;color:rgba(255,255,255,0.8);display:flex;align-items:center;gap:5px;transition:all 0.2s;cursor:default}
+    .ll-pill:hover{transform:translateY(-1px);box-shadow:0 0 12px rgba(79,172,254,0.15)}
+    .ll-powered{font-size:11px;color:rgba(255,255,255,0.18);margin-top:auto;padding-top:16px}
+
+    /* RIGHT SIDE */
+    .login-right{display:flex;align-items:center;justify-content:center;padding:48px;position:relative;z-index:1}
+    .login-glass-card{width:400px;max-width:100%;background:rgba(255,255,255,0.05);backdrop-filter:blur(28px) saturate(180%);-webkit-backdrop-filter:blur(28px) saturate(180%);border:1px solid rgba(255,255,255,0.08);border-radius:20px;box-shadow:0 24px 64px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.06),0 0 80px rgba(79,172,254,0.04);padding:40px 32px;transition:box-shadow 0.4s}
+    .login-glass-card:hover{box-shadow:0 24px 64px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.08),0 0 100px rgba(79,172,254,0.08)}
+    .lgc-head{text-align:center;margin-bottom:28px}
+    .lgc-head h2{font-size:20px;font-weight:700;color:#fff;margin:0}
+    .lgc-head p{font-size:13px;color:rgba(255,255,255,0.4);margin-top:4px}
+    .lgc-field{margin-bottom:18px}
+    .lgc-options{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .lgc-forgot{color:#4facfe;text-decoration:none;font-size:12px;font-weight:500}
+    .lgc-forgot:hover{color:#00f2fe}
+    .lgc-ssl{display:flex;align-items:center;gap:4px;font-size:11px;color:rgba(79,172,254,0.6);margin-bottom:20px;justify-content:center}
+    .lgc-btn{border-radius:10px!important;background:linear-gradient(135deg,#4facfe 0%,#00f2fe 100%)!important;color:#fff!important;font-weight:600!important;font-size:15px!important;text-transform:none!important;height:48px!important;box-shadow:0 4px 20px rgba(79,172,254,0.3)!important;position:relative;overflow:hidden}
+    .lgc-btn:hover{box-shadow:0 6px 24px rgba(79,172,254,0.4)!important;transform:translateY(-1px)}
+    .lgc-btn::after{content:'';position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.2),transparent);animation:btnShine 3s ease-in-out infinite}
+    .lgc-divider{border:none;border-top:1px solid rgba(255,255,255,0.06);margin:24px 0;height:0}
+    .lgc-footer{text-align:center;font-size:11px;color:rgba(255,255,255,0.2);line-height:1.8}
+
+    /* Glass input overrides for dark bg — high specificity to beat MudBlazor */
+    .login-glass-card .glass-input .mud-input-outlined .mud-input-root,
+    .login-glass-card .glass-input .mud-input-root-outlined {
+        background: rgba(255,255,255,0.06) !important;
+        border-radius: 10px !important;
+        color: rgba(255,255,255,0.9) !important;
+    }
+    .login-glass-card .glass-input input,
+    .login-glass-card .glass-input .mud-input,
+    .login-glass-card .glass-input .mud-input-slot {
+        color: rgba(255,255,255,0.9) !important;
+        -webkit-text-fill-color: rgba(255,255,255,0.9) !important;
+    }
+    .login-glass-card .glass-input input::placeholder {
+        color: rgba(255,255,255,0.3) !important;
+    }
+    /* Label color */
+    .login-glass-card .glass-input label,
+    .login-glass-card .glass-input .mud-input-label {
+        color: rgba(255,255,255,0.45) !important;
+    }
+    .login-glass-card .glass-input .mud-input-label-inputcontrol {
+        color: rgba(255,255,255,0.45) !important;
+    }
+    /* Fieldset border */
+    .login-glass-card .glass-input fieldset,
+    .login-glass-card .glass-input .mud-input-outlined-border {
+        border-color: rgba(255,255,255,0.12) !important;
+        border-width: 1px !important;
+        border-radius: 10px !important;
+    }
+    /* Focus state */
+    .login-glass-card .glass-input:focus-within fieldset,
+    .login-glass-card .glass-input .mud-input-root-outlined.mud-input-root-focused fieldset {
+        border-color: rgba(79,172,254,0.5) !important;
+        border-width: 2px !important;
+        box-shadow: 0 0 0 3px rgba(79,172,254,0.08);
+    }
+    /* Adornment icons */
+    .login-glass-card .glass-input .mud-input-adornment,
+    .login-glass-card .glass-input .mud-input-adornment-start,
+    .login-glass-card .glass-input .mud-input-adornment-end {
+        color: rgba(255,255,255,0.3) !important;
+    }
+    .login-glass-card .glass-input .mud-input-adornment svg {
+        fill: rgba(255,255,255,0.3) !important;
+    }
+    .login-glass-card .glass-input .mud-icon-button {
+        color: rgba(255,255,255,0.3) !important;
+    }
+    /* Chrome autofill override — prevent white bg on autofill */
+    .login-glass-card .glass-input input:-webkit-autofill,
+    .login-glass-card .glass-input input:-webkit-autofill:hover,
+    .login-glass-card .glass-input input:-webkit-autofill:focus {
+        -webkit-box-shadow: 0 0 0 1000px rgba(27,37,55,0.95) inset !important;
+        -webkit-text-fill-color: rgba(255,255,255,0.9) !important;
+        caret-color: rgba(255,255,255,0.9) !important;
+        transition: background-color 5000s ease-in-out 0s;
+    }
+
+    /* Entrance animations */
+    .anim{opacity:0;transform:translateY(24px);animation:revealUp 0.7s cubic-bezier(0.16,1,0.3,1) forwards}
+    .anim-1{animation-delay:0.1s}.anim-2{animation-delay:0.25s}.anim-3{animation-delay:0.4s}.anim-4{animation-delay:0.55s}.anim-5{animation-delay:0.7s}.anim-6{animation-delay:0.85s}.anim-7{animation-delay:1.0s}
+    .anim-card{opacity:0;transform:translateX(40px) scale(0.96);animation:revealCard 0.8s cubic-bezier(0.16,1,0.3,1) forwards;animation-delay:0.3s}
+    .anim-logo{opacity:0;transform:scale(0.5) rotate(-180deg);animation:revealSpin 0.8s cubic-bezier(0.16,1,0.3,1) forwards;animation-delay:0.05s}
+    @@keyframes revealUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+    @@keyframes revealCard{from{opacity:0;transform:translateX(40px) scale(0.96)}to{opacity:1;transform:translateX(0) scale(1)}}
+    @@keyframes revealSpin{from{opacity:0;transform:scale(0.5) rotate(-180deg)}to{opacity:1;transform:scale(1) rotate(0deg)}}
+    @@keyframes btnShine{0%,100%{left:-100%}50%{left:150%}}
+
+    /* Reduced motion */
+    @@media(prefers-reduced-motion:reduce){.anim,.anim-card,.anim-logo{opacity:1!important;transform:none!important;animation:none!important}}
+
+    /* Responsive */
+    @@media(max-width:960px){.login-split{grid-template-columns:1fr}.login-left{padding:24px;display:none}.login-right{padding:24px}.login-glass-card{width:100%;max-width:420px}}
+
+    /* ===== LIGHT MODE (applied to entire page via .login-light) ===== */
+
+    /* Page background — soft gradient instead of flat gray */
+    .login-light{background:linear-gradient(135deg,#eef2ff 0%,#f0f4ff 40%,#f5f0ff 70%,#fdf2f8 100%)!important}
+
+    /* Left brand panel — rich blue gradient (keeps authority but lighter) */
+    .login-light .login-left{background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 50%,#3b82f6 100%)}
+    .login-light .ll-heading{color:#fff!important;text-shadow:0 0 30px rgba(255,255,255,0.15)}
+    .login-light .ll-sub{color:rgba(255,255,255,0.7)!important}
+    .login-light .ll-logo-text{color:#fff!important}
+    .login-light .ll-stat{background:rgba(255,255,255,0.1);border-color:rgba(255,255,255,0.15)}
+    .login-light .ll-stat:hover{background:rgba(255,255,255,0.18);border-color:rgba(255,255,255,0.3);box-shadow:0 0 20px rgba(255,255,255,0.08)}
+    .login-light .ll-stat-val{color:#fff}
+    .login-light .ll-stat-lbl{color:rgba(255,255,255,0.5)}
+    .login-light .ll-feature{color:rgba(255,255,255,0.75)}
+    .login-light .ll-feature-icon{background:rgba(255,255,255,0.12)!important;color:#fff!important}
+    .login-light .ll-pill{color:rgba(255,255,255,0.85)}
+    .login-light .ll-pill .mud-icon-root{color:rgba(255,255,255,0.85)!important}
+    .login-light .ll-powered{color:rgba(255,255,255,0.3)}
+
+    /* Blobs — more vibrant for light mode */
+    .login-light .blob-1{background:radial-gradient(circle,rgba(79,172,254,0.12) 0%,transparent 70%)!important}
+    .login-light .blob-2{background:radial-gradient(circle,rgba(147,51,234,0.08) 0%,transparent 70%)!important}
+    .login-light .blob-3{background:radial-gradient(circle,rgba(236,72,153,0.06) 0%,transparent 70%)!important}
+
+    /* Right side — soft warm white */
+    .login-light .login-right{background:transparent}
+
+    /* Glass card — light with warmth */
+    .login-light .login-glass-card{
+        background:rgba(255,255,255,0.75)!important;
+        backdrop-filter:blur(24px) saturate(180%)!important;
+        -webkit-backdrop-filter:blur(24px) saturate(180%)!important;
+        border:1px solid rgba(255,255,255,0.6)!important;
+        box-shadow:0 20px 60px rgba(37,99,235,0.08),0 0 0 1px rgba(255,255,255,0.3),inset 0 1px 0 rgba(255,255,255,0.9)!important;
+    }
+    .login-light .login-glass-card:hover{box-shadow:0 20px 60px rgba(37,99,235,0.12),0 0 0 1px rgba(255,255,255,0.4),inset 0 1px 0 rgba(255,255,255,0.9)!important}
+    .login-light .lgc-head h2{color:#1e293b!important}
+    .login-light .lgc-head p{color:#64748b!important}
+    .login-light .lgc-divider{border-top-color:#e2e8f0!important}
+    .login-light .lgc-footer{color:#94a3b8!important}
+
+    /* Light form inputs */
+    .login-light .glass-input .mud-input-outlined .mud-input-root,
+    .login-light .glass-input .mud-input-root-outlined{background:#f8fafc!important;color:#1e293b!important}
+    .login-light .glass-input input,
+    .login-light .glass-input .mud-input,
+    .login-light .glass-input .mud-input-slot{color:#1e293b!important;-webkit-text-fill-color:#1e293b!important}
+    .login-light .glass-input input::placeholder{color:#94a3b8!important}
+    .login-light .glass-input label,
+    .login-light .glass-input .mud-input-label,
+    .login-light .glass-input .mud-input-label-inputcontrol{color:#64748b!important}
+    .login-light .glass-input fieldset,
+    .login-light .glass-input .mud-input-outlined-border{border-color:#e2e8f0!important}
+    .login-light .glass-input:focus-within fieldset{border-color:#4facfe!important;box-shadow:0 0 0 3px rgba(79,172,254,0.1)}
+    .login-light .glass-input .mud-input-adornment,
+    .login-light .glass-input .mud-input-adornment-start,
+    .login-light .glass-input .mud-input-adornment-end,
+    .login-light .glass-input .mud-icon-button{color:#94a3b8!important}
+    .login-light .glass-input .mud-input-adornment svg{fill:#94a3b8!important}
+    .login-light .pwd-toggle{color:#94a3b8!important}
+    .login-light .glass-input input:-webkit-autofill,
+    .login-light .glass-input input:-webkit-autofill:hover,
+    .login-light .glass-input input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px #f8fafc inset!important;-webkit-text-fill-color:#1e293b!important}
+    .login-light .mud-checkbox{color:#64748b!important}
+    .login-light .lgc-forgot{color:#4facfe}
+
+    /* Theme toggle button — fixed top-right of page */
+    .login-theme-toggle{position:fixed;top:20px;right:20px;z-index:100;width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(255,255,255,0.6);transition:all 0.25s;font-size:0;box-shadow:0 4px 12px rgba(0,0,0,0.15)}
+    .login-theme-toggle:hover{background:rgba(255,255,255,0.15);color:#fff;transform:scale(1.05)}
+    .login-light .login-theme-toggle{border-color:rgba(0,0,0,0.1);background:rgba(255,255,255,0.7);color:#64748b;box-shadow:0 4px 12px rgba(0,0,0,0.06)}
+    .login-light .login-theme-toggle:hover{background:#fff;color:#1e293b;transform:scale(1.05)}
+
+    /* LEGACY — keep this so old class doesn't break */
+    .professional-login-container {
+        display: none;
+        background: linear-gradient(135deg, #2563EB 0%, #3B82F6 50%, #60A5FA 100%);
+        z-index: 1;
+    }
+
+    .hero-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: transparent;
+        z-index: 0;
+    }
+
+    .hero-pattern {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: transparent;
+        z-index: 0;
+    }
+
+    .login-card {
+        position: relative;
+        z-index: 10;
+        background: #ffffff;
+        border-radius: 24px;
+        box-shadow: 
+            0 24px 48px rgba(0, 0, 0, 0.12),
+            0 0 0 1px rgba(255, 255, 255, 0.2);
+        padding: 3rem 2.5rem;
+        width: 100%;
+        max-width: 440px;
+        margin: 1rem;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .login-header {
+        text-align: center;
+        margin-bottom: 2.5rem;
+    }
+
+    .logo-container {
+        position: relative;
+        display: inline-block;
+        margin-bottom: 2rem;
+    }
+
+    .logo-icon {
+        width: 90px;
+        height: 90px;
+        background: linear-gradient(135deg, #2563EB, #60A5FA);
+        border-radius: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto;
+        box-shadow: 0 12px 24px rgba(26, 35, 126, 0.3);
+        color: white;
+        position: relative;
+    }
+
+    .security-badge {
+        position: absolute;
+        top: -8px;
+        right: -8px;
+        background: #2e7d32;
+        color: white;
+        padding: 6px 10px;
+        border-radius: 16px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        box-shadow: 0 4px 12px rgba(46, 125, 50, 0.4);
+        border: 2px solid white;
+        min-width: 60px;
+        justify-content: center;
+    }
+
+    .brand-title {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #2563EB;
+        margin: 0 0 0.75rem 0;
+        letter-spacing: -0.3px;
+        line-height: 1.2;
+    }
+
+    .brand-subtitle {
+        font-size: 0.95rem;
+        color: #666;
+        margin: 0 0 1.25rem 0;
+        font-weight: 500;
+        line-height: 1.4;
+        max-width: 300px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .organization-info {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: #888;
+        font-size: 0.85rem;
+        font-weight: 500;
+        line-height: 1.3;
+    }
+
+    .login-form-container {
+        margin-bottom: 2.5rem;
+    }
+
+    .form-group {
+        margin-bottom: 1.75rem;
+    }
+
+    .modern-input {
+        border-radius: 12px !important;
+    }
+
+    .modern-input .mud-input-root {
+        border-radius: 12px !important;
+    }
+
+    .form-options {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .security-indicators {
+        display: flex;
+        gap: 1rem;
+    }
+
+    .security-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: #2e7d32;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+
+    .login-button {
+        height: 50px !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
+        text-transform: none !important;
+        box-shadow: 0 4px 12px rgba(26, 35, 126, 0.3) !important;
+        transition: all 0.3s ease !important;
+    }
+
+    .login-button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 6px 20px rgba(26, 35, 126, 0.4) !important;
+    }
+
+    .error-alert {
+        border-radius: 12px !important;
+        margin-bottom: 1rem !important;
+    }
+
+    .login-footer-custom {
+        border-top: 1px solid rgba(0, 0, 0, 0.08);
+        padding-top: 2rem;
+        margin-top: 1rem;
+    }
+
+    .quick-links {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .footer-link {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #666 !important;
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: color 0.3s ease;
+    }
+
+    .footer-link:hover {
+        color: #2563EB !important;
+    }
+
+    .system-info {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.8rem;
+        color: #888;
+    }
+
+    .info-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .security-badge-bottom-page {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        padding: 10px 18px;
+        border-radius: 24px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #2e7d32;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+        z-index: 1000;
+        border: 1px solid rgba(46, 125, 50, 0.2);
+    }
+
+    /* Responsive Design */
+    @@media (max-width: 768px) {
+        .login-card {
+            margin: 0.5rem;
+            padding: 2.5rem 2rem;
+            border-radius: 20px;
+            max-width: 400px;
+        }
+
+        .logo-icon {
+            width: 80px;
+            height: 80px;
+            border-radius: 20px;
+        }
+
+        .security-badge {
+            top: -6px;
+            right: -6px;
+            padding: 4px 8px;
+            font-size: 0.65rem;
+        }
+
+        .brand-title {
+            font-size: 1.6rem;
+        }
+
+        .brand-subtitle {
+            font-size: 0.9rem;
+            max-width: 280px;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-options {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+
+        .quick-links {
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .system-info {
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .security-badge-bottom-page {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            padding: 8px 14px;
+            font-size: 0.75rem;
+        }
+    }
+
+    /* Animation */
+    @@keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .login-card {
+        animation: fadeInUp 0.6s ease-out;
+    }
+</style>
+
+@code {
+    private LoginModel loginModel = new();
+    private string errorMessage = string.Empty;
+    private bool isLoading = false;
+    private InputType passwordInputType = InputType.Password;
+    private bool _loginLightMode = false;
+    private bool _systemDetected = false;
+    private MudTextField<string>? _usernameField;
+
+    private void ToggleLoginTheme() => _loginLightMode = !_loginLightMode;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Auto-focus the username field so users can start typing immediately
+            if (_usernameField != null)
+            {
+                try { await _usernameField.FocusAsync(); } catch { /* ignore focus errors */ }
+            }
+
+            if (!_systemDetected)
+            {
+                try
+                {
+                    var prefersDark = await JSRuntime.InvokeAsync<bool>("eval",
+                        "window.matchMedia('(prefers-color-scheme: light)').matches");
+                    _loginLightMode = prefersDark;
+                    _systemDetected = true;
+                    StateHasChanged();
+                }
+                catch { _systemDetected = true; }
+            }
+        }
+    }
+
+    [Parameter]
+    [SupplyParameterFromQuery]
+    public string? Reason { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // If user is already authenticated, redirect to dashboard
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated == true)
+        {
+            NavigationManager.NavigateTo("/dashboard", true);
+            return;
+        }
+        
+        // Show message if logged out due to inactivity
+        if (Reason == "inactivity")
+        {
+            errorMessage = "You have been logged out due to 15 minutes of inactivity. Please log in again.";
+        }
+        else if (Reason == "server_restart")
+        {
+            errorMessage = "Server restarted. Please log in again.";
+        }
+    }
+
+    public class LoginModel
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+        public bool RememberMe { get; set; } = false;
+    }
+
+    public class LoginResponse
+    {
+        public string Token { get; set; } = string.Empty;
+        public string RefreshToken { get; set; } = string.Empty;
+        public int ExpiresIn { get; set; }
+        public string TokenType { get; set; } = string.Empty;
+    }
+
+    private void TogglePasswordVisibility()
+    {
+        passwordInputType = passwordInputType == InputType.Password 
+            ? InputType.Text 
+            : InputType.Password;
+    }
+
+    private async Task HandleLogin()
+    {
+        Logger.LogInformation("Login button clicked for user: {Username}", loginModel.Username ?? "unknown");
+        errorMessage = string.Empty;
+        isLoading = true;
+        StateHasChanged(); // Force UI update
+
+        try
+        {
+            // Validate input
+            if (string.IsNullOrWhiteSpace(loginModel.Username) || string.IsNullOrWhiteSpace(loginModel.Password))
+            {
+                errorMessage = "Please enter username and password";
+                Snackbar.Add(errorMessage, Severity.Warning);
+                isLoading = false;
+                return;
+            }
+            
+            using var httpClient = HttpClientFactory.CreateClient("NickScanAPI");
+            
+            var loginRequest = new 
+            { 
+                Username = loginModel.Username, 
+                Password = loginModel.Password
+            };
+            
+            var response = await httpClient.PostAsJsonAsync("/api/Authentication/login", loginRequest);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<LoginResponse>();
+                
+                if (result != null && !string.IsNullOrEmpty(result.Token))
+                {
+                    try
+                    {
+                        Logger.LogInformation("Login successful for user: {Username}. Token received (length: {TokenLength})", 
+                            loginModel.Username, result.Token.Length);
+                        
+                        await AuthProvider.LoginAsync(result.Token);
+                        Logger.LogDebug("AuthProvider.LoginAsync completed for user: {Username}", loginModel.Username);
+
+                        await PopulatePermissionClaimsAsync(httpClient, result.Token);
+                        
+                        Logger.LogInformation("Navigating to dashboard for user: {Username}", loginModel.Username);
+                        NavigationManager.NavigateTo("/dashboard", forceLoad: true);
+                    }
+                    catch (Exception navEx)
+                    {
+                        Logger.LogError(navEx, "Navigation error after successful login for user: {Username}", loginModel.Username);
+                        Snackbar.Add($"Navigation failed: {navEx.Message}", Severity.Error);
+                    }
+                }
+                else
+                {
+                    Logger.LogWarning("Login failed - no token in response for user: {Username}", loginModel.Username);
+                    errorMessage = "Login failed. Invalid response from server.";
+                    Snackbar.Add(errorMessage, Severity.Error);
+                }
+            }
+            else
+            {
+                var statusCode = response.StatusCode;
+                Logger.LogWarning("Login API call failed with status {StatusCode} for user: {Username}", 
+                    statusCode, loginModel.Username);
+                
+                // Provide more specific error messages based on status code
+                if (statusCode == System.Net.HttpStatusCode.Unauthorized || 
+                    statusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    errorMessage = "Invalid username or password. Please check your credentials and try again.";
+                }
+                else if (statusCode == System.Net.HttpStatusCode.ServiceUnavailable || 
+                         statusCode == System.Net.HttpStatusCode.BadGateway)
+                {
+                    var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                    errorMessage = $"⚠️ API Service Unavailable (HTTP {statusCode}). " +
+                                  $"The backend service at {apiUrl} may be temporarily down. " +
+                                  $"Please try again in a few moments.";
+                }
+                else if (statusCode == System.Net.HttpStatusCode.InternalServerError)
+                {
+                    errorMessage = $"Server Error (HTTP 500). The API server encountered an internal error. " +
+                                  $"Please contact support if this issue persists.";
+                }
+                else
+                {
+                    errorMessage = $"Login failed with error code {statusCode}. " +
+                                  $"Please try again or contact support if the problem continues.";
+                }
+                
+                Snackbar.Add(errorMessage, Severity.Error);
+            }
+        }
+        catch (HttpRequestException httpEx)
+        {
+            // Check for connection refused errors
+            var innerException = httpEx.InnerException;
+            if (innerException is System.Net.Sockets.SocketException socketEx)
+            {
+                var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                
+                // Socket error 10061 = Connection refused
+                if (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionRefused)
+                {
+                    Logger.LogError(httpEx, "Connection refused to API server: {ApiUrl} for user: {Username}", 
+                        apiUrl, loginModel.Username ?? "unknown");
+                    
+                    errorMessage = $"⚠️ Cannot connect to API server at {apiUrl}. " +
+                                  $"The backend service may not be running. " +
+                                  $"Please verify the NickScan API service is started and accessible.";
+                    Snackbar.Add(errorMessage, Severity.Error);
+                }
+                else
+                {
+                    Logger.LogError(httpEx, "Network error connecting to API: {SocketError} for user: {Username}", 
+                        socketEx.SocketErrorCode, loginModel.Username ?? "unknown");
+                    
+                    errorMessage = $"Network connection error: {socketEx.SocketErrorCode}. " +
+                                  $"Please check your network connection and ensure the API server is accessible.";
+                    Snackbar.Add(errorMessage, Severity.Error);
+                }
+            }
+            else
+            {
+                // Other HTTP request exceptions
+                Logger.LogError(httpEx, "HTTP request error for user: {Username}. Error: {ErrorMessage}", 
+                    loginModel.Username ?? "unknown", httpEx.Message);
+                
+                var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                errorMessage = $"Connection error: {httpEx.Message}. " +
+                              $"Unable to reach API server at {apiUrl}. " +
+                              $"Please verify the service is running and accessible.";
+                Snackbar.Add(errorMessage, Severity.Error);
+            }
+        }
+        catch (System.Net.Sockets.SocketException socketEx)
+        {
+            var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            Logger.LogError(socketEx, "Socket error connecting to API: {SocketError} at {ApiUrl} for user: {Username}", 
+                socketEx.SocketErrorCode, apiUrl, loginModel.Username ?? "unknown");
+            
+            if (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionRefused)
+            {
+                errorMessage = $"⚠️ Connection Refused: Cannot reach API server at {apiUrl}. " +
+                              $"The backend service is not running or not accessible. " +
+                              $"Please start the NickScan Central Imaging Portal API service.";
+            }
+            else if (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.TimedOut)
+            {
+                errorMessage = $"⏱️ Connection Timeout: The API server at {apiUrl} did not respond in time. " +
+                              $"The service may be overloaded or unreachable.";
+            }
+            else
+            {
+                errorMessage = $"Network Error ({socketEx.SocketErrorCode}): Unable to connect to API server at {apiUrl}. " +
+                              $"Please check your network connection and firewall settings.";
+            }
+            
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+        catch (TaskCanceledException timeoutEx)
+        {
+            var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            Logger.LogError(timeoutEx, "Request timeout connecting to API at {ApiUrl} for user: {Username}", 
+                apiUrl, loginModel.Username ?? "unknown");
+            
+            errorMessage = $"⏱️ Request Timeout: The API server at {apiUrl} did not respond. " +
+                          $"The service may be busy or unreachable. Please try again in a moment.";
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected login error for user: {Username}. Error: {ErrorMessage}", 
+                loginModel.Username ?? "unknown", ex.Message);
+            
+            var apiUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            errorMessage = $"Login failed: {ex.Message}. " +
+                          $"If this persists, please verify the API server is running at {apiUrl}.";
+            Snackbar.Add(errorMessage, Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+            Logger.LogDebug("Login handler finished for user: {Username}. isLoading = false", loginModel.Username ?? "unknown");
+        }
+    }
+
+    private async Task PopulatePermissionClaimsAsync(HttpClient httpClient, string token)
+    {
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            var jwt = handler.ReadJwtToken(token);
+
+            var username = jwt.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Name)?.Value ?? loginModel.Username;
+            var email = jwt.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Email)?.Value ?? string.Empty;
+            var role = jwt.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Role)?.Value ?? string.Empty;
+
+            var permissionClaims = jwt.Claims
+                .Where(c => string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.Value)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            Logger.LogDebug("JWT parsed - Username: {Username}, Role: {Role}, Permission claims: {Count}", 
+                username, role, permissionClaims.Count);
+            Logger.LogTrace("Permission claims for {Username}: {Permissions}", 
+                username, string.Join(", ", permissionClaims));
+
+            if (permissionClaims.Count == 0)
+            {
+                try
+                {
+                    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    var apiPermissions = await httpClient.GetFromJsonAsync<List<string>>("/api/permissions/my-permissions");
+                    if (apiPermissions != null)
+                    {
+                        permissionClaims = apiPermissions
+                            .Where(p => !string.IsNullOrWhiteSpace(p))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                    }
+                }
+                catch (Exception permEx)
+                {
+                    Logger.LogWarning(permEx, "Unable to fetch permissions from API for user: {Username}", username);
+                }
+            }
+
+            CustomAuthProvider.SetAuthenticatedUserWithPermissions(
+                username,
+                string.IsNullOrWhiteSpace(role) ? "Viewer" : role,
+                email,
+                permissionClaims);
+
+            await AuthBootstrapper.RefreshAsync();
+        }
+        catch (Exception claimEx)
+        {
+            Logger.LogWarning(claimEx, "Permission claim processing failed for user: {Username}", loginModel.Username ?? "unknown");
+            CustomAuthProvider.SetAuthenticatedUserWithPermissions(
+                loginModel.Username ?? "unknown",
+                "Viewer",
+                string.Empty,
+                new List<string>());
+
+            await AuthBootstrapper.RefreshAsync();
+        }
+    }
+    
+    public class ServerLoginResponse
+    {
+        public bool Success { get; set; }
+        public string Token { get; set; } = string.Empty;
+        public object? User { get; set; }
+    }
+}

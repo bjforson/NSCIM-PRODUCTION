@@ -1,0 +1,36 @@
+@using MudBlazor
+@inject NavigationManager Navigation
+
+<MudHidden Breakpoint="Breakpoint.MdAndUp">
+    <div class="mobile-bottom-nav">
+        <a href="/dashboard" class="mobile-nav-item @GetNavLinkClass("/dashboard", true)">
+            <MudIcon Icon="@Icons.Material.Outlined.Dashboard" />
+            <span class="nav-label">Home</span>
+        </a>
+        <a href="/containers" class="mobile-nav-item @GetNavLinkClass("/containers")">
+            <MudIcon Icon="@Icons.Material.Outlined.Inventory" />
+            <span class="nav-label">Containers</span>
+        </a>
+        <a href="/icums" class="mobile-nav-item @GetNavLinkClass("/icums")">
+            <MudIcon Icon="@Icons.Material.Outlined.Description" />
+            <span class="nav-label">ICUMS</span>
+        </a>
+        <a href="/operations/image-analysis" class="mobile-nav-item @GetNavLinkClass("/operations/image-analysis")">
+            <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" />
+            <span class="nav-label">Analysis</span>
+        </a>
+        <a href="/reports" class="mobile-nav-item @GetNavLinkClass("/reports")">
+            <MudIcon Icon="@Icons.Material.Outlined.Assessment" />
+            <span class="nav-label">Reports</span>
+        </a>
+    </div>
+</MudHidden>
+
+@code {
+    private string GetNavLinkClass(string href, bool matchExact = false)
+    {
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri).PathAndQuery;
+        if (matchExact) return uri == href || uri == "/" ? "mobile-nav-active" : "";
+        return uri.StartsWith(href) ? "mobile-nav-active" : "";
+    }
+}

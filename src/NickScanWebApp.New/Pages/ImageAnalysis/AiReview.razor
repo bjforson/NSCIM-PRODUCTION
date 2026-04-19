@@ -1,0 +1,601 @@
+@page "/image-analysis/ai"
+@page "/operations/ai-suggestions"
+@page "/image-analysis/ai-suggestions"
+@page "/operations/ai-shadow-dashboard"
+@page "/image-analysis/ai-shadow"
+@attribute [Authorize(Policy = Permissions.ControllersAiWorkflow)]
+@inject HttpClient Http
+@inject ISnackbar Snackbar
+@inject IConfiguration Config
+@inject NavigationManager Navigation
+@using NickScanCentralImagingPortal.Core.Constants
+
+<PageTitle>AI Review</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h5" Class="mb-1" Style="font-weight:700;">AI Review</MudText>
+    <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+        Review AI-generated suggestions and evaluate model accuracy against analyst decisions.
+    </MudText>
+
+    <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" @bind-ActivePanelIndex="_activeTab">
+        @* ═════════ Tab 1: Suggestions ═════════ *@
+        <MudTabPanel Text="Suggestions" Icon="@Icons.Material.Outlined.SmartToy">
+            <MudCard Elevation="1" Class="mb-4">
+                <MudCardContent>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="4">
+                            <MudTextField T="string" @bind-Value="_search" Label="Container Number" Variant="Variant.Outlined"
+                                          Margin="Margin.Dense" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search"
+                                          Immediate="true" DebounceInterval="300" TextChanged="LoadSuggestions" />
+                        </MudItem>
+                        <MudItem xs="6" sm="2">
+                            <MudSelect T="string" @bind-Value="_statusFilter" Label="Status" Variant="Variant.Outlined" Margin="Margin.Dense">
+                                <MudSelectItem T="string" Value="@("pending")">Pending Review</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("resolved")">Resolved</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("all")">All</MudSelectItem>
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="6" sm="2">
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="LoadSuggestions"
+                                       StartIcon="@Icons.Material.Outlined.Refresh" FullWidth="true"
+                                       Style="height:40px; margin-top:4px;">Refresh</MudButton>
+                        </MudItem>
+                        <MudItem xs="12" sm="4" Class="d-flex align-end justify-end">
+                            <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small" Color="Color.Info">
+                                @(_suggestions?.Count ?? 0) suggestions
+                            </MudChip>
+                        </MudItem>
+                    </MudGrid>
+                </MudCardContent>
+            </MudCard>
+
+            @if (_suggestionsLoading)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+            }
+            else if (_suggestions == null || _suggestions.Count == 0)
+            {
+                <MudCard Elevation="1">
+                    <MudCardContent Class="text-center pa-8">
+                        <MudIcon Icon="@Icons.Material.Outlined.SmartToy" Size="Size.Large" Color="Color.Secondary" />
+                        <MudText Typo="Typo.h6" Class="mt-2">No Suggestions</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">AI suggestions will appear here after analysis runs.</MudText>
+                    </MudCardContent>
+                </MudCard>
+            }
+            else
+            {
+                <MudGrid Spacing="3">
+                    @foreach (var s in _suggestions)
+                    {
+                        <MudItem xs="12" md="6">
+                            <MudCard Elevation="1" Style="@($"border-left: 4px solid {GetDecisionColor(s.SuggestedDecision)};")">
+                                <MudCardHeader>
+                                    <CardHeaderContent>
+                                        <div class="d-flex justify-space-between align-center">
+                                            <div>
+                                                <MudText Typo="Typo.h6" Style="font-weight:600;">@s.ContainerNumber</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                    @s.ScannerType &bull; @s.GroupIdentifier &bull; @s.ModelId
+                                                </MudText>
+                                            </div>
+                                            <div class="d-flex gap-1">
+                                                @if (s.SuggestedDecision != null)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                                                             Color="@(s.SuggestedDecision == "Normal" ? Color.Success : Color.Error)">
+                                                        @s.SuggestedDecision
+                                                    </MudChip>
+                                                }
+                                                @if (s.Confidence.HasValue)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                                        @($"{s.Confidence:P0}")
+                                                    </MudChip>
+                                                }
+                                            </div>
+                                        </div>
+                                    </CardHeaderContent>
+                                </MudCardHeader>
+                                <MudCardContent>
+                                    @if (s.Payload != null)
+                                    {
+                                        @if (!string.IsNullOrWhiteSpace(s.Payload.Reasoning))
+                                        {
+                                            <MudText Typo="Typo.body2" Class="mb-2">@s.Payload.Reasoning</MudText>
+                                        }
+
+                                        @if (s.Payload.Observations?.Count > 0)
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600;">Observations:</MudText>
+                                            <ul style="margin:4px 0 8px 16px; padding:0;">
+                                                @foreach (var obs in s.Payload.Observations)
+                                                {
+                                                    <li><MudText Typo="Typo.caption">@obs</MudText></li>
+                                                }
+                                            </ul>
+                                        }
+
+                                        @if (s.Payload.RegionsOfInterest?.Count > 0)
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-weight:600;" Class="mb-1">
+                                                Regions of Interest: @s.Payload.RegionsOfInterest.Count area(s)
+                                            </MudText>
+                                            @foreach (var roi in s.Payload.RegionsOfInterest)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning" Class="mr-1 mb-1">
+                                                    @roi.Label @(roi.Confidence.HasValue ? $"({roi.Confidence:P0})" : "")
+                                                </MudChip>
+                                            }
+                                        }
+                                    }
+
+                                    @if (s.ResolvedAtUtc.HasValue)
+                                    {
+                                        <MudDivider Class="my-2" />
+                                        <div class="d-flex gap-2 align-center">
+                                            <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Size="Size.Small" Color="Color.Success" />
+                                            <MudText Typo="Typo.caption">
+                                                Resolved by @s.HumanReviewedBy: <b>@s.HumanFinalDecision</b>
+                                                @if (s.ResolvedDiffersFromSuggestion == true)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">Corrected</MudChip>
+                                                }
+                                            </MudText>
+                                        </div>
+                                    }
+                                </MudCardContent>
+
+                                @if (!s.ResolvedAtUtc.HasValue)
+                                {
+                                    <MudCardActions>
+                                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Success"
+                                                   StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                                   OnClick="@(() => ResolveSuggestion(s.Id, "Normal"))">
+                                            Normal
+                                        </MudButton>
+                                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Error"
+                                                   StartIcon="@Icons.Material.Outlined.Warning"
+                                                   OnClick="@(() => ResolveSuggestion(s.Id, "Abnormal"))">
+                                            Abnormal
+                                        </MudButton>
+                                        <MudSpacer />
+                                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Default"
+                                                   OnClick="@(() => DismissSuggestion(s.Id))">
+                                            Dismiss
+                                        </MudButton>
+                                    </MudCardActions>
+                                }
+                            </MudCard>
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+        </MudTabPanel>
+
+        @* ═════════ Tab 2: Shadow Evaluation ═════════ *@
+        <MudTabPanel Text="Shadow Evaluation" Icon="@Icons.Material.Outlined.Analytics">
+            @if (_shadowLoading)
+            {
+                <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+            }
+            else if (_metrics == null)
+            {
+                <MudAlert Severity="Severity.Info">No evaluation data available yet. Suggestions must be generated and resolved by analysts first.</MudAlert>
+            }
+            else
+            {
+                @* Summary Cards *@
+                <MudGrid Spacing="3">
+                    <MudItem xs="6" sm="3">
+                        <MudCard Elevation="1">
+                            <MudCardContent>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Total Resolved</MudText>
+                                <MudText Typo="Typo.h4" Style="font-weight:700;">@S("TotalResolved")</MudText>
+                                <MudText Typo="Typo.caption">@S("PendingReview") pending</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudCard Elevation="1">
+                            <MudCardContent>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Agreement Rate</MudText>
+                                <MudText Typo="Typo.h4" Style="font-weight:700;" Color="Color.Success">@S("AgreementRate")%</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Success">@S("Agreed") agreed</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudCard Elevation="1">
+                            <MudCardContent>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Override Rate</MudText>
+                                <MudText Typo="Typo.h4" Style="font-weight:700;" Color="Color.Error">@S("OverrideRate")%</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Error">@S("Overridden") overridden</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudCard Elevation="1">
+                            <MudCardContent>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Confidence</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Success">Correct: @S("AvgConfidenceWhenCorrect")%</MudText>
+                                <MudText Typo="Typo.h6" Color="Color.Error">Wrong: @S("AvgConfidenceWhenWrong")%</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+
+                @* Confusion Matrix *@
+                <MudGrid Spacing="3" Class="mt-3">
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="1">
+                            <MudCardHeader><MudText Typo="Typo.h6">Confusion Matrix</MudText></MudCardHeader>
+                            <MudCardContent>
+                                <MudSimpleTable Dense="true" Hover="true" Bordered="true">
+                                    <thead>
+                                        <tr>
+                                            <th></th>
+                                            <th style="text-align:center;">Human: Normal</th>
+                                            <th style="text-align:center;">Human: Abnormal</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td style="font-weight:600;">AI: Normal</td>
+                                            <td style="text-align:center; background:rgba(34,197,94,0.1); font-weight:600;">@C("aiNormalHumanNormal")</td>
+                                            <td style="text-align:center; background:rgba(220,38,38,0.1);">@C("aiNormalHumanAbnormal")</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="font-weight:600;">AI: Abnormal</td>
+                                            <td style="text-align:center; background:rgba(249,115,22,0.1);">@C("aiAbnormalHumanNormal")</td>
+                                            <td style="text-align:center; background:rgba(34,197,94,0.1); font-weight:600;">@C("aiAbnormalHumanAbnormal")</td>
+                                        </tr>
+                                    </tbody>
+                                </MudSimpleTable>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2">
+                                    Green = agreement. AI Normal + Human Abnormal = missed threat (most critical). AI Abnormal + Human Normal = false alarm.
+                                </MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    @* By Scanner Type *@
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="1">
+                            <MudCardHeader><MudText Typo="Typo.h6">By Scanner Type</MudText></MudCardHeader>
+                            <MudCardContent>
+                                <MudSimpleTable Dense="true" Hover="true">
+                                    <thead>
+                                        <tr><th>Scanner</th><th>Total</th><th>Agreed</th><th>Overridden</th><th>Rate</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        @if (_byScannerType != null)
+                                        {
+                                            @foreach (var row in _byScannerType)
+                                            {
+                                                <tr>
+                                                    <td>@G(row, "ScannerType")</td>
+                                                    <td>@G(row, "Total")</td>
+                                                    <td>@G(row, "Agreed")</td>
+                                                    <td>@G(row, "Overridden")</td>
+                                                    <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">@G(row, "AgreementRate")%</MudChip></td>
+                                                </tr>
+                                            }
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+
+                @* By Model + Corrections *@
+                <MudGrid Spacing="3" Class="mt-3">
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="1">
+                            <MudCardHeader><MudText Typo="Typo.h6">By Model</MudText></MudCardHeader>
+                            <MudCardContent>
+                                <MudSimpleTable Dense="true" Hover="true">
+                                    <thead><tr><th>Model</th><th>Total</th><th>Agreed</th><th>Rate</th></tr></thead>
+                                    <tbody>
+                                        @if (_byModel != null)
+                                        {
+                                            @foreach (var row in _byModel)
+                                            {
+                                                <tr>
+                                                    <td>@G(row, "ModelId")</td>
+                                                    <td>@G(row, "Total")</td>
+                                                    <td>@G(row, "Agreed")</td>
+                                                    <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">@G(row, "AgreementRate")%</MudChip></td>
+                                                </tr>
+                                            }
+                                        }
+                                    </tbody>
+                                </MudSimpleTable>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudCard Elevation="1">
+                            <MudCardHeader><MudText Typo="Typo.h6">Top Correction Reasons</MudText></MudCardHeader>
+                            <MudCardContent>
+                                @if (_corrections != null && _corrections.Count > 0)
+                                {
+                                    @foreach (var c in _corrections)
+                                    {
+                                        <div class="d-flex justify-space-between mb-2">
+                                            <MudText Typo="Typo.body2">@G(c, "Reason")</MudText>
+                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@G(c, "Count")</MudChip>
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No correction reasons recorded yet.</MudText>
+                                }
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                </MudGrid>
+
+                @* Daily Trend *@
+                @if (_trendLabels.Length > 0)
+                {
+                    <MudCard Elevation="1" Class="mt-3">
+                        <MudCardHeader><MudText Typo="Typo.h6">Daily Trend</MudText></MudCardHeader>
+                        <MudCardContent>
+                            <MudChart ChartType="ChartType.Line" ChartSeries="@_trendSeries"
+                                      XAxisLabels="@_trendLabels" Width="100%" Height="220px"
+                                      ChartOptions="@_chartOpts" />
+                        </MudCardContent>
+                    </MudCard>
+                }
+            }
+        </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    // ═════════ Shared ═════════
+    private int _activeTab;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Route-based initial tab selection: legacy shadow routes land on the shadow tab
+        var uri = new Uri(Navigation.Uri);
+        if (uri.AbsolutePath.Contains("ai-shadow", StringComparison.OrdinalIgnoreCase))
+        {
+            _activeTab = 1;
+        }
+
+        // Load both tabs in parallel — both are cheap single API calls
+        await Task.WhenAll(LoadSuggestions(), LoadShadowMetrics());
+    }
+
+    // ═════════ Tab 1: Suggestions ═════════
+    private List<SuggestionViewModel>? _suggestions;
+    private bool _suggestionsLoading = true;
+    private string? _search;
+    private string _statusFilter = "pending";
+
+    private async Task LoadSuggestions()
+    {
+        _suggestionsLoading = true;
+        try
+        {
+            var url = $"api/aiworkflow/image/suggestions?status={_statusFilter}";
+            if (!string.IsNullOrWhiteSpace(_search))
+                url += $"&containerNumber={Uri.EscapeDataString(_search)}";
+
+            var response = await Http.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var raw = System.Text.Json.JsonSerializer.Deserialize<List<SuggestionRaw>>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                _suggestions = raw?.Select(r => new SuggestionViewModel
+                {
+                    Id = r.Id,
+                    ContainerNumber = r.ContainerNumber ?? "",
+                    ScannerType = r.ScannerType ?? "",
+                    GroupIdentifier = r.GroupIdentifier ?? "",
+                    ModelId = r.ModelId ?? "",
+                    SuggestedDecision = r.SuggestedDecision,
+                    Confidence = r.Confidence,
+                    HumanFinalDecision = r.HumanFinalDecision,
+                    HumanReviewedBy = r.HumanReviewedBy,
+                    ResolvedAtUtc = r.ResolvedAtUtc,
+                    ResolvedDiffersFromSuggestion = r.ResolvedDiffersFromSuggestion,
+                    CreatedAtUtc = r.CreatedAtUtc,
+                    Payload = TryParsePayload(r.SuggestionPayloadJson)
+                }).ToList() ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load suggestions: {ex.Message}", Severity.Error);
+        }
+        finally { _suggestionsLoading = false; }
+    }
+
+    private async Task ResolveSuggestion(long id, string decision)
+    {
+        try
+        {
+            var response = await Http.PostAsJsonAsync($"api/aiworkflow/image/suggestions/{id}/resolve",
+                new { Decision = decision });
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add($"Marked as {decision}", Severity.Success);
+                await LoadSuggestions();
+            }
+            else
+            {
+                Snackbar.Add("Failed to resolve suggestion", Severity.Error);
+            }
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DismissSuggestion(long id)
+    {
+        try
+        {
+            var response = await Http.PostAsJsonAsync($"api/aiworkflow/image/suggestions/{id}/resolve",
+                new { Decision = (string?)null, CorrectionReason = "Dismissed by analyst" });
+
+            if (response.IsSuccessStatusCode)
+            {
+                Snackbar.Add("Suggestion dismissed", Severity.Info);
+                await LoadSuggestions();
+            }
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private static PayloadViewModel? TryParsePayload(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<PayloadViewModel>(json,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch { return null; }
+    }
+
+    private static string GetDecisionColor(string? decision) => decision switch
+    {
+        "Normal" => "#2E7D32",
+        "Abnormal" => "#D32F2F",
+        _ => "#9E9E9E"
+    };
+
+    public class SuggestionRaw
+    {
+        public long Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public string? ScannerType { get; set; }
+        public string? GroupIdentifier { get; set; }
+        public string? ModelId { get; set; }
+        public string? SuggestedDecision { get; set; }
+        public double? Confidence { get; set; }
+        public string? SuggestionPayloadJson { get; set; }
+        public string? HumanFinalDecision { get; set; }
+        public string? HumanReviewedBy { get; set; }
+        public DateTime? ResolvedAtUtc { get; set; }
+        public bool? ResolvedDiffersFromSuggestion { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+    }
+
+    public class SuggestionViewModel
+    {
+        public long Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public string GroupIdentifier { get; set; } = "";
+        public string ModelId { get; set; } = "";
+        public string? SuggestedDecision { get; set; }
+        public double? Confidence { get; set; }
+        public PayloadViewModel? Payload { get; set; }
+        public string? HumanFinalDecision { get; set; }
+        public string? HumanReviewedBy { get; set; }
+        public DateTime? ResolvedAtUtc { get; set; }
+        public bool? ResolvedDiffersFromSuggestion { get; set; }
+        public DateTime CreatedAtUtc { get; set; }
+    }
+
+    public class PayloadViewModel
+    {
+        public string? Kind { get; set; }
+        public List<RoiViewModel>? RegionsOfInterest { get; set; }
+        public int RankScore { get; set; }
+        public string? Summary { get; set; }
+        public string? Reasoning { get; set; }
+        public List<string>? Observations { get; set; }
+    }
+
+    public class RoiViewModel
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double W { get; set; }
+        public double H { get; set; }
+        public string? Label { get; set; }
+        public double? Confidence { get; set; }
+    }
+
+    // ═════════ Tab 2: Shadow Evaluation ═════════
+    private bool _shadowLoading = true;
+    private System.Text.Json.JsonElement? _metrics;
+    private System.Text.Json.JsonElement? _summary;
+    private System.Text.Json.JsonElement? _confusion;
+    private List<System.Text.Json.JsonElement>? _byScannerType;
+    private List<System.Text.Json.JsonElement>? _byModel;
+    private List<System.Text.Json.JsonElement>? _corrections;
+
+    private List<ChartSeries> _trendSeries = new();
+    private string[] _trendLabels = Array.Empty<string>();
+    private ChartOptions _chartOpts = new() { YAxisTicks = 5, LineStrokeWidth = 2 };
+
+    private async Task LoadShadowMetrics()
+    {
+        try
+        {
+            var response = await Http.GetAsync("api/aiworkflow/shadow/metrics");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var doc = System.Text.Json.JsonDocument.Parse(json);
+                _metrics = doc.RootElement;
+
+                if (_metrics.Value.TryGetProperty("summary", out var s)) _summary = s;
+                if (_metrics.Value.TryGetProperty("confusionMatrix", out var c)) _confusion = c;
+                if (_metrics.Value.TryGetProperty("byScannerType", out var bst))
+                    _byScannerType = bst.EnumerateArray().ToList();
+                if (_metrics.Value.TryGetProperty("byModel", out var bm))
+                    _byModel = bm.EnumerateArray().ToList();
+                if (_metrics.Value.TryGetProperty("topCorrectionReasons", out var tc))
+                    _corrections = tc.EnumerateArray().ToList();
+                if (_metrics.Value.TryGetProperty("dailyTrend", out var dt))
+                    BuildTrend(dt);
+            }
+        }
+        catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); }
+        finally { _shadowLoading = false; }
+    }
+
+    private string S(string prop)
+    {
+        if (_summary?.TryGetProperty(char.ToLower(prop[0]) + prop[1..], out var v) == true) return v.ToString();
+        return "0";
+    }
+
+    private string C(string prop)
+    {
+        if (_confusion?.TryGetProperty(prop, out var v) == true) return v.ToString();
+        return "0";
+    }
+
+    private static string G(System.Text.Json.JsonElement el, string prop)
+    {
+        var key = char.ToLower(prop[0]) + prop[1..];
+        if (el.TryGetProperty(key, out var v)) return v.ToString();
+        return "";
+    }
+
+    private void BuildTrend(System.Text.Json.JsonElement dt)
+    {
+        var items = dt.EnumerateArray().ToList();
+        _trendLabels = items.Select(i => i.TryGetProperty("date", out var d) ? d.GetString()?[5..] ?? "" : "").ToArray();
+        _trendSeries = new()
+        {
+            new() { Name = "Agreed", Data = items.Select(i => i.TryGetProperty("agreed", out var v) ? v.GetDouble() : 0).ToArray() },
+            new() { Name = "Overridden", Data = items.Select(i => i.TryGetProperty("overridden", out var v) ? v.GetDouble() : 0).ToArray() }
+        };
+    }
+}

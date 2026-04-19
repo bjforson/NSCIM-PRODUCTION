@@ -1,0 +1,2143 @@
+@page "/validation"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationCompleteness)]
+@inject ISnackbar Snackbar
+@inject NavigationManager NavigationManager
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<ContainerCompletenessLegacy> Logger
+@implements IDisposable
+
+<PageTitle>NICKSCAN ERP — NSCIS — Container Completeness</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    
+    <!-- Breadcrumbs -->
+    <MudBreadcrumbs Items="@breadcrumbs" Class="mb-4"></MudBreadcrumbs>
+    
+    <!-- Header -->
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <div>
+                <MudText Typo="Typo.h4">
+                    <MudIcon Icon="@Icons.Material.Outlined.FactCheck" Class="mr-2" />
+                    Container Completeness Dashboard
+                </MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">
+                    Monitor data completeness between scanner systems and ICUMS
+                </MudText>
+            </div>
+            <MudStack Row="true" Spacing="2">
+                <MudChip T="string" 
+                         Size="Size.Medium" 
+                         Color="@(serviceRunning ? Color.Success : Color.Error)" 
+                         Icon="@(serviceRunning ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Error)">
+                    Service: @(serviceRunning ? "Running" : "Stopped")
+                </MudChip>
+                <MudButton Variant="Variant.Outlined"
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.AccountTree"
+                          Href="/validation/record-completeness">
+                    Record Completeness
+                </MudButton>
+                <MudButton Variant="Variant.Filled"
+                          Color="Color.Primary"
+                          StartIcon="@Icons.Material.Outlined.PlayArrow"
+                          OnClick="@TriggerManualCheck"
+                          Disabled="@isChecking">
+                    @if (isChecking)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>Checking...</span>
+                    }
+                    else
+                    {
+                        <span>Check Now</span>
+                    }
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    @* ── 1.15.0 — Record Integrity Banner ───────────────────────────────── *@
+    @* Shows the record-level integrity gap at a glance and routes operators to the
+       new declaration-anchored view. Non-intrusive: sits above the existing
+       container-grain overview and leaves all existing controls untouched. *@
+    @if (_recordSummary != null && _recordSummary.TotalRecords > 0)
+    {
+        <MudPaper Elevation="0" Class="mb-4 pa-3" Outlined="true"
+                  Style="@(_recordSummary.PartiallyReady > 0 || _recordSummary.IntegrityGapContainers > 0
+                          ? "border-left: 4px solid var(--mud-palette-warning);"
+                          : "border-left: 4px solid var(--mud-palette-success);")">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="4">
+                <MudIcon Icon="@Icons.Material.Outlined.AccountTree" Size="Size.Large"
+                         Color="@(_recordSummary.PartiallyReady > 0 ? Color.Warning : Color.Primary)" />
+                <div>
+                    <MudText Typo="Typo.subtitle1"><b>Record Completeness</b> — declaration-level view</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        Proactive ICUMS reconciliation (1.14.0). Records with missing containers are now visible before they would have been missed.
+                    </MudText>
+                </div>
+                <MudSpacer />
+                <MudStack Row="true" Spacing="3" AlignItems="AlignItems.Center">
+                    <MudStack Spacing="0" AlignItems="AlignItems.End">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Records</MudText>
+                        <MudText Typo="Typo.h6">@_recordSummary.TotalRecords</MudText>
+                    </MudStack>
+                    <MudStack Spacing="0" AlignItems="AlignItems.End">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Multi-container</MudText>
+                        <MudText Typo="Typo.h6">@_recordSummary.TotalMultiContainer</MudText>
+                    </MudStack>
+                    <MudStack Spacing="0" AlignItems="AlignItems.End">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Partially Ready</MudText>
+                        <MudText Typo="Typo.h6" Color="@(_recordSummary.PartiallyReady > 0 ? Color.Warning : Color.Default)">
+                            @_recordSummary.PartiallyReady
+                        </MudText>
+                    </MudStack>
+                    <MudStack Spacing="0" AlignItems="AlignItems.End">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Integrity gap</MudText>
+                        <MudText Typo="Typo.h6" Color="@(_recordSummary.IntegrityGapContainers > 0 ? Color.Warning : Color.Success)">
+                            @_recordSummary.IntegrityGapContainers containers
+                        </MudText>
+                    </MudStack>
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               Size="Size.Small"
+                               EndIcon="@Icons.Material.Outlined.ArrowForward"
+                               Href="/validation/record-completeness?status=PartiallyReady">
+                        View records
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    }
+
+    <!-- Overview Stats -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%); color: white;">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Total Scanned</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" />
+                    </MudStack>
+                    <MudText Typo="Typo.h4">@totalContainers</MudText>
+                    <MudText Typo="Typo.caption">All scanner records</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Complete</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" />
+                    </MudStack>
+                    <MudText Typo="Typo.h4">@completeContainers</MudText>
+                    <MudProgressLinear Color="Color.Success" Value="@completenessRate" Min="0" Max="100" Size="Size.Small" Rounded="true" Style="background: rgba(255,255,255,0.2);" />
+                    <MudText Typo="Typo.caption">@completenessRate.ToString("F1")% Completeness</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Missing ICUMS Data</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Warning" />
+                    </MudStack>
+                    <MudText Typo="Typo.h4">@missingContainers</MudText>
+                    <MudText Typo="Typo.caption">@criticalMissing critical</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12" sm="6" md="3">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed Requests</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Error" />
+                    </MudStack>
+                    <MudText Typo="Typo.h4">@failedRequests</MudText>
+                    <MudText Typo="Typo.caption">Need retry</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Scanner Breakdown -->
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Scanner" Color="Color.Primary" Class="mr-2" />
+                        FS6000 Completeness
+                    </MudText>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.End">
+                        <div>
+                            <MudText Typo="Typo.h4" Color="Color.Primary">@fs6000Complete</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">of @fs6000Total containers</MudText>
+                        </div>
+                        <MudText Typo="Typo.h5" Color="@(fs6000Rate >= 95 ? Color.Success : fs6000Rate >= 85 ? Color.Warning : Color.Error)">
+                            @fs6000Rate.ToString("F1")%
+                        </MudText>
+                    </MudStack>
+                    <MudProgressLinear Color="@(fs6000Rate >= 95 ? Color.Success : fs6000Rate >= 85 ? Color.Warning : Color.Error)" 
+                                      Value="@fs6000Rate" 
+                                      Min="0" 
+                                      Max="100" 
+                                      Size="Size.Medium"
+                                      Rounded="true" />
+                    <MudText Typo="Typo.caption" Color="Color.Error">@fs6000Missing missing</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Scanner" Color="Color.Secondary" Class="mr-2" />
+                        ASE Completeness
+                    </MudText>
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.End">
+                        <div>
+                            <MudText Typo="Typo.h4" Color="Color.Secondary">@aseComplete</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">of @aseTotal containers</MudText>
+                        </div>
+                        <MudText Typo="Typo.h5" Color="@(aseRate >= 95 ? Color.Success : aseRate >= 85 ? Color.Warning : Color.Error)">
+                            @aseRate.ToString("F1")%
+                        </MudText>
+                    </MudStack>
+                    <MudProgressLinear Color="@(aseRate >= 95 ? Color.Success : aseRate >= 85 ? Color.Warning : Color.Error)" 
+                                      Value="@aseRate" 
+                                      Min="0" 
+                                      Max="100" 
+                                      Size="Size.Medium"
+                                      Rounded="true" />
+                    <MudText Typo="Typo.caption" Color="Color.Error">@aseMissing missing</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        
+        <MudItem xs="12" md="4">
+            <MudPaper Elevation="2" Class="pa-4 rounded-lg">
+                <MudStack Spacing="2">
+                    <MudText Typo="Typo.h6" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Timer" Color="Color.Info" Class="mr-2" />
+                        Service Status
+                    </MudText>
+                    <MudSimpleTable Dense="true">
+                        <tbody>
+                            <tr>
+                                <td><MudText Typo="Typo.caption">Status</MudText></td>
+                                <td><MudChip T="string" Size="Size.Small" Color="@(serviceRunning ? Color.Success : Color.Error)">@(serviceRunning ? "Running" : "Stopped")</MudChip></td>
+                            </tr>
+                            <tr>
+                                <td><MudText Typo="Typo.caption">Last Check</MudText></td>
+                                <td><MudText Typo="Typo.caption">@lastCheckTime.ToString("HH:mm:ss")</MudText></td>
+                            </tr>
+                            <tr>
+                                <td><MudText Typo="Typo.caption">Next Check</MudText></td>
+                                <td><MudText Typo="Typo.caption" Color="Color.Info">in @nextCheckIn</MudText></td>
+                            </tr>
+                            <tr>
+                                <td><MudText Typo="Typo.caption">Interval</MudText></td>
+                                <td><MudText Typo="Typo.caption">Every 5 minutes</MudText></td>
+                            </tr>
+                        </tbody>
+                    </MudSimpleTable>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+    
+    <!-- Main Content -->
+    <MudPaper Elevation="2" Class="rounded-lg">
+        <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary">
+            
+            <!-- Cargo Groups Tab - Consolidated Model (FIRST TAB - PRIMARY VIEW) -->
+            <MudTabPanel Text="Cargo Groups" Icon="@Icons.Material.Outlined.Inventory2" BadgeData="@(nonConsolidatedGroups.Count + consolidatedGroups.Count)" BadgeColor="Color.Info">
+                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2" Color="Color.Info">
+                    <!-- Non-Consolidated Sub-Tab -->
+                    <MudTabPanel Text="Non-Consolidated" Icon="@Icons.Material.Outlined.LocalShipping" BadgeData="@nonConsolidatedGroups.Count" BadgeColor="Color.Primary">
+                        <MudAlert Severity="Severity.Info" Class="mb-4">
+                            <MudText>Non-Consolidated Cargo: One Master BL covers multiple containers. Expand to see all containers under each Master BL.</MudText>
+                        </MudAlert>
+                        
+                        <MudTable Items="@nonConsolidatedGroups" 
+                                 Dense="true" 
+                                 Hover="true" 
+                                 Breakpoint="Breakpoint.Sm"
+                                 Loading="@isLoadingCargoGroups"
+                                 ExpandableRows="true"
+                                 @bind-ExpandedItems="expandedNonConsolidated">
+                            <HeaderContent>
+                                <MudTh>Declaration Number</MudTh>
+                                <MudTh>Master BL</MudTh>
+                                <MudTh>Containers</MudTh>
+                                <MudTh>Consignee</MudTh>
+                                <MudTh>Clearance Type</MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Declaration">
+                                    <MudText Typo="Typo.body2"><strong>@context.DeclarationNumber</strong></MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Master BL">
+                                    <MudText Typo="Typo.body2">@context.MasterBL</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Containers">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">
+                                        @context.Containers.Count / @context.NoOfContainers
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Consignee">
+                                    <MudText Typo="Typo.caption">@context.ConsigneeName</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Clearance Type">
+                                    <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(context.ClearanceType)">
+                                        @context.ClearanceType
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Actions">
+                                    <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                  Size="Size.Small"
+                                                  Color="Color.Info"
+                                                  Href="@($"/containers/{context.Containers.FirstOrDefault()}")"
+                                                  Disabled="@(!context.Containers.Any())" />
+                                </MudTd>
+                            </RowTemplate>
+                            <ChildRowContent>
+                                <MudTd ColSpan="6">
+                                    <MudCard Elevation="1" Class="ma-2">
+                                        <MudCardHeader>
+                                            <CardHeaderContent>
+                                                <MudText Typo="Typo.h6">Containers under Declaration @context.DeclarationNumber</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">Master BL: @context.MasterBL</MudText>
+                                            </CardHeaderContent>
+                                        </MudCardHeader>
+                                        <MudCardContent>
+                                            <MudSimpleTable Dense="true">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Container Number</th>
+                                                        <th>Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var container in context.Containers)
+                                                    {
+                                                        <tr>
+                                                            <td>
+                                                                <MudLink Href="@($"/containers/{container}")">
+                                                                    <strong>@container</strong>
+                                                                </MudLink>
+                                                            </td>
+                                                            <td>
+                                                                <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                              Size="Size.Small"
+                                                                              Color="Color.Info"
+                                                                              Href="@($"/containers/{container}")" />
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </MudSimpleTable>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudTd>
+                            </ChildRowContent>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                            <NoRecordsContent>
+                                <MudAlert Severity="Severity.Info">No non-consolidated cargo groups found.</MudAlert>
+                            </NoRecordsContent>
+                        </MudTable>
+                    </MudTabPanel>
+                    
+                    <!-- Consolidated Sub-Tab -->
+                    <MudTabPanel Text="Consolidated" Icon="@Icons.Material.Outlined.Inventory" BadgeData="@consolidatedGroups.Count" BadgeColor="Color.Warning">
+                        <MudAlert Severity="Severity.Info" Class="mb-4">
+                            <MudText>Consolidated Cargo: One Master BL has multiple House BLs (different consignees). A Master BL can span one or multiple containers. Expand to see all House BLs and containers under each Master BL.</MudText>
+                        </MudAlert>
+                        
+                        <MudTable Items="@consolidatedGroups" 
+                                 Dense="true" 
+                                 Hover="true" 
+                                 Breakpoint="Breakpoint.Sm"
+                                 Loading="@isLoadingCargoGroups"
+                                 ExpandableRows="true"
+                                 @bind-ExpandedItems="expandedConsolidated">
+                            <HeaderContent>
+                                <MudTh>Master BL</MudTh>
+                                <MudTh>Containers</MudTh>
+                                <MudTh>House BLs</MudTh>
+                                <MudTh>Clearance Type</MudTh>
+                                <MudTh>Actions</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Master BL">
+                                    <MudText Typo="Typo.body2"><strong>@context.MasterBL</strong></MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Containers">
+                                    @if (context.ContainerNumbers.Any())
+                                    {
+                                        <MudStack Spacing="1">
+                                            @foreach (var container in context.ContainerNumbers.Take(3))
+                                            {
+                                                <MudLink Href="@($"/containers/{container}")" Typo="Typo.caption">
+                                                    @container
+                                                </MudLink>
+                                            }
+                                            @if (context.ContainerNumbers.Count > 3)
+                                            {
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                    +@(context.ContainerNumbers.Count - 3) more
+                                                </MudText>
+                                            }
+                                        </MudStack>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">No containers</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="House BLs">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning">
+                                        @context.HouseBLDetails.Count HBLs
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Clearance Type">
+                                    @if (context.HouseBLDetails.Any())
+                                    {
+                                        var clearanceType = context.HouseBLDetails.First().ClearanceType;
+                                        <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(clearanceType)">
+                                            @clearanceType
+                                        </MudChip>
+                                    }
+                                </MudTd>
+                                <MudTd DataLabel="Actions">
+                                    @if (context.ContainerNumbers.Any())
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                      Size="Size.Small"
+                                                      Color="Color.Info"
+                                                      Href="@($"/containers/{context.ContainerNumbers.First()}")" />
+                                    }
+                                </MudTd>
+                            </RowTemplate>
+                            <ChildRowContent>
+                                <MudTd ColSpan="5">
+                                    <MudCard Elevation="1" Class="ma-2">
+                                        <MudCardHeader>
+                                            <CardHeaderContent>
+                                                <MudText Typo="Typo.h6">House BLs under Master BL: @context.MasterBL</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                    @context.ContainerNumbers.Count container(s): @string.Join(", ", context.ContainerNumbers)
+                                                </MudText>
+                                            </CardHeaderContent>
+                                        </MudCardHeader>
+                                        <MudCardContent>
+                                            <MudSimpleTable Dense="true" Striped="true">
+                                                <thead>
+                                                    <tr>
+                                                        <th>House BL</th>
+                                                        <th>Declaration</th>
+                                                        <th>Consignee</th>
+                                                        <th>Clearance Type</th>
+                                                        <th>Container</th>
+                                                        <th>Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var hbl in context.HouseBLDetails)
+                                                    {
+                                                        <tr>
+                                                            <td><strong>@hbl.HouseBL</strong></td>
+                                                            <td>@hbl.DeclarationNumber</td>
+                                                            <td>@hbl.ConsigneeName</td>
+                                                            <td>
+                                                                <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(hbl.ClearanceType)">
+                                                                    @hbl.ClearanceType
+                                                                </MudChip>
+                                                            </td>
+                                                            <td>
+                                                                <MudLink Href="@($"/containers/{hbl.ContainerNumber}")" Typo="Typo.caption">
+                                                                    @hbl.ContainerNumber
+                                                                </MudLink>
+                                                            </td>
+                                                            <td>
+                                                                <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                                                              Size="Size.Small"
+                                                                              Color="Color.Info"
+                                                                              Href="@($"/containers/{hbl.ContainerNumber}")" />
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </MudSimpleTable>
+                                        </MudCardContent>
+                                    </MudCard>
+                                </MudTd>
+                            </ChildRowContent>
+                            <PagerContent>
+                                <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                            </PagerContent>
+                            <NoRecordsContent>
+                                <MudAlert Severity="Severity.Info">No consolidated cargo groups found.</MudAlert>
+                            </NoRecordsContent>
+                        </MudTable>
+                    </MudTabPanel>
+                </MudTabs>
+            </MudTabPanel>
+            
+            <!-- Missing Data Tab -->
+            <MudTabPanel Text="Missing Data" Icon="@Icons.Material.Outlined.Warning" BadgeData="@missingContainers" BadgeColor="Color.Error">
+                
+                <!-- Filters -->
+                <MudGrid Class="mb-4">
+                    <MudItem xs="12" md="3">
+                        <MudSelect T="string" @bind-Value="filterScanner" Label="Scanner" Variant="Variant.Outlined">
+                            <MudSelectItem T="string" Value="@("All")">All Scanners</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("FS6000")">FS6000</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("ASE")">ASE</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("HeimannSmith")">Heimann Smith</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudSelect T="string" @bind-Value="filterAge" Label="Age" Variant="Variant.Outlined">
+                            <MudSelectItem T="string" Value="@("All")">All Ages</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("Today")">Today</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("Last7Days")">Last 7 Days</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("Last30Days")">Last 30 Days</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("Older")">Older than 30 Days</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudTextField T="string" @bind-Value="searchTerm" Label="Search" Placeholder="Container number..." Variant="Variant.Outlined" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Outlined.Search" />
+                    </MudItem>
+                    <MudItem xs="12" md="2">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" OnClick="@ApplyFilters">Apply</MudButton>
+                    </MudItem>
+                </MudGrid>
+                
+                <!-- Bulk Actions for Selected -->
+                @if (selectedMissing.Any())
+                {
+                    <MudAlert Severity="Severity.Info" Class="mb-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudText><strong>@selectedMissing.Count</strong> container(s) selected</MudText>
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Size="Size.Small" 
+                                          Variant="Variant.Filled" 
+                                          Color="Color.Primary"
+                                          StartIcon="@Icons.Material.Outlined.CloudDownload"
+                                          OnClick="@BulkRequestBOE">
+                                    Request BOE for Selected
+                                </MudButton>
+                                <MudButton Size="Size.Small" 
+                                          Variant="Variant.Outlined" 
+                                          Color="Color.Default"
+                                          StartIcon="@Icons.Material.Outlined.Download"
+                                          OnClick="@ExportSelected">
+                                    Export
+                                </MudButton>
+                                <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small" OnClick="@ClearSelection" />
+                            </MudStack>
+                        </MudStack>
+                    </MudAlert>
+                }
+                
+                <!-- Missing Data Table -->
+                <MudTable Items="@filteredMissingData" 
+                         Dense="true" 
+                         Hover="true" 
+                         Breakpoint="Breakpoint.Sm"
+                         MultiSelection="true"
+                         @bind-SelectedItems="selectedMissing"
+                         Loading="@isLoading">
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Scanner</MudTh>
+                        <MudTh>Scan Date</MudTh>
+                        <MudTh>Days Missing</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Retries</MudTh>
+                        <MudTh>Last Checked</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container">
+                            <MudLink Href="@($"/containers/{context.ContainerNumber}")">
+                                <strong>@context.ContainerNumber</strong>
+                            </MudLink>
+                        </MudTd>
+                        <MudTd DataLabel="Scanner">
+                            <MudChip T="string" Size="Size.Small" Color="@GetScannerColor(context.ScannerType)">
+                                @context.ScannerType
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Scan Date">
+                            <MudText Typo="Typo.caption">@context.ScanDate.ToString("dd MMM yyyy")</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@context.ScanDate.ToString("HH:mm")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Days Missing">
+                            <MudChip T="string" 
+                                     Size="Size.Small" 
+                                     Color="@GetAgeColor(context.DaysMissing)">
+                                @context.DaysMissing days
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" 
+                                     Size="Size.Small" 
+                                     Color="@GetStatusColor(context.Status)"
+                                     Icon="@GetStatusIcon(context.Status)">
+                                @context.Status
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Retries">
+                            @if (context.RetryCount > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning">@context.RetryCount</MudChip>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption">-</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Last Checked">
+                            @if (context.LastChecked.HasValue)
+                            {
+                                <MudText Typo="Typo.caption">@context.LastChecked.Value.ToString("dd MMM HH:mm")</MudText>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Never</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Outlined.CloudDownload"
+                                              Size="Size.Small"
+                                              Color="Color.Primary"
+                                              OnClick="@(() => RequestBOE(context.ContainerNumber))"
+                                              title="Request BOE from ICUMS" />
+                                <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                              Size="Size.Small"
+                                              Color="Color.Default"
+                                              Href="@($"/containers/{context.ContainerNumber}")"
+                                              title="View container details" />
+                            </MudStack>
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 10, 25, 50, 100 }" />
+                    </PagerContent>
+                    <NoRecordsContent>
+                        <EmptyState Icon="@Icons.Material.Outlined.CheckCircle"
+                                   Message="All containers are complete!"
+                                   SubMessage="Every scanned container has corresponding ICUMS data"
+                                   Height="300">
+                            <ActionButton>
+                                <MudButton Variant="Variant.Outlined" Color="Color.Success" StartIcon="@Icons.Material.Outlined.Celebration">
+                                    Excellent! 100% Complete
+                                </MudButton>
+                            </ActionButton>
+                        </EmptyState>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudTabPanel>
+            
+            <!-- Complete Data Tab -->
+            <MudTabPanel Text="Complete" Icon="@Icons.Material.Outlined.CheckCircle" BadgeData="@completeContainers" BadgeColor="Color.Success">
+                <MudTable Items="@completeData" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@isLoading">
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Scanner</MudTh>
+                        <MudTh>Scan Date</MudTh>
+                        <MudTh>ICUMS Data Date</MudTh>
+                        <MudTh>Time to Complete</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container">
+                            <MudLink Href="@($"/containers/{context.ContainerNumber}")">
+                                @context.ContainerNumber
+                            </MudLink>
+                        </MudTd>
+                        <MudTd DataLabel="Scanner">
+                            <MudChip T="string" Size="Size.Small" Color="@GetScannerColor(context.ScannerType)">
+                                @context.ScannerType
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Scan Date">
+                            <MudText Typo="Typo.caption">@context.ScanDate.ToString("dd MMM yyyy HH:mm")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="ICUMS Date">
+                            @if (context.ICUMSDataDate.HasValue)
+                            {
+                                <MudText Typo="Typo.caption">@context.ICUMSDataDate.Value.ToString("dd MMM yyyy HH:mm")</MudText>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption">-</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Time to Complete">
+                            @if (context.ICUMSDataDate.HasValue)
+                            {
+                                var timeSpan = context.ICUMSDataDate.Value - context.ScanDate;
+                                <MudText Typo="Typo.caption">@FormatTimeSpan(timeSpan)</MudText>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption">-</MudText>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                          Size="Size.Small"
+                                          Href="@($"/containers/{context.ContainerNumber}")" />
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager PageSizeOptions="new int[] { 10, 25, 50 }" />
+                    </PagerContent>
+                </MudTable>
+            </MudTabPanel>
+            
+            <!-- Analytics Tab -->
+            <MudTabPanel Text="Analytics" Icon="@Icons.Material.Outlined.Analytics">
+                <MudPaper Elevation="0" Class="pa-8">
+                    <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                        <MudIcon Icon="@Icons.Material.Outlined.Analytics" Size="Size.Large" Color="Color.Secondary" />
+                        <MudText Typo="Typo.h5" Color="Color.Secondary">Analytics -- Coming Soon</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center">
+                            Completeness trends, scanner distribution charts, and time-to-completion analysis
+                            will be available in a future update.
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudTabPanel>
+            
+            <!-- Service Logs Tab -->
+            <MudTabPanel Text="Service Logs" Icon="@Icons.Material.Outlined.History">
+                @if (serviceLogs.Any())
+                {
+                    <MudTable Items="@serviceLogs" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                        <ToolBarContent>
+                            <MudText Typo="Typo.h6">Recent Service Runs</MudText>
+                            <MudSpacer />
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Last 50 checks</MudText>
+                        </ToolBarContent>
+                        <HeaderContent>
+                            <MudTh>Run Time</MudTh>
+                            <MudTh>Processed</MudTh>
+                            <MudTh>New</MudTh>
+                            <MudTh>Updated</MudTh>
+                            <MudTh>Skipped</MudTh>
+                            <MudTh>Duration</MudTh>
+                            <MudTh>Status</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Run Time">
+                                <MudText Typo="Typo.caption">@context.RunTime.ToString("dd MMM HH:mm:ss")</MudText>
+                            </MudTd>
+                            <MudTd DataLabel="Processed">@context.ProcessedCount</MudTd>
+                            <MudTd DataLabel="New">@context.NewCount</MudTd>
+                            <MudTd DataLabel="Updated">@context.UpdatedCount</MudTd>
+                            <MudTd DataLabel="Skipped">@context.SkippedCount</MudTd>
+                            <MudTd DataLabel="Duration">@context.Duration.TotalSeconds.ToString("F1")s</MudTd>
+                            <MudTd DataLabel="Status">
+                                <MudChip T="string" Size="Size.Small" Color="@(context.Success ? Color.Success : Color.Error)">
+                                    @(context.Success ? "Success" : "Failed")
+                                </MudChip>
+                            </MudTd>
+                        </RowTemplate>
+                        <PagerContent>
+                            <MudTablePager PageSizeOptions="new int[] { 10, 25, 50 }" />
+                        </PagerContent>
+                    </MudTable>
+                }
+                else
+                {
+                    <MudPaper Elevation="0" Class="pa-8">
+                        <MudStack AlignItems="AlignItems.Center" Spacing="3">
+                            <MudIcon Icon="@Icons.Material.Outlined.History" Size="Size.Large" Color="Color.Secondary" />
+                            <MudText Typo="Typo.h5" Color="Color.Secondary">Service Logs -- Coming Soon</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center">
+                                Service run history and detailed processing logs will be available once the logging integration is complete.
+                            </MudText>
+                        </MudStack>
+                    </MudPaper>
+                }
+            </MudTabPanel>
+            
+            <!-- Ready for Validation Tab -->
+            <MudTabPanel Text="Ready for Validation" Icon="@Icons.Material.Outlined.FactCheck" BadgeData="@readyForValidationCount" BadgeColor="Color.Info">
+                <MudStack Spacing="3">
+                    <!-- Filters -->
+                    <MudPaper Elevation="1" Class="pa-3">
+                        <MudGrid>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSelect T="string" 
+                                          Label="Clearance Type" 
+                                          Variant="Variant.Outlined"
+                                          @bind-Value="filterClearanceType"
+                                          Clearable="true">
+                                    <MudSelectItem T="string">All Types</MudSelectItem>
+                                    <MudSelectItem T="string">CMR</MudSelectItem>
+                                    <MudSelectItem T="string">IMEX</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSelect T="string" 
+                                          Label="Scanner Type" 
+                                          Variant="Variant.Outlined"
+                                          @bind-Value="filterScannerType"
+                                          Clearable="true">
+                                    <MudSelectItem T="string">All Scanners</MudSelectItem>
+                                    <MudSelectItem T="string">ASE</MudSelectItem>
+                                    <MudSelectItem T="string">FS6000</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudSelect T="string" 
+                                          Label="Status" 
+                                          Variant="Variant.Outlined"
+                                          @bind-Value="filterStatus"
+                                          Clearable="true">
+                                    <MudSelectItem T="string">All Status</MudSelectItem>
+                                    <MudSelectItem T="string">Pending</MudSelectItem>
+                                    <MudSelectItem T="string">Validated</MudSelectItem>
+                                    <MudSelectItem T="string">In Review</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudTextField T="string" 
+                                             Label="Search" 
+                                             Variant="Variant.Outlined"
+                                             @bind-Value="searchTerm"
+                                             Adornment="Adornment.Start"
+                                             AdornmentIcon="@Icons.Material.Outlined.Search"
+                                             Placeholder="Container number..." />
+                            </MudItem>
+                        </MudGrid>
+                        <MudStack Row="true" Justify="Justify.FlexEnd" Class="mt-3">
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary"
+                                      StartIcon="@Icons.Material.Outlined.FilterList"
+                                      OnClick="@ApplyValidationFilters">
+                                Apply Filters
+                            </MudButton>
+                        </MudStack>
+                    </MudPaper>
+
+                    <!-- Validation Table -->
+                    <MudPaper Elevation="1">
+                        <MudTable T="ValidationContainerItem" 
+                                 Items="@filteredValidationContainers" 
+                                 Dense="true"
+                                 Hover="true"
+                                 Striped="true"
+                                 Loading="@isLoadingValidationData"
+                                 FixedHeader="true"
+                          Height="600px"
+                          MultiSelection="true"
+                          @bind-SelectedItems="selectedValidationContainers">
+                    <HeaderContent>
+                        <MudTh>Container Number</MudTh>
+                        <MudTh>Clearance Type</MudTh>
+                        <MudTh>Scanner</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Data Completeness</MudTh>
+                        <MudTh>Scanner Data</MudTh>
+                        <MudTh>ICUMS Data</MudTh>
+                        <MudTh>Image Data</MudTh>
+                        <MudTh>Created</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Container Number">
+                                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudText Typo="Typo.body2">@context.ContainerNumber</MudText>
+                                        <MudIconButton Icon="@Icons.Material.Outlined.ContentCopy" 
+                                                      Size="Size.Small"
+                                               OnClick="@(() => CopyToClipboard(context.ContainerNumber))" />
+                                    </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Clearance Type">
+                            <MudChip T="string" Size="Size.Small" Color="@GetClearanceTypeColor(context.ClearanceType)" Variant="Variant.Filled">
+                                @context.ClearanceType
+                                    </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Scanner">
+                            <MudChip T="string" Size="Size.Small" Color="@GetScannerTypeColor(context.ScannerType)" Variant="Variant.Filled">
+                                @context.ScannerType
+                                    </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Size="Size.Small" Color="@GetValidationStatusColor(context.Status)" Variant="Variant.Filled" Icon="@GetValidationStatusIcon(context.Status)">
+                                @context.Status
+                                    </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Data Completeness">
+                                    <MudStack Spacing="1">
+                                <MudProgressLinear Color="@GetCompletenessColor(context.DataCompletenessPercentage)"
+                                                   Value="@context.DataCompletenessPercentage"
+                                                   Min="0" Max="100" Size="Size.Small" Rounded="true" />
+                                <MudText Typo="Typo.caption" Color="@GetCompletenessColor(context.DataCompletenessPercentage)">
+                                    @context.DataCompletenessPercentage%
+                                        </MudText>
+                                    </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Scanner Data">
+                                    <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="@(context.ScannerDataPercentage == 100 ? Color.Success : Color.Warning)">
+                                    @(context.ScannerDataPercentage == 100 ? "Complete" : "Incomplete")
+                                        </MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@context.ScannerDataPercentage%</MudText>
+                                    </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="ICUMS Data">
+                                    <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="@(context.ICUMSDataPercentage == 100 ? Color.Success : Color.Warning)">
+                                    @(context.ICUMSDataPercentage == 100 ? "Complete" : "Incomplete")
+                                        </MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@context.ICUMSDataPercentage%</MudText>
+                                    </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Image Data">
+                            <MudChip T="string" Size="Size.Small" Color="@(context.HasImageData ? Color.Success : Color.Error)" Variant="Variant.Filled">
+                                @(context.HasImageData ? "Available" : "Missing")
+                                    </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Created">
+                            <MudText Typo="Typo.caption">@context.CreatedAt.ToString("MMM dd, yyyy HH:mm")</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility" 
+                                                      Size="Size.Small"
+                                                      Color="Color.Info"
+                                               OnClick="@(() => ViewContainer(context.ContainerNumber))" />
+                                @if (context.Status == "Validated")
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Outlined.Check" 
+                                                          Size="Size.Small"
+                                                          Color="Color.Success"
+                                                   OnClick="@(() => ApproveContainer(context.ContainerNumber))" />
+                                            <MudIconButton Icon="@Icons.Material.Outlined.Close" 
+                                                          Size="Size.Small"
+                                                          Color="Color.Error"
+                                                   OnClick="@(() => RejectContainer(context.ContainerNumber))" />
+                                        }
+                                    </MudStack>
+                        </MudTd>
+                    </RowTemplate>
+                        </MudTable>
+                        
+                        <!-- Pagination -->
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="pa-3">
+                            <MudText Typo="Typo.body2">
+                                Showing @((currentPage - 1) * pageSize + 1) to @(Math.Min(currentPage * pageSize, totalValidationContainers)) of @totalValidationContainers containers
+                            </MudText>
+                            <MudPagination Count="@totalPages" 
+                                          Selected="@currentPage" 
+                                          SelectedChanged="@((int page) => OnPageChanged(page))" />
+                        </MudStack>
+                    </MudPaper>
+                    
+                    <!-- Queue Publishing Health Section -->
+                    <MudDivider Class="my-4" />
+                    <MudPaper Elevation="1" Class="pa-3">
+                        <MudStack Spacing="3">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.h6">
+                                    <MudIcon Icon="@Icons.Material.Outlined.HealthAndSafety" Class="mr-2" Color="Color.Primary" />
+                                    Queue Publishing Health
+                                    @if (queuePublishingHealth?.Alerts?.Count > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Class="ml-2">
+                                            @queuePublishingHealth.Alerts.Count alerts
+                                        </MudChip>
+                                    }
+                                </MudText>
+                                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                    <MudChip T="string" Size="Size.Small" Color="@GetQueueHealthStatusColor()" Icon="@GetQueueHealthStatusIcon()">
+                                        @(queuePublishingHealth?.Status ?? "Loading...")
+                                    </MudChip>
+                                    <MudButton Variant="Variant.Text" 
+                                              Color="Color.Primary"
+                                              Size="Size.Small"
+                                              StartIcon="@Icons.Material.Outlined.Refresh"
+                                              OnClick="@LoadQueuePublishingHealth"
+                                              Disabled="@isLoadingQueuePublishingHealth">
+                                        Refresh
+                                    </MudButton>
+                                </MudStack>
+                            </MudStack>
+                            
+                            @if (queuePublishingHealth?.Metrics != null)
+                            {
+                                <!-- Overview Metrics Cards -->
+                                <MudGrid>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%); color: white;">
+                                            <MudStack Spacing="2">
+                                                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Success Rate</MudText>
+                                                <MudText Typo="Typo.h5">@queuePublishingHealth.Metrics.SuccessRate.ToString("F2")%</MudText>
+                                                <MudProgressLinear Color="Color.Success" Value="@queuePublishingHealth.Metrics.SuccessRate" Min="0" Max="100" Size="Size.Small" Rounded="true" Style="background: rgba(255,255,255,0.2);" />
+                                            </MudStack>
+                                        </MudPaper>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #1976d2 0%, #1565c0 100%); color: white;">
+                                            <MudStack Spacing="2">
+                                                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Total Attempts</MudText>
+                                                <MudText Typo="Typo.h5">@queuePublishingHealth.Metrics.TotalAttempts</MudText>
+                                                <MudText Typo="Typo.caption">@queuePublishingHealth.Metrics.SuccessfulPublishes successful</MudText>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #d32f2f 0%, #c62828 100%); color: white;">
+                                            <MudStack Spacing="2">
+                                                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Failed Publishes</MudText>
+                                                <MudText Typo="Typo.h5">@queuePublishingHealth.Metrics.FailedPublishes</MudText>
+                                                <MudText Typo="Typo.caption">@queuePublishingHealth.Metrics.SkippedPublishes skipped</MudText>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </MudItem>
+                                    <MudItem xs="12" sm="6" md="3">
+                                        <MudPaper Elevation="2" Class="pa-3 rounded-lg" Style="background: linear-gradient(135deg, #f57c00 0%, #ef6c00 100%); color: white;">
+                                            <MudStack Spacing="2">
+                                                <MudText Typo="Typo.caption" Style="opacity: 0.9;">Avg Retry Count</MudText>
+                                                <MudText Typo="Typo.h5">@queuePublishingHealth.Metrics.AverageRetryCount.ToString("F2")</MudText>
+                                                <MudText Typo="Typo.caption">@queuePublishingHealth.Metrics.TotalRetries total retries</MudText>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </MudItem>
+                                </MudGrid>
+
+                                <!-- Alerts -->
+                                @if (queuePublishingHealth.Alerts != null && queuePublishingHealth.Alerts.Any())
+                                {
+                                    <MudPaper Elevation="1" Class="pa-3">
+                                        <MudText Typo="Typo.subtitle1" Class="mb-2">
+                                            <MudIcon Icon="@Icons.Material.Outlined.Warning" Class="mr-2" Color="Color.Warning" />
+                                            Active Alerts
+                                        </MudText>
+                                        <MudStack Spacing="1">
+                                            @foreach (var alert in queuePublishingHealth.Alerts)
+                                            {
+                                                var severity = alert.Contains("[Critical]", StringComparison.OrdinalIgnoreCase) ? Severity.Error : Severity.Warning;
+                                                <MudAlert Severity="@severity" Variant="Variant.Filled" Dense="true">@alert</MudAlert>
+                                            }
+                                        </MudStack>
+                                    </MudPaper>
+                                }
+
+                                <!-- Metrics Summary Table -->
+                                <MudGrid>
+                                    <MudItem xs="12" md="6">
+                                        <MudPaper Elevation="1" Class="pa-3">
+                                            <MudText Typo="Typo.subtitle1" Class="mb-2">Performance Metrics</MudText>
+                                            <MudSimpleTable Dense="true">
+                                                <tbody>
+                                                    <tr><td><MudText Typo="Typo.caption">Avg Publish Duration</MudText></td><td><MudText Typo="Typo.body2">@FormatDuration(queuePublishingHealth.Metrics.AveragePublishDuration)</MudText></td></tr>
+                                                    <tr><td><MudText Typo="Typo.caption">Time Window</MudText></td><td><MudText Typo="Typo.body2">@FormatTimeSpan(queuePublishingHealth.Metrics.TimeWindow)</MudText></td></tr>
+                                                </tbody>
+                                            </MudSimpleTable>
+                                        </MudPaper>
+                                    </MudItem>
+                                    <MudItem xs="12" md="6">
+                                        <MudPaper Elevation="1" Class="pa-3">
+                                            <MudText Typo="Typo.subtitle1" Class="mb-2">Statistics</MudText>
+                                            <MudSimpleTable Dense="true">
+                                                <tbody>
+                                                    <tr><td><MudText Typo="Typo.caption">Total Attempts</MudText></td><td><MudText Typo="Typo.body2">@queuePublishingHealth.Metrics.TotalAttempts</MudText></td></tr>
+                                                    <tr><td><MudText Typo="Typo.caption">Total Retries</MudText></td><td><MudText Typo="Typo.body2">@queuePublishingHealth.Metrics.TotalRetries</MudText></td></tr>
+                                                </tbody>
+                                            </MudSimpleTable>
+                                        </MudPaper>
+                                    </MudItem>
+                                </MudGrid>
+
+                                <!-- Recent Failures -->
+                                @if (queuePublishingHealth.Metrics.RecentFailures != null && queuePublishingHealth.Metrics.RecentFailures.Any())
+                                {
+                                    <MudPaper Elevation="1" Class="pa-3">
+                                        <MudText Typo="Typo.subtitle1" Class="mb-2">
+                                            <MudIcon Icon="@Icons.Material.Outlined.ErrorOutline" Class="mr-2" Color="Color.Error" />
+                                            Recent Failures (Last 5)
+                                        </MudText>
+                                        <MudTable Items="@queuePublishingHealth.Metrics.RecentFailures.Take(5)" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                                            <HeaderContent>
+                                                <MudTh>Timestamp</MudTh>
+                                                <MudTh>Scanner</MudTh>
+                                                <MudTh>Retries</MudTh>
+                                                <MudTh>Error</MudTh>
+                                            </HeaderContent>
+                                            <RowTemplate>
+                                                <MudTd DataLabel="Timestamp"><MudText Typo="Typo.caption">@context.Timestamp.ToString("HH:mm:ss")</MudText></MudTd>
+                                                <MudTd DataLabel="Scanner"><MudChip T="string" Size="Size.Small" Color="@GetScannerColor(context.ScannerType)">@context.ScannerType</MudChip></MudTd>
+                                                <MudTd DataLabel="Retries"><MudText Typo="Typo.body2">@context.RetryCount</MudText></MudTd>
+                                                <MudTd DataLabel="Error"><MudText Typo="Typo.caption" Style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">@context.ErrorMessage</MudText></MudTd>
+                                            </RowTemplate>
+                                        </MudTable>
+                                    </MudPaper>
+                                }
+                            }
+                            else if (isLoadingQueuePublishingHealth)
+                            {
+                                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                                <MudText Typo="Typo.body2" Color="Color.Secondary" Align="Align.Center">Loading queue publishing health...</MudText>
+                            }
+                            else
+                            {
+                                <MudAlert Severity="Severity.Info" Dense="true">Queue publishing health data is not available.</MudAlert>
+                            }
+                        </MudStack>
+                    </MudPaper>
+                </MudStack>
+            </MudTabPanel>
+
+            <!-- Settings Tab -->
+            <MudTabPanel Text="Settings" Icon="@Icons.Material.Outlined.Settings">
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.h6" Class="mb-4">Service Configuration</MudText>
+                        <MudStack Spacing="3">
+                            <MudNumericField T="int" 
+                                            @bind-Value="checkInterval" 
+                                            Label="Check Interval (minutes)" 
+                                            Variant="Variant.Outlined"
+                                            Min="1"
+                                            Max="60" />
+                            <MudSwitch T="bool" 
+                                      @bind-Value="autoRequestMissing" 
+                                      Color="Color.Primary" 
+                                      Label="Auto-request missing BOE data" />
+                            <MudSwitch T="bool" 
+                                      @bind-Value="enableNotifications" 
+                                      Color="Color.Primary" 
+                                      Label="Enable notifications for missing data" />
+                            <MudDivider />
+                            <MudButton Variant="Variant.Filled" 
+                                      Color="Color.Primary" 
+                                      StartIcon="@Icons.Material.Outlined.Save"
+                                      OnClick="@(() => Snackbar.Add("Settings saved", Severity.Success))">
+                                Save Settings
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                    
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.h6" Class="mb-4">Service Control</MudText>
+                        <MudStack Spacing="2">
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="@(serviceRunning ? Color.Error : Color.Success)"
+                                      StartIcon="@(serviceRunning ? Icons.Material.Outlined.Stop : Icons.Material.Outlined.PlayArrow)"
+                                      FullWidth="true"
+                                      OnClick="@ToggleService">
+                                @(serviceRunning ? "Stop Service" : "Start Service")
+                            </MudButton>
+                            <MudButton Variant="Variant.Outlined" 
+                                      Color="Color.Info"
+                                      StartIcon="@Icons.Material.Outlined.Refresh"
+                                      FullWidth="true"
+                                      OnClick="@(() => Snackbar.Add("Restarting service...", Severity.Info))">
+                                Restart Service
+                            </MudButton>
+                            <MudDivider Class="my-2" />
+                            <MudAlert Severity="Severity.Info" Dense="true">
+                                Service will check @totalContainers containers every @checkInterval minutes
+                            </MudAlert>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+            </MudTabPanel>
+        </MudTabs>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private List<BreadcrumbItem> breadcrumbs = new();
+    
+    // Service status
+    private bool serviceRunning = true;
+    private bool isChecking = false;
+    private bool isLoading = false;
+    private DateTime lastCheckTime = DateTime.Now.AddMinutes(-3);
+    private string nextCheckIn = "2m 15s";
+    
+    // Stats (initialized to 0, will be loaded from API)
+    private int totalContainers = 0;
+    private int completeContainers = 0;
+    private int missingContainers = 0;
+    private int failedRequests = 0;
+    private int criticalMissing = 0; // Missing > 7 days
+    private double completenessRate = 0;
+    
+    // Scanner breakdown (initialized to 0, will be loaded from API)
+    private int fs6000Total = 0;
+    private int fs6000Complete = 0;
+    private int fs6000Missing = 0;
+    private double fs6000Rate = 0;
+    
+    private int aseTotal = 0;
+    private int aseComplete = 0;
+    private int aseMissing = 0;
+    private double aseRate = 0;
+    
+    // Filters
+    private string filterScanner = "All";
+    private string filterAge = "All";
+    private string searchTerm = "";
+    
+    // Settings
+    private int checkInterval = 5;
+    private bool autoRequestMissing = false;
+    private bool enableNotifications = true;
+    
+    // Data
+    private List<MissingContainerData> allMissingData = new();
+    private List<MissingContainerData> filteredMissingData = new();
+    private List<CompleteContainerData> completeData = new();
+    private List<ServiceLogEntry> serviceLogs = new();
+    private HashSet<MissingContainerData> selectedMissing = new();
+    
+    // Validation Data
+    private List<ValidationContainerItem> allValidationContainers = new();
+    private List<ValidationContainerItem> filteredValidationContainers = new();
+    private HashSet<ValidationContainerItem> selectedValidationContainers = new();
+    private bool isLoadingValidationData = false;
+    private bool selectAll = false;
+    private int readyForValidationCount = 0;
+    
+    // ✅ CONSOLIDATED CARGO MODEL - New data for cargo groups
+    private List<NonConsolidatedCargoGroup> nonConsolidatedGroups = new();
+    private List<ConsolidatedCargoGroup> consolidatedGroups = new();
+    private bool isLoadingCargoGroups = false;
+    
+    // ✅ PHASE 3: Queue Publishing Health
+    private QueuePublishingHealthResponse? queuePublishingHealth;
+    private bool isLoadingQueuePublishingHealth = false;
+    private HashSet<NonConsolidatedCargoGroup> expandedNonConsolidated = new();
+    private HashSet<ConsolidatedCargoGroup> expandedConsolidated = new();
+    
+    // Validation Filters
+    private string filterClearanceType = "";
+    private string filterScannerType = "";
+    private string filterStatus = "";
+    
+    // Pagination
+    private int currentPage = 1;
+    private int pageSize = 10;
+    private int totalValidationContainers = 0;
+    private int totalPages = 0;
+    
+    // Auto-refresh timer
+    private System.Threading.Timer? _refreshTimer;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        breadcrumbs = new List<BreadcrumbItem>
+        {
+            new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
+            new BreadcrumbItem("Validation", href: "#", icon: Icons.Material.Outlined.FactCheck),
+            new BreadcrumbItem("Container Completeness", href: null, disabled: true)
+        };
+        
+        // ✅ Wait for authentication to be ready before making API calls
+        await WaitForAuthenticationAsync();
+        
+        await LoadData();
+        await LoadValidationData();
+        await LoadCargoGroups();
+        await LoadQueuePublishingHealth();
+        await LoadRecordSummaryAsync();
+
+        // ✅ AUTO-REFRESH: Refresh data every 30 seconds for real-time updates
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadData();
+                await LoadValidationData();
+                await LoadCargoGroups();
+                await LoadRecordSummaryAsync();
+                StateHasChanged();
+            });
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    // 1.15.0 — Record Completeness summary for the banner at the top of this page
+    private RecordIntegritySummary? _recordSummary;
+
+    private async Task LoadRecordSummaryAsync()
+    {
+        try
+        {
+            _recordSummary = await ApiService.GetAsync<RecordIntegritySummary>("/api/recordcompleteness/summary");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load record completeness summary for banner (non-fatal)");
+        }
+    }
+
+    public class RecordIntegritySummary
+    {
+        public int TotalRecords { get; set; }
+        public int TotalMultiContainer { get; set; }
+        public int IntegrityGapContainers { get; set; }
+        public int Pending { get; set; }
+        public int PartiallyReady { get; set; }
+        public int Ready { get; set; }
+        public int InAnalysis { get; set; }
+        public int InAudit { get; set; }
+        public int Submitted { get; set; }
+        public int Completed { get; set; }
+        public int Archived { get; set; }
+    }
+    
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+    
+    /// <summary>
+    /// Wait for authentication to be ready before making API calls
+    /// </summary>
+    private async Task WaitForAuthenticationAsync()
+    {
+        try
+        {
+            // Wait for authentication state to be available
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            
+            // If using SimpleAuthStateProvider, wait for token to be available
+            if (AuthStateProvider is NickScanWebApp.New.Services.SimpleAuthStateProvider simpleAuth)
+            {
+                var token = await simpleAuth.GetTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    // Wait a bit and retry (token might still be loading from session storage)
+                    await Task.Delay(100);
+                    token = await simpleAuth.GetTokenAsync();
+                }
+                
+                if (!string.IsNullOrEmpty(token))
+                {
+                    Logger.LogInformation("[ContainerCompleteness] ✅ Authentication token available");
+                }
+                else
+                {
+                    Logger.LogWarning("[ContainerCompleteness] ⚠️ No authentication token available yet");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "[ContainerCompleteness] Error waiting for authentication: {Message}", ex.Message);
+        }
+    }
+    
+    private async Task LoadData()
+    {
+        isLoading = true;
+        try
+        {
+            // ✅ CONNECTED TO REAL API
+            // Load statistics
+            var stats = await ApiService.GetAsync<CompletenessStatsApi>("/api/containercompleteness/stats");
+            if (stats != null)
+            {
+                totalContainers = stats.TotalContainers;
+                completeContainers = stats.CompleteContainers;
+                missingContainers = stats.MissingContainers;
+                failedRequests = stats.FailedRequests;
+                completenessRate = stats.CompletenessRate;
+                
+                fs6000Total = stats.FS6000Total;
+                fs6000Complete = stats.FS6000Complete;
+                fs6000Missing = stats.FS6000Missing;
+                fs6000Rate = fs6000Total > 0 ? (double)fs6000Complete / fs6000Total * 100 : 0;
+                
+                aseTotal = stats.ASETotal;
+                aseComplete = stats.ASEComplete;
+                aseMissing = stats.ASEMissing;
+                aseRate = aseTotal > 0 ? (double)aseComplete / aseTotal * 100 : 0;
+                
+                lastCheckTime = stats.LastCheckTime;
+                serviceRunning = stats.ServiceRunning;
+            }
+            
+            // Load missing containers
+            var missingResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/missing");
+            if (missingResponse != null)
+            {
+                allMissingData = missingResponse.Select(m => new MissingContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    DaysMissing = (int)(DateTime.Now - m.ScanDate).TotalDays,
+                    Status = m.Status ?? "Missing",
+                    RetryCount = m.RetryCount,
+                    LastChecked = m.LastCheckedAt
+                }).ToList();
+                
+                filteredMissingData = allMissingData;
+                criticalMissing = allMissingData.Count(m => m.DaysMissing > 7);
+            }
+            
+            // Load complete containers
+            var completeResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/complete");
+            if (completeResponse != null)
+            {
+                completeData = completeResponse.Select(m => new CompleteContainerData
+                {
+                    ContainerNumber = m.ContainerNumber ?? "",
+                    ScannerType = m.ScannerType ?? "Unknown",
+                    ScanDate = m.ScanDate,
+                    ICUMSDataDate = null
+                }).ToList();
+            }
+            
+            // Initialize service logs with empty list
+            serviceLogs = new List<ServiceLogEntry>();
+            
+            Snackbar.Add("Completeness data loaded from API", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading completeness data: {Message}", ex.Message);
+            
+            // Reset to zero instead of showing fake data
+            totalContainers = 0;
+            completeContainers = 0;
+            missingContainers = 0;
+            failedRequests = 0;
+            completenessRate = 0;
+            
+            fs6000Total = 0;
+            fs6000Complete = 0;
+            fs6000Missing = 0;
+            fs6000Rate = 0;
+            
+            aseTotal = 0;
+            aseComplete = 0;
+            aseMissing = 0;
+            aseRate = 0;
+            
+            allMissingData = new List<MissingContainerData>();
+            filteredMissingData = new List<MissingContainerData>();
+            criticalMissing = 0;
+            completeData = new List<CompleteContainerData>();
+            serviceLogs = new List<ServiceLogEntry>();
+            
+            Snackbar.Add($"Error loading completeness data: {ex.Message}. Please try again.", Severity.Error);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+    
+    // API Response DTOs
+    public class CompletenessStatsApi
+    {
+        public int TotalContainers { get; set; }
+        public int CompleteContainers { get; set; }
+        public int MissingContainers { get; set; }
+        public int FailedRequests { get; set; }
+        public double CompletenessRate { get; set; }
+        public int FS6000Total { get; set; }
+        public int FS6000Complete { get; set; }
+        public int FS6000Missing { get; set; }
+        public int ASETotal { get; set; }
+        public int ASEComplete { get; set; }
+        public int ASEMissing { get; set; }
+        public DateTime LastCheckTime { get; set; }
+        public bool ServiceRunning { get; set; }
+    }
+    
+    public class ApiMissingContainer
+    {
+        public string? ContainerNumber { get; set; }
+        public string? ScannerType { get; set; }
+        public DateTime ScanDate { get; set; }
+        public string? Status { get; set; }
+        public int RetryCount { get; set; }
+        public DateTime? LastCheckedAt { get; set; }
+    }
+    
+    private async Task TriggerManualCheck()
+    {
+        isChecking = true;
+        Snackbar.Add("Triggering completeness check...", Severity.Info);
+        
+        try
+        {
+            // ✅ CONNECTED TO REAL API
+            var response = await ApiService.PostAsync<object, object>("/api/containercompleteness/trigger-check", new { });
+            
+            lastCheckTime = DateTime.Now;
+            Snackbar.Add("Completeness check completed successfully", Severity.Success);
+            
+            await LoadData(); // Refresh data
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error triggering check: {Message}", ex.Message);
+            Snackbar.Add("Could not trigger check", Severity.Error);
+        }
+        finally
+        {
+            isChecking = false;
+        }
+    }
+    
+    private void ApplyFilters()
+    {
+        filteredMissingData = allMissingData.Where(d =>
+        {
+            if (filterScanner != "All" && d.ScannerType != filterScanner)
+                return false;
+                
+            if (!string.IsNullOrWhiteSpace(searchTerm) && !d.ContainerNumber.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
+                return false;
+                
+            if (filterAge != "All")
+            {
+                var daysAgo = (DateTime.Now - d.ScanDate).Days;
+                var match = filterAge switch
+                {
+                    "Today" => daysAgo == 0,
+                    "Last7Days" => daysAgo <= 7,
+                    "Last30Days" => daysAgo <= 30,
+                    "Older" => daysAgo > 30,
+                    _ => true
+                };
+                if (!match) return false;
+            }
+            
+            return true;
+        }).ToList();
+        
+        Snackbar.Add($"{filteredMissingData.Count} containers match filters", Severity.Info);
+    }
+    
+    private async Task RequestBOE(string containerNumber)
+    {
+        try
+        {
+            // ✅ CONNECTED TO REAL API
+            await ApiService.PostAsync<object, object>($"/api/containercompleteness/request-boe/{containerNumber}", new { });
+            Snackbar.Add($"BOE request queued for {containerNumber}", Severity.Success);
+            await LoadData(); // Refresh
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error requesting BOE: {Message}", ex.Message);
+            Snackbar.Add("Could not request BOE", Severity.Error);
+        }
+    }
+    
+    private async Task BulkRequestBOE()
+    {
+        try
+        {
+            // ✅ CONNECTED TO REAL API
+            var containerNumbers = selectedMissing.Select(m => m.ContainerNumber).ToList();
+            await ApiService.PostAsync<List<string>, object>("/api/containercompleteness/request-boe-bulk", containerNumbers);
+            Snackbar.Add($"BOE requests queued for {selectedMissing.Count} containers", Severity.Success);
+            ClearSelection();
+            await LoadData(); // Refresh
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error bulk requesting BOE: {Message}", ex.Message);
+            Snackbar.Add("Could not request BOE in bulk", Severity.Error);
+        }
+    }
+    
+    private void ExportSelected()
+    {
+        Snackbar.Add($"Exporting {selectedMissing.Count} containers to Excel...", Severity.Info);
+        // TODO: Export functionality
+    }
+    
+    private void ClearSelection()
+    {
+        selectedMissing.Clear();
+    }
+    
+    private void ToggleService()
+    {
+        serviceRunning = !serviceRunning;
+        Snackbar.Add($"Service {(serviceRunning ? "started" : "stopped")}", 
+                    serviceRunning ? Severity.Success : Severity.Warning);
+    }
+    
+    private Color GetScannerColor(string scanner) => scanner switch
+    {
+        "FS6000" => Color.Primary,
+        "ASE" => Color.Secondary,
+        "HeimannSmith" => Color.Tertiary,
+        _ => Color.Default
+    };
+    
+    private Color GetAgeColor(int days) => days switch
+    {
+        <= 1 => Color.Info,
+        <= 7 => Color.Warning,
+        _ => Color.Error
+    };
+    
+    private Color GetStatusColor(string status) => status switch
+    {
+        "Complete" => Color.Success,
+        "Missing" => Color.Error,
+        "Requested" => Color.Info,
+        "Failed" => Color.Warning,
+        _ => Color.Default
+    };
+    
+    private string GetStatusIcon(string status) => status switch
+    {
+        "Complete" => Icons.Material.Outlined.CheckCircle,
+        "Missing" => Icons.Material.Outlined.Warning,
+        "Requested" => Icons.Material.Outlined.CloudQueue,
+        "Failed" => Icons.Material.Outlined.Error,
+        _ => Icons.Material.Outlined.Circle
+    };
+    
+    private string FormatTimeSpan(TimeSpan ts)
+    {
+        if (ts.TotalDays >= 1)
+            return $"{ts.TotalDays:F1} days";
+        if (ts.TotalHours >= 1)
+            return $"{ts.TotalHours:F1} hours";
+        return $"{ts.TotalMinutes:F0} minutes";
+    }
+    
+    // View Models
+    public class MissingContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public int DaysMissing { get; set; }
+        public string Status { get; set; } = "";
+        public int RetryCount { get; set; }
+        public DateTime? LastChecked { get; set; }
+    }
+    
+    public class CompleteContainerData
+    {
+        public string ContainerNumber { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public DateTime ScanDate { get; set; }
+        public DateTime? ICUMSDataDate { get; set; }
+    }
+    
+    public class ServiceLogEntry
+    {
+        public DateTime RunTime { get; set; }
+        public int ProcessedCount { get; set; }
+        public int NewCount { get; set; }
+        public int UpdatedCount { get; set; }
+        public int SkippedCount { get; set; }
+        public TimeSpan Duration { get; set; }
+        public bool Success { get; set; }
+    }
+    
+    // Validation Methods
+    private async Task LoadValidationData()
+    {
+        isLoadingValidationData = true;
+        try
+        {
+            Logger.LogInformation("🔍 Loading validation data - Page: {Page}, PageSize: {PageSize}", currentPage, pageSize);
+            
+            // ✅ FIXED: Use currentPage variable and optimized pageSize (100 records per page to avoid timeout)
+            // 100 records balances performance and data visibility - can be adjusted based on server performance
+            var queryParams = $"page={currentPage}&pageSize=100&search={searchTerm}&scannerType={filterScannerType}&status={filterStatus}";
+            var response = await ApiService.GetAsync<PagedValidationApiResponse>($"/api/containervalidation/pending?{queryParams}");
+            
+            if (response?.Data != null)
+            {
+                allValidationContainers = response.Data.Select(v => new ValidationContainerItem
+                {
+                    Id = v.Id,
+                    ContainerNumber = v.ContainerNumber ?? "",
+                    ClearanceType = ConvertClearanceTypeToString(v.ClearanceType),
+                    ScannerType = v.ScannerType ?? "Unknown",
+                    Status = ConvertValidationStatusToString(v.Status),
+                    DataCompletenessPercentage = v.DataCompletenessPercentage,
+                    ScannerDataPercentage = v.ScannerCompleteness?.CompletenessScore ?? 0,
+                    ICUMSDataPercentage = v.ICUMSCompleteness?.CompletenessScore ?? 0,
+                    HasImageData = v.ImageCompleteness?.HasImage ?? false,
+                    CreatedAt = v.CreatedAt,
+                    IsReadyForSubmission = v.IsReadyForSubmission
+                }).ToList();
+                
+                filteredValidationContainers = allValidationContainers;
+                
+                // ✅ FIXED: Use API response total count instead of local count
+                totalValidationContainers = response.TotalCount;
+                totalPages = response.TotalPages > 0 ? response.TotalPages : (int)Math.Ceiling((double)totalValidationContainers / pageSize);
+                readyForValidationCount = totalValidationContainers;
+                
+                Logger.LogInformation("✅ Loaded {Count} validation containers out of {Total} total (Page {Page}/{TotalPages})", 
+                    allValidationContainers.Count, totalValidationContainers, currentPage, totalPages);
+                Snackbar.Add($"Loaded {allValidationContainers.Count} validation containers (Total: {totalValidationContainers})", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading validation data: {Message}", ex.Message);
+            
+            allValidationContainers = new List<ValidationContainerItem>();
+            filteredValidationContainers = allValidationContainers;
+            totalValidationContainers = 0;
+            totalPages = 0;
+            readyForValidationCount = 0;
+            
+            Snackbar.Add($"No validation data available: {ex.Message}", Severity.Info);
+        }
+        finally
+        {
+            isLoadingValidationData = false;
+        }
+    }
+    
+    private async Task ApplyValidationFilters()
+    {
+        await LoadValidationData();
+    }
+    
+    private async Task OnPageChanged(int page)
+    {
+        currentPage = page;
+        await LoadValidationData();
+    }
+    
+    private void SelectAllContainers()
+    {
+        if (selectAll)
+        {
+            selectedValidationContainers = filteredValidationContainers.ToHashSet();
+        }
+        else
+        {
+            selectedValidationContainers.Clear();
+        }
+    }
+    
+    private async Task CopyToClipboard(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            Snackbar.Add($"Copied {text} to clipboard", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error copying to clipboard: {Message}", ex.Message);
+            Snackbar.Add("Could not copy to clipboard", Severity.Error);
+        }
+    }
+    
+    private void ViewContainer(string containerNumber)
+    {
+        try
+        {
+            NavigationManager.NavigateTo($"/containers/{containerNumber}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error navigating to container: {Message}", ex.Message);
+            Snackbar.Add("Could not open container details", Severity.Error);
+        }
+    }
+    
+    private async Task ApproveContainer(string containerNumber)
+    {
+        try
+        {
+            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/approve/{containerNumber}", new { });
+            
+            if (result != null)
+            {
+                Snackbar.Add($"Container {containerNumber} approved successfully", Severity.Success);
+                await LoadValidationData(); // Refresh data
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving container: {Message}", ex.Message);
+            Snackbar.Add($"Could not approve container {containerNumber}", Severity.Error);
+        }
+    }
+    
+    private async Task RejectContainer(string containerNumber)
+    {
+        try
+        {
+            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/reject/{containerNumber}", new { });
+            
+            if (result != null)
+            {
+                Snackbar.Add($"Container {containerNumber} rejected", Severity.Info);
+                await LoadValidationData(); // Refresh data
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error rejecting container: {Message}", ex.Message);
+            Snackbar.Add($"Could not reject container {containerNumber}", Severity.Error);
+        }
+    }
+    
+    // Color Helper Methods
+    private Color GetClearanceTypeColor(string clearanceType)
+    {
+        return clearanceType switch
+        {
+            "CMR" => Color.Info,
+            "IMEX" => Color.Warning,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetScannerTypeColor(string scannerType)
+    {
+        return scannerType switch
+        {
+            "ASE" => Color.Secondary,
+            "FS6000" => Color.Primary,
+            _ => Color.Default
+        };
+    }
+    
+    private Color GetValidationStatusColor(string status)
+    {
+        return status switch
+        {
+            "Validated" => Color.Success,
+            "Pending" => Color.Warning,
+            "InReview" => Color.Info,
+            "Approved" => Color.Success,
+            "Rejected" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    private string GetValidationStatusIcon(string status)
+    {
+        return status switch
+        {
+            "Validated" => Icons.Material.Outlined.CheckCircle,
+            "Pending" => Icons.Material.Outlined.PendingActions,
+            "InReview" => Icons.Material.Outlined.Visibility,
+            "Approved" => Icons.Material.Outlined.Check,
+            "Rejected" => Icons.Material.Outlined.Close,
+            _ => Icons.Material.Outlined.Circle
+        };
+    }
+    
+    private Color GetCompletenessColor(int percentage)
+    {
+        return percentage switch
+        {
+            >= 90 => Color.Success,
+            >= 70 => Color.Warning,
+            _ => Color.Error
+        };
+    }
+    
+    // Helper Methods - API now returns enums as strings
+    private string ConvertClearanceTypeToString(string? clearanceType)
+    {
+        return clearanceType ?? "Unknown";
+    }
+    
+    private string ConvertValidationStatusToString(string? status)
+    {
+        return status ?? "Pending";
+    }
+    
+    // ✅ CONSOLIDATED CARGO MODEL - Load cargo groups
+    private async Task LoadCargoGroups()
+    {
+        isLoadingCargoGroups = true;
+        try
+        {
+            Logger.LogInformation("[ContainerCompleteness] Loading cargo groups from consolidated cargo API...");
+            
+            // ✅ PERFORMANCE FIX: Reduced pageSize from 100 to 25 for faster loading
+            // Load non-consolidated cargo groups
+            var nonConsolidatedResponse = await ApiService.GetAsync<List<NonConsolidatedCargoGroup>>("/api/consolidatedcargo/non-consolidated?pageSize=25");
+            if (nonConsolidatedResponse != null)
+            {
+                nonConsolidatedGroups = nonConsolidatedResponse;
+                Logger.LogInformation("[ContainerCompleteness] Loaded {Count} non-consolidated cargo groups", nonConsolidatedGroups.Count);
+                Snackbar.Add($"Loaded {nonConsolidatedGroups.Count} non-consolidated cargo groups", Severity.Success);
+            }
+            else
+            {
+                nonConsolidatedGroups = new List<NonConsolidatedCargoGroup>();
+                Logger.LogWarning("[ContainerCompleteness] No non-consolidated cargo groups returned from API");
+            }
+            
+            // ✅ PERFORMANCE FIX: Reduced pageSize from 100 to 25 for faster loading
+            // Load consolidated cargo groups
+            var consolidatedResponse = await ApiService.GetAsync<List<ConsolidatedCargoGroup>>("/api/consolidatedcargo/consolidated?pageSize=25");
+            if (consolidatedResponse != null)
+            {
+                consolidatedGroups = consolidatedResponse;
+                Logger.LogInformation("[ContainerCompleteness] Loaded {Count} consolidated cargo groups", consolidatedGroups.Count);
+                Snackbar.Add($"Loaded {consolidatedGroups.Count} consolidated cargo groups", Severity.Success);
+            }
+            else
+            {
+                consolidatedGroups = new List<ConsolidatedCargoGroup>();
+                Logger.LogWarning("[ContainerCompleteness] No consolidated cargo groups returned from API");
+            }
+            
+            StateHasChanged(); // Force UI update
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "[ContainerCompleteness] Error loading cargo groups: {Message}", ex.Message);
+            Snackbar.Add($"Could not load cargo groups from API: {ex.Message}", Severity.Error);
+            nonConsolidatedGroups = new List<NonConsolidatedCargoGroup>();
+            consolidatedGroups = new List<ConsolidatedCargoGroup>();
+        }
+        finally
+        {
+            isLoadingCargoGroups = false;
+        }
+    }
+    
+    // ✅ CONSOLIDATED CARGO MODEL - Data Models
+    public class NonConsolidatedCargoGroup
+    {
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string MasterBL { get; set; } = string.Empty;
+        public List<string> Containers { get; set; } = new();
+        public int NoOfContainers { get; set; }
+        public string ClearanceType { get; set; } = string.Empty;
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string? DeclarationDate { get; set; }
+        public int SampleBOEId { get; set; }
+    }
+    
+    public class ConsolidatedCargoGroup
+    {
+        public string MasterBL { get; set; } = string.Empty;
+        public List<string> ContainerNumbers { get; set; } = new();
+        public List<HouseBLDetail> HouseBLDetails { get; set; } = new();
+    }
+    
+    public class HouseBLDetail
+    {
+        public string HouseBL { get; set; } = string.Empty;
+        public string MasterBL { get; set; } = string.Empty;
+        public string DeclarationNumber { get; set; } = string.Empty;
+        public string ConsigneeName { get; set; } = string.Empty;
+        public string ClearanceType { get; set; } = string.Empty;
+        public string RotationNumber { get; set; } = string.Empty;
+        public string GoodsDescription { get; set; } = string.Empty;
+        public decimal? TotalDutyPaid { get; set; }
+        public string? DeclarationDate { get; set; }
+        public int BOEId { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+    }
+    
+    // Validation Data Models
+    public class ValidationContainerItem
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = "";
+        public string ClearanceType { get; set; } = "";
+        public string ScannerType { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int DataCompletenessPercentage { get; set; }
+        public int ScannerDataPercentage { get; set; }
+        public int ICUMSDataPercentage { get; set; }
+        public bool HasImageData { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public bool IsReadyForSubmission { get; set; }
+    }
+    
+    // API Response Models
+    public class PagedValidationApiResponse
+    {
+        public List<ApiValidationContainer>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+    
+    public class ApiValidationContainer
+    {
+        public int Id { get; set; }
+        public string? ContainerNumber { get; set; }
+        public string? ClearanceType { get; set; } // ✅ Changed to string (API returns "CMR" or "IMEX")
+        public string? ScannerType { get; set; }
+        public string? Status { get; set; } // ✅ Changed to string (API returns enum as string)
+        public int DataCompletenessPercentage { get; set; }
+        public bool IsReadyForSubmission { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public ApiScannerCompleteness? ScannerCompleteness { get; set; }
+        public ApiICUMSCompleteness? ICUMSCompleteness { get; set; }
+        public ApiImageCompleteness? ImageCompleteness { get; set; }
+    }
+    
+    public class ApiScannerCompleteness
+    {
+        public int CompletenessScore { get; set; }
+    }
+    
+    public class ApiICUMSCompleteness
+    {
+        public int CompletenessScore { get; set; }
+    }
+    
+    public class ApiImageCompleteness
+    {
+        public bool HasImage { get; set; }
+    }
+    
+    // ✅ PHASE 3: Queue Publishing Health Models
+    public class QueuePublishingHealthResponse
+    {
+        public string Status { get; set; } = "Unknown";
+        public DateTime Timestamp { get; set; }
+        public QueuePublishingMetricsDto? Metrics { get; set; }
+        public List<string> Alerts { get; set; } = new();
+        public string? Error { get; set; }
+    }
+    
+    public class QueuePublishingMetricsDto
+    {
+        public TimeSpan TimeWindow { get; set; }
+        public DateTime StartTime { get; set; }
+        public DateTime EndTime { get; set; }
+        public int TotalAttempts { get; set; }
+        public int SuccessfulPublishes { get; set; }
+        public int FailedPublishes { get; set; }
+        public int SkippedPublishes { get; set; }
+        public int TotalRetries { get; set; }
+        public double AverageRetryCount { get; set; }
+        public double SuccessRate { get; set; }
+        public TimeSpan AveragePublishDuration { get; set; }
+        public Dictionary<string, int> ByScannerType { get; set; } = new();
+        public List<PublishingFailureDto> RecentFailures { get; set; } = new();
+    }
+    
+    public class PublishingFailureDto
+    {
+        public DateTime Timestamp { get; set; }
+        public string ScannerType { get; set; } = string.Empty;
+        public int RetryCount { get; set; }
+        public string? ErrorMessage { get; set; }
+        public TimeSpan Duration { get; set; }
+    }
+    
+    // Queue Publishing Health Methods
+    private async Task LoadQueuePublishingHealth()
+    {
+        isLoadingQueuePublishingHealth = true;
+        try
+        {
+            Logger.LogInformation("[ContainerCompleteness] Loading queue publishing health data...");
+            
+            var response = await ApiService.GetAsync<QueuePublishingHealthResponse>("/api/QueueHealth/publishing");
+            
+            if (response != null)
+            {
+                queuePublishingHealth = response;
+                Logger.LogInformation("[ContainerCompleteness] Loaded queue publishing health: Status={Status}, SuccessRate={SuccessRate:F2}%", 
+                    response.Status, response.Metrics?.SuccessRate ?? 0);
+            }
+            else
+            {
+                Logger.LogWarning("[ContainerCompleteness] Queue publishing health response was null");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "[ContainerCompleteness] Error loading queue publishing health: {Message}", ex.Message);
+            Snackbar.Add($"Could not load queue publishing health: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            isLoadingQueuePublishingHealth = false;
+            StateHasChanged();
+        }
+    }
+    
+    private Color GetQueueHealthStatusColor()
+    {
+        if (queuePublishingHealth == null) return Color.Default;
+        
+        return queuePublishingHealth.Status switch
+        {
+            "Healthy" => Color.Success,
+            "Warning" => Color.Warning,
+            "Critical" => Color.Error,
+            _ => Color.Default
+        };
+    }
+    
+    private string GetQueueHealthStatusIcon()
+    {
+        if (queuePublishingHealth == null) return Icons.Material.Outlined.Circle;
+        
+        return queuePublishingHealth.Status switch
+        {
+            "Healthy" => Icons.Material.Outlined.CheckCircle,
+            "Warning" => Icons.Material.Outlined.Warning,
+            "Critical" => Icons.Material.Outlined.Error,
+            _ => Icons.Material.Outlined.Circle
+        };
+    }
+    
+    private Color GetQueueHealthBadgeColor()
+    {
+        if (queuePublishingHealth?.Alerts == null || !queuePublishingHealth.Alerts.Any())
+            return Color.Success;
+        
+        var hasCritical = queuePublishingHealth.Alerts.Any(a => a.Contains("[Critical]", StringComparison.OrdinalIgnoreCase));
+        return hasCritical ? Color.Error : Color.Warning;
+    }
+    
+    private string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalMilliseconds < 1000)
+            return $"{duration.TotalMilliseconds:F0}ms";
+        if (duration.TotalSeconds < 60)
+            return $"{duration.TotalSeconds:F2}s";
+        return $"{duration.TotalMinutes:F2}m";
+    }
+    
+}
+

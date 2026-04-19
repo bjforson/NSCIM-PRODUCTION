@@ -1,0 +1,128 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject ILogger<DebugPanel> Logger
+
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.BugReport" Class="mr-2" />
+        Debug Tools
+    </MudText>
+
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        <MudText><strong>Development Only:</strong> These tools are for debugging and development purposes only.</MudText>
+    </MudAlert>
+
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4" Color="Color.Primary" @bind-ActivePanelIndex="activeTab">
+        <!-- API Test Tab -->
+        <MudTabPanel Text="API Test" Icon="@Icons.Material.Outlined.Api">
+            <MudStack Spacing="3">
+                <MudTextField @bind-Value="@_testEndpoint" 
+                             Label="API Endpoint" 
+                             Variant="Variant.Outlined"
+                             Placeholder="/api/..." />
+                <MudSelect @bind-Value="@_testMethod" Label="HTTP Method" Variant="Variant.Outlined">
+                    <MudSelectItem Value="@("GET")">GET</MudSelectItem>
+                    <MudSelectItem Value="@("POST")">POST</MudSelectItem>
+                    <MudSelectItem Value="@("PUT")">PUT</MudSelectItem>
+                    <MudSelectItem Value="@("DELETE")">DELETE</MudSelectItem>
+                </MudSelect>
+                <MudTextField @bind-Value="@_testBody" 
+                             Label="Request Body (JSON)" 
+                             Variant="Variant.Outlined"
+                             Lines="5"
+                             Placeholder='{"key": "value"}' />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="TestApi">
+                    Test API
+                </MudButton>
+                @if (!string.IsNullOrEmpty(_testResponse))
+                {
+                    <MudPaper Class="pa-4" Elevation="2">
+                        <MudText Typo="Typo.h6" Class="mb-2">Response</MudText>
+                        <MudTextField Value="@_testResponse" Variant="Variant.Outlined" Lines="10" ReadOnly="true" />
+                    </MudPaper>
+                }
+            </MudStack>
+        </MudTabPanel>
+
+        <!-- System Info Tab -->
+        <MudTabPanel Text="System Info" Icon="@Icons.Material.Outlined.Info">
+            @if (_systemInfo != null)
+            {
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudSimpleTable>
+                        <tbody>
+                            @foreach (var item in _systemInfo)
+                            {
+                                <tr>
+                                    <td><strong>@item.Key</strong></td>
+                                    <td>@item.Value</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </MudPaper>
+            }
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadSystemInfo" Class="mt-4">
+                Refresh System Info
+            </MudButton>
+        </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    private int activeTab = 0;
+    private string _testEndpoint = "";
+    private string _testMethod = "GET";
+    private string _testBody = "";
+    private string _testResponse = "";
+    private Dictionary<string, string>? _systemInfo;
+
+    private async Task TestApi()
+    {
+        if (string.IsNullOrWhiteSpace(_testEndpoint))
+        {
+            Snackbar.Add("Please enter an endpoint", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            object? response = null;
+            switch (_testMethod)
+            {
+                case "GET":
+                    response = await ApiService.GetAsync<object>(_testEndpoint);
+                    break;
+                case "POST":
+                    var postData = string.IsNullOrWhiteSpace(_testBody) ? new { } : System.Text.Json.JsonSerializer.Deserialize<object>(_testBody);
+                    response = await ApiService.PostAsync<object, object>(_testEndpoint, postData ?? new { });
+                    break;
+                // Add PUT and DELETE if needed
+            }
+            _testResponse = System.Text.Json.JsonSerializer.Serialize(response, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            Snackbar.Add("API test completed", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            _testResponse = $"Error: {ex.Message}\n\n{ex.StackTrace}";
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadSystemInfo()
+    {
+        try
+        {
+            var info = await ApiService.GetAsync<Dictionary<string, string>>("api/debug/system");
+            _systemInfo = info;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading system info");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+}
+

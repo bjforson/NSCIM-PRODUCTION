@@ -1,0 +1,3433 @@
+@using MudBlazor
+@using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Services.Permissions
+@using System
+@using System.Linq
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+@inject ApiService ApiService
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject PermissionGuard PermissionGuard
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@implements IAsyncDisposable
+
+<MudDialog>
+    <TitleContent>
+        <div style="background: linear-gradient(135deg, #37474f 0%, #546e7a 100%); margin: -24px -24px 0 -24px; padding: 12px 24px; color: white;">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Size="Size.Small" Style="color:#90caf9;" />
+                    <MudText Typo="Typo.subtitle1" Style="font-weight:700; color:white;">@ContainerNumber</MudText>
+                    @if (!string.IsNullOrEmpty(ScannerType))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">@ScannerType</MudChip>
+                    }
+                </MudStack>
+                <MudText Typo="Typo.caption" Style="color:rgba(255,255,255,0.6);">
+                    [+/-] Zoom [R] Rotate [G] Gray [I] Invert @(AuditMode ? "[N] Approve [A] Reject" : "[N/A] Decision") [D] Draw
+                </MudText>
+            </MudStack>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="display: flex; flex-direction: column; height: 100%; max-height: calc(100vh - 64px); overflow: hidden;">
+
+            @* ═══ ROW 1: Compact Horizontal Toolbar ═══ *@
+            <div style="background: linear-gradient(135deg, #455a64 0%, #607d8b 100%); padding: 6px 12px; display: flex; align-items: center; gap: 8px; overflow-x: auto; flex-shrink: 0; border-bottom: 2px solid #78909c;">
+                @* Zoom Controls *@
+                <MudButtonGroup Variant="Variant.Text" Color="Color.Inherit" Size="Size.Small">
+                    <MudIconButton Icon="@Icons.Material.Outlined.ZoomOut" OnClick="ZoomOut" Disabled="@(_zoom <= 0.25)" Style="color:white;" Title="Zoom Out" />
+                    <MudButton Style="color:white; padding:4px 8px; min-width:50px; font-size:0.75rem;">@(_zoom.ToString("P0"))</MudButton>
+                    <MudIconButton Icon="@Icons.Material.Outlined.ZoomIn" OnClick="ZoomIn" Disabled="@(_zoom >= 5.0)" Style="color:white;" Title="Zoom In" />
+                    <MudIconButton Icon="@Icons.Material.Outlined.CenterFocusStrong" OnClick="ZoomTo1x" Style="color:white;" Title="Zoom 1x" />
+                    <MudIconButton Icon="@Icons.Material.Outlined.FitScreen" OnClick="ResetZoom" Style="color:white;" Title="Fit / Zoom Reset" />
+                </MudButtonGroup>
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Rotate Controls *@
+                <MudButtonGroup Variant="Variant.Text" Color="Color.Inherit" Size="Size.Small">
+                    <MudIconButton Icon="@Icons.Material.Outlined.RotateLeft" OnClick="RotateLeft" Style="color:white;" Title="Rotate Left" />
+                    <MudButton Style="color:white; padding:4px 8px; min-width:40px; font-size:0.75rem;">@(_rotation)°</MudButton>
+                    <MudIconButton Icon="@Icons.Material.Outlined.RotateRight" OnClick="RotateRight" Style="color:white;" Title="Rotate Right" />
+                </MudButtonGroup>
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Enhance Menu (sliders inside popover) *@
+                <MudMenu Icon="@Icons.Material.Outlined.Tune" Label="Enhance" Color="Color.Inherit" Variant="Variant.Text" Size="Size.Small" Dense="true"
+                         AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft">
+                    <div style="padding: 16px; min-width: 280px;">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2" Style="font-weight:600;">Image Enhancement</MudText>
+                        <MudStack Spacing="2">
+                            <div>
+                                <MudText Typo="Typo.caption">Brightness: @_brightness%</MudText>
+                                <MudSlider @bind-Value="_brightness" Min="0" Max="500" Step="10" Color="Color.Warning" Size="Size.Small" />
+                            </div>
+                            <div>
+                                <MudText Typo="Typo.caption">Contrast: @_contrast%</MudText>
+                                <MudSlider @bind-Value="_contrast" Min="0" Max="500" Step="10" Color="Color.Info" Size="Size.Small" />
+                            </div>
+                            <div>
+                                <MudText Typo="Typo.caption">Saturation: @_saturation%</MudText>
+                                <MudSlider @bind-Value="_saturation" Min="0" Max="500" Step="10" Color="Color.Success" Size="Size.Small" />
+                            </div>
+                            <div>
+                                <MudText Typo="Typo.caption">Hue: @_hue°</MudText>
+                                <MudSlider @bind-Value="_hue" Min="0" Max="360" Step="15" Color="Color.Secondary" Size="Size.Small" />
+                            </div>
+                            <div>
+                                <MudText Typo="Typo.caption">Blur: @(_blur.ToString("F1"))px</MudText>
+                                <MudSlider @bind-Value="_blur" Min="0" Max="10" Step="0.5" Color="Color.Default" Size="Size.Small" />
+                            </div>
+                        </MudStack>
+                    </div>
+                </MudMenu>
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Filter Chips (inline) *@
+                <MudChip T="string" Size="Size.Small"
+                         Color="@(_grayscale ? Color.Primary : Color.Default)"
+                         Variant="@(_grayscale ? Variant.Filled : Variant.Outlined)"
+                         Style="@(!_grayscale ? "color:white; border-color:rgba(255,255,255,0.3);" : "")"
+                         OnClick="ToggleGrayscale">G</MudChip>
+                <MudChip T="string" Size="Size.Small"
+                         Color="@(_invertColors ? Color.Primary : Color.Default)"
+                         Variant="@(_invertColors ? Variant.Filled : Variant.Outlined)"
+                         Style="@(!_invertColors ? "color:white; border-color:rgba(255,255,255,0.3);" : "")"
+                         OnClick="ToggleInvert">Inv</MudChip>
+                <MudChip T="string" Size="Size.Small"
+                         Color="@(_edgeDetect ? Color.Primary : Color.Default)"
+                         Variant="@(_edgeDetect ? Variant.Filled : Variant.Outlined)"
+                         Style="@(!_edgeDetect ? "color:white; border-color:rgba(255,255,255,0.3);" : "")"
+                         OnClick="ToggleEdgeDetect">Edge</MudChip>
+                <MudChip T="string" Size="Size.Small"
+                         Color="@(_sepia ? Color.Primary : Color.Default)"
+                         Variant="@(_sepia ? Variant.Filled : Variant.Outlined)"
+                         Style="@(!_sepia ? "color:white; border-color:rgba(255,255,255,0.3);" : "")"
+                         OnClick="ToggleSepia">Sepia</MudChip>
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Canvas Tools Menu *@
+                <MudMenu Icon="@Icons.Material.Outlined.Layers" Label="Canvas" Color="Color.Inherit" Variant="Variant.Text" Size="Size.Small" Dense="true"
+                         AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft">
+                    <div style="padding: 12px; min-width: 260px;">
+                        <MudText Typo="Typo.subtitle2" Class="mb-2" Style="font-weight:600;">Convolution Filters</MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mb-3">
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasConvolution == "sobel" ? Color.Tertiary : Color.Default)"
+                                     Variant="@(_canvasConvolution == "sobel" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasConvolution("sobel"))">Sobel</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasConvolution == "laplacian" ? Color.Tertiary : Color.Default)"
+                                     Variant="@(_canvasConvolution == "laplacian" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasConvolution("laplacian"))">Laplacian</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasConvolution == "sharpen" ? Color.Tertiary : Color.Default)"
+                                     Variant="@(_canvasConvolution == "sharpen" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasConvolution("sharpen"))">Sharpen</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasConvolution == "emboss" ? Color.Tertiary : Color.Default)"
+                                     Variant="@(_canvasConvolution == "emboss" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasConvolution("emboss"))">Emboss</MudChip>
+                        </MudStack>
+
+                        <MudText Typo="Typo.subtitle2" Class="mb-2" Style="font-weight:600;">Pseudocolor Maps</MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mb-3">
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasColorMap == "hot" ? Color.Error : Color.Default)"
+                                     Variant="@(_canvasColorMap == "hot" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasColorMap("hot"))">Hot</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasColorMap == "jet" ? Color.Info : Color.Default)"
+                                     Variant="@(_canvasColorMap == "jet" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasColorMap("jet"))">Jet</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasColorMap == "bone" ? Color.Default : Color.Default)"
+                                     Variant="@(_canvasColorMap == "bone" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasColorMap("bone"))">Bone</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasColorMap == "rainbow" ? Color.Success : Color.Default)"
+                                     Variant="@(_canvasColorMap == "rainbow" ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleCanvasColorMap("rainbow"))">Rainbow</MudChip>
+                        </MudStack>
+
+                        <MudText Typo="Typo.subtitle2" Class="mb-2" Style="font-weight:600;">Special Tools</MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasHistEq ? Color.Warning : Color.Default)"
+                                     Variant="@(_canvasHistEq ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleCanvasHistEq">Hist EQ</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_canvasWLActive ? Color.Warning : Color.Default)"
+                                     Variant="@(_canvasWLActive ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleWindowLevel">W/L</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_loupeEnabled ? Color.Success : Color.Default)"
+                                     Variant="@(_loupeEnabled ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleLoupe">Loupe</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_showHistogram ? Color.Info : Color.Default)"
+                                     Variant="@(_showHistogram ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleHistogram">Histogram</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_autoEnhance ? Color.Success : Color.Default)"
+                                     Variant="@(_autoEnhance ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleAutoEnhance">Auto Enhance</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_highContrastPreset ? Color.Warning : Color.Default)"
+                                     Variant="@(_highContrastPreset ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="ToggleHighContrast">High Contrast</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                                     OnClick="ResetCanvasTools">Reset</MudChip>
+                        </MudStack>
+
+                        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-2" Style="font-weight:600;">Density (Gamma)</MudText>
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center">
+                            <MudIconButton Icon="@Icons.Material.Outlined.Remove" Size="Size.Small" OnClick="DecreaseDensity" Title="Decrease Density (lighter)" />
+                            <MudText Typo="Typo.caption" Style="min-width:60px; text-align:center;">@($"γ {_density:F2}")</MudText>
+                            <MudIconButton Icon="@Icons.Material.Outlined.Add" Size="Size.Small" OnClick="IncreaseDensity" Title="Increase Density (denser)" />
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                                     OnClick="ResetDensity">Reset</MudChip>
+                        </MudStack>
+
+                        @if (_canvasWLActive)
+                        {
+                            <MudText Typo="Typo.caption" Style="color: #666; margin-top:8px;">
+                                Right-click + drag on image: horizontal = window, vertical = level
+                            </MudText>
+                        }
+                        @if (_showHistogram)
+                        {
+                            <div style="background: #1a1a1a; padding: 8px; border-radius: 4px; margin-top:8px;">
+                                <MudText Typo="Typo.caption" Style="color: #aaa; margin-bottom: 4px;">Pixel Intensity Histogram</MudText>
+                                <canvas @ref="_histogramCanvas" style="width: 100%; height: 80px; border: 1px solid #333;" />
+                            </div>
+                        }
+                    </div>
+                </MudMenu>
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Magnifier (standalone, no canvas required) *@
+                <MudIconButton Icon="@Icons.Material.Outlined.Search"
+                               OnClick="ToggleMagnifier"
+                               Style="@(_magnifierEnabled ? "color:#ffb74d;" : "color:white;")"
+                               Size="Size.Small" Title="@(_magnifierEnabled ? "Magnifier ON (hover image)" : "Magnifier")" />
+
+                @* Goods Description quick reference *@
+                <MudIconButton Icon="@Icons.Material.Outlined.Description"
+                               OnClick="ToggleGoodsPanel"
+                               Style="@(_showGoodsPanel ? "color:#4fc3f7;" : "color:white;")"
+                               Size="Size.Small" Title="Goods Description" />
+
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+
+                @* Action Icon Buttons *@
+                <MudIconButton Icon="@Icons.Material.Outlined.Straighten"
+                               OnClick="ToggleRuler"
+                               Style="@(_rulerMode ? "color:#ffeb3b;" : "color:white;")"
+                               Size="Size.Small" Title="@(_rulerMode ? "Ruler ON — click 2 points" : "Ruler (measure)")" />
+                <MudIconButton Icon="@Icons.Material.Outlined.CropSquare"
+                               OnClick="ToggleDrawMode"
+                               Style="@(_drawMode ? "color:#ef5350;" : "color:white;")"
+                               Size="Size.Small" Title="@(_drawMode ? "Drawing Mode ON" : "Mark Area / Add Annotation")" />
+                <MudIconButton Icon="@(_hideAnnotations ? Icons.Material.Outlined.VisibilityOff : Icons.Material.Outlined.Visibility)"
+                               OnClick="ToggleHideAnnotations"
+                               Style="@(_hideAnnotations ? "color:#ffb74d;" : "color:white;")"
+                               Size="Size.Small" Title="@(_hideAnnotations ? "Show Annotations" : "Hide Annotations")" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Palette"
+                               OnClick="ToggleColorQuick"
+                               Style="@(_canvasColorMap != null ? "color:#ff7043;" : "color:white;")"
+                               Size="Size.Small" Title="@(_canvasColorMap != null ? $"Color: {_canvasColorMap}" : "Color (pseudocolor)")" />
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+                @* Undo / Redo cluster *@
+                <MudIconButton Icon="@Icons.Material.Outlined.Undo" OnClick="Undo" Disabled="@(_undoCount <= 1)"
+                               Style="color:white;" Size="Size.Small" Title="Undo" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Redo" OnClick="Redo" Disabled="@(_redoCount == 0)"
+                               Style="color:white;" Size="Size.Small" Title="Redo" />
+                <MudIconButton Icon="@Icons.Material.Outlined.FirstPage" OnClick="UndoAll" Disabled="@(_undoCount <= 1)"
+                               Style="color:white;" Size="Size.Small" Title="Undo All" />
+                <MudIconButton Icon="@Icons.Material.Outlined.LastPage" OnClick="RedoAll" Disabled="@(_redoCount == 0)"
+                               Style="color:white;" Size="Size.Small" Title="Redo All" />
+                <MudIconButton Icon="@Icons.Material.Outlined.History" OnClick="ReloadActions"
+                               Style="color:white;" Size="Size.Small" Title="Reload Actions" />
+                <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
+                <MudIconButton Icon="@Icons.Material.Outlined.Refresh" OnClick="ResetAll" Style="color:white;" Size="Size.Small" Title="Reset All" />
+                <MudIconButton Icon="@(_useEnhancedImage ? Icons.Material.Outlined.AutoAwesome : Icons.Material.Outlined.Image)"
+                               OnClick="ToggleEnhancement"
+                               Style="@(_useEnhancedImage ? "color:#66bb6a;" : "color:white;")"
+                               Size="Size.Small" Title="@(_useEnhancedImage ? "Enhanced" : "Original")" />
+                <MudIconButton Icon="@(_showDetectionOverlays ? Icons.Material.Outlined.Visibility : Icons.Material.Outlined.VisibilityOff)"
+                               OnClick="ToggleDetectionOverlays"
+                               Style="@(_showDetectionOverlays ? "color:#66bb6a;" : "color:white;")"
+                               Size="Size.Small" Title="@(_showDetectionOverlays ? "Hide Detections" : "Show Detections")" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Fullscreen" OnClick="ToggleFullscreen" Style="color:white;" Size="Size.Small" Title="Fullscreen" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Download" OnClick="DownloadImage" Style="color:white;" Size="Size.Small" Title="Download" />
+                <MudIconButton Icon="@Icons.Material.Outlined.Print" OnClick="PrintImage" Style="color:white;" Size="Size.Small" Title="Print" />
+                <MudIconButton Icon="@Icons.Material.Outlined.AutoAwesome"
+                               OnClick="EnhanceSelectedRegion"
+                               Disabled="@(_selectedRectIndex == -1)"
+                               Style="color:white;" Size="Size.Small" Title="Enhance Selected Region" />
+            </div>
+
+            @* ═══ ROW 2: Main 70/30 Content Area ═══ *@
+            <div style="display: flex; flex-direction: row; flex: 1; overflow: hidden;">
+
+                @* ═══ LEFT: Image Viewport (70%) ═══ *@
+                <div class="ia-viewer-image" style="flex: 7; position: relative; overflow: hidden; background: #1e1e2e; @GetContainerStyle()">
+
+                    @* Floating Goods Description Panel *@
+                    @if (_showGoodsPanel)
+                    {
+                        <div style="position: absolute; top: 12px; right: 12px; z-index: 40; width: 420px; max-height: 60%;
+                                    background: rgba(255,255,255,0.97); border-radius: 8px;
+                                    box-shadow: 0 8px 32px rgba(0,0,0,0.3); overflow: hidden; display: flex; flex-direction: column;">
+                            <div style="background: #546e7a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+                                <span style="color: white; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                    Goods Description
+                                    @if (_goodsPanelItems.Any())
+                                    {
+                                        <text> (@_goodsPanelItems.Count items across @_goodsPanelGroups.Count BOE@(_goodsPanelGroups.Count != 1 ? "s" : ""))</text>
+                                    }
+                                    @if (!string.IsNullOrEmpty(_crmsRiskLevel))
+                                    {
+                                        var riskColor = _crmsRiskLevel switch
+                                        {
+                                            "Red" => "#ef5350",
+                                            "Yellow" => "#ffc107",
+                                            "Green" => "#66bb6a",
+                                            "Blue" => "#42a5f5",
+                                            _ => "#90a4ae"
+                                        };
+                                        var riskTextColor = _crmsRiskLevel == "Yellow" ? "#333" : "white";
+                                        <span style="background: @riskColor; color: @riskTextColor; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">
+                                            @_crmsRiskLevel.ToUpper()
+                                        </span>
+                                    }
+                                </span>
+                                <MudIconButton Icon="@Icons.Material.Outlined.Close" Size="Size.Small"
+                                               Style="color: white; padding: 2px;" OnClick="ToggleGoodsPanel" />
+                            </div>
+                            <div style="overflow-y: auto; padding: 0; flex: 1;">
+                                @if (_goodsPanelLoading)
+                                {
+                                    <div style="padding: 24px; text-align: center;">
+                                        <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                        <div style="font-size: 12px; color: #999; margin-top: 8px;">Loading...</div>
+                                    </div>
+                                }
+                                else if (_goodsPanelGroups.Any())
+                                {
+                                    @foreach (var grp in _goodsPanelGroups)
+                                    {
+                                        @if (_goodsPanelGroups.Count > 1)
+                                        {
+                                            <div style="background: #eceff1; padding: 5px 10px; font-size: 11px; font-weight: 700; color: #455a64; border-bottom: 1px solid #cfd8dc; position: sticky; top: 0; z-index: 1;">
+                                                @grp.Label
+                                                @if (grp.Items.Any())
+                                                {
+                                                    <span style="font-weight: 400; color: #78909c; margin-left: 6px;">(@grp.Items.Count items)</span>
+                                                }
+                                            </div>
+                                        }
+                                        @* Narrative summary from BOE goodsdescription — always shown first *@
+                                        @if (!string.IsNullOrEmpty(grp.NarrativeText))
+                                        {
+                                            <div style="padding: 8px 12px; font-size: 13px; color: #1a237e; line-height: 1.5; background: #e8eaf6; border-bottom: 1px solid #c5cae9; font-weight: 500;">
+                                                @grp.NarrativeText
+                                            </div>
+                                        }
+                                        @* Structured line items from manifest — shown below narrative *@
+                                        @if (grp.Items.Any())
+                                        {
+                                            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                                <thead>
+                                                    <tr style="background: #f5f5f5;">
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">#</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Description</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">HS Code</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Qty</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var item in grp.Items)
+                                                    {
+                                                        <tr style="border-bottom: 1px solid #f0f0f0;">
+                                                            <td style="padding: 5px 10px; color: #999;">@item.ItemNo</td>
+                                                            <td style="padding: 5px 10px; font-weight: 500; color: #333;">@item.Description</td>
+                                                            <td style="padding: 5px 10px; font-family: monospace; font-size: 11px; color: #666;">@(item.HsCode ?? "-")</td>
+                                                            <td style="padding: 5px 10px; color: #666;">@(item.Quantity ?? "-")</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    <div style="padding: 16px; text-align: center; color: #999; font-size: 12px;">No goods description available</div>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @* OUTER CONTAINER — pan/zoom wheel events only. Draw/move events live on an
+                       overlay INSIDE the transform wrapper so offsetX/Y are in image-local space. *@
+                    <div style="position: relative; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;"
+                         @onmousedown="HandleContainerMouseDown"
+                         @onmousemove="HandleContainerMouseMove"
+                         @onmouseup="HandleContainerMouseUp"
+                         @onmouseleave="HandleContainerMouseLeave"
+                         @ref="_imageContainer">
+                    @if (!string.IsNullOrEmpty(GetCurrentImageUrl()))
+                    {
+                        var currentUrl = GetCurrentImageUrl();
+                        @* Transform wrapper is display:inline-block so its box is sized to the <img>.
+                           Every child at position:absolute; inset:0 therefore exactly matches the image
+                           rect in the pre-transform frame — which is what we need for precise
+                           image-local coordinates that are invariant to zoom/rotate/translate. *@
+                        <div style="@GetTransformContainerStyle()">
+                        <img src="@currentUrl"
+                             alt="Container Scan"
+                             style="@GetImageStyle()"
+                             @ref="_imageElement"
+                             @key="@($"{ContainerNumber}_{_useEnhancedImage}_{_imageCacheBuster}")"
+                             draggable="false"
+                             @onerror="@(() => HandleImageLoadError(currentUrl))"
+                             @onload="@(() => HandleImageLoadSuccess(currentUrl))" />
+
+                        @* Canvas overlay for advanced pixel processing *@
+                        <canvas @ref="_canvasElement"
+                                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: @(_canvasVisible ? "block" : "none"); z-index: 5; pointer-events: none;" />
+
+                        @* Loupe (magnifying glass) overlay *@
+                        <canvas @ref="_loupeCanvas"
+                                style="position: absolute; display: @(_loupeVisible ? "block" : "none"); z-index: 30; pointer-events: none; border-radius: 50%; box-shadow: 0 0 10px rgba(0,0,0,0.5);" />
+
+                        @* ═══ DRAW OVERLAY — captures draw-mode mouse events in IMAGE-LOCAL coords ═══
+                           Positioned absolutely over the <img>, inside the same transform wrapper.
+                           Because the browser reports OffsetX/Y in the event target's own
+                           untransformed coordinate space, a click at visual position (cx,cy) with
+                           the image scaled/rotated still arrives here as the correct
+                           (offsetX,offsetY) in the image's natural layout frame. Divide by the
+                           overlay's clientWidth/Height → scale-invariant 0..1 fraction. No zoom
+                           or rotation math needed. *@
+                        <div style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 25; pointer-events: @(_drawMode ? "auto" : "none"); cursor: crosshair;"
+                             @ref="_drawOverlay"
+                             @onmousedown="HandleDrawMouseDown"
+                             @onmousemove="HandleDrawMouseMove"
+                             @onmouseup="HandleDrawMouseUp"
+                             @onmouseleave="HandleDrawMouseLeave" />
+
+                    <!-- SVG Overlay for Object Detection -->
+                    @if (_detectionResult != null && _detectionResult.Success && _showDetectionOverlays)
+                    {
+                        <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10;">
+                            @foreach (var container in _detectionResult.ContainerRegions)
+                            {
+                                <g>
+                                    <rect x="@container.X" y="@container.Y" 
+                                          width="@container.Width" height="@container.Height"
+                                          fill="none" stroke="green" stroke-width="2" opacity="0.8" />
+                                    <text x="@(container.X + 5)" y="@(container.Y - 5)" 
+                                          fill="green" font-size="12" font-weight="bold">Container</text>
+                                </g>
+                            }
+                            @foreach (var vehicle in _detectionResult.VehicleRegions)
+                            {
+                                <g>
+                                    <rect x="@vehicle.X" y="@vehicle.Y" 
+                                          width="@vehicle.Width" height="@vehicle.Height"
+                                          fill="none" stroke="blue" stroke-width="2" opacity="0.8" />
+                                    <text x="@(vehicle.X + 5)" y="@(vehicle.Y - 5)" 
+                                          fill="blue" font-size="12" font-weight="bold">Vehicle</text>
+                                </g>
+                            }
+                            @foreach (var anomaly in _detectionResult.Anomalies)
+                            {
+                                <g>
+                                    <rect x="@anomaly.X" y="@anomaly.Y" 
+                                          width="@anomaly.Width" height="@anomaly.Height"
+                                          fill="rgba(255,0,0,0.2)" stroke="red" stroke-width="3" opacity="0.9" />
+                                    <text x="@(anomaly.X + 5)" y="@(anomaly.Y - 5)" 
+                                          fill="red" font-size="14" font-weight="bold">⚠️ Anomaly</text>
+                                </g>
+                            }
+                        </svg>
+                    }
+
+                    <!-- SVG Overlay for AI Suggestion ROIs -->
+                    @if (_aiSuggestion != null && _showAiOverlays && _aiRois != null)
+                    {
+                        <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15;">
+                            @foreach (var roi in _aiRois)
+                            {
+                                <g>
+                                    <rect x="@($"{roi.X * 100}%")" y="@($"{roi.Y * 100}%")"
+                                          width="@($"{roi.W * 100}%")" height="@($"{roi.H * 100}%")"
+                                          fill="rgba(255, 165, 0, 0.15)" stroke="#FF9800" stroke-width="2"
+                                          stroke-dasharray="6,3" opacity="0.9" />
+                                    <text x="@($"{(roi.X + 0.005) * 100}%")" y="@($"{(roi.Y - 0.01) * 100}%")"
+                                          fill="#FF9800" font-size="11" font-weight="bold">
+                                        AI: @roi.Label @(roi.Confidence.HasValue ? $"({roi.Confidence:P0})" : "")
+                                    </text>
+                                </g>
+                            }
+                        </svg>
+                    }
+
+                    <!-- SVG Overlay for Rectangles (User Annotations) -->
+                    @* Coordinates stored as 0-1 fractions, rendered as percentages *@
+                    <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 20; @(_hideAnnotations ? "display:none;" : "")">
+                        @for (int i = 0; i < _rectangles.Count; i++)
+                        {
+                            var rectIndex = i;
+                            var rect = _rectangles[i];
+                            var rx = rect.X * 100;
+                            var ry = rect.Y * 100;
+                            var rw = rect.Width * 100;
+                            var rh = rect.Height * 100;
+                            <g>
+                                <!-- Rectangle outline -->
+                                <rect x="@(rx.ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                      y="@(ry.ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                      width="@(rw.ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                      height="@(rh.ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                      fill="none"
+                                      stroke="red"
+                                      stroke-width="3"
+                                      opacity="0.8" />
+
+                                <!-- Tag label -->
+                                @if (!string.IsNullOrWhiteSpace(rect.Tag))
+                                {
+                                    <foreignObject x="@(rx.ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                                   y="@(Math.Max(ry - 4, 0).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                                   width="@(Math.Max(rw, 20).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                                   height="22">
+                                        <div xmlns="http://www.w3.org/1999/xhtml"
+                                             style="background: rgba(200,0,0,0.85); color: white; font-size: 12px; font-weight: bold;
+                                                    padding: 2px 6px; border-radius: 3px; display: inline-block;
+                                                    pointer-events: none; user-select: none; white-space: nowrap;">
+                                            @rect.Tag
+                                        </div>
+                                    </foreignObject>
+                                }
+                                
+                                <!-- Resize handles (corners) -->
+                                @if (_selectedRectIndex == rectIndex)
+                                {
+                                    <!-- Top-left -->
+                                    <circle cx="@(rx.ToString(System.Globalization.CultureInfo.InvariantCulture))%" cy="@(ry.ToString(System.Globalization.CultureInfo.InvariantCulture))%" r="6" fill="red" style="pointer-events: all; cursor: nwse-resize;" @onmousedown="@((e) => StartResize(e, rectIndex, ResizeHandle.TopLeft))" @onmousedown:stopPropagation="true" />
+                                    <!-- Top-right -->
+                                    <circle cx="@((rx + rw).ToString(System.Globalization.CultureInfo.InvariantCulture))%" cy="@(ry.ToString(System.Globalization.CultureInfo.InvariantCulture))%" r="6" fill="red" style="pointer-events: all; cursor: nesw-resize;" @onmousedown="@((e) => StartResize(e, rectIndex, ResizeHandle.TopRight))" @onmousedown:stopPropagation="true" />
+                                    <!-- Bottom-left -->
+                                    <circle cx="@(rx.ToString(System.Globalization.CultureInfo.InvariantCulture))%" cy="@((ry + rh).ToString(System.Globalization.CultureInfo.InvariantCulture))%" r="6" fill="red" style="pointer-events: all; cursor: nesw-resize;" @onmousedown="@((e) => StartResize(e, rectIndex, ResizeHandle.BottomLeft))" @onmousedown:stopPropagation="true" />
+                                    <!-- Bottom-right -->
+                                    <circle cx="@((rx + rw).ToString(System.Globalization.CultureInfo.InvariantCulture))%" cy="@((ry + rh).ToString(System.Globalization.CultureInfo.InvariantCulture))%" r="6" fill="red" style="pointer-events: all; cursor: nwse-resize;" @onmousedown="@((e) => StartResize(e, rectIndex, ResizeHandle.BottomRight))" @onmousedown:stopPropagation="true" />
+                                    
+                                    <!-- Delete button (admin only) -->
+                                    <PermissionGate Permission="PermissionIds.Images.Edit">
+                                        <g style="pointer-events: all; cursor: pointer;" @onclick="@(() => DeleteRectangle(rectIndex))" @onclick:stopPropagation="true">
+                                            <circle cx="@((rx + rw).ToString(System.Globalization.CultureInfo.InvariantCulture))%" cy="@(ry.ToString(System.Globalization.CultureInfo.InvariantCulture))%" r="10" fill="darkred" stroke="white" stroke-width="1" />
+                                            <text x="@((rx + rw).ToString(System.Globalization.CultureInfo.InvariantCulture))%" y="@((ry + 0.5).ToString(System.Globalization.CultureInfo.InvariantCulture))%" text-anchor="middle" fill="white" font-size="14" font-weight="bold" dominant-baseline="middle">X</text>
+                                        </g>
+                                    </PermissionGate>
+                                }
+                            </g>
+                        }
+                        
+                        <!-- Current drawing rectangle -->
+                        @if (_isDrawing && _currentRect != null)
+                        {
+                            <rect x="@((_currentRect.X * 100).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                  y="@((_currentRect.Y * 100).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                  width="@((_currentRect.Width * 100).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                  height="@((_currentRect.Height * 100).ToString(System.Globalization.CultureInfo.InvariantCulture))%"
+                                  fill="none"
+                                  stroke="red"
+                                  stroke-width="3"
+                                  stroke-dasharray="5,5"
+                                  opacity="0.6" />
+                        }
+                    </svg>
+                        </div> @* End transformed container *@
+                    }
+                    else
+                    {
+                        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                            <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Size="Size.Large" Color="Color.Error" />
+                            <MudText Typo="Typo.h6" Color="Color.Error">Image URL not available</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">
+                                Container: @ContainerNumber<br />
+                                ImageUrl: @(ImageUrl ?? "null")<br />
+                                ScannerType: @ScannerType
+                            </MudText>
+                        </MudStack>
+                    }
+                </div>
+                </div> @* End LEFT image viewport *@
+
+                @* ═══ RIGHT: Decision Panel (30%) ═══ *@
+                <div class="ia-viewer-panel" style="flex: 3; min-width: 280px; max-width: 400px; background: var(--mud-palette-surface); border-left: 3px solid var(--mud-palette-primary); overflow-y: auto; padding: 16px;">
+
+                    @* ── DECISION Section ── *@
+                    @if (AuditMode)
+                    {
+                        <MudText Typo="Typo.overline" Style="color:#7B3FA8; font-weight:700; letter-spacing:2px;">AUDIT DECISION</MudText>
+
+                        @* Original analyst decision banner *@
+                        @if (!string.IsNullOrEmpty(OriginalAnalystDecision))
+                        {
+                            <MudPaper Elevation="0" Class="pa-2 mt-2 mb-2"
+                                      Style="@($"background: {(OriginalAnalystDecision == "Abnormal" ? "#fff3e0" : "#f1f8e9")}; border-left: 3px solid {(OriginalAnalystDecision == "Abnormal" ? "#ff9800" : "#8bc34a")}; border-radius: 4px;")">
+                                <MudText Typo="Typo.caption" Style="@($"color: {(OriginalAnalystDecision == "Abnormal" ? "#e65100" : "#33691e")}; font-weight: 600;")">
+                                    Analyst: @OriginalAnalystDecision
+                                </MudText>
+                                @if (!string.IsNullOrEmpty(OriginalAnalystReviewedBy))
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="font-size: 0.7rem;">by @OriginalAnalystReviewedBy</MudText>
+                                }
+                                @if (!string.IsNullOrEmpty(OriginalAnalystComments))
+                                {
+                                    <MudText Typo="Typo.caption" Style="font-size: 0.7rem;">@OriginalAnalystComments</MudText>
+                                }
+                                @if (!string.IsNullOrEmpty(OriginalAnalystTags))
+                                {
+                                    <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mt-1">
+                                        @foreach (var tag in OriginalAnalystTags.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()))
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text" Style="font-size: 0.65rem;">@tag</MudChip>
+                                        }
+                                    </MudStack>
+                                }
+                            </MudPaper>
+                        }
+
+                        <MudStack Spacing="2" Class="mt-2">
+                            <MudButton Variant="@(_selectedDecision == "Approved" ? Variant.Filled : Variant.Outlined)"
+                                       Color="Color.Success"
+                                       StartIcon="@Icons.Material.Outlined.Verified"
+                                       OnClick="@(() => { _selectedDecision = "Approved"; StateHasChanged(); })"
+                                       Style="@(_selectedDecision == "Approved" ? "box-shadow: 0 0 12px rgba(76,175,80,0.4); border-radius:10px;" : "border-radius:10px;")"
+                                       FullWidth="true" Size="Size.Large">
+                                APPROVE
+                            </MudButton>
+                            <MudButton Variant="@(_selectedDecision == "Rejected" ? Variant.Filled : Variant.Outlined)"
+                                       Color="Color.Error"
+                                       StartIcon="@Icons.Material.Outlined.GppBad"
+                                       OnClick="@(() => { _selectedDecision = "Rejected"; StateHasChanged(); })"
+                                       Style="@(_selectedDecision == "Rejected" ? "box-shadow: 0 0 12px rgba(244,67,54,0.4); border-radius:10px;" : "border-radius:10px;")"
+                                       FullWidth="true" Size="Size.Large">
+                                REJECT
+                            </MudButton>
+                        </MudStack>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.overline" Style="color:#546e7a; font-weight:700; letter-spacing:2px;">DECISION</MudText>
+                        <MudStack Spacing="2" Class="mt-2">
+                            <MudButton Variant="@(_selectedDecision == "Normal" ? Variant.Filled : Variant.Outlined)"
+                                       Color="Color.Success"
+                                       StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                       OnClick="@(() => { _selectedDecision = "Normal"; StateHasChanged(); })"
+                                       Style="@(_selectedDecision == "Normal" ? "box-shadow: 0 0 12px rgba(76,175,80,0.4); border-radius:10px;" : "border-radius:10px;")"
+                                       FullWidth="true" Size="Size.Large">
+                                NORMAL
+                            </MudButton>
+                            <MudButton Variant="@(_selectedDecision == "Abnormal" ? Variant.Filled : Variant.Outlined)"
+                                       Color="Color.Error"
+                                       StartIcon="@Icons.Material.Outlined.Warning"
+                                       OnClick="@(() => { _selectedDecision = "Abnormal"; StateHasChanged(); })"
+                                       Style="@(_selectedDecision == "Abnormal" ? "box-shadow: 0 0 12px rgba(244,67,54,0.4); border-radius:10px;" : "border-radius:10px;")"
+                                       FullWidth="true" Size="Size.Large">
+                                ABNORMAL
+                            </MudButton>
+                        </MudStack>
+                    }
+
+                    @* ── Controlled finding categories (AI training flywheel — Gap 1a) ── *@
+                    @if (_threatCategories.Any() || _revenueAnomalyCategories.Any())
+                    {
+                        <MudStack Spacing="2" Class="mt-3">
+                            @if (_threatCategories.Any())
+                            {
+                                <MudSelect T="int?"
+                                           @bind-Value="_selectedThreatCategoryId"
+                                           Label="Security finding (optional)"
+                                           Variant="Variant.Outlined"
+                                           Margin="Margin.Dense"
+                                           Clearable="true"
+                                           HelperText="Weapons, drugs, contraband, hazmat">
+                                    <MudSelectItem T="int?" Value="@((int?)null)">
+                                        <em>None</em>
+                                    </MudSelectItem>
+                                    @foreach (var cat in _threatCategories)
+                                    {
+                                        <MudSelectItem T="int?" Value="@((int?)cat.Id)">
+                                            @cat.DisplayName
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            }
+                            @if (_revenueAnomalyCategories.Any())
+                            {
+                                <MudSelect T="int?"
+                                           @bind-Value="_selectedRevenueAnomalyCategoryId"
+                                           Label="Revenue finding (optional)"
+                                           Variant="Variant.Outlined"
+                                           Margin="Margin.Dense"
+                                           Clearable="true"
+                                           HelperText="Undeclared, undervalued, misclassified, transit diversion">
+                                    <MudSelectItem T="int?" Value="@((int?)null)">
+                                        <em>None</em>
+                                    </MudSelectItem>
+                                    @foreach (var cat in _revenueAnomalyCategories)
+                                    {
+                                        <MudSelectItem T="int?" Value="@((int?)cat.Id)">
+                                            @cat.DisplayName
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            }
+                        </MudStack>
+                    }
+
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Medium"
+                               StartIcon="@Icons.Material.Outlined.Save"
+                               OnClick="SaveTagsAndDecision"
+                               FullWidth="true" Class="mt-3"
+                               Style="white-space: nowrap;">
+                        Save &amp; Next
+                    </MudButton>
+
+                    <MudDivider Class="my-3" />
+
+                    @* ── AI Suggestion ── *@
+                    @if (_aiSuggestion != null)
+                    {
+                        <MudAlert Severity="@(_aiSuggestion.SuggestedDecision == "Abnormal" ? Severity.Error : _aiSuggestion.SuggestedDecision == "Normal" ? Severity.Success : Severity.Info)"
+                                  Class="mb-3" Variant="Variant.Outlined" Dense="true">
+                            <MudStack Spacing="1">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudIcon Icon="@Icons.Material.Outlined.SmartToy" Size="Size.Small" />
+                                    <MudText Typo="Typo.body2" Style="font-weight:600;">
+                                        AI: @(_aiSuggestion.SuggestedDecision ?? "N/A")
+                                        @if (_aiSuggestion.Confidence.HasValue)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-1">
+                                                @($"{_aiSuggestion.Confidence:P0}")
+                                            </MudChip>
+                                        }
+                                    </MudText>
+                                    <MudSpacer />
+                                    <MudToggleIconButton @bind-Toggled="_showAiOverlays"
+                                                         Icon="@Icons.Material.Outlined.VisibilityOff"
+                                                         ToggledIcon="@Icons.Material.Outlined.Visibility"
+                                                         Size="Size.Small" Color="Color.Warning" ToggledColor="Color.Warning"
+                                                         Title="Toggle AI ROI overlay" />
+                                </MudStack>
+                                @if (!string.IsNullOrWhiteSpace(_aiReasoning))
+                                {
+                                    <MudText Typo="Typo.caption">@_aiReasoning</MudText>
+                                }
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Model: @_aiSuggestion.ModelId</MudText>
+                            </MudStack>
+                        </MudAlert>
+                    }
+
+                    @* ── Quality Assessment Badge ── *@
+                    @if (_qualityAssessment != null && _qualityAssessment.Success)
+                    {
+                        <MudAlert Severity="@(_qualityAssessment.IsAcceptable ? Severity.Success : Severity.Warning)" Class="mb-3" Dense="true" Variant="Variant.Outlined">
+                            <MudStack Spacing="1">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Assessment" Size="Size.Small" />
+                                    <MudText Typo="Typo.body2" Style="font-weight:600;">Quality: @(_qualityAssessment.OverallScore.ToString("P0"))</MudText>
+                                    @if (_qualityAssessment.IsAcceptable)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success">OK</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">Low</MudChip>
+                                    }
+                                </MudStack>
+                                <MudProgressLinear Value="@(_qualityAssessment.OverallScore * 100)"
+                                                   Color="@(_qualityAssessment.IsAcceptable ? Color.Success : Color.Warning)"
+                                                   Size="Size.Small" />
+                                <MudStack Row="true" Spacing="2">
+                                    <MudText Typo="Typo.caption">Sharp: @(_qualityAssessment.Sharpness.ToString("P0"))</MudText>
+                                    <MudText Typo="Typo.caption">Bright: @(_qualityAssessment.Brightness.ToString("P0"))</MudText>
+                                    <MudText Typo="Typo.caption">Contrast: @(_qualityAssessment.Contrast.ToString("P0"))</MudText>
+                                    <MudText Typo="Typo.caption">Noise: @(_qualityAssessment.NoiseLevel.ToString("P0"))</MudText>
+                                </MudStack>
+                                @if (!_qualityAssessment.IsAcceptable && _qualityAssessment.Recommendations.Any())
+                                {
+                                    <MudExpansionPanels>
+                                        <MudExpansionPanel Text="Recommendations" Dense="true">
+                                            <ul style="margin: 4px 0; padding-left: 16px;">
+                                                @foreach (var rec in _qualityAssessment.Recommendations)
+                                                {
+                                                    <li><MudText Typo="Typo.caption">@rec</MudText></li>
+                                                }
+                                            </ul>
+                                        </MudExpansionPanel>
+                                    </MudExpansionPanels>
+                                }
+                            </MudStack>
+                        </MudAlert>
+                    }
+
+                    @* ── Anomaly Detection Alert ── *@
+                    @if (_detectionResult != null && _detectionResult.Success && _detectionResult.HasAnomalies)
+                    {
+                        <MudAlert Severity="Severity.Warning" Class="mb-3" Variant="Variant.Filled" Dense="true">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.body2" Style="font-weight:600;">Anomalies Detected</MudText>
+                                <MudText Typo="Typo.caption">
+                                    @_detectionResult.Anomalies.Count anomaly(ies) found. Review carefully.
+                                </MudText>
+                                <MudText Typo="Typo.caption">
+                                    Containers: @_detectionResult.ContainerRegions.Count |
+                                    Vehicles: @_detectionResult.VehicleRegions.Count
+                                </MudText>
+                            </MudStack>
+                        </MudAlert>
+                    }
+
+                    @* ── Cross-Record Warning ── *@
+                    @if (_crossRecordInfo != null && _crossRecordInfo.IsCrossRecordImage)
+                    {
+                        <MudAlert Severity="@GetCrossRecordSeverity(_crossRecordInfo.Severity)" Class="mb-3" Variant="Variant.Filled" Dense="true">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.body2" Style="font-weight:600;">Cross-Record Image</MudText>
+                                <MudText Typo="Typo.caption">
+                                    Two containers from different records in this scan.
+                                </MudText>
+                                <MudStack Spacing="1">
+                                    <MudText Typo="Typo.caption">
+                                        Pos 1: @(_crossRecordInfo.PositionInScan == 1 ? ContainerNumber : _crossRecordInfo.SiblingContainer)
+                                        @if (_crossRecordInfo.PositionInScan == 1) { <MudChip T="string" Size="Size.Small" Color="Color.Primary">Current</MudChip> }
+                                    </MudText>
+                                    <MudText Typo="Typo.caption">
+                                        Pos 2: @(_crossRecordInfo.PositionInScan == 2 ? ContainerNumber : _crossRecordInfo.SiblingContainer)
+                                        @if (_crossRecordInfo.PositionInScan == 2) { <MudChip T="string" Size="Size.Small" Color="Color.Primary">Current</MudChip> }
+                                    </MudText>
+                                </MudStack>
+                                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                    <MudChip T="string" Color="@GetCrossRecordTypeColor(_crossRecordInfo.CrossRecordType)" Size="Size.Small">
+                                        @FormatCrossRecordType(_crossRecordInfo.CrossRecordType)
+                                    </MudChip>
+                                    <MudButton Size="Size.Small"
+                                               Variant="Variant.Outlined"
+                                               Color="Color.Primary"
+                                               StartIcon="@Icons.Material.Outlined.SwapHoriz"
+                                               OnClick="@(() => NavigateToSibling())"
+                                               Style="white-space: nowrap;">
+                                        Switch
+                                    </MudButton>
+                                </MudStack>
+                            </MudStack>
+                        </MudAlert>
+                    }
+
+                    <MudDivider Class="my-3" />
+
+                    @* ── MARKED AREAS Section ── *@
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.CropFree" Style="color:#546e7a;" Size="Size.Small" />
+                        <MudText Typo="Typo.overline" Style="color:#546e7a; font-weight:700; letter-spacing:2px;">MARKED AREAS</MudText>
+                    </MudStack>
+
+                    @if (_rectangles.Any())
+                    {
+                        <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap" Class="mb-2">
+                            @for (int i = 0; i < _rectangles.Count; i++)
+                            {
+                                var rect = _rectangles[i];
+                                var idx = i;
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined"
+                                         OnClick="@(() => SelectRectangle(idx))"
+                                         OnClose="@(() => RemoveRectangle(idx))">
+                                    @(!string.IsNullOrEmpty(rect.Tag) ? rect.Tag : $"Area {idx + 1}") (@((int)(rect.X * 100))%,@((int)(rect.Y * 100))%)
+                                </MudChip>
+                            }
+                        </MudStack>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.caption" Style="color:#999;" Class="mb-2">
+                            Use Mark Area (toolbar) to draw rectangles on suspicious regions
+                        </MudText>
+                    }
+
+                    @if (_selectedRectIndex >= 0 && _selectedRectIndex < _rectangles.Count)
+                    {
+                        <MudStack Spacing="1" Class="mb-2">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudIcon Icon="@Icons.Material.Outlined.Label" Color="Color.Warning" Size="Size.Small" />
+                                <MudText Typo="Typo.caption" Style="font-weight:600;">Tag Selected Area:</MudText>
+                            </MudStack>
+                            <MudTextField T="string"
+                                          Value="@_selectedTagText"
+                                          ValueChanged="@OnTagTextChanged"
+                                          Placeholder="Type tag label and press Enter or click Save..."
+                                          Variant="Variant.Outlined"
+                                          Margin="Margin.Dense"
+                                          Immediate="true"
+                                          OnKeyDown="@OnTagKeyDown" />
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       StartIcon="@Icons.Material.Outlined.Save"
+                                       OnClick="SaveTagAndRectangles"
+                                       FullWidth="true">
+                                Save Tag
+                            </MudButton>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-1">Quick tags:</MudText>
+                            <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Suspicious"))">Suspicious</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Weapons"))">Weapons</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Contraband"))">Contraband</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Narcotics"))">Narcotics</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Dense"))">Dense</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => TagSelectedRectangle("Clear"))">Clear</MudChip>
+                            </MudStack>
+                        </MudStack>
+                    }
+
+                </div> @* End RIGHT decision panel *@
+
+            </div> @* End 70/30 flex row *@
+
+            @* ═══ ROW 3: Status Bar ═══ *@
+            <div style="background: linear-gradient(135deg, #546e7a 0%, #607d8b 100%); padding: 6px 16px; display: flex; align-items: center; gap: 16px; flex-shrink: 0;">
+                <MudText Typo="Typo.caption" Style="color:#e0e0e0;">Container: <strong style="color:white;">@ContainerNumber</strong></MudText>
+                <MudText Typo="Typo.caption" Style="color:#e0e0e0;">Scanner: <strong style="color:white;">@ScannerType</strong></MudText>
+                <MudText Typo="Typo.caption" Style="color:#e0e0e0;">Zoom: <strong style="color:white;">@(_zoom.ToString("P0"))</strong></MudText>
+                <MudText Typo="Typo.caption" Style="color:#e0e0e0;">Rotation: <strong style="color:white;">@(_rotation)°</strong></MudText>
+                <MudSpacer />
+                <MudText Typo="Typo.caption" Style="color:#e0e0e0;">@ScanDate.ToString("MMM dd, HH:mm")</MudText>
+                <MudButton OnClick="CloseAsync" Color="Color.Inherit" Size="Size.Small" Variant="Variant.Text" Style="color:#e0e0e0;">Close</MudButton>
+            </div>
+
+        </div> @* End main 3-row column *@
+    </DialogContent>
+</MudDialog>
+
+@* Enhanced Region Comparison Overlay (Phase 5) *@
+@if (_showEnhancedRegionDialog && _enhancedRegionRect != null)
+{
+    <MudOverlay Visible="true" DarkBackground="true" ZIndex="10000" @onclick="CloseEnhancedRegionDialog">
+        <MudPaper @onclick:stopPropagation="true" 
+                  Elevation="24" 
+                  Class="pa-4" 
+                  Style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10001; background: #2b2b2b; max-width: 90vw; max-height: 90vh; overflow-y: auto;">
+            <MudStack Spacing="3">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    <MudText Typo="Typo.h6">
+                        <MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" Class="mr-2" />
+                        Enhanced Region Comparison
+                    </MudText>
+                    <MudIconButton Icon="@Icons.Material.Outlined.Close" OnClick="CloseEnhancedRegionDialog" Color="Color.Default" />
+                </MudStack>
+                
+                <MudAlert Severity="Severity.Info" Dense="true">
+                    <MudText Typo="Typo.caption">
+                        Region: X=@((int)_enhancedRegionRect.X), Y=@((int)_enhancedRegionRect.Y), 
+                        Width=@((int)_enhancedRegionRect.Width), Height=@((int)_enhancedRegionRect.Height)
+                    </MudText>
+                </MudAlert>
+                
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-3">
+                            <MudStack Spacing="2">
+                                <MudText Typo="Typo.h6" Align="Align.Center">Enhanced Region</MudText>
+                                @if (!string.IsNullOrEmpty(_enhancedRegionUrl))
+                                {
+                                    <div style="display: flex; justify-content: center; align-items: center; min-height: 300px; background-color: #1a1a1a;">
+                                        <img src="@_enhancedRegionUrl" 
+                                             alt="Enhanced Region" 
+                                             style="max-width: 100%; max-height: 400px; border: 2px solid #4caf50;" />
+                                    </div>
+                                }
+                                else
+                                {
+                                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+                                    <MudText Typo="Typo.body2" Align="Align.Center">Loading enhanced region...</MudText>
+                                }
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="2" Class="pa-3">
+                            <MudStack Spacing="2">
+                                <MudText Typo="Typo.h6" Align="Align.Center">Original Region</MudText>
+                                <div style="display: flex; justify-content: center; align-items: center; min-height: 300px; background-color: #1a1a1a; position: relative;">
+                                    @if (!string.IsNullOrEmpty(GetCurrentImageUrl()))
+                                    {
+                                        <div style="position: relative; display: inline-block;">
+                                            <img src="@GetCurrentImageUrl()" 
+                                                 alt="Original Image" 
+                                                 style="max-width: 100%; max-height: 400px; opacity: 0.7;" />
+                                            <div style="position: absolute; 
+                                                        top: @((int)_enhancedRegionRect.Y)px; 
+                                                        left: @((int)_enhancedRegionRect.X)px; 
+                                                        width: @((int)_enhancedRegionRect.Width)px; 
+                                                        height: @((int)_enhancedRegionRect.Height)px; 
+                                                        border: 3px solid #ff9800; 
+                                                        background-color: rgba(255, 152, 0, 0.2); 
+                                                        pointer-events: none;">
+                                            </div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2" Align="Align.Center" Color="Color.Error">Original image not available</MudText>
+                                    }
+                                </div>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+                
+                <MudAlert Severity="Severity.Success" Dense="true">
+                    <MudText Typo="Typo.caption">
+                        <strong>Enhancement Applied:</strong> Brightness +30%, Contrast +20%, Sharpening +80%
+                    </MudText>
+                </MudAlert>
+                
+                <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="2">
+                    <MudButton OnClick="CloseEnhancedRegionDialog" Color="Color.Default">Close</MudButton>
+                    <MudButton OnClick="@(() => DownloadEnhancedRegion())" Color="Color.Success" StartIcon="@Icons.Material.Outlined.Download">
+                        Download Enhanced
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+    </MudOverlay>
+}
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? MudDialog { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<DecisionSaveResponse?> OnDecisionSaved { get; set; }
+    [Parameter] public string ImageUrl { get; set; } = "";
+    [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string ScannerType { get; set; } = "";
+    [Parameter] public DateTime ScanDate { get; set; }
+    [Parameter] public string? GroupIdentifier { get; set; }
+    [Parameter] public bool IsConsolidated { get; set; }
+
+    // Audit mode — when true, shows Approve/Reject instead of Normal/Abnormal
+    [Parameter] public bool AuditMode { get; set; } = false;
+    [Parameter] public int ImageIndex { get; set; } = 0;
+    [Parameter] public string? OriginalAnalystDecision { get; set; }
+    [Parameter] public string? OriginalAnalystComments { get; set; }
+    [Parameter] public string? OriginalAnalystTags { get; set; }
+    [Parameter] public string? OriginalAnalystReviewedBy { get; set; }
+    [Parameter] public EventCallback<AuditDecisionResult> OnAuditDecisionSaved { get; set; }
+
+    public class AuditDecisionResult
+    {
+        public string ContainerNumber { get; set; } = "";
+        public int ImageIndex { get; set; }
+        public string ScannerType { get; set; } = "";
+        public string Decision { get; set; } = "";
+        public string? Notes { get; set; }
+    }
+
+    private DotNetObjectReference<ImageAnalysisViewer>? _dotNetRef;
+    private string? _lastContainerNumber;
+
+    private async Task LogToBrowserConsole(string message)
+    {
+        try { await JS.InvokeVoidAsync("console.log", message); } catch { }
+    }
+    
+    private ElementReference _imageElement;
+    private ElementReference _canvasElement;
+    private ElementReference _loupeCanvas;
+    private ElementReference _histogramCanvas;
+    // Transparent overlay sibling of <img> inside the transform wrapper. Its offsetX/Y
+    // is reported by the browser in image-local (pre-transform) coordinates, which is
+    // the only frame that survives zoom/rotate/resize without drift.
+    private ElementReference _drawOverlay;
+    private bool _canvasInitialized = false;
+    private bool _canvasVisible = false;
+    private bool _loupeVisible = false;
+    private bool _wlDragAttached = false;
+
+    // Canvas tool state
+    private string? _canvasConvolution = null;
+    private string? _canvasColorMap = null;
+    private bool _canvasHistEq = false;
+    private bool _canvasWLActive = false;
+    private int _canvasWLWindow = 255;
+    private int _canvasWLLevel = 128;
+    private bool _loupeEnabled = false;
+    private bool _magnifierEnabled = false;
+
+    // ═══ NEW TOOLS STATE (density, auto-enhance, high-contrast, hide annotations, ruler) ═══
+    private double _density = 1.0;         // gamma factor, 1.0 = neutral
+    private bool _autoEnhance = false;
+    private bool _highContrastPreset = false;
+    private bool _hideAnnotations = false;
+    private bool _rulerMode = false;
+    // mm-per-pixel calibration per scanner (overrideable via config)
+    private const double DEFAULT_MM_PER_PIXEL_ASE = 2.5;
+    private const double DEFAULT_MM_PER_PIXEL_FS6000 = 3.2;
+
+    // ═══ UNDO / REDO state tracking ═══
+    // History size mirrors JS module — we just read sizes to enable/disable buttons.
+    private int _undoCount = 0;
+    private int _redoCount = 0;
+
+    // Tracks whether a final decision (Normal/Abnormal/Approved/Rejected/etc.) has
+    // already been saved for this image. Used to gate rectangle deletion: users can
+    // only delete their own rectangles while no final decision exists.
+    private bool _hasSavedDecision = false;
+    private bool _showGoodsPanel = false;
+    private bool _goodsPanelLoading = false;
+    private string? _goodsPanelText;
+    private List<GoodsPanelItem> _goodsPanelItems = new();
+    private List<GoodsPanelGroup> _goodsPanelGroups = new();
+    private string? _crmsRiskLevel;
+    private bool _showHistogram = false;
+
+    private double _zoom = 1.0;
+    private int _rotation = 0;
+    private int _brightness = 100;
+    private int _contrast = 100;
+    private int _saturation = 100; // New: Color saturation (0-200%)
+    private int _hue = 0; // New: Hue rotation (0-360°)
+    private double _blur = 0; // New: Blur amount (0-10px)
+    private bool _grayscale = false;
+    private bool _invertColors = false;
+    private bool _edgeDetect = false;
+    private bool _sepia = false; // New: Sepia tone filter
+    private bool _isFullscreen = false;
+    private bool _useEnhancedImage = false; // Phase 1: Enhanced image toggle
+    private string _imageCacheBuster = ""; // Cache buster to force image reload when toggling
+    
+    // Pan state
+    private bool _isPanning = false;
+    private double _panX = 0;
+    private double _panY = 0;
+    private double _lastMouseX = 0;
+    private double _lastMouseY = 0;
+
+    // Tags state
+    private List<string> _tags = new();
+    private string _newTag = "";
+    private string _selectedDecision = "Pending";
+    private string? _existingComments = null;
+    private string _currentUsername = "System";
+
+    // AI training flywheel — controlled-vocabulary finding categories.
+    // Loaded once from /api/inspection-finding-categories on init. Both ids
+    // are independently nullable: an analyst may pick a security finding,
+    // a revenue finding, both, or neither. Defaults preserve any value
+    // already saved against the decision row.
+    private List<FindingCategoryDto> _threatCategories = new();
+    private List<FindingCategoryDto> _revenueAnomalyCategories = new();
+    private int? _selectedThreatCategoryId;
+    private int? _selectedRevenueAnomalyCategoryId;
+
+    // Rectangle drawing state
+    private ElementReference _imageContainer;
+    private bool _drawMode = false;
+    private bool _isDrawing = false;
+    private bool _isResizing = false;
+    private bool _isMoving = false;
+    private List<SuspiciousAreaRect> _rectangles = new();
+    private SuspiciousAreaRect? _currentRect = null;
+    private int _selectedRectIndex = -1;
+    private ResizeHandle _currentResizeHandle = ResizeHandle.None;
+    private double _drawStartX = 0;
+    private double _drawStartY = 0;
+
+    // Cross-record tracking state
+    private CrossRecordImageInfoDto? _crossRecordInfo = null;
+
+    // OCR state (Phase 2)
+    private OcrResultDto? _ocrResult = null;
+
+    // Object Detection state (Phase 3)
+    private ObjectDetectionResultDto? _detectionResult = null;
+    private bool _showDetectionOverlays = true; // Toggle for showing/hiding detection overlays
+
+    // AI Suggestion state
+    private AiSuggestionViewDto? _aiSuggestion = null;
+    private List<AiRoiDto>? _aiRois = null;
+    private string? _aiReasoning = null;
+    private bool _showAiOverlays = true;
+
+    public class AiSuggestionViewDto
+    {
+        public long Id { get; set; }
+        public string? SuggestedDecision { get; set; }
+        public double? Confidence { get; set; }
+        public string? ModelId { get; set; }
+        public string? SuggestionPayloadJson { get; set; }
+    }
+
+    public class AiRoiDto
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double W { get; set; }
+        public double H { get; set; }
+        public string Label { get; set; } = "";
+        public double? Confidence { get; set; }
+    }
+
+    public class AiPayloadDto
+    {
+        public List<AiRoiDto>? RegionsOfInterest { get; set; }
+        public string? Reasoning { get; set; }
+        public List<string>? Observations { get; set; }
+    }
+
+    // Quality Assessment state (Phase 4)
+    private QualityAssessmentDto? _qualityAssessment = null;
+
+    // Region Enhancement state (Phase 5)
+    private bool _showEnhancedRegionDialog = false;
+    private string? _enhancedRegionUrl = null;
+    private SuspiciousAreaRect? _enhancedRegionRect = null;
+
+    /// <summary>
+    /// OCR Result DTO for frontend
+    /// </summary>
+    public class OcrResultDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public string DetectedText { get; set; } = string.Empty;
+        public string? ContainerNumber { get; set; }
+        public bool MatchesExpected { get; set; }
+        public string? ExpectedContainerNumber { get; set; }
+        public float Confidence { get; set; }
+    }
+
+    /// <summary>
+    /// Object Detection Result DTO for frontend (Phase 3)
+    /// </summary>
+    public class ObjectDetectionResultDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public List<BoundingBoxDto> ContainerRegions { get; set; } = new();
+        public List<BoundingBoxDto> VehicleRegions { get; set; } = new();
+        public List<BoundingBoxDto> Anomalies { get; set; } = new();
+        public bool HasAnomalies { get; set; }
+    }
+
+    /// <summary>
+    /// Bounding Box DTO for frontend
+    /// </summary>
+    public class BoundingBoxDto
+    {
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public float Confidence { get; set; }
+    }
+
+    /// <summary>
+    /// Quality Assessment DTO for frontend (Phase 4)
+    /// </summary>
+    public class QualityAssessmentDto
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+        public float OverallScore { get; set; }
+        public float Sharpness { get; set; }
+        public float Brightness { get; set; }
+        public float Contrast { get; set; }
+        public float NoiseLevel { get; set; }
+        public bool IsAcceptable { get; set; }
+        public List<string> Recommendations { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Get current image URL (original or enhanced based on toggle)
+    /// </summary>
+    private string GetCurrentImageUrl()
+    {
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        string baseUrl;
+        
+        if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
+        {
+            // Use enhanced image endpoint (Phase 1) - return full URL with cache buster
+            baseUrl = $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/enhanced";
+        }
+        else
+        {
+            // ImageUrl should already be a full URL (converted in OnInitializedAsync)
+            // But handle edge cases - AND ensure we always request full-size, not thumbnail
+            if (!string.IsNullOrEmpty(ImageUrl))
+            {
+                // If it's already a full URL, use it
+                if (ImageUrl.StartsWith("http://") || ImageUrl.StartsWith("https://"))
+                {
+                    baseUrl = ImageUrl;
+                }
+                // If it's relative, prepend API base URL
+                else if (ImageUrl.StartsWith("/"))
+                {
+                    baseUrl = $"{apiBaseUrl}{ImageUrl}";
+                }
+                // Relative without leading slash
+                else
+                {
+                    baseUrl = $"{apiBaseUrl}/{ImageUrl}";
+                }
+                // ✅ FIX: Fullscreen viewer must show full-resolution. Replace size=thumbnail with size=full
+                if (baseUrl.Contains("size=thumbnail", StringComparison.OrdinalIgnoreCase))
+                {
+                    baseUrl = baseUrl.Replace("size=thumbnail", "size=full", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            // Final fallback - use unified endpoint
+            else if (!string.IsNullOrEmpty(ContainerNumber))
+            {
+                baseUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full";
+            }
+            else
+            {
+                return string.Empty;
+            }
+        }
+        
+        // ✅ FIX: Add cache buster to force browser to reload image when toggling
+        if (!string.IsNullOrEmpty(_imageCacheBuster))
+        {
+            var separator = baseUrl.Contains("?") ? "&" : "?";
+            return $"{baseUrl}{separator}v={_imageCacheBuster}";
+        }
+        
+        return baseUrl;
+    }
+
+    /// <summary>
+    /// Toggle between original and enhanced image
+    /// </summary>
+    private void ToggleEnhancement()
+    {
+        _useEnhancedImage = !_useEnhancedImage;
+        
+        // ✅ FIX: Add cache buster to force browser to reload image
+        _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+        
+        Console.WriteLine($"[ImageAnalysisViewer] Toggled enhancement: {(_useEnhancedImage ? "Enhanced" : "Original")}, URL: {GetCurrentImageUrl()}");
+        
+        StateHasChanged();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ContainerNumber != _lastContainerNumber && !string.IsNullOrEmpty(ContainerNumber))
+        {
+            _lastContainerNumber = ContainerNumber;
+            ResetAll();
+            _canvasInitialized = false;
+            _canvasVisible = false;
+            _loupeVisible = false;
+            _wlDragAttached = false;
+            _canvasConvolution = null;
+            _canvasColorMap = null;
+            _canvasHistEq = false;
+            _canvasWLActive = false;
+            _canvasWLWindow = 255;
+            _canvasWLLevel = 128;
+            _loupeEnabled = false;
+            _showHistogram = false;
+            _tags.Clear();
+            _selectedDecision = "Pending";
+            _existingComments = null;
+            _rectangles.Clear();
+            _selectedRectIndex = -1;
+            _ocrResult = null;
+            _detectionResult = null;
+            _qualityAssessment = null;
+            _crossRecordInfo = null;
+            _imageLoadRetries = 0;
+
+            await LoadExistingTags();
+            await LoadExistingRectangles();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUsername = authState.User.Identity?.Name ?? "System";
+        _lastContainerNumber = ContainerNumber;
+        
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        
+        if (!string.IsNullOrEmpty(ImageUrl))
+        {
+            if (ImageUrl.StartsWith("http://") || ImageUrl.StartsWith("https://")) { }
+            else if (ImageUrl.StartsWith("/"))
+                ImageUrl = $"{apiBaseUrl}{ImageUrl}";
+            else
+                ImageUrl = $"{apiBaseUrl}/{ImageUrl}";
+
+            if (ImageUrl.Contains("size=thumbnail", StringComparison.OrdinalIgnoreCase))
+                ImageUrl = ImageUrl.Replace("size=thumbnail", "size=full", StringComparison.OrdinalIgnoreCase);
+        }
+        else if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            ImageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full";
+        }
+        
+        // Load the controlled finding-category lookups once before LoadExistingTags
+        // so that LoadExistingTags can resolve any pre-saved id against a populated
+        // dropdown list.
+        await LoadFindingCategoriesAsync();
+
+        if (!string.IsNullOrEmpty(ContainerNumber))
+        {
+            await LoadExistingTags();
+            await LoadExistingRectangles();
+            await LoadCrossRecordInfo();
+            await LoadOcrResult();
+            await LoadObjectDetection();
+            await LoadQualityAssessment();
+            await LoadAiSuggestion();
+        }
+    }
+
+    private async Task LoadFindingCategoriesAsync()
+    {
+        try
+        {
+            var threat = await ApiService.GetAsync<List<FindingCategoryDto>>(
+                "/api/inspection-finding-categories/threat");
+            _threatCategories = threat ?? new List<FindingCategoryDto>();
+
+            var revenue = await ApiService.GetAsync<List<FindingCategoryDto>>(
+                "/api/inspection-finding-categories/revenue-anomaly");
+            _revenueAnomalyCategories = revenue ?? new List<FindingCategoryDto>();
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: if the API is unavailable the dropdowns just stay empty.
+            // The Save path still works because both ids are optional on the request.
+            Console.WriteLine($"[LoadFindingCategoriesAsync] ERROR: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private async Task LoadAiSuggestion()
+    {
+        try
+        {
+            var items = await ApiService.GetAsync<List<AiSuggestionViewDto>>(
+                $"api/aiworkflow/image/suggestions?status=all&containerNumber={Uri.EscapeDataString(ContainerNumber)}&pageSize=1");
+
+            _aiSuggestion = items?.FirstOrDefault();
+            if (_aiSuggestion?.SuggestionPayloadJson != null)
+            {
+                try
+                {
+                    var payload = System.Text.Json.JsonSerializer.Deserialize<AiPayloadDto>(
+                        _aiSuggestion.SuggestionPayloadJson,
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    _aiRois = payload?.RegionsOfInterest;
+                    _aiReasoning = payload?.Reasoning;
+                }
+                catch { }
+            }
+        }
+        catch { } // Non-critical: viewer works fine without AI suggestions
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                _dotNetRef = DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("ImageAnalysisViewer.attachWheelZoom", _dotNetRef, _imageContainer);
+                await JS.InvokeVoidAsync("ImageAnalysisViewer.attachKeyboardShortcuts", _dotNetRef);
+            }
+            catch { }
+        }
+    }
+
+    private string GetCanvasProxyImageUrl()
+    {
+        var imageUrl = GetCurrentImageUrl();
+        if (string.IsNullOrEmpty(imageUrl)) return "";
+        var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(imageUrl));
+        var baseUri = new Uri(Navigation.Uri).GetLeftPart(UriPartial.Authority);
+        return $"{baseUri}/api/imageproxy?url={Uri.EscapeDataString(encoded)}";
+    }
+
+    private async Task EnsureCanvasInitialized()
+    {
+        if (_canvasInitialized) return;
+        var proxyUrl = GetCanvasProxyImageUrl();
+        Console.WriteLine($"[Canvas] ProxyUrl: {proxyUrl}");
+        Console.WriteLine($"[Canvas] CurrentImageUrl: {GetCurrentImageUrl()}");
+        Console.WriteLine($"[Canvas] Navigation.Uri: {Navigation.Uri}");
+        if (string.IsNullOrEmpty(proxyUrl))
+        {
+            Console.WriteLine("[Canvas] No image URL for proxy");
+            return;
+        }
+        try
+        {
+            // Pass _imageElement as the 4th arg so JS can reuse the already-loaded bitmap (no double fetch)
+            var result = await JS.InvokeAsync<bool>("ImageCanvasProcessor.initWithUrl", _canvasElement, proxyUrl, _dotNetRef, _imageElement);
+            if (result)
+            {
+                _canvasInitialized = true;
+                await JS.InvokeVoidAsync("ImageCanvasProcessor.initLoupe", _loupeCanvas, 180, 3);
+                if (!_wlDragAttached)
+                {
+                    await JS.InvokeVoidAsync("ImageCanvasProcessor.attachWindowLevelDrag", _imageContainer);
+                    _wlDragAttached = true;
+                }
+            }
+            else
+            {
+                Snackbar.Add("Canvas could not load image. Try again or use a different image.", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Canvas] Init failed: {ex.Message}");
+            Snackbar.Add($"Canvas error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private bool HasActiveCanvasFilters()
+    {
+        return _canvasConvolution != null || _canvasColorMap != null || _canvasHistEq || _canvasWLActive;
+    }
+
+    private async Task ApplyCanvasFilter(string category, string? value, object? parms = null)
+    {
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized)
+        {
+            Snackbar.Add("Canvas not ready — wait for the image to finish loading.", Severity.Warning);
+            return;
+        }
+        _canvasVisible = HasActiveCanvasFilters();
+        await JS.InvokeVoidAsync("ImageCanvasProcessor.applyFilter", category, value, parms);
+        if (_showHistogram) await RefreshHistogram();
+
+        // Record into undo history after every filter change
+        try
+        {
+            var snap = await JS.InvokeAsync<object>("ImageCanvasProcessor.getStateSnapshot");
+            await JS.InvokeVoidAsync("ImageAnalysisTools.pushState", snap);
+            await RefreshHistoryCountsAsync();
+        }
+        catch { }
+
+        StateHasChanged();
+    }
+
+    private async Task ToggleCanvasConvolution(string name)
+    {
+        _canvasConvolution = _canvasConvolution == name ? null : name;
+        await ApplyCanvasFilter("convolution", _canvasConvolution);
+    }
+
+    private async Task ToggleCanvasColorMap(string name)
+    {
+        _canvasColorMap = _canvasColorMap == name ? null : name;
+        await ApplyCanvasFilter("colorMap", _canvasColorMap);
+    }
+
+    private async Task ToggleCanvasHistEq()
+    {
+        _canvasHistEq = !_canvasHistEq;
+        await ApplyCanvasFilter("histEq", _canvasHistEq ? "true" : null);
+    }
+
+    private async Task ToggleWindowLevel()
+    {
+        _canvasWLActive = !_canvasWLActive;
+        await ApplyCanvasFilter("windowLevel", _canvasWLActive ? "true" : null,
+            _canvasWLActive ? new { window = _canvasWLWindow, level = _canvasWLLevel } : null);
+    }
+
+    [JSInvokable]
+    public void OnWindowLevelChanged(int window, int level)
+    {
+        _canvasWLWindow = window;
+        _canvasWLLevel = level;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  NEW TOOLS — Density, Auto Enhance, High Contrast, Color toggle,
+    //  Hide Annotations, Zoom 1x, Ruler, and Undo/Redo history.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private double GetMmPerPixel()
+    {
+        // Fall back sensibly depending on source scanner
+        var sc = ScannerType?.ToLowerInvariant() ?? "";
+        if (sc.Contains("fs6000") || sc.Contains("rapiscan")) return DEFAULT_MM_PER_PIXEL_FS6000;
+        return DEFAULT_MM_PER_PIXEL_ASE;
+    }
+
+    // ─── Density (gamma) ─────────────────────────────────────────────────
+    private async Task IncreaseDensity()
+    {
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized) { Snackbar.Add("Canvas not ready.", Severity.Warning); return; }
+        _density = await JS.InvokeAsync<double>("ImageCanvasProcessor.adjustGamma", 0.20);
+        _canvasVisible = true;
+        await PushHistoryAsync();
+        StateHasChanged();
+    }
+
+    private async Task DecreaseDensity()
+    {
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized) { Snackbar.Add("Canvas not ready.", Severity.Warning); return; }
+        _density = await JS.InvokeAsync<double>("ImageCanvasProcessor.adjustGamma", -0.17);
+        _canvasVisible = true;
+        await PushHistoryAsync();
+        StateHasChanged();
+    }
+
+    private async Task ResetDensity()
+    {
+        if (!_canvasInitialized) { _density = 1.0; StateHasChanged(); return; }
+        _density = await JS.InvokeAsync<double>("ImageCanvasProcessor.resetGamma");
+        _canvasVisible = HasActiveCanvasFilters();
+        await PushHistoryAsync();
+        StateHasChanged();
+    }
+
+    // ─── Auto Enhance (percentile stretch) ───────────────────────────────
+    private async Task ToggleAutoEnhance()
+    {
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized) { Snackbar.Add("Canvas not ready.", Severity.Warning); return; }
+        _autoEnhance = !_autoEnhance;
+        await JS.InvokeVoidAsync("ImageCanvasProcessor.setAutoEnhance", _autoEnhance);
+        _canvasVisible = true;
+        await PushHistoryAsync();
+        StateHasChanged();
+    }
+
+    // ─── High Contrast preset ────────────────────────────────────────────
+    private async Task ToggleHighContrast()
+    {
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized) { Snackbar.Add("Canvas not ready.", Severity.Warning); return; }
+        _highContrastPreset = !_highContrastPreset;
+        if (_highContrastPreset)
+        {
+            _canvasWLActive = true;
+            _canvasWLWindow = 100;
+            _canvasWLLevel = 128;
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.applyFilter", "windowLevel", "true",
+                new { window = _canvasWLWindow, level = _canvasWLLevel });
+        }
+        else
+        {
+            _canvasWLActive = false;
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.applyFilter", "windowLevel", null, null);
+        }
+        _canvasVisible = HasActiveCanvasFilters();
+        await PushHistoryAsync();
+        StateHasChanged();
+    }
+
+    // ─── Color (one-click pseudocolor toggle) ────────────────────────────
+    private async Task ToggleColorQuick()
+    {
+        // Cycles: Off -> Hot -> Off
+        if (_canvasColorMap == null)
+            await ToggleCanvasColorMap("hot");
+        else
+            await ToggleCanvasColorMap(_canvasColorMap);  // same name toggles off
+        await PushHistoryAsync();
+    }
+
+    // ─── Hide Annotations ────────────────────────────────────────────────
+    private void ToggleHideAnnotations()
+    {
+        _hideAnnotations = !_hideAnnotations;
+        StateHasChanged();
+    }
+
+    // ─── Zoom 1x (keeps pan) ─────────────────────────────────────────────
+    private void ZoomTo1x()
+    {
+        _zoom = 1.0;
+        StateHasChanged();
+    }
+
+    // ─── Ruler ───────────────────────────────────────────────────────────
+    private async Task ToggleRuler()
+    {
+        _rulerMode = !_rulerMode;
+        if (_rulerMode)
+        {
+            // Disable draw mode so clicks go to the ruler
+            if (_drawMode) _drawMode = false;
+            await JS.InvokeVoidAsync("ImageAnalysisTools.attachRuler", _imageContainer, GetMmPerPixel());
+            Snackbar.Add("Ruler: click two points on the image. Esc to clear. Click twice more to re-measure.", Severity.Info);
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("ImageAnalysisTools.detachRuler", _imageContainer);
+        }
+        StateHasChanged();
+    }
+
+    // ─── Undo / Redo history ─────────────────────────────────────────────
+    private async Task PushHistoryAsync()
+    {
+        try
+        {
+            var snap = await JS.InvokeAsync<object>("ImageCanvasProcessor.getStateSnapshot");
+            await JS.InvokeVoidAsync("ImageAnalysisTools.pushState", snap);
+            await RefreshHistoryCountsAsync();
+        }
+        catch { /* non-critical */ }
+    }
+
+    private async Task RefreshHistoryCountsAsync()
+    {
+        try
+        {
+            var sz = await JS.InvokeAsync<System.Text.Json.JsonElement>("ImageAnalysisTools.historySize");
+            if (sz.TryGetProperty("undo", out var u)) _undoCount = u.GetInt32();
+            if (sz.TryGetProperty("redo", out var r)) _redoCount = r.GetInt32();
+        }
+        catch { }
+    }
+
+    private async Task Undo()
+    {
+        var s = await JS.InvokeAsync<object?>("ImageAnalysisTools.undo");
+        if (s != null) await JS.InvokeVoidAsync("ImageCanvasProcessor.applyStateSnapshot", s);
+        await RefreshHistoryCountsAsync();
+        StateHasChanged();
+    }
+
+    private async Task Redo()
+    {
+        var s = await JS.InvokeAsync<object?>("ImageAnalysisTools.redo");
+        if (s != null) await JS.InvokeVoidAsync("ImageCanvasProcessor.applyStateSnapshot", s);
+        await RefreshHistoryCountsAsync();
+        StateHasChanged();
+    }
+
+    private async Task UndoAll()
+    {
+        var s = await JS.InvokeAsync<object?>("ImageAnalysisTools.undoAll");
+        if (s != null) await JS.InvokeVoidAsync("ImageCanvasProcessor.applyStateSnapshot", s);
+        await RefreshHistoryCountsAsync();
+        StateHasChanged();
+    }
+
+    private async Task RedoAll()
+    {
+        var s = await JS.InvokeAsync<object?>("ImageAnalysisTools.redoAll");
+        if (s != null) await JS.InvokeVoidAsync("ImageCanvasProcessor.applyStateSnapshot", s);
+        await RefreshHistoryCountsAsync();
+        StateHasChanged();
+    }
+
+    private async Task ReloadActions()
+    {
+        // Replay: go back to earliest state, then undoAll->start, then redoAll to reapply everything
+        await JS.InvokeVoidAsync("ImageAnalysisTools.undoAll");
+        var s = await JS.InvokeAsync<object?>("ImageAnalysisTools.redoAll");
+        if (s != null) await JS.InvokeVoidAsync("ImageCanvasProcessor.applyStateSnapshot", s);
+        await RefreshHistoryCountsAsync();
+        Snackbar.Add("Actions replayed.", Severity.Info);
+        StateHasChanged();
+    }
+
+    private async Task ToggleLoupe()
+    {
+        _loupeEnabled = !_loupeEnabled;
+        await EnsureCanvasInitialized();
+        if (!_canvasInitialized)
+        {
+            _loupeEnabled = false;
+            Snackbar.Add("Canvas not ready — wait for the image to finish loading.", Severity.Warning);
+            return;
+        }
+        if (_loupeEnabled)
+        {
+            _loupeVisible = true;
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.attachLoupe", _imageContainer);
+        }
+        else
+        {
+            _loupeVisible = false;
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.detachLoupe", _imageContainer);
+        }
+    }
+
+    private async Task ToggleGoodsPanel()
+    {
+        _showGoodsPanel = !_showGoodsPanel;
+        if (_showGoodsPanel && !_goodsPanelItems.Any() && string.IsNullOrEmpty(_goodsPanelText))
+        {
+            await LoadGoodsPanelData();
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadGoodsPanelData()
+    {
+        _goodsPanelLoading = true;
+        StateHasChanged();
+        try
+        {
+            var groupId = GroupIdentifier;
+            if (string.IsNullOrEmpty(groupId))
+                groupId = ContainerNumber;
+
+            // Try cargo group API first (has structured line items)
+            var cargoGroup = await ApiService.GetAsync<CargoGroupResponse>(
+                $"/api/cargogroup/{Uri.EscapeDataString(groupId)}?loadICUMSData=true");
+
+            if (cargoGroup?.Data?.ICUMSData != null)
+            {
+                // Extract CRMS Risk Level from any group
+                foreach (var group in cargoGroup.Data.ICUMSData)
+                {
+                    if (string.IsNullOrEmpty(_crmsRiskLevel))
+                    {
+                        var riskRecord = group.Records?.FirstOrDefault(r =>
+                            r.Field == "CRMS Risk Level" && !string.IsNullOrWhiteSpace(r.Value) && r.Value != "Not assessed");
+                        if (riskRecord != null)
+                            _crmsRiskLevel = riskRecord.Value;
+                    }
+                }
+
+                foreach (var group in cargoGroup.Data.ICUMSData)
+                {
+                    var label = !string.IsNullOrEmpty(group.HouseBL) ? $"HBL: {group.HouseBL}"
+                              : !string.IsNullOrEmpty(group.GroupKey) ? group.GroupKey
+                              : !string.IsNullOrEmpty(group.ContainerNumber) ? group.ContainerNumber
+                              : "BOE";
+
+                    var panelGroup = new GoodsPanelGroup { Label = label };
+
+                    var cargo = group.Records?.Where(r => r.Category == "Cargo Info" && r.Field.Contains(":")) ?? Enumerable.Empty<CargoRecord>();
+                    var itemGroups = cargo
+                        .GroupBy(r =>
+                        {
+                            var match = System.Text.RegularExpressions.Regex.Match(r.Field, @"Item\s+(\d+):");
+                            return match.Success ? int.Parse(match.Groups[1].Value) : 0;
+                        })
+                        .Where(g => g.Key > 0)
+                        .OrderBy(g => g.Key);
+
+                    foreach (var ig in itemGroups)
+                    {
+                        var desc = ig.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value;
+                        if (string.IsNullOrWhiteSpace(desc)) continue;
+                        var item = new GoodsPanelItem
+                        {
+                            ItemNo = ig.Key,
+                            Description = desc.Trim(),
+                            HsCode = ig.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value,
+                            Quantity = ig.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value
+                        };
+                        panelGroup.Items.Add(item);
+                        _goodsPanelItems.Add(item); // flat list for count badge
+                    }
+
+                    // Always extract the narrative Goods Description from the BOE
+                    // Shows as a summary header above the structured line items
+                    var goodsDesc = group.Records?
+                        .Where(r => r.Field == "Goods Description" && !string.IsNullOrWhiteSpace(r.Value))
+                        .Select(r => r.Value!.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (goodsDesc?.Any() == true)
+                        panelGroup.NarrativeText = string.Join("; ", goodsDesc);
+
+                    if (panelGroup.Items.Any() || !string.IsNullOrEmpty(panelGroup.NarrativeText))
+                        _goodsPanelGroups.Add(panelGroup);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GoodsPanel] Error loading: {ex.Message}");
+            _goodsPanelText = "Could not load goods description.";
+        }
+        finally
+        {
+            _goodsPanelLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    // Lightweight DTOs for the goods panel (avoids pulling in full CargoGroupDto)
+    private class CargoGroupResponse
+    {
+        public CargoGroupDataResponse? Data { get; set; }
+    }
+    private class CargoGroupDataResponse
+    {
+        public List<ICUMSGroupResponse>? ICUMSData { get; set; }
+    }
+    private class ICUMSGroupResponse
+    {
+        public string? GroupKey { get; set; }
+        public string? HouseBL { get; set; }
+        public string? ContainerNumber { get; set; }
+        public List<CargoRecord>? Records { get; set; }
+    }
+    private class CargoRecord
+    {
+        public string Field { get; set; } = "";
+        public string? Value { get; set; }
+        public string? Category { get; set; }
+    }
+    private class GoodsPanelItem
+    {
+        public int ItemNo { get; set; }
+        public string Description { get; set; } = "";
+        public string? HsCode { get; set; }
+        public string? Quantity { get; set; }
+    }
+    private class GoodsPanelGroup
+    {
+        public string Label { get; set; } = "";
+        public List<GoodsPanelItem> Items { get; set; } = new();
+        public string? NarrativeText { get; set; }
+    }
+
+    private async Task ToggleMagnifier()
+    {
+        _magnifierEnabled = !_magnifierEnabled;
+        try
+        {
+            if (_magnifierEnabled)
+            {
+                await JS.InvokeVoidAsync("ImageMagnifier.attach", _imageElement, new { size = 240, zoom = 3.0 });
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("ImageMagnifier.detach", _imageElement);
+            }
+        }
+        catch (Exception ex)
+        {
+            _magnifierEnabled = false;
+            Snackbar.Add($"Magnifier error: {ex.Message}", Severity.Warning);
+        }
+        StateHasChanged();
+    }
+
+    private async Task ToggleHistogram()
+    {
+        _showHistogram = !_showHistogram;
+        if (_showHistogram)
+        {
+            await EnsureCanvasInitialized();
+            if (!_canvasInitialized)
+            {
+                _showHistogram = false;
+                Snackbar.Add("Canvas not ready — wait for the image to finish loading.", Severity.Warning);
+                return;
+            }
+            StateHasChanged();
+            await Task.Delay(100);
+            await RefreshHistogram();
+        }
+    }
+
+    private async Task RefreshHistogram()
+    {
+        try { await JS.InvokeVoidAsync("ImageCanvasProcessor.renderHistogram", _histogramCanvas); } catch { }
+    }
+
+    private async Task ResetCanvasTools()
+    {
+        _canvasConvolution = null;
+        _canvasColorMap = null;
+        _canvasHistEq = false;
+        _canvasWLActive = false;
+        _canvasWLWindow = 255;
+        _canvasWLLevel = 128;
+        _loupeEnabled = false;
+        _loupeVisible = false;
+        _showHistogram = false;
+        _canvasVisible = false;
+        try
+        {
+            if (_canvasInitialized)
+            {
+                await JS.InvokeVoidAsync("ImageCanvasProcessor.resetAll");
+                await JS.InvokeVoidAsync("ImageCanvasProcessor.detachLoupe", _imageContainer);
+            }
+        }
+        catch { }
+    }
+
+    [JSInvokable]
+    public void OnScrollZoom(double direction)
+    {
+        // Multiplicative zoom — 6% per wheel tick. Feels natural at all zoom
+        // levels (same relative change whether at 0.3x or 4x).
+        const double factor = 1.06;
+        var newZoom = direction > 0 ? _zoom * factor : _zoom / factor;
+        _zoom = Math.Clamp(newZoom, 0.25, 5.0);
+        if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
+        InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public async Task OnKeyboardAction(string action)
+    {
+        switch (action)
+        {
+            case "ZoomIn": ZoomIn(); break;
+            case "ZoomOut": ZoomOut(); break;
+            case "ResetZoom": ResetZoom(); break;
+            case "RotateRight": RotateRight(); break;
+            case "RotateLeft": RotateLeft(); break;
+            case "ToggleGrayscale": ToggleGrayscale(); break;
+            case "ToggleInvert": ToggleInvert(); break;
+            case "DecisionNormal": _selectedDecision = AuditMode ? "Approved" : "Normal"; break;
+            case "DecisionAbnormal": _selectedDecision = AuditMode ? "Rejected" : "Abnormal"; break;
+            case "ToggleDrawMode": ToggleDrawMode(); break;
+            case "ToggleEnhanced": ToggleEnhancement(); break;
+            case "ToggleLoupe": await ToggleLoupe(); break;
+            case "ToggleHistogram": await ToggleHistogram(); break;
+            case "ToggleWindowLevel": await ToggleWindowLevel(); break;
+            case "Fullscreen": await ToggleFullscreen(); break;
+            case "Close": await CloseAsync(); break;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.detachWheelZoom", _imageContainer);
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.detachKeyboardShortcuts");
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.detachWindowLevelDrag", _imageContainer);
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.detachLoupe", _imageContainer);
+            await JS.InvokeVoidAsync("ImageCanvasProcessor.dispose");
+        }
+        catch { }
+        _dotNetRef?.Dispose();
+    }
+
+    // OCR/Tesseract removed — not reliable enough for production use.
+    private Task LoadOcrResult() => Task.CompletedTask;
+
+    /// <summary>
+    /// Load object detection results for container (Phase 3)
+    /// </summary>
+    private async Task LoadObjectDetection()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(ContainerNumber))
+                return;
+
+            _detectionResult = await ApiService.GetAsync<ObjectDetectionResultDto>(
+                $"/api/image-analysis/{ContainerNumber}/detect");
+
+            if (_detectionResult != null && _detectionResult.Success)
+            {
+                Console.WriteLine($"[ObjectDetection] Containers: {_detectionResult.ContainerRegions.Count}, " +
+                    $"Vehicles: {_detectionResult.VehicleRegions.Count}, Anomalies: {_detectionResult.Anomalies.Count}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ObjectDetection] Error loading detection results: {ex.Message}");
+            // Non-critical error - continue without detection results
+        }
+    }
+
+    /// <summary>
+    /// Load quality assessment for container (Phase 4)
+    /// </summary>
+    private async Task LoadQualityAssessment()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(ContainerNumber))
+                return;
+
+            _qualityAssessment = await ApiService.GetAsync<QualityAssessmentDto>(
+                $"/api/image-analysis/{ContainerNumber}/quality");
+
+            if (_qualityAssessment != null && _qualityAssessment.Success)
+            {
+                Console.WriteLine($"[QualityAssessment] Overall: {_qualityAssessment.OverallScore:F2}, " +
+                    $"Acceptable: {_qualityAssessment.IsAcceptable}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[QualityAssessment] Error loading quality assessment: {ex.Message}");
+            // Non-critical error - continue without quality assessment
+        }
+    }
+
+    /// <summary>
+    /// Enhance selected annotation region (Phase 5)
+    /// </summary>
+    private async Task EnhanceSelectedRegion()
+    {
+        if (_selectedRectIndex < 0 || _selectedRectIndex >= _rectangles.Count)
+        {
+            Snackbar.Add("Please select an annotation region first", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var rect = _rectangles[_selectedRectIndex];
+            
+            // Build API URL for enhanced region
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var enhancedImageUrl = $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/annotations/enhance?x={(int)rect.X}&y={(int)rect.Y}&width={(int)rect.Width}&height={(int)rect.Height}";
+            
+            // Store enhanced region URL and rectangle for dialog display
+            _enhancedRegionUrl = enhancedImageUrl;
+            _enhancedRegionRect = rect;
+            _showEnhancedRegionDialog = true;
+            
+            Snackbar.Add($"Enhanced region ready for comparison", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error enhancing region: {ex.Message}");
+            Snackbar.Add($"Error enhancing region: {ex.Message}", Severity.Error);
+        }
+    }
+
+    /// <summary>
+    /// Close enhanced region dialog
+    /// </summary>
+    private void CloseEnhancedRegionDialog()
+    {
+        _showEnhancedRegionDialog = false;
+        _enhancedRegionUrl = null;
+        _enhancedRegionRect = null;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Download enhanced region image
+    /// </summary>
+    private async Task DownloadEnhancedRegion()
+    {
+        if (string.IsNullOrEmpty(_enhancedRegionUrl))
+            return;
+
+        try
+        {
+            var fileName = $"{ContainerNumber}_enhanced_region_{DateTime.Now:yyyyMMddHHmmss}.jpg";
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.downloadImage", _enhancedRegionUrl, fileName);
+            Snackbar.Add("Enhanced region downloaded", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Download error: {ex.Message}");
+            Snackbar.Add($"Error downloading enhanced region: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadCrossRecordInfo()
+    {
+        try
+        {
+            _crossRecordInfo = await ApiService.GetAsync<CrossRecordImageInfoDto>(
+                $"/api/CrossRecordScans/container/{ContainerNumber}");
+            
+            if (_crossRecordInfo?.IsCrossRecordImage == true)
+            {
+                Console.WriteLine($"⚠️ Cross-record image detected: {ContainerNumber} (Position {_crossRecordInfo.PositionInScan}, Sibling: {_crossRecordInfo.SiblingContainer})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading cross-record info: {ex.Message}");
+            // Non-critical error - continue without cross-record info
+        }
+    }
+
+    private async Task LoadExistingTags()
+    {
+        try
+        {
+            Console.WriteLine($"[LoadExistingTags] Loading for container={ContainerNumber}, scanner={ScannerType}");
+            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            
+            Console.WriteLine($"[LoadExistingTags] API returned {decisions?.Count ?? 0} decision(s)");
+            if (decisions != null)
+            {
+                foreach (var d in decisions)
+                    Console.WriteLine($"[LoadExistingTags]   - Scanner={d.ScannerType}, Decision={d.Decision}, Tags='{d.Tags}'");
+            }
+
+            var decision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
+            if (decision != null)
+            {
+                Console.WriteLine($"[LoadExistingTags] Matched decision: Tags='{decision.Tags}', Decision='{decision.Decision}'");
+
+                // Load tags
+                if (!string.IsNullOrEmpty(decision.Tags))
+                {
+                    _tags = decision.Tags.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(t => t.Trim())
+                        .ToList();
+                    Console.WriteLine($"[LoadExistingTags] Loaded {_tags.Count} tag(s): {string.Join(", ", _tags)}");
+                }
+                else
+                {
+                    Console.WriteLine($"[LoadExistingTags] Tags field is null or empty");
+                }
+                
+                // Load decision
+                _selectedDecision = string.IsNullOrEmpty(decision.Decision) ? "Pending" : decision.Decision;
+
+                // Load comments
+                _existingComments = decision.Comments;
+
+                // Load any previously saved finding category ids (AI training flywheel).
+                _selectedThreatCategoryId = decision.ThreatCategoryId;
+                _selectedRevenueAnomalyCategoryId = decision.RevenueAnomalyCategoryId;
+            }
+            else
+            {
+                Console.WriteLine($"[LoadExistingTags] No matching decision found for scanner '{ScannerType}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LoadExistingTags] ERROR: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void ZoomIn()
+    {
+        if (_zoom < 5.0)
+            _zoom += 0.25;
+    }
+
+    private void ZoomOut()
+    {
+        if (_zoom > 0.25)
+            _zoom -= 0.25;
+        if (_zoom <= 1.0) { _panX = 0; _panY = 0; }
+    }
+
+    private void ResetZoom()
+    {
+        _zoom = 1.0;
+        _panX = 0;
+        _panY = 0;
+    }
+
+    private void RotateLeft()
+    {
+        _rotation -= 90;
+        if (_rotation < 0) _rotation = 270;
+    }
+
+    private void RotateRight()
+    {
+        _rotation += 90;
+        if (_rotation >= 360) _rotation = 0;
+    }
+
+    private void ToggleGrayscale()
+    {
+        _grayscale = !_grayscale;
+    }
+
+    private void ToggleInvert()
+    {
+        _invertColors = !_invertColors;
+    }
+
+    private void ToggleEdgeDetect()
+    {
+        _edgeDetect = !_edgeDetect;
+        if (_edgeDetect)
+        {
+            _grayscale = true; // Edge detection works better with grayscale
+        }
+    }
+
+    private void ToggleSepia()
+    {
+        _sepia = !_sepia;
+    }
+
+    /// <summary>
+    /// Toggle visibility of detection overlays (boxes and labels)
+    /// Detection still runs in background, only display is toggled
+    /// </summary>
+    private void ToggleDetectionOverlays()
+    {
+        _showDetectionOverlays = !_showDetectionOverlays;
+        StateHasChanged();
+    }
+
+    private void ResetAll()
+    {
+        _zoom = 1.0;
+        _rotation = 0;
+        _brightness = 100;
+        _contrast = 100;
+        _saturation = 100;
+        _hue = 0;
+        _blur = 0;
+        _grayscale = false;
+        _invertColors = false;
+        _edgeDetect = false;
+        _sepia = false;
+        _panX = 0;
+        _panY = 0;
+
+        // Reset new tools state
+        _density = 1.0;
+        _autoEnhance = false;
+        _highContrastPreset = false;
+        _hideAnnotations = false;
+        if (_rulerMode)
+        {
+            _rulerMode = false;
+            _ = JS.InvokeVoidAsync("ImageAnalysisTools.detachRuler", _imageContainer);
+        }
+
+        // Reset canvas filter state + history
+        if (_canvasInitialized)
+        {
+            _canvasConvolution = null;
+            _canvasColorMap = null;
+            _canvasHistEq = false;
+            _canvasWLActive = false;
+            _canvasWLWindow = 255;
+            _canvasWLLevel = 128;
+            _canvasVisible = false;
+            _ = JS.InvokeVoidAsync("ImageCanvasProcessor.resetAll");
+            _ = JS.InvokeVoidAsync("ImageAnalysisTools.resetHistory");
+            _undoCount = 0;
+            _redoCount = 0;
+        }
+
+        // Detach magnifier if active
+        if (_magnifierEnabled)
+        {
+            _magnifierEnabled = false;
+            _ = JS.InvokeVoidAsync("ImageMagnifier.detach", _imageElement);
+        }
+    }
+
+    private void StartPan(MouseEventArgs e)
+    {
+        if (_zoom > 1.0)
+        {
+            _isPanning = true;
+            _lastMouseX = e.ClientX;
+            _lastMouseY = e.ClientY;
+        }
+    }
+
+    private void DoPan(MouseEventArgs e)
+    {
+        if (_isPanning)
+        {
+            var deltaX = e.ClientX - _lastMouseX;
+            var deltaY = e.ClientY - _lastMouseY;
+            
+            _panX += deltaX / _zoom;
+            _panY += deltaY / _zoom;
+            
+            _lastMouseX = e.ClientX;
+            _lastMouseY = e.ClientY;
+        }
+    }
+
+    private void EndPan(MouseEventArgs e)
+    {
+        _isPanning = false;
+    }
+
+    private string GetContainerStyle()
+    {
+        var cursor = _drawMode ? "crosshair" : (_isPanning ? "grabbing" : (_zoom > 1.0 ? "grab" : "default"));
+        return $"background-color: #1e1e2e; position: relative; overflow: hidden; cursor: {cursor};";
+    }
+
+    private string GetTransformContainerStyle()
+    {
+        var transform = $"scale({_zoom}) rotate({_rotation}deg) translateX({_panX}px) translateY({_panY}px)";
+        // image-rendering: auto  — use browser's best quality resampling (bilinear/bicubic)
+        //   on most browsers. Overrides any "pixelated" default that some browsers
+        //   apply when images are transform-scaled.
+        // transition: transform 0.15s ease-out — slightly longer than before, smoother
+        //   motion between zoom states when using the scroll wheel.
+        return $"position: relative; display: inline-block; transform: {transform}; transform-origin: center center; " +
+               $"transition: transform 0.15s ease-out; image-rendering: auto; will-change: transform;";
+    }
+
+    // Cached image dimensions — updated on image load
+    private double _imgNaturalWidth = 0;
+    private double _imgNaturalHeight = 0;
+    private double _imgDisplayWidth = 0;
+    private double _imgDisplayHeight = 0;
+
+    /// <summary>
+    /// Capture the image's *layout* dimensions, which are what the draw overlay
+    /// uses as the denominator for image-local fractions. Uses a JS helper that
+    /// reads directly from the passed element reference (reliable even when
+    /// multiple &lt;img&gt; tags exist on the page).
+    /// </summary>
+    private async Task UpdateImageDimensions()
+    {
+        try
+        {
+            // Read from the <img> element directly via its ElementReference.
+            // naturalWidth/Height come from the decoded image; clientWidth/Height are
+            // the post-CSS layout size (before transform). That's the exact frame our
+            // draw overlay lives in — so using clientWidth/Height keeps OffsetX/Y
+            // and the stored fractions perfectly aligned.
+            var dims = await JS.InvokeAsync<double[]>("eval",
+                @"(function(){
+                    var el = document.activeElement;
+                    var imgs = document.querySelectorAll('img[alt=""Container Scan""]');
+                    el = imgs[imgs.length - 1];
+                    if (!el || !el.clientWidth) return [0,0,0,0];
+                    return [el.naturalWidth, el.naturalHeight, el.clientWidth, el.clientHeight];
+                })()");
+            if (dims != null && dims.Length == 4 && dims[2] > 0)
+            {
+                _imgNaturalWidth = dims[0];
+                _imgNaturalHeight = dims[1];
+                _imgDisplayWidth = dims[2];
+                _imgDisplayHeight = dims[3];
+                Console.WriteLine($"[Annotations] Dimensions captured: natural={_imgNaturalWidth}x{_imgNaturalHeight}, display={_imgDisplayWidth}x{_imgDisplayHeight}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Annotations] UpdateImageDimensions failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Ensure we have image dimensions before any coordinate conversion.
+    /// </summary>
+    private async Task EnsureImageDimensions()
+    {
+        if (_imgDisplayWidth <= 0 || _imgDisplayHeight <= 0)
+        {
+            await UpdateImageDimensions();
+        }
+    }
+
+    /// <summary>
+    /// Convert an OffsetX/Y from the DRAW OVERLAY (sibling of &lt;img&gt; inside the transform wrapper)
+    /// into a scale-invariant 0..1 fraction of the image's natural layout frame.
+    ///
+    /// Because the overlay is a child of the same transform wrapper as the &lt;img&gt;, and the
+    /// browser reports OffsetX/Y in the event target's untransformed coordinate space,
+    /// no zoom, rotation or pan math is required here — the browser has already inverted
+    /// the CSS transform chain for us. The overlay's clientWidth/Height equal the image's
+    /// pre-transform layout size, so offsetX / clientWidth is exactly the fraction of the
+    /// natural image (same fraction regardless of any future viewport/zoom/rotation change).
+    ///
+    /// IMPORTANT: this function MUST only be called with OffsetX/Y from a draw-overlay
+    /// event. Do not pass OffsetX/Y from the outer container — those are in a different
+    /// coordinate space and will drift on letterbox/zoom/rotate.
+    /// </summary>
+    private (double x, double y) ScreenToImageCoords(double offsetX, double offsetY)
+    {
+        if (_imgDisplayWidth > 0 && _imgDisplayHeight > 0)
+        {
+            // Clamp to [0,1] so rectangles never escape the image frame.
+            var fx = Math.Max(0.0, Math.Min(1.0, offsetX / _imgDisplayWidth));
+            var fy = Math.Max(0.0, Math.Min(1.0, offsetY / _imgDisplayHeight));
+            return (fx, fy);
+        }
+        // Before dimensions are captured we cannot safely convert — return 0 so no rectangle is
+        // silently recorded in the wrong frame. HandleDrawMouseDown blocks this case anyway.
+        return (0.0, 0.0);
+    }
+
+    /// <summary>
+    /// Check if coordinates look like legacy pixel values (> 1.5) vs normalized fractions (0-1).
+    /// Legacy annotations stored raw CSS pixels; new ones store 0-1 fractions.
+    /// </summary>
+    private bool IsLegacyPixelCoordinates(SuspiciousAreaRect rect)
+    {
+        return rect.X > 1.5 || rect.Y > 1.5 || rect.Width > 1.5 || rect.Height > 1.5;
+    }
+
+    private string GetImageStyle()
+    {
+        var filters = new List<string>();
+        
+        if (_brightness != 100) filters.Add($"brightness({_brightness}%)");
+        if (_contrast != 100) filters.Add($"contrast({_contrast}%)");
+        if (_saturation != 100) filters.Add($"saturate({_saturation}%)");
+        if (_hue != 0) filters.Add($"hue-rotate({_hue}deg)");
+        if (_blur > 0) filters.Add($"blur({_blur}px)");
+        if (_grayscale) filters.Add("grayscale(100%)");
+        if (_invertColors) filters.Add("invert(100%)");
+        if (_sepia) filters.Add("sepia(100%)");
+        if (_edgeDetect) { filters.Add("contrast(300%)"); filters.Add("brightness(120%)"); }
+        
+        var filter = filters.Any() ? string.Join(" ", filters) : "none";
+        // image-rendering: auto - browser uses best-quality bilinear/bicubic scaling
+        //   when image is zoomed via CSS transform (prevents pixelated appearance).
+        return $"max-width: 100%; max-height: 500px; filter: {filter}; image-rendering: auto;";
+    }
+
+    private async Task ToggleFullscreen()
+    {
+        try
+        {
+            _isFullscreen = !_isFullscreen;
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.toggleFullscreen", _isFullscreen);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Fullscreen error: {ex.Message}");
+        }
+    }
+
+    private async Task DownloadImage()
+    {
+        try
+        {
+            var url = GetCurrentImageUrl();
+            var fileName = $"{ContainerNumber}_{ScannerType}_{DateTime.Now:yyyyMMdd}.jpg";
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.downloadImage", url, fileName);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Download error: {ex.Message}");
+        }
+    }
+
+    private async Task PrintImage()
+    {
+        try
+        {
+            var url = GetCurrentImageUrl();
+            await JS.InvokeVoidAsync("ImageAnalysisViewer.printImage", url, ContainerNumber);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Print error: {ex.Message}");
+        }
+    }
+
+    private void AddTag()
+    {
+        if (!string.IsNullOrWhiteSpace(_newTag) && !_tags.Contains(_newTag.Trim()))
+        {
+            _tags.Add(_newTag.Trim());
+            _newTag = "";
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Commits any text still in the tag input to the tags list. Called at the top of
+    /// every save path so a user who typed a tag but forgot to press Enter doesn't lose
+    /// it on save. Idempotent — safe to call even when _newTag is empty.
+    /// </summary>
+    private void FlushPendingTag()
+    {
+        if (!string.IsNullOrWhiteSpace(_newTag))
+        {
+            var candidate = _newTag.Trim();
+            if (!_tags.Contains(candidate))
+            {
+                _tags.Add(candidate);
+                Console.WriteLine($"[FlushPendingTag] Auto-committed pending tag: '{candidate}'");
+            }
+            _newTag = "";
+        }
+
+        // ALSO commit any pending rectangle-tag text — but ONLY when we know exactly
+        // which rectangle it belongs to (selected). Never guess at "last untagged"
+        // because the tag would land on the wrong rectangle and the pin would appear
+        // at the wrong location.
+        if (!string.IsNullOrWhiteSpace(_selectedTagText)
+            && _selectedRectIndex >= 0
+            && _selectedRectIndex < _rectangles.Count)
+        {
+            var tagText = _selectedTagText.Trim();
+            if (string.IsNullOrWhiteSpace(_rectangles[_selectedRectIndex].Tag))
+            {
+                _rectangles[_selectedRectIndex].Tag = tagText;
+                Console.WriteLine($"[FlushPendingTag] Auto-committed rectangle tag to #{_selectedRectIndex}: '{tagText}'");
+            }
+        }
+    }
+
+    private void QuickAddTag(string tag)
+    {
+        if (!_tags.Contains(tag))
+        {
+            _tags.Add(tag);
+            StateHasChanged();
+        }
+    }
+
+    private void RemoveTag(string tag)
+    {
+        _tags.Remove(tag);
+        StateHasChanged();
+    }
+
+    private Task HandleTagKeyPress(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            AddTag();
+        }
+        return Task.CompletedTask;
+    }
+
+    // Response DTO for decision save
+    public class DecisionSaveResponse
+    {
+        public bool Success { get; set; }
+        public bool AdvancedToAudit { get; set; }
+        public bool AllContainersDecided { get; set; }
+        public string? NextContainerNumber { get; set; }
+        public string? Message { get; set; }
+    }
+
+    private async Task SaveTagsAndDecision()
+    {
+        if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to save decisions or tags.", Severity.Warning);
+            return;
+        }
+
+        // Commit any tag text that's still in the input field but not yet added to the list
+        FlushPendingTag();
+
+
+        try
+        {
+            // ✅ FIX: Validate decision is selected (cannot be "Pending")
+            var validDecisions = AuditMode
+                ? new[] { "Approved", "Rejected" }
+                : new[] { "Normal", "Abnormal" };
+            if (string.IsNullOrEmpty(_selectedDecision) || string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase)
+                || !validDecisions.Contains(_selectedDecision))
+            {
+                Snackbar.Add(AuditMode
+                    ? "Please select a decision (Approve or Reject) before saving"
+                    : "Please select a decision (Normal or Abnormal) before saving", Severity.Warning);
+                return;
+            }
+
+            // ── AUDIT MODE: close dialog with result instead of API POST ──
+            if (AuditMode)
+            {
+                var auditResult = new AuditDecisionResult
+                {
+                    ContainerNumber = ContainerNumber,
+                    ImageIndex = ImageIndex,
+                    ScannerType = ScannerType,
+                    Decision = _selectedDecision,
+                    Notes = _existingComments
+                };
+
+                Snackbar.Add($"Audit decision: {_selectedDecision}", Severity.Success);
+
+                // Fire-and-forget transition animation
+                _ = Task.Run(async () => {
+                    try { await JS.InvokeVoidAsync("DecisionTransitions.showDecisionSaved", _selectedDecision); }
+                    catch { }
+                });
+
+                // Close the dialog and return the audit result to the caller
+                MudDialog?.Close(DialogResult.Ok(auditResult));
+                return;
+            }
+
+            var tagsString = string.Join(", ", _tags);
+            var rectanglesJson = _rectangles.Any() ? System.Text.Json.JsonSerializer.Serialize(_rectangles) : null;
+
+            var request = new
+            {
+                ContainerNumber,
+                ScannerType,
+                Decision = _selectedDecision,
+                Comments = _existingComments ?? "",
+                Tags = tagsString,
+                SuspiciousAreas = rectanglesJson,
+                ReviewedBy = _currentUsername,
+                GroupIdentifier,
+                IsConsolidated,
+                ThreatCategoryId = _selectedThreatCategoryId,
+                RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
+            };
+
+            var response = await ApiService.PostAsync<object, DecisionSaveResponse>("/api/ImageAnalysisDecision", request);
+            
+            // ✅ Verify the save was successful before closing
+            // Response will be null if API threw an exception (caught in catch block below)
+            // Response.Success will be false if API returned success:false in body
+            if (response != null && response.Success == true)
+            {
+                // Mark all rectangles + final decision as persisted so the delete/remove
+                // gate flips to "admin only" for this image.
+                foreach (var r in _rectangles) r.IsPersisted = true;
+                _hasSavedDecision = true;
+
+                await LogToBrowserConsole($"✅ [ImageAnalysisViewer] Save successful - API Response:");
+                await LogToBrowserConsole($"   - AllContainersDecided: {response.AllContainersDecided}");
+                await LogToBrowserConsole($"   - NextContainerNumber: {response.NextContainerNumber ?? "null"}");
+                await LogToBrowserConsole($"   - AdvancedToAudit: {response.AdvancedToAudit}");
+                
+                Console.WriteLine($"✅ [ImageAnalysisViewer] Save successful - closing dialog");
+                Snackbar.Add($"Decision and tags saved for {ScannerType} image", Severity.Success);
+
+                // Fire-and-forget transition animation (non-blocking)
+                _ = Task.Run(async () => {
+                    try { await JS.InvokeVoidAsync("DecisionTransitions.showDecisionSaved", _selectedDecision ?? "Normal"); }
+                    catch { /* JS not available */ }
+                });
+
+                if (OnDecisionSaved.HasDelegate)
+                {
+                    await OnDecisionSaved.InvokeAsync(response);
+                }
+                else
+                {
+                    await OnClose.InvokeAsync();
+                }
+            }
+            else
+            {
+                // Save failed or response indicates failure - show error and keep dialog open
+                var errorMessage = response?.Message ?? "Failed to save decision and tags";
+                Console.WriteLine($"❌ [ImageAnalysisViewer] Save failed or unsuccessful: {errorMessage} (Response null: {response == null}, Success: {response?.Success})");
+                Snackbar.Add($"Error: {errorMessage}", Severity.Error);
+                // Dialog stays open so user can retry
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error saving decision and tags: {ex.Message}");
+            Snackbar.Add($"Error saving decision and tags: {ex.Message}", Severity.Error);
+            // Don't close dialog on error - let user see the error and try again
+        }
+    }
+    
+    // ✅ Keep old SaveTags method for backward compatibility (auto-save on close)
+    private async Task SaveTags()
+    {
+        if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to save tags.", Severity.Warning);
+            return;
+        }
+
+        // Commit any tag text still in the input before saving
+        FlushPendingTag();
+
+        // If decision is selected, save both; otherwise just save tags (if decision exists)
+        if (!string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase))
+        {
+            await SaveTagsAndDecision();
+        }
+        else
+        {
+            // Tags-only save (preserves existing decision if it exists)
+            try
+            {
+                var tagsString = string.Join(", ", _tags);
+                
+                // Get existing decision for this image
+                var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
+                    $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+                
+                var existingDecision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
+
+                if (existingDecision == null || string.IsNullOrEmpty(existingDecision.Decision))
+                {
+                    // No existing decision - cannot save tags only
+                    Console.WriteLine("⚠️ Cannot save tags without a decision. Decision required.");
+                    return;
+                }
+
+                var rectanglesJson = _rectangles.Any() ? System.Text.Json.JsonSerializer.Serialize(_rectangles) : existingDecision.SuspiciousAreas;
+
+                var request = new
+                {
+                    ContainerNumber,
+                    ScannerType,
+                    Decision = existingDecision.Decision,
+                    Comments = existingDecision.Comments ?? "",
+                    Tags = tagsString,
+                    SuspiciousAreas = rectanglesJson,
+                    ReviewedBy = _currentUsername,
+                    GroupIdentifier,
+                    IsConsolidated,
+                    // AI training flywheel — preserve current dropdown selections.
+                    // Sending the local state means a user who picked a category and
+                    // then triggered a tags-only auto-save still gets their pick saved.
+                    ThreatCategoryId = _selectedThreatCategoryId,
+                    RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
+                };
+
+                await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision", request);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error saving tags: {ex.Message}");
+            }
+        }
+    }
+
+    // Rectangle Drawing Methods
+    private async void ToggleDrawMode()
+    {
+        _drawMode = !_drawMode;
+        if (_drawMode)
+        {
+            // Ensure we have image dimensions before any drawing
+            await EnsureImageDimensions();
+        }
+        else
+        {
+            _isDrawing = false;
+            _currentRect = null;
+            _selectedRectIndex = -1;
+        }
+    }
+
+    private async Task LoadExistingRectangles()
+    {
+        try
+        {
+            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
+                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+
+            var decision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
+
+            // Record whether a finalised decision is already on file — drives permission
+            // logic for rectangle deletion (users can only delete their own rectangles
+            // while no final decision exists).
+            _hasSavedDecision = !string.IsNullOrWhiteSpace(decision?.Decision)
+                             && !string.Equals(decision!.Decision, "Pending", StringComparison.OrdinalIgnoreCase);
+
+            if (!string.IsNullOrEmpty(decision?.SuspiciousAreas))
+            {
+                _rectangles = System.Text.Json.JsonSerializer.Deserialize<List<SuspiciousAreaRect>>(decision.SuspiciousAreas) ?? new();
+
+                // Anything that came from the server is already persisted.
+                foreach (var r in _rectangles) r.IsPersisted = true;
+
+                // Normalize legacy pixel coordinates to 0-1 fractions.
+                // Legacy annotations have X/Y/Width/Height > 1.5 (raw CSS pixels).
+                // New annotations are 0-1 fractions of the displayed image.
+                if (_imgDisplayWidth > 0 && _imgDisplayHeight > 0)
+                {
+                    foreach (var rect in _rectangles)
+                    {
+                        if (IsLegacyPixelCoordinates(rect))
+                        {
+                            Console.WriteLine($"[Annotations] Normalizing legacy rect: ({rect.X},{rect.Y},{rect.Width},{rect.Height}) / display=({_imgDisplayWidth},{_imgDisplayHeight})");
+                            rect.X /= _imgDisplayWidth;
+                            rect.Y /= _imgDisplayHeight;
+                            rect.Width /= _imgDisplayWidth;
+                            rect.Height /= _imgDisplayHeight;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading rectangles: {ex.Message}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  DRAW-OVERLAY HANDLERS — receive OffsetX/Y in image-local coord space
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private async Task HandleDrawMouseDown(MouseEventArgs e)
+    {
+        if (!_drawMode) return;
+
+        // Refresh dimensions in case the viewport resized between opens.
+        // Also guards against coordinate division by zero before the img layout is ready.
+        if (_imgDisplayWidth <= 0 || _imgDisplayHeight <= 0) await EnsureImageDimensions();
+        if (_imgDisplayWidth <= 0 || _imgDisplayHeight <= 0) return;
+
+        var (imgX, imgY) = ScreenToImageCoords(e.OffsetX, e.OffsetY);
+
+        // Click inside an existing rectangle → move it; else start a new draw.
+        var clickedRectIndex = FindRectangleAt(imgX, imgY);
+        if (clickedRectIndex >= 0)
+        {
+            _selectedRectIndex = clickedRectIndex;
+            _isMoving = true;
+            _drawStartX = imgX;
+            _drawStartY = imgY;
+        }
+        else
+        {
+            _isDrawing = true;
+            _selectedRectIndex = -1;
+            _drawStartX = imgX;
+            _drawStartY = imgY;
+            _currentRect = new SuspiciousAreaRect
+            {
+                X = imgX,
+                Y = imgY,
+                Width = 0,
+                Height = 0,
+                CreatedBy = _currentUsername,
+                Tag = string.Empty,
+                IsPersisted = false
+            };
+        }
+        StateHasChanged();
+    }
+
+    private void HandleDrawMouseMove(MouseEventArgs e)
+    {
+        if (!_drawMode) return;
+        if (_imgDisplayWidth <= 0 || _imgDisplayHeight <= 0) return;
+        var (imgX, imgY) = ScreenToImageCoords(e.OffsetX, e.OffsetY);
+
+        if (_isDrawing && _currentRect != null)
+        {
+            // Update current rectangle while drawing (image-local fractions)
+            _currentRect.Width = imgX - _drawStartX;
+            _currentRect.Height = imgY - _drawStartY;
+            if (_currentRect.Width < 0) { _currentRect.X = imgX; _currentRect.Width = Math.Abs(_currentRect.Width); }
+            else { _currentRect.X = _drawStartX; }
+            if (_currentRect.Height < 0) { _currentRect.Y = imgY; _currentRect.Height = Math.Abs(_currentRect.Height); }
+            else { _currentRect.Y = _drawStartY; }
+            StateHasChanged();
+        }
+        else if (_isResizing && _selectedRectIndex >= 0)
+        {
+            HandleResize(e);
+        }
+        else if (_isMoving && _selectedRectIndex >= 0)
+        {
+            var deltaX = imgX - _drawStartX;
+            var deltaY = imgY - _drawStartY;
+            _rectangles[_selectedRectIndex].X += deltaX;
+            _rectangles[_selectedRectIndex].Y += deltaY;
+            _drawStartX = imgX;
+            _drawStartY = imgY;
+            StateHasChanged();
+        }
+    }
+
+    private Task HandleDrawMouseUp(MouseEventArgs e) => HandleMouseUp(e);
+
+    private async Task HandleDrawMouseLeave(MouseEventArgs e)
+    {
+        // End any in-progress draw/move when leaving the overlay (same semantics as
+        // the old handler) so the user doesn't get stuck in a half-drawn state.
+        await HandleMouseLeave(e);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  CONTAINER HANDLERS — pan only (draw-overlay catches anything else)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void HandleContainerMouseDown(MouseEventArgs e)
+    {
+        // Draw-mode clicks are captured by the overlay (pointer-events: auto) and
+        // never reach here. Everything else = pan.
+        if (!_drawMode) StartPan(e);
+    }
+
+    private void HandleContainerMouseMove(MouseEventArgs e)
+    {
+        if (_isPanning) DoPan(e);
+    }
+
+    private void HandleContainerMouseUp(MouseEventArgs e) => EndPan(e);
+
+    private void HandleContainerMouseLeave(MouseEventArgs e) => EndPan(e);
+
+    private async Task HandleMouseUp(MouseEventArgs e)
+    {
+        if (_isDrawing && _currentRect != null)
+        {
+            // Finish drawing rectangle — minimum size 1% of image in each dimension
+            var minSize = (_imgDisplayWidth > 0) ? 0.01 : 10;
+            if (Math.Abs(_currentRect.Width) > minSize && Math.Abs(_currentRect.Height) > minSize)
+            {
+                _rectangles.Add(_currentRect);
+                _selectedRectIndex = _rectangles.Count - 1;
+                _selectedTagText = "";
+                await SaveRectangles();
+            }
+            _isDrawing = false;
+            _currentRect = null;
+        }
+        else if (_isResizing)
+        {
+            _isResizing = false;
+            await SaveRectangles();
+        }
+        else if (_isMoving)
+        {
+            _isMoving = false;
+            await SaveRectangles();
+        }
+        else if (!_drawMode)
+        {
+            EndPan(e);
+        }
+    }
+
+    private async Task HandleMouseLeave(MouseEventArgs e)
+    {
+        // Min size = 1% of image dimensions (coords are fractions 0..1)
+        const double minFraction = 0.01;
+        if (_isDrawing && _currentRect != null
+            && _currentRect.Width > minFraction && _currentRect.Height > minFraction)
+        {
+            _rectangles.Add(_currentRect);
+            await SaveRectangles();
+        }
+        if ((_isResizing || _isMoving) && _selectedRectIndex >= 0)
+        {
+            await SaveRectangles();
+        }
+        _isDrawing = false;
+        _isResizing = false;
+        _isMoving = false;
+        _currentRect = null;
+        if (!_drawMode)
+        {
+            EndPan(e);
+        }
+    }
+
+    private int FindRectangleAt(double x, double y)
+    {
+        for (int i = _rectangles.Count - 1; i >= 0; i--)
+        {
+            var rect = _rectangles[i];
+            if (x >= rect.X && x <= rect.X + rect.Width &&
+                y >= rect.Y && y <= rect.Y + rect.Height)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void StartResize(MouseEventArgs e, int index, ResizeHandle handle)
+    {
+        var (imgX, imgY) = ScreenToImageCoords(e.OffsetX, e.OffsetY);
+        _selectedRectIndex = index;
+        _isResizing = true;
+        _currentResizeHandle = handle;
+        _drawStartX = imgX;
+        _drawStartY = imgY;
+    }
+
+    private void HandleResize(MouseEventArgs e)
+    {
+        if (_selectedRectIndex < 0 || _selectedRectIndex >= _rectangles.Count) return;
+
+        var (imgX, imgY) = ScreenToImageCoords(e.OffsetX, e.OffsetY);
+        var rect = _rectangles[_selectedRectIndex];
+        var deltaX = imgX - _drawStartX;
+        var deltaY = imgY - _drawStartY;
+
+        switch (_currentResizeHandle)
+        {
+            case ResizeHandle.TopLeft:
+                rect.X += deltaX;
+                rect.Y += deltaY;
+                rect.Width -= deltaX;
+                rect.Height -= deltaY;
+                break;
+            case ResizeHandle.TopRight:
+                rect.Y += deltaY;
+                rect.Width += deltaX;
+                rect.Height -= deltaY;
+                break;
+            case ResizeHandle.BottomLeft:
+                rect.X += deltaX;
+                rect.Width -= deltaX;
+                rect.Height += deltaY;
+                break;
+            case ResizeHandle.BottomRight:
+                rect.Width += deltaX;
+                rect.Height += deltaY;
+                break;
+        }
+
+        // Ensure minimum size
+        if (rect.Width < 20) rect.Width = 20;
+        if (rect.Height < 20) rect.Height = 20;
+
+        _drawStartX = imgX;
+        _drawStartY = imgY;
+        StateHasChanged();
+    }
+
+    private async Task DeleteRectangle(int index)
+    {
+        if (index < 0 || index >= _rectangles.Count) return;
+        var rect = _rectangles[index];
+
+        // Permission rules:
+        //   1. Admin (Images.Edit) can always delete.
+        //   2. Otherwise, a non-admin user may delete a rectangle ONLY IF:
+        //      - they created it (CreatedBy matches current user), AND
+        //      - no final decision has been saved yet (i.e. still editable), AND
+        //      - the rectangle has not been persisted OR the owning image decision
+        //        is still Pending (they can clean up their own in-progress work).
+        var isAdmin = PermissionGuard.Can(PermissionIds.Images.Edit);
+        var isOwner = string.Equals(rect.CreatedBy, _currentUsername, StringComparison.OrdinalIgnoreCase);
+        var decisionStillOpen = !_hasSavedDecision
+            || string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(_selectedDecision);
+
+        if (!isAdmin)
+        {
+            if (!isOwner)
+            {
+                Snackbar.Add("Only the user who added this mark (or an admin) can remove it.", Severity.Warning);
+                return;
+            }
+            if (!decisionStillOpen)
+            {
+                Snackbar.Add("A final decision has been saved — only an admin can remove marks now.", Severity.Warning);
+                return;
+            }
+        }
+
+        _rectangles.RemoveAt(index);
+        _selectedRectIndex = -1;
+
+        // Only round-trip to the server if we had previously persisted the rectangle.
+        // Rectangles the user just drew (IsPersisted = false) live only in memory and
+        // are cleaned up by simply removing them from the list.
+        if (rect.IsPersisted)
+        {
+            await SaveRectangles();
+        }
+        Snackbar.Add("Suspicious area removed", Severity.Info);
+        StateHasChanged();
+    }
+
+    private void SelectRectangle(int index)
+    {
+        if (index >= 0 && index < _rectangles.Count)
+        {
+            _selectedRectIndex = index;
+            _selectedTagText = _rectangles[index].Tag ?? "";
+            StateHasChanged();
+        }
+    }
+
+    private async Task RemoveRectangle(int index)
+    {
+        await DeleteRectangle(index);
+    }
+
+    // Tag text for the selected rectangle — decoupled from the list to avoid binding issues
+    private string _selectedTagText = "";
+
+    private void OnTagTextChanged(string value)
+    {
+        _selectedTagText = value;
+        if (_selectedRectIndex >= 0 && _selectedRectIndex < _rectangles.Count)
+        {
+            _rectangles[_selectedRectIndex].Tag = value;
+        }
+    }
+
+    private async Task OnTagKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveTagAndRectangles();
+        }
+    }
+
+    private async Task SaveTagAndRectangles()
+    {
+        // Ensure the tag text is committed to the rectangle (overrides any previous tag —
+        // this is an explicit "save tag" action, so we always take the input value).
+        if (_selectedRectIndex >= 0 && _selectedRectIndex < _rectangles.Count)
+        {
+            _rectangles[_selectedRectIndex].Tag = _selectedTagText?.Trim() ?? "";
+        }
+        // Also flush any pending _newTag text into the global tag list
+        FlushPendingTag();
+        await SaveRectangles();
+        Snackbar.Add("Tag saved", Severity.Success);
+    }
+
+    private async Task TagSelectedRectangle(string tag)
+    {
+        if (_selectedRectIndex >= 0 && _selectedRectIndex < _rectangles.Count)
+        {
+            _rectangles[_selectedRectIndex].Tag = tag;
+            _selectedTagText = tag;
+            await SaveRectangles();
+            Snackbar.Add($"Tagged as '{tag}'", Severity.Success);
+        }
+    }
+
+    private async Task SaveRectangles()
+    {
+        if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
+        {
+            Snackbar.Add("You do not have permission to save marked areas.", Severity.Warning);
+            return;
+        }
+
+        // Commit any pending tag text (global list AND selected-rectangle tag) before serialising
+        FlushPendingTag();
+
+        try
+        {
+            var rectanglesJson = System.Text.Json.JsonSerializer.Serialize(_rectangles);
+
+            var request = new
+            {
+                ContainerNumber,
+                ScannerType,
+                SuspiciousAreas = rectanglesJson,
+                ReviewedBy = _currentUsername,
+                GroupIdentifier,
+                IsConsolidated
+            };
+
+            Console.WriteLine($"[SaveRectangles] Posting JSON ({rectanglesJson.Length} chars): {rectanglesJson.Substring(0, Math.Min(200, rectanglesJson.Length))}...");
+            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision/rectangles", request);
+
+            // Mark every rectangle as persisted — from here on they require admin to delete
+            foreach (var r in _rectangles) r.IsPersisted = true;
+            Console.WriteLine("[SaveRectangles] Save successful");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SaveRectangles] ERROR: {ex.Message}");
+            Snackbar.Add($"Error saving marked areas: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private int _imageLoadRetries = 0;
+    private void HandleImageLoadError(string imageUrl)
+    {
+        if (_imageLoadRetries == 0)
+        {
+            _imageLoadRetries = 1;
+            _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+            Console.WriteLine($"[ImageAnalysisViewer] Image failed — retrying with cache bust | Container: {ContainerNumber}");
+            StateHasChanged();
+            return;
+        }
+        Console.WriteLine($"[ImageAnalysisViewer] Image failed after retry | Container: {ContainerNumber} | URL: {imageUrl}");
+        Snackbar.Add($"Image unavailable for {ContainerNumber}.", Severity.Info);
+    }
+
+    private async void HandleImageLoadSuccess(string imageUrl)
+    {
+        Console.WriteLine($"[ImageAnalysisViewer] Image loaded successfully: {imageUrl}");
+        // Capture image dimensions for accurate annotation coordinate mapping
+        await Task.Delay(50); // Brief delay to ensure browser has finalized layout
+        await UpdateImageDimensions();
+        Console.WriteLine($"[ImageAnalysisViewer] Image dims: natural={_imgNaturalWidth}x{_imgNaturalHeight}, display={_imgDisplayWidth}x{_imgDisplayHeight}");
+    }
+
+    private async Task CloseAsync()
+    {
+        // Commit any tag text still in the input BEFORE any save decisions
+        FlushPendingTag();
+
+        // Always save rectangles (annotations + tags) on close — they don't require a decision
+        if (_rectangles.Any())
+        {
+            await SaveRectangles();
+        }
+
+        // Save decision + tags only if a decision has been made
+        if ((_rectangles.Any() || _tags.Any()) && !string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase))
+        {
+            await SaveTagsAndDecision();
+        }
+        else if (_tags.Any() && string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase))
+        {
+            Snackbar.Add("Decision required before saving tags. Please select Normal or Abnormal.", Severity.Warning);
+        }
+        await OnClose.InvokeAsync();
+    }
+
+    // Cross-Record Helper Methods
+    private Severity GetCrossRecordSeverity(string severity) => severity?.ToLower() switch
+    {
+        "high" => Severity.Error,
+        "medium" => Severity.Warning,
+        "low" => Severity.Info,
+        _ => Severity.Normal
+    };
+
+    private Color GetCrossRecordTypeColor(string type) => type switch
+    {
+        "DifferentImporters" => Color.Default,
+        "DifferentRiskLevels" => Color.Warning,
+        "DifferentClearanceTypes" => Color.Info,
+        _ => Color.Default
+    };
+
+    private Color GetCRMSColor(string? crms)
+    {
+        if (crms == "Current") return Color.Primary;
+        
+        return crms?.ToUpper() switch
+        {
+            "RED" or "H" or "HIGH" => Color.Error,
+            "YELLOW" or "M" or "MEDIUM" => Color.Warning,
+            "GREEN" or "L" or "LOW" => Color.Success,
+            _ => Color.Default
+        };
+    }
+
+    private string FormatCrossRecordType(string type) => type switch
+    {
+        "DifferentImporters" => "Different Importers",
+        "DifferentRiskLevels" => "Mixed CRMS",
+        "DifferentClearanceTypes" => "Import/Export Mix",
+        "DifferentBOEs" => "Different BOEs",
+        _ => type
+    };
+
+    private async Task NavigateToSibling()
+    {
+        if (_crossRecordInfo?.SiblingContainer != null)
+        {
+            Snackbar.Add($"Switching to {_crossRecordInfo.SiblingContainer}...", Severity.Info);
+            await OnClose.InvokeAsync();
+        }
+    }
+
+    // DTOs and Supporting Classes
+    public class ImageDecisionDto
+    {
+        public int Id { get; set; }
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string ScannerType { get; set; } = string.Empty;
+        public string Decision { get; set; } = string.Empty;
+        public string? Comments { get; set; }
+        public string? Tags { get; set; }
+        public string? SuspiciousAreas { get; set; }
+        public string ReviewedBy { get; set; } = string.Empty;
+        public DateTime ReviewedAt { get; set; }
+
+        // AI training flywheel — controlled-vocabulary finding categories.
+        // Both nullable. Either, both, or neither may be set.
+        public int? ThreatCategoryId { get; set; }
+        public int? RevenueAnomalyCategoryId { get; set; }
+    }
+
+    /// <summary>
+    /// Wire-format projection of a finding category, mirroring the API's
+    /// CategoryDto returned by /api/inspection-finding-categories/threat and
+    /// /api/inspection-finding-categories/revenue-anomaly. Used to populate the
+    /// analyst dropdowns.
+    /// </summary>
+    public class FindingCategoryDto
+    {
+        public int Id { get; set; }
+        public string Code { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public bool IsActive { get; set; }
+        public int SortOrder { get; set; }
+    }
+
+    public class SuspiciousAreaRect
+    {
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+        public string Tag { get; set; } = string.Empty; // Tag/label for this area
+
+        /// <summary>
+        /// True once this rectangle has been persisted (round-tripped to the API).
+        /// Freshly-drawn rectangles start false. Set true after successful SaveRectangles
+        /// or when loaded from the server. Clients use this (together with decision status)
+        /// to decide whether a non-admin user may delete the rectangle.
+        /// </summary>
+        public bool IsPersisted { get; set; } = false;
+    }
+
+    public enum ResizeHandle
+    {
+        None,
+        TopLeft,
+        TopRight,
+        BottomLeft,
+        BottomRight
+    }
+
+    public class CrossRecordImageInfoDto
+    {
+        public bool IsCrossRecordImage { get; set; }
+        public string OriginalScanRecord { get; set; } = string.Empty;
+        public string CurrentContainer { get; set; } = string.Empty;
+        public int PositionInScan { get; set; }
+        public string SiblingContainer { get; set; } = string.Empty;
+        public string CrossRecordType { get; set; } = string.Empty;
+        public string Severity { get; set; } = string.Empty;
+        public string? SiblingBOE { get; set; }
+        public string? SiblingConsignee { get; set; }
+        public string? SiblingCRMS { get; set; }
+    }
+}
+

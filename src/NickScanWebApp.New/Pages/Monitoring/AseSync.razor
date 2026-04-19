@@ -1,0 +1,191 @@
+@page "/services/ase-sync"
+@page "/monitoring/ase-sync"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesAseSync)]
+@using MudBlazor
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject ILogger<AseSync> Logger
+
+<PageTitle>NICKSCAN ERP — NSCIS — ASE Sync Management</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudText Typo="Typo.h4" Class="mb-4">
+        <MudIcon Icon="@Icons.Material.Outlined.Sync" Class="mr-2" />
+        ASE Scanner Synchronization
+    </MudText>
+
+    @if (_syncStatus != null)
+    {
+        <!-- Status Cards -->
+        <MudGrid Spacing="3" Class="mb-4">
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Sync Status</MudText>
+                        <MudChip T="string" Color="@(_syncStatus.SyncEnabled == true ? Color.Success : Color.Warning)" Size="Size.Small">
+                            @(_syncStatus.SyncEnabled == true ? "Enabled" : "Disabled")
+                        </MudChip>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Last Sync</MudText>
+                        <MudText Typo="Typo.h6">@FormatDateTime(_syncStatus.LastSyncTime)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Pending Records</MudText>
+                        <MudText Typo="Typo.h5">@(_syncStatus.PendingSyncRecords?.ToString("N0") ?? "0")</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Sync Interval</MudText>
+                        <MudText Typo="Typo.h6">@(_syncStatus.SyncIntervalMinutes?.ToString("F0") ?? "0") min</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <!-- Sync History -->
+        @if (_syncHistory != null && _syncHistory.Any())
+        {
+            <MudPaper Class="pa-4" Elevation="2">
+                <MudText Typo="Typo.h6" Class="mb-4">Sync History</MudText>
+                <MudTable Items="@_syncHistory" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Sync Time</MudTh>
+                        <MudTh>Last Synced ID</MudTh>
+                        <MudTh>Records Processed</MudTh>
+                        <MudTh>Status</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        @{
+                            var log = (dynamic)context;
+                        }
+                        <MudTd DataLabel="Sync Time">@FormatDateTime(log.LastSyncTime)</MudTd>
+                        <MudTd DataLabel="Last Synced ID">@(log.LastSyncedInspectionId ?? 0)</MudTd>
+                        <MudTd DataLabel="Records Processed">@(log.RecordsProcessed ?? 0)</MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Color="@(log.SyncStatus == "Success" ? Color.Success : Color.Error)" Size="Size.Small">
+                                @(log.SyncStatus ?? "Unknown")
+                            </MudChip>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        }
+
+        <!-- Actions -->
+        <MudStack Row="true" Spacing="2" Class="mt-4">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.PlayArrow" OnClick="TriggerSync">
+                Trigger Sync Now
+            </MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Info" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadSyncStatus">
+                Refresh Status
+            </MudButton>
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    private AseSyncStatusDto? _syncStatus;
+    private List<object>? _syncHistory;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSyncStatus();
+    }
+
+    private async Task LoadSyncStatus()
+    {
+        try
+        {
+            // Use statistics endpoint instead of status (which doesn't exist)
+            var stats = await ApiService.GetAsync<AseSyncStatisticsDto>("api/asesync/statistics");
+            if (stats != null)
+            {
+                // Convert statistics to status format
+                _syncStatus = new AseSyncStatusDto
+                {
+                    SyncEnabled = stats.SyncEnabled,
+                    LastSyncTime = stats.LastSyncTime,
+                    PendingSyncRecords = stats.PendingSyncRecords,
+                    SyncIntervalMinutes = stats.SyncIntervalMinutes,
+                    LastSyncedInspectionId = stats.LastSyncedInspectionId,
+                    LastSyncStatus = stats.LastSyncStatus
+                };
+            }
+            
+            // Load sync history
+            try
+            {
+                _syncHistory = await ApiService.GetAsync<List<object>>("api/asesync/history");
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading ASE sync status");
+            // Don't show error snackbar - gracefully handle missing endpoint
+        }
+    }
+
+    private async Task TriggerSync()
+    {
+        bool? confirmed = await DialogService.ShowMessageBox(
+            "Trigger ASE Sync",
+            "Are you sure you want to trigger ASE synchronization now?",
+            yesText: "Yes", cancelText: "Cancel");
+        
+        if (confirmed != true) return;
+
+        try
+        {
+            await ApiService.PostAsync<object, object>("api/asesync/trigger", new { });
+            Snackbar.Add("ASE sync triggered", Severity.Success);
+            await LoadSyncStatus();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error triggering ASE sync");
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string FormatDateTime(DateTime? dateTime)
+    {
+        if (dateTime == null) return "N/A";
+        return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    // DTOs
+    public class AseSyncStatusDto
+    {
+        public bool? SyncEnabled { get; set; }
+        public DateTime? LastSyncTime { get; set; }
+        public int? PendingSyncRecords { get; set; }
+        public double? SyncIntervalMinutes { get; set; }
+        public int? LastSyncedInspectionId { get; set; }
+        public string? LastSyncStatus { get; set; }
+    }
+    
+    public class AseSyncStatisticsDto
+    {
+        public bool SyncEnabled { get; set; }
+        public DateTime? LastSyncTime { get; set; }
+        public int PendingSyncRecords { get; set; }
+        public double SyncIntervalMinutes { get; set; }
+        public int LastSyncedInspectionId { get; set; }
+        public string LastSyncStatus { get; set; } = string.Empty;
+    }
+}
+

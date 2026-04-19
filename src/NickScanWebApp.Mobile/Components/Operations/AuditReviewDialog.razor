@@ -1,0 +1,223 @@
+@using MudBlazor
+@using NickScanWebApp.Mobile.Services
+@using NickScanWebApp.Shared.Services
+@using NickScanWebApp.Shared.Models
+@using NickScanCentralImagingPortal.Core.Models
+@using ImageMetadata = NickScanWebApp.Shared.Models.ImageMetadata
+@using NickScanWebApp.Mobile.Components.Containers
+@using NickScanWebApp.Mobile.Components.ICUMS
+@using NickScanWebApp.Mobile.Models
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IDialogService DialogService
+
+<MudDialog FullWidth="true" MaxWidth="MaxWidth.Medium">
+    <TitleContent>
+        <MudText Typo="Typo.h6">
+            <MudIcon Icon="@Icons.Material.Filled.Verified" Size="Size.Small" Class="mr-2" />
+            Audit Review: @Record?.GroupIdentifier
+        </MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudContainer Style="max-height: 80vh; overflow-y: auto;">
+            
+            <!-- Header Banner -->
+            <MudPaper Class="pa-3 mb-3" Elevation="1" Style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.h6" Style="color: white;">
+                        @Record?.GroupIdentifier
+                    </MudText>
+                    <MudText Typo="Typo.caption" Style="color: white;">
+                        @Record?.TotalContainers container(s) | @Record?.ScannerType Scanner
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+
+            <!-- Container Tabs - Mobile Optimized -->
+            @if (Record?.ImageAnalysisDecisions != null && Record.ImageAnalysisDecisions.Any())
+            {
+                <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2">
+                    @foreach (var decision in Record.ImageAnalysisDecisions)
+                    {
+                        <MudTabPanel Text="@decision.ContainerNumber" Icon="@Icons.Material.Filled.Inventory">
+                            
+                            <!-- Original Decision Alert -->
+                            <MudAlert Severity="@(decision.Decision == "Abnormal" ? Severity.Error : Severity.Success)" 
+                                     Dense="true" 
+                                     Class="mb-3">
+                                <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                    Original: @decision.Decision
+                                </MudText>
+                                <MudText Typo="Typo.caption">@(decision.Comments ?? "No comments")</MudText>
+                            </MudAlert>
+
+                            <!-- Sub-Tabs -->
+                            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-2">
+                                
+                                <MudTabPanel Text="Scanner" Icon="@Icons.Material.Filled.Scanner">
+                                    <ScannerDataTab ContainerNumber="@decision.ContainerNumber" TotalRecords="1" />
+                                </MudTabPanel>
+
+                                <MudTabPanel Text="Images" Icon="@Icons.Material.Filled.Image">
+                                    @if (_containerImages.ContainsKey(decision.ContainerNumber))
+                                    {
+                                        <MudStack Spacing="2">
+                                            @foreach (var image in _containerImages[decision.ContainerNumber])
+                                            {
+                                                <MudPaper Elevation="1" Class="pa-2">
+                                                    <MudText Typo="Typo.body2" Class="mb-2">
+                                                        @image.ImageType Scanner
+                                                    </MudText>
+                                                    <img src="@image.ThumbnailUrl" 
+                                                         alt="@image.ImageType" 
+                                                         style="max-width: 100%; border-radius: 4px; cursor: pointer;"
+                                                         @onclick="@(() => OpenFullImage(image, decision.ContainerNumber))" />
+                                                </MudPaper>
+                                            }
+                                        </MudStack>
+                                    }
+                                    else
+                                    {
+                                        <MudProgressCircular Indeterminate="true" />
+                                    }
+                                </MudTabPanel>
+
+                                <MudTabPanel Text="ICUMS" Icon="@Icons.Material.Filled.Description">
+                                    <ICUMSDataTab ContainerNumber="@decision.ContainerNumber" TotalRecords="1" />
+                                </MudTabPanel>
+
+                                <MudTabPanel Text="Decision" Icon="@Icons.Material.Filled.Gavel">
+                                    <MudPaper Class="pa-3" Outlined="true">
+                                        <MudText Typo="Typo.h6" Class="mb-3">Make Audit Decision</MudText>
+                                        
+                                        <MudRadioGroup T="string" @bind-Value="_auditDecision" Required="true">
+                                            <MudRadio T="string" Value="@ApprovedValue" Color="Color.Success">
+                                                <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Size="Size.Small" Class="mr-1" />
+                                                Approve
+                                            </MudRadio>
+                                            <MudRadio T="string" Value="@RejectedValue" Color="Color.Error">
+                                                <MudIcon Icon="@Icons.Material.Filled.Cancel" Size="Size.Small" Class="mr-1" />
+                                                Reject
+                                            </MudRadio>
+                                        </MudRadioGroup>
+                                        
+                                        <MudTextField @bind-Value="_auditNotes"
+                                                     Label="Audit Notes"
+                                                     Variant="Variant.Outlined"
+                                                     Lines="3"
+                                                     FullWidth="true"
+                                                     Class="mt-3" />
+                                        
+                                        <MudButton Color="Color.Primary" 
+                                                  Variant="Variant.Filled" 
+                                                  OnClick="@(() => SubmitDecision(decision.ContainerNumber))"
+                                                  FullWidth="true"
+                                                  Class="mt-3"
+                                                  Disabled="string.IsNullOrEmpty(_auditDecision)">
+                                            Submit Decision
+                                        </MudButton>
+                                    </MudPaper>
+                                </MudTabPanel>
+                            </MudTabs>
+                        </MudTabPanel>
+                    }
+                </MudTabs>
+            }
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close" FullWidth="true">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter] public AuditGroupDto? Record { get; set; }
+    [CascadingParameter] IDialogReference? MudDialog { get; set; }
+
+    private const string ApprovedValue = "Approved";
+    private const string RejectedValue = "Rejected";
+
+    private Dictionary<string, List<ImageMetadata>> _containerImages = new();
+    private string _auditDecision = "";
+    private string _auditNotes = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Record?.ImageAnalysisDecisions != null)
+        {
+            foreach (var decision in Record.ImageAnalysisDecisions)
+            {
+                await LoadContainerImages(decision.ContainerNumber);
+            }
+        }
+    }
+
+    private async Task LoadContainerImages(string containerNumber)
+    {
+        try
+        {
+            var images = await ContainerDetailsService.GetImageMetadataAsync(containerNumber);
+            if (images != null)
+            {
+                _containerImages[containerNumber] = images.ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error loading images: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OpenFullImage(ImageMetadata image, string containerNumber)
+    {
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = image.FullImageUrl,
+            ["ImageFileName"] = $"{image.ImageType} - {containerNumber}"
+        };
+
+        var options = new DialogOptions 
+        { 
+            MaxWidth = MaxWidth.False,
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        await DialogService.ShowAsync<FullscreenImageViewer>("Image Viewer", parameters, options);
+    }
+
+    private async Task SubmitDecision(string containerNumber)
+    {
+        if (string.IsNullOrEmpty(_auditDecision))
+        {
+            Snackbar.Add("Please select a decision", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            var request = new
+            {
+                GroupIdentifier = Record?.GroupIdentifier,
+                ContainerNumber = containerNumber,
+                Decision = _auditDecision,
+                Notes = _auditNotes
+            };
+
+            await ApiService.PostAsync<object, object>("/api/image-analysis/audit/submit", request);
+            Snackbar.Add("Audit decision submitted", Severity.Success);
+            MudDialog?.Close();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error submitting decision: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void Close()
+    {
+        MudDialog?.Close();
+    }
+}
