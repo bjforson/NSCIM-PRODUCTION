@@ -126,6 +126,23 @@ for per-file notes and the out-of-source config mutations).
 
 ---
 
+## [1.23.0 – 2.8.0] — 2026-04-09 to 2026-04-19 — release notes not maintained
+
+Change-log entries were not written for the releases that shipped between
+1.22.0 (2026-04-09) and 2.9.0 (2026-04-19). The code for those releases is
+present in the repo history (`git log --oneline main` covers it) — only the
+human-readable release summaries are missing.
+
+Recorded here so the version jump in this file is not a mystery to future
+readers. If anyone needs to reconstruct the window properly, the input
+material is:
+
+- `git log --since=2026-04-09 --until=2026-04-19 --oneline`
+- Deploy history on 10.0.1.254 (`Get-EventLog -LogName Application -Source NSCIM_API` / service install logs)
+- `_CLAUDE_CHANGES_BACKUP_20260419/CHANGES.md` under `C:\NICK ERP\` documents the final-day hot-patches that became `2.9.0`.
+
+---
+
 ## [1.22.0] — 2026-04-09 — Pure-C# ASE decoder fallback (mode switch, default DllOnly)
 
 Eliminates the single point of failure in NSCIM's ASE decode path. The vendor
