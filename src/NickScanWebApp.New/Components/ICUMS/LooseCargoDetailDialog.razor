@@ -24,17 +24,17 @@
                     <div>
                         <MudText Typo="Typo.h6">@doc.DeclarationNumber</MudText>
                         <MudText Typo="Typo.body2" Color="Color.Secondary">
-                            @doc.ClearanceType - @doc.CrmsLevel
+                            @doc.ClearanceType - @GetCrmsDisplayText(doc.ClearanceType, doc.DeclarationNumber, doc.CrmsLevel)
                         </MudText>
                     </div>
                     <MudSpacer />
-                    <MudChip T="string" Size="Size.Small" 
-                            Color="@(doc.ClearanceType == "IM" ? Color.Info : doc.ClearanceType == "EX" ? Color.Warning : Color.Success)">
+                    <MudChip T="string" Size="Size.Small"
+                            Color="@(doc.ClearanceType == "IM" ? Color.Info : doc.ClearanceType == "EX" ? Color.Warning : doc.ClearanceType == "CMR" ? Color.Secondary : Color.Default)">
                         @doc.ClearanceType
                     </MudChip>
-                    <MudChip T="string" Size="Size.Small" 
-                            Color="@GetCrmsColor(doc.CrmsLevel)">
-                        @(doc.CrmsLevel ?? "N/A")
+                    <MudChip T="string" Size="Size.Small"
+                            Color="@GetCrmsDisplayColor(doc.ClearanceType, doc.DeclarationNumber, doc.CrmsLevel)">
+                        @GetCrmsDisplayText(doc.ClearanceType, doc.DeclarationNumber, doc.CrmsLevel)
                     </MudChip>
                 </MudStack>
             </MudPaper>
@@ -319,6 +319,24 @@
             _loading = false;
         }
     }
+
+    // 2026-04-19: ICUMS emits CRMSLevel="Green" as a *placeholder* for CMR pre-declaration
+    // manifests (no DeclarationNumber yet). Annotate the placeholder so operators don't
+    // mistake it for a real low-risk assessment. Real Green/Red/Yellow/Blue render normally.
+    private static bool IsDefaultPreDeclarationCmrGreen(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+           && string.IsNullOrWhiteSpace(declarationNumber)
+           && string.Equals(crmsLevel, "Green", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetCrmsDisplayText(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? "Green (default — pre-declaration)"
+            : (string.IsNullOrWhiteSpace(crmsLevel) ? "N/A" : crmsLevel);
+
+    private Color GetCrmsDisplayColor(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? Color.Default
+            : GetCrmsColor(crmsLevel);
 
     private Color GetCrmsColor(string? crmsLevel)
     {

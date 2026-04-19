@@ -206,7 +206,7 @@
                 </MudTd>
                 <MudTd DataLabel="Type">
                     <MudChip T="string" Size="Size.Small" 
-                            Color="@(context.ClearanceType == "IM" ? Color.Info : context.ClearanceType == "EX" ? Color.Warning : Color.Success)">
+                            Color="@(context.ClearanceType == "IM" ? Color.Info : context.ClearanceType == "EX" ? Color.Warning : context.ClearanceType == "CMR" ? Color.Secondary : Color.Default)">
                         @context.ClearanceType
                     </MudChip>
                 </MudTd>
@@ -225,9 +225,9 @@
                     </MudText>
                 </MudTd>
                 <MudTd DataLabel="CRMS">
-                    <MudChip T="string" Size="Size.Small" 
-                            Color="@(GetCrmsColor(context.CrmsLevel))">
-                        @(context.CrmsLevel ?? "N/A")
+                    <MudChip T="string" Size="Size.Small"
+                            Color="@GetCrmsDisplayColor(context.ClearanceType, context.DeclarationNumber, context.CrmsLevel)">
+                        @GetCrmsDisplayText(context.ClearanceType, context.DeclarationNumber, context.CrmsLevel)
                     </MudChip>
                 </MudTd>
                 <MudTd DataLabel="Regime">
@@ -470,6 +470,24 @@
             _ => Color.Default
         };
     }
+
+    // 2026-04-19: ICUMS emits CRMSLevel="Green" as a *placeholder* for CMR pre-declaration
+    // manifests (no DeclarationNumber yet). Annotate the placeholder so operators don't
+    // mistake it for a real low-risk assessment. Real Green/Red/Yellow render normally.
+    private static bool IsDefaultPreDeclarationCmrGreen(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+           && string.IsNullOrWhiteSpace(declarationNumber)
+           && string.Equals(crmsLevel, "Green", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetCrmsDisplayText(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? "Green (default — pre-declaration)"
+            : (string.IsNullOrWhiteSpace(crmsLevel) ? "N/A" : crmsLevel);
+
+    private Color GetCrmsDisplayColor(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? Color.Default
+            : GetCrmsColor(crmsLevel);
 
     private async Task ViewDetails(LooseCargoDto record)
     {

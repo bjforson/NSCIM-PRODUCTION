@@ -1087,12 +1087,14 @@
         _ => Color.Default
     };
     
+    // 2026-04-19: Distinct colours per clearance type so the "Clearance Type" chip
+    // cannot be confused with a risk-level indicator. Earlier version painted CMR
+    // with Color.Success (green), which looked identical to a "Green risk" badge.
     private Color GetClearanceTypeColor(string? clearanceType) => clearanceType switch
     {
-        "CMR" => Color.Success,
-        "GREEN" => Color.Success,
-        "YELLOW" => Color.Warning,
-        "RED" => Color.Error,
+        "IM"  => Color.Info,       // blue — import
+        "EX"  => Color.Warning,    // amber — export
+        "CMR" => Color.Secondary,  // purple — transit manifest (neutral, not a risk colour)
         _ => Color.Default
     };
     

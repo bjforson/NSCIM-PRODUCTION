@@ -129,8 +129,10 @@
                                         </MudChip>
                                     </MudTd>
                                     <MudTd DataLabel="CRMS">
-                                        <MudChip T="string" Size="Size.Small" Color="@GetCrmsColor(context.CrmsLevel)" Variant="Variant.Filled">
-                                            @DisplayValue(context.CrmsLevel)
+                                        <MudChip T="string" Size="Size.Small"
+                                                 Color="@GetCrmsDisplayColor(context.ClearanceType, context.DeclarationNumber, context.CrmsLevel)"
+                                                 Variant="Variant.Filled">
+                                            @GetCrmsDisplayText(context.ClearanceType, context.DeclarationNumber, context.CrmsLevel)
                                         </MudChip>
                                     </MudTd>
                                     <MudTd DataLabel="Consignee">
@@ -178,7 +180,7 @@
                                                         <MudItem xs="12" sm="4"><MudTextField Label="Declaration Date" Value="@DisplayValue(context.DeclarationDate)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
                                                         <MudItem xs="12" sm="4"><MudTextField Label="Declaration Version" Value="@(context.DeclarationVersion.HasValue ? context.DeclarationVersion.Value.ToString() : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
                                                         <MudItem xs="12" sm="4"><MudTextField Label="Clearance Type" Value="@DisplayValue(context.ClearanceType)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
-                                                        <MudItem xs="12" sm="4"><MudTextField Label="CRMS Level" Value="@DisplayValue(context.CrmsLevel)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
+                                                        <MudItem xs="12" sm="4"><MudTextField Label="CRMS Level" Value="@GetCrmsDisplayText(context.ClearanceType, context.DeclarationNumber, context.CrmsLevel)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
                                                         <MudItem xs="12" sm="4"><MudTextField Label="Regime Code" Value="@DisplayValue(context.RegimeCode)" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
                                                         <MudItem xs="12" sm="4"><MudTextField Label="Total Duty Paid" Value="@(context.TotalDutyPaid.HasValue ? context.TotalDutyPaid.Value.ToString("N2") : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
                                                         <MudItem xs="12" sm="4"><MudTextField Label="No. of Containers" Value="@(context.NoOfContainers.HasValue ? context.NoOfContainers.Value.ToString() : "N/A")" Variant="Variant.Outlined" ReadOnly="true" Margin="Margin.Dense" /></MudItem>
@@ -444,10 +446,11 @@
     {
         "IM" => Color.Info,
         "EX" => Color.Warning,
-        "CMR" => Color.Success,
+        // 2026-04-19: was Color.Success (green) — confused with the Green risk-level chip.
+        "CMR" => Color.Secondary,
         _ => Color.Default
     };
-    
+
     private Color GetCrmsColor(string crmsLevel) => crmsLevel?.ToUpper() switch
     {
         "GREEN" => Color.Success,
@@ -456,6 +459,25 @@
         "BLUE" => Color.Info,
         _ => Color.Default
     };
+
+    // 2026-04-19: ICUMS emits CRMSLevel="Green" as a *placeholder* for CMR pre-declaration
+    // manifests (no DeclarationNumber yet). It's not a real risk assessment — when the
+    // declaration arrives the record is re-sent with the real level. Annotate the
+    // placeholder case so operators don't mistake it for a real low-risk assessment.
+    private static bool IsDefaultPreDeclarationCmrGreen(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+           && string.IsNullOrWhiteSpace(declarationNumber)
+           && string.Equals(crmsLevel, "Green", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetCrmsDisplayText(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? "Green (default — pre-declaration)"
+            : (string.IsNullOrWhiteSpace(crmsLevel) ? "N/A" : crmsLevel);
+
+    private Color GetCrmsDisplayColor(string? clearanceType, string? declarationNumber, string? crmsLevel)
+        => IsDefaultPreDeclarationCmrGreen(clearanceType, declarationNumber, crmsLevel)
+            ? Color.Default
+            : GetCrmsColor(crmsLevel ?? string.Empty);
 
     public class BOERecordDto
     {

@@ -76,7 +76,7 @@
                                     <tr><td><strong>Importer</strong></td><td>@(_detail.MatchedBoe.ImporterName ?? "—")</td></tr>
                                     <tr><td><strong>Consignee</strong></td><td>@(_detail.MatchedBoe.ConsigneeName ?? "—")</td></tr>
                                     <tr><td><strong>Goods</strong></td><td>@(_detail.MatchedBoe.GoodsDescription ?? "—")</td></tr>
-                                    <tr><td><strong>CRMS</strong></td><td>@(_detail.MatchedBoe.CrmsLevel ?? "—")</td></tr>
+                                    <tr><td><strong>CRMS</strong></td><td>@GetCrmsDisplayText(_detail.MatchedBoe.ClearanceType, _detail.MatchedBoe.DeclarationNumber, _detail.MatchedBoe.CrmsLevel)</td></tr>
                                     <tr><td><strong>Master BL</strong></td><td>@(_detail.MatchedBoe.MasterBlNumber ?? "—")</td></tr>
                                     <tr><td><strong>House BL</strong></td><td>@(_detail.MatchedBoe.HouseBl ?? "—")</td></tr>
                                 </tbody>
@@ -246,6 +246,20 @@
     }
 
     private void Close() => MudDialog.Cancel();
+
+    // 2026-04-19: ICUMS emits CRMSLevel="Green" as a *placeholder* for CMR pre-declaration
+    // manifests (no DeclarationNumber yet). Annotate the placeholder so reviewers don't
+    // mistake it for a real low-risk assessment.
+    private static string GetCrmsDisplayText(string? clearanceType, string? declarationNumber, string? crmsLevel)
+    {
+        if (string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(declarationNumber)
+            && string.Equals(crmsLevel, "Green", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Green (default — pre-declaration)";
+        }
+        return string.IsNullOrWhiteSpace(crmsLevel) ? "—" : crmsLevel;
+    }
 
     [Inject] private IDialogService DialogService { get; set; } = default!;
 
