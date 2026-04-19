@@ -99,14 +99,22 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
 
                 try
                 {
-                    // Robust read: retry on IOException (file lock from file-sync
-                    // still touching the Archive folder, etc.). 4 attempts with
-                    // exponential backoff covers transient contention. If still
-                    // failing after 4 attempts we throw and let the caller
-                    // (worker or backfill) retry on its next cycle — never
-                    // abandon, the next cycle's query will still see the
-                    // missing channel and try again.
-                    byte[] bytes = await ReadFileWithRetryAsync(file, ct);
+                    // 2026-04-19 (v2.9.5): two-stage read to defeat file-lock
+                    // contention with file-sync / antivirus / anything else
+                    // that may still be touching the .img files in Archive.
+                    //
+                    //   stage 1: Archive file → our own IngestWorkspace folder
+                    //            (retry on IOException, 4 attempts, exp backoff).
+                    //   stage 2: read bytes from the workspace copy — we own
+                    //            this file, so the read is guaranteed stable.
+                    //
+                    // The workspace copy is deleted in a finally-block once
+                    // we're done with it. If stage 1 still fails after 4
+                    // attempts we throw; the worker / backfill will try again
+                    // on its next cycle. Never-abandon is preserved: the
+                    // candidate query will still list this scan as "missing
+                    // channel" next time round.
+                    byte[] bytes = await CopyThenReadAsync(file, ct);
 
                     var entity = new FS6000Image
                     {
@@ -155,45 +163,89 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         }
 
         /// <summary>
-        /// Read a file with retry-on-IOException. Used instead of
-        /// <see cref="File.ReadAllBytesAsync"/> because the .img files — even
-        /// after they've moved to Archive/ — can briefly be held by the
-        /// file-sync service during a copy/verify step, or by an antivirus
-        /// scan, or by a concurrent reader. 4 attempts with exp backoff
-        /// covers typical transient contention (500ms, 1s, 2s, 4s = ~7.5s
-        /// max wait). On the 4th failure we throw — the caller is expected
-        /// to try again on the next cycle.
-        ///
-        /// Uses <see cref="FileShare.ReadWrite"/> so we don't block another
-        /// process that legitimately has the file open for reading.
+        /// Ingest-workspace root. Transient copies of .img files land here
+        /// just long enough to read them; cleaned up in a finally-block after
+        /// the DB write completes (successfully or not). Kept under Data/
+        /// alongside Staging/ and Archive/ so the workspace is visible to
+        /// ops, backed up by the same rules that cover the rest of the data
+        /// tree, and easy to inspect if something goes wrong.
         /// </summary>
-        private static async Task<byte[]> ReadFileWithRetryAsync(string path, CancellationToken ct)
-        {
-            const int maxAttempts = 4;
-            int delayMs = 500;
+        private static readonly string WorkspaceRoot =
+            @"C:\Shared\NSCIM_PRODUCTION\Data\FS6000\IngestWorkspace";
 
-            for (int attempt = 1; ; attempt++)
+        /// <summary>
+        /// Two-stage read with retry on the copy step. Rather than reading
+        /// directly from the Archive file (where we race file-sync /
+        /// antivirus / any other reader), we first copy the file into a
+        /// local workspace folder we own, then read from that copy. The
+        /// read stage is always on a quiet local file — no lock contention
+        /// possible.
+        ///
+        /// Retry lives on the copy, not the read. 4 attempts with
+        /// exponential backoff (500ms → 1s → 2s → 4s). On the 4th failure
+        /// we throw; the caller (worker or backfill endpoint) will try
+        /// again on its next cycle.
+        /// </summary>
+        private static async Task<byte[]> CopyThenReadAsync(string sourcePath, CancellationToken ct)
+        {
+            Directory.CreateDirectory(WorkspaceRoot);
+            var workspaceFile = Path.Combine(
+                WorkspaceRoot,
+                Guid.NewGuid().ToString("N") + "_" + Path.GetFileName(sourcePath));
+
+            try
             {
+                // Stage 1: Archive → workspace, with retry.
+                const int maxCopyAttempts = 4;
+                int delayMs = 500;
+                for (int attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        await CopyFileWithShareReadWriteAsync(sourcePath, workspaceFile, ct);
+                        break;
+                    }
+                    catch (IOException) when (attempt < maxCopyAttempts)
+                    {
+                        await Task.Delay(delayMs, ct);
+                        delayMs *= 2;
+                    }
+                }
+
+                // Stage 2: read from workspace. We own this file; no contention.
+                return await File.ReadAllBytesAsync(workspaceFile, ct);
+            }
+            finally
+            {
+                // Workspace is purely transient — clear the copy whether or
+                // not the rest of the call succeeded. If something deleted
+                // the file from under us, the best-effort catch just logs
+                // nothing; IngestWorkspace should stay small.
                 try
                 {
-                    using var fs = new FileStream(
-                        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true);
-                    var buf = new byte[fs.Length];
-                    int read = 0;
-                    while (read < buf.Length)
-                    {
-                        int n = await fs.ReadAsync(buf.AsMemory(read, buf.Length - read), ct);
-                        if (n == 0) break;
-                        read += n;
-                    }
-                    return buf;
+                    if (File.Exists(workspaceFile)) File.Delete(workspaceFile);
                 }
-                catch (IOException) when (attempt < maxAttempts)
+                catch
                 {
-                    await Task.Delay(delayMs, ct);
-                    delayMs *= 2;
+                    // best effort; cleanup worker could sweep later
                 }
             }
+        }
+
+        /// <summary>
+        /// Async file copy that explicitly opens the source with
+        /// <see cref="FileShare.ReadWrite"/>, which is more forgiving than
+        /// <see cref="File.Copy(string,string,bool)"/>'s default share mode.
+        /// If file-sync has the source open for writing (with FileShare.Read),
+        /// we still get in.
+        /// </summary>
+        private static async Task CopyFileWithShareReadWriteAsync(string source, string dest, CancellationToken ct)
+        {
+            using var src = new FileStream(
+                source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true);
+            using var dst = new FileStream(
+                dest, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+            await src.CopyToAsync(dst, ct);
         }
 
         private static bool IsUniqueViolation(DbUpdateException ex)
