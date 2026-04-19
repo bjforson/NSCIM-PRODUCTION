@@ -344,7 +344,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// </summary>
         /// <param name="minSizeBytes">Minimum size in bytes - images smaller than this are considered placeholders (default: 10000)</param>
         /// <returns>Number of placeholder caches cleared</returns>
-        [AllowAnonymous] // TODO: Add [Authorize(Roles = "Admin")] in production
+        // 2026-04-19: auth enforced — admin cache wipe must be gated.
+        [Authorize(Roles = "Admin,SuperAdmin")]
         [HttpDelete("admin/cache/placeholders")]
         [ProducesResponseType(200)]
         public async Task<ActionResult> ClearPlaceholderCache([FromQuery] int minSizeBytes = 10000)
@@ -377,7 +378,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Admin endpoint to get cache statistics (Phase 2 Enhancement)
         /// </summary>
-        [AllowAnonymous] // TODO: Add [Authorize(Roles = "Admin")] in production
+        // 2026-04-19: auth enforced — admin cache stats must be gated.
+        [Authorize(Roles = "Admin,SuperAdmin")]
         [HttpGet("admin/cache/stats")]
         [ProducesResponseType(200)]
         public async Task<ActionResult> GetCacheStats()

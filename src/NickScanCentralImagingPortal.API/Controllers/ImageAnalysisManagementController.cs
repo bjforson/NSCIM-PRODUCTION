@@ -204,7 +204,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // POST /api/image-analysis/sync-stages
         [HttpPost("sync-stages")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult> SyncStages()
         {
             // Placeholder: light no-op to satisfy UI; real implementation will reconcile lifecycle states
@@ -215,7 +214,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // POST /api/image-analysis/rebuild-intake
         [HttpPost("rebuild-intake")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult> RebuildIntake()
         {
             // Placeholder: no-op; real implementation will rescan Completeness and repopulate Ready groups
@@ -323,7 +321,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // GET /api/image-analysis/groups/ready
         [HttpGet("groups/ready")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<IEnumerable<ReadyGroupResponse>>> GetReadyGroups()
         {
             // ✅ PERFORMANCE: Check cache first to avoid expensive query
@@ -471,7 +468,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // GET /api/image-analysis/assignments
         [HttpGet("assignments")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<IEnumerable<ActiveAssignmentResponse>>> GetActiveAssignments()
         {
             try
@@ -615,7 +611,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // GET /api/image-analysis/stats
         [HttpGet("stats")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<ManagementStatsResponse>> GetStats()
         {
             // ✅ PERFORMANCE FIX: Single query instead of 3 separate queries
@@ -646,7 +641,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // GET /api/image-analysis/analysts
         [HttpGet("analysts")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<IEnumerable<string>>> GetAnalysts()
         {
             // Basic: return all active users; refine to Role=Analyst/Audit if role relationships are available
@@ -673,7 +667,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         // tables don't accumulate many rows in practice), so no pagination
         // is needed at this layer.
         [HttpGet("wave-monitor")]
-        [AllowAnonymous] // Allow access, check permission inside (ValidationCompleteness)
         public async Task<ActionResult<WaveMonitorResponse>> GetWaveMonitor()
         {
             var now = DateTime.UtcNow;
@@ -1180,7 +1173,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         // ═══════════════════════════════════════════════════════════════
 
         [HttpGet("agent/settings")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetAgentSettings()
         {
             var settings = await _db.DecisionAgentSettings.AsNoTracking().FirstOrDefaultAsync()
@@ -1229,7 +1221,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("agent/conditions")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetAgentConditions()
         {
             var conditions = await _db.DecisionAgentConditions.AsNoTracking()
@@ -1315,7 +1306,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("agent/audit-log")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetAgentAuditLog([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             pageSize = Math.Clamp(pageSize, 1, 100);
@@ -1392,7 +1382,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("agent/stats")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetAgentStats()
         {
             var logs = _db.DecisionAgentAuditLogs.AsNoTracking();
