@@ -121,6 +121,80 @@ function Publish-Project($name, $csproj, $target) {
     Write-OK "Published $name"
 }
 
+function Set-RuntimeConfigRollForward($target) {
+    # Patch every *.runtimeconfig.json under $target to include
+    #   "rollForward": "latestMajor"
+    # so assemblies built against net8.0 keep running under net10+. `dotnet publish`
+    # rewrites these files on every publish, so we re-apply here as a post-publish step.
+    # Originally lived as Deploy-ERP-Target.ps1 step 8.5 on the deploy target; baked in
+    # here 2026-04-19 so a cold source-driven deploy does not regress.
+    if ($DryRun) {
+        Write-Host "    [DryRun] Would set rollForward=latestMajor on runtimeconfig.json files under $target" -ForegroundColor Magenta
+        return
+    }
+    if (-not (Test-Path $target)) { return }
+    $configs = Get-ChildItem -Path $target -Filter "*.runtimeconfig.json" -Recurse -ErrorAction SilentlyContinue
+    if (-not $configs) {
+        Write-Host "    No runtimeconfig.json files under $target - skipping rollForward patch" -ForegroundColor Gray
+        return
+    }
+    $patched = 0
+    foreach ($cfg in $configs) {
+        try {
+            $raw = Get-Content -LiteralPath $cfg.FullName -Raw
+            $json = $raw | ConvertFrom-Json
+            if (-not $json.runtimeOptions) { continue }
+            if ($json.runtimeOptions.rollForward -eq 'latestMajor') { continue }
+            $json.runtimeOptions | Add-Member -NotePropertyName rollForward -NotePropertyValue 'latestMajor' -Force
+            ($json | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $cfg.FullName -Encoding UTF8
+            $patched++
+        } catch {
+            Write-Host "    Warn: could not patch $($cfg.FullName): $_" -ForegroundColor DarkYellow
+        }
+    }
+    if ($patched -gt 0) { Write-OK "Patched rollForward=latestMajor in $patched runtimeconfig.json file(s)" }
+}
+
+function Set-NssmEnvPair($service, $name, $value) {
+    # Idempotently set an env var on an NSSM-hosted service via AppEnvironmentExtra.
+    # Why this exists: LocalSystem services cannot read user-mapped drives (e.g. Z:\),
+    # so the FS6000 UNC path has to be handed to the ImageSplitter through an env var
+    # rather than a drive letter. Baked into Deploy.ps1 2026-04-19.
+    $svc = Get-Service -Name $service -ErrorAction SilentlyContinue
+    if ($null -eq $svc) {
+        Write-Host "    Service $service not installed, skipping NSSM env $name" -ForegroundColor Gray
+        return
+    }
+    $nssm = Join-Path $ScriptRoot "tools\nssm-2.24\win64\nssm.exe"
+    if (-not (Test-Path $nssm)) {
+        Write-Host "    NSSM not found at $nssm, skipping NSSM env $name on $service" -ForegroundColor Gray
+        return
+    }
+    if ($DryRun) {
+        Write-Host "    [DryRun] Would set NSSM env ${name}=${value} on $service" -ForegroundColor Magenta
+        return
+    }
+    try {
+        $existing = & $nssm get $service AppEnvironmentExtra 2>$null
+    } catch {
+        $existing = ""
+    }
+    $pair = "${name}=${value}"
+    # If the exact pair is already set, nothing to do
+    if ($existing -and ($existing -split "[\r\n]") -contains $pair) {
+        Write-Host "    NSSM env $name already set on $service" -ForegroundColor Gray
+        return
+    }
+    # Preserve other entries, replace any existing entry for the same name
+    $lines = @()
+    if ($existing) {
+        $lines = $existing -split "[\r\n]" | Where-Object { $_ -and ($_ -notmatch "^$([regex]::Escape($name))=") }
+    }
+    $lines += $pair
+    & $nssm set $service AppEnvironmentExtra ($lines -join "`n") | Out-Null
+    Write-OK "Set NSSM env $name on $service"
+}
+
 function Test-DeploymentBinary($name, $dllPath) {
     if ($DryRun) { return }
     if (-not (Test-Path $dllPath)) {
@@ -197,6 +271,23 @@ if ($ApiOnly -or (-not $WebAppOnly)) {
 }
 if ($WebAppOnly -or (-not $ApiOnly)) {
     Test-DeploymentBinary "WebApp" (Join-Path $WEBAPP_PUBLISH "NickScanWebApp.New.dll")
+}
+
+# --- Phase 3.5: Post-publish config (baked in 2026-04-19 from operator hot-patches) ---
+#   * rollForward=latestMajor so net8-built assemblies run on net10 host runtime
+#   * NSSM env var hands the ImageSplitter the FS6000 UNC path (LocalSystem cannot
+#     use the user-mapped Z:\ drive that the operator sees)
+if (-not $SkipBuild) {
+    Write-Header "Phase 3.5: Post-publish config"
+    if ($ApiOnly -or (-not $WebAppOnly)) {
+        Set-RuntimeConfigRollForward $API_PUBLISH
+    }
+    if ($WebAppOnly -or (-not $ApiOnly)) {
+        Set-RuntimeConfigRollForward $WEBAPP_PUBLISH
+    }
+    if (-not $WebAppOnly) {
+        Set-NssmEnvPair $SERVICE_ENGINE "NICKSCAN_FS6000_SHARE" "\\172.16.1.1\Image\23301FS01"
+    }
 }
 
 # --- Phase 4: Start services ---
