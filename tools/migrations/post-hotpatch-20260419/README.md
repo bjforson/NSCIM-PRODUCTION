@@ -6,15 +6,15 @@ On 2026-04-19 a set of operational fixes landed in source (CHANGELOG
 git — these notes explain what has to be applied manually (or re-applied
 after a cold rebuild of the server) so the fixes survive.
 
-`Deploy.ps1` Phase 3.5 now handles the two that are safe to automate:
+`Deploy.ps1` Phase 3.5 handles two; two more are now scripted in this folder:
 
-| Thing | Automated by `Deploy.ps1`? |
+| Thing | How it's applied |
 | --- | --- |
-| `rollForward = latestMajor` in every `*.runtimeconfig.json` under `publish/` | Yes (Phase 3.5) |
-| `NICKSCAN_FS6000_SHARE` NSSM env var on `NSCIM_ImageSplitter` | Yes (Phase 3.5) |
-| `FS6000__NetworkSharePath` **machine** env var (for NSCIM_API) | No — manual (below) |
-| `decisionagentsettings` DB tuning | No — manual (below) |
-| WebApp HTTPS cert selection (PFX path vs. `Subject=10.0.1.254`) | No — see caveat below |
+| `rollForward = latestMajor` in every `*.runtimeconfig.json` under `publish/` | `Deploy.ps1` Phase 3.5 |
+| `NICKSCAN_FS6000_SHARE` NSSM env var on `NSCIM_ImageSplitter` | `Deploy.ps1` Phase 3.5 |
+| `FS6000__NetworkSharePath` machine env var (for NSCIM_API) | `02-set-machine-env.ps1` here |
+| `decisionagentsettings` DB tuning | `01-decisionagent-tuning.sql` here |
+| WebApp HTTPS cert selection (PFX path vs. `Subject=10.0.1.254`) | Committed to source (0fd8d7a). See caveat below |
 
 ## 1. Machine env var — `FS6000__NetworkSharePath`
 

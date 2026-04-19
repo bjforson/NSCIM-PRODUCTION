@@ -43,17 +43,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         // GET /api/image-analysis/service-state
+        // 2026-04-19: removed [AllowAnonymous] + fake-defaults fallback.
         [HttpGet("service-state")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<AnalysisSettings>> GetServiceState()
         {
-            // Check permission gracefully
-            if (!User.Identity?.IsAuthenticated ?? true)
-            {
-                // Return default settings if not authenticated
-                return Ok(new AnalysisSettings());
-            }
-
             var settings = await _db.AnalysisSettings.AsNoTracking().FirstOrDefaultAsync();
             if (settings == null)
             {

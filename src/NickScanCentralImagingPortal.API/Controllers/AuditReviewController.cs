@@ -36,23 +36,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get records ready for audit (using WorkflowStage = 'Audit')
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("ready")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult<ApiResponse<List<AuditGroupDto>>>> GetRecordsReadyForAudit([FromQuery] string? scannerType = null)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty response if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new ApiResponse<List<AuditGroupDto>>
-                    {
-                        Success = true,
-                        Data = new List<AuditGroupDto>(),
-                        Message = "Authentication required"
-                    });
-                }
                 // ✅ Use WorkflowStage approach - get IDs using raw SQL since column exists in DB but not entity
                 var auditRecordIds = new List<int>();
 
@@ -417,30 +406,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get audit statistics
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-zero fallback.
         [HttpGet("stats")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult<ApiResponse<AuditStats>>> GetStats()
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return default stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new ApiResponse<AuditStats>
-                    {
-                        Success = true,
-                        Data = new AuditStats
-                        {
-                            ReadyForAudit = 0,
-                            Completed = 0,
-                            Approved = 0,
-                            Rejected = 0,
-                            ApprovalRate = 0
-                        },
-                        Message = "Authentication required"
-                    });
-                }
                 var connection = _dbContext.Database.GetDbConnection();
                 var wasOpen = connection.State == System.Data.ConnectionState.Open;
                 if (!wasOpen) await connection.OpenAsync();
@@ -1386,25 +1357,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get completed records (containers in terminal workflow stages: PendingSubmission, Submitted, Completed)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("completed")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult<ApiResponse<List<CompletedRecordDto>>>> GetCompletedRecords(
             [FromQuery] string? scannerType = null,
             [FromQuery] string? decision = null)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty response if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new ApiResponse<List<CompletedRecordDto>>
-                    {
-                        Success = true,
-                        Data = new List<CompletedRecordDto>(),
-                        Message = "Authentication required"
-                    });
-                }
                 // Get IDs of completed records using raw SQL
                 var completedRecordIds = new List<int>();
 

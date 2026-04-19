@@ -465,19 +465,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
         }
 
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("stats")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult<object>> GetStats()
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new List<object>());
-                }
-
                 // Only query last 30 days for performance (instead of all-time grouping)
                 var thirtyDaysAgo = DateTime.SpecifyKind(DateTime.UtcNow.Date.AddDays(-30), DateTimeKind.Utc);
 
@@ -501,8 +494,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving ASE stats");
-                // ✅ FIX: Return empty list instead of 500 to prevent frontend errors
-                return Ok(new List<object>());
+                return StatusCode(500, new { error = "Failed to load ASE stats" });
             }
         }
     }

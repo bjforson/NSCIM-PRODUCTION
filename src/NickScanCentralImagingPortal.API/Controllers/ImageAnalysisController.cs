@@ -130,17 +130,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get service state (backward compatibility endpoint - delegates to management controller)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-defaults fallback.
         [HttpGet("service-state")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<AnalysisSettings>> GetServiceState()
         {
-            // Check permission gracefully
-            if (!User.Identity?.IsAuthenticated ?? true)
-            {
-                // Return default settings if not authenticated
-                return Ok(new AnalysisSettings());
-            }
-
             var settings = await _db.AnalysisSettings.AsNoTracking().FirstOrDefaultAsync();
             if (settings == null)
             {
@@ -154,16 +147,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get assigned groups for current user (filtered by role: Analyst sees Analyst assignments, Audit sees Audit assignments)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("my-assignments")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<List<MyAssignmentResponse>>> GetMyAssignments([FromQuery] string? role = null)
         {
-            // Return empty list if not authenticated
-            if (!User.Identity?.IsAuthenticated ?? true)
-            {
-                return Ok(new List<MyAssignmentResponse>());
-            }
-
             var username = User.Identity?.Name ?? "unknown";
             var now = DateTime.UtcNow;
 
@@ -745,16 +732,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get available groups for UserClaim mode (eligible groups only - Ready for Analyst, AnalystCompleted for Audit)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("available")]
-        [AllowAnonymous] // Allow access, check permission inside
         public async Task<ActionResult<List<MyAssignmentResponse>>> GetAvailableGroups([FromQuery] string? role = null)
         {
-            // Return empty list if not authenticated
-            if (!User.Identity?.IsAuthenticated ?? true)
-            {
-                return Ok(new List<MyAssignmentResponse>());
-            }
-
             var username = User.Identity?.Name ?? "unknown";
             var now = DateTime.UtcNow;
 

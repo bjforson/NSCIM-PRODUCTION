@@ -264,11 +264,15 @@
 
     private List<BreadcrumbItem> breadcrumbs = new();
     
-    private int highPriorityCount = 3;
-    private int normalPriorityCount = 8;
-    private int completedToday = 156;
+    // 2026-04-19: was non-zero ({3, 8, 156, 0, 2}) — these pre-render numbers showed
+    // on page-load before the first API poll returned, giving the impression of
+    // "hard-coded data" even when the real data was still loading. Initialise to 0
+    // so the UI is honest about having no data yet.
+    private int highPriorityCount = 0;
+    private int normalPriorityCount = 0;
+    private int completedToday = 0;
     private int completedYesterday = 0;
-    private int failedToday = 2;
+    private int failedToday = 0;
     
     private List<DownloadQueueItem> queueItems = new();
     private List<DownloadQueueItem> pendingItems => queueItems.Where(x => x.Status == "Pending").ToList();

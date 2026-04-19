@@ -34,58 +34,34 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get all queue items (all statuses for UI display)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty-list fallback. The previous
+        // behaviour returned [] to anonymous callers, which made auth failures look like an
+        // empty queue in the UI. Now authentication is enforced by the class-level [Authorize]
+        // and real errors surface as 500 so the dashboard can display an honest state.
         [HttpGet]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult> GetAllQueueItems([FromQuery] int limit = 100)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty list if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new List<object>());
-                }
-
                 var items = await _queueRepository.GetAllQueueItemsAsync(limit);
                 return Ok(items);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting queue items");
-                // ✅ FIX: Return empty list instead of 500 to prevent frontend errors
-                return Ok(new List<object>());
+                return StatusCode(500, new { error = "Failed to load queue items" });
             }
         }
 
         /// <summary>
         /// Get queue statistics
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-zero fallback.
         [HttpGet("stats")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult> GetQueueStatistics()
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return default stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new
-                    {
-                        pending = 0,
-                        processing = 0,
-                        completed = 0,
-                        failed = 0,
-                        highPriority = 0,
-                        normalPriority = 0,
-                        lowPriority = 0,
-                        averageWaitTimeMinutes = 0.0,
-                        successRate = 0.0,
-                        oldestPendingQueuedAt = (DateTime?)null
-                    });
-                }
-
                 var stats = await _queueService.GetStatisticsAsync();
                 return Ok(new
                 {
@@ -104,20 +80,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting queue statistics");
-                // ✅ FIX: Return default stats instead of 500 to prevent frontend errors
-                return Ok(new
-                {
-                    pending = 0,
-                    processing = 0,
-                    completed = 0,
-                    failed = 0,
-                    highPriority = 0,
-                    normalPriority = 0,
-                    lowPriority = 0,
-                    averageWaitTimeMinutes = 0.0,
-                    successRate = 0.0,
-                    oldestPendingQueuedAt = (DateTime?)null
-                });
+                return StatusCode(500, new { error = "Failed to load queue statistics" });
             }
         }
 
@@ -253,19 +216,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get queue status for a specific container
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-"not in queue" fallback.
         [HttpGet("status/{containerNumber}")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult> GetContainerQueueStatus(string containerNumber)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return default status if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new { inQueue = false, message = "Container not in queue" });
-                }
-
                 var queueItem = await _queueRepository.GetByContainerNumberAsync(containerNumber);
 
                 if (queueItem == null)
@@ -288,8 +244,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting queue status for: {ContainerNumber}", containerNumber);
-                // ✅ FIX: Return default status instead of 500 to prevent frontend errors
-                return Ok(new { inQueue = false, message = "Error checking queue status" });
+                return StatusCode(500, new { error = "Failed to check queue status" });
             }
         }
 

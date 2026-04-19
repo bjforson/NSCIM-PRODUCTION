@@ -27,8 +27,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get loose cargo records with filtering and pagination
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<IActionResult> GetLooseCargoRecords(
             [FromQuery] string? clearanceType = null,
             [FromQuery] string? crmsLevel = null,
@@ -44,23 +44,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty response if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new
-                    {
-                        success = true,
-                        data = new List<object>(),
-                        count = 0,
-                        totalCount = 0,
-                        pageNumber = 1,
-                        pageSize = pageSize,
-                        totalPages = 0,
-                        timestamp = DateTime.UtcNow
-                    });
-                }
-
                 _logger.LogInformation("Fetching loose cargo records. Clearance: {Type}, CRMS: {Level}, Search: {Search}, Page: {Page}",
                     clearanceType ?? "All", crmsLevel ?? "All", search ?? "None", pageNumber);
 
@@ -113,37 +96,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get loose cargo statistics
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-zero fallbacks.
         [HttpGet("stats")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<IActionResult> GetLooseCargoStats()
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return default stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new
-                    {
-                        success = true,
-                        data = new
-                        {
-                            totalRecords = 0,
-                            imports = 0,
-                            exports = 0,
-                            transit = 0,
-                            highRisk = 0,
-                            mediumRisk = 0,
-                            lowRisk = 0,
-                            recentRecords = 0,
-                            totalDutyPaid = 0m,
-                            oldestRecord = (DateTime?)null,
-                            newestRecord = (DateTime?)null
-                        },
-                        timestamp = DateTime.UtcNow
-                    });
-                }
-
                 var stats = await _looseCargoService.GetStatisticsAsync();
 
                 return Ok(new
@@ -169,44 +127,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error fetching loose cargo statistics");
-                // ✅ FIX: Return default stats instead of 500 to prevent frontend errors
-                return Ok(new
-                {
-                    success = true,
-                    data = new
-                    {
-                        totalRecords = 0,
-                        imports = 0,
-                        exports = 0,
-                        transit = 0,
-                        highRisk = 0,
-                        mediumRisk = 0,
-                        lowRisk = 0,
-                        recentRecords = 0,
-                        totalDutyPaid = 0m,
-                        oldestRecord = (DateTime?)null,
-                        newestRecord = (DateTime?)null
-                    },
-                    timestamp = DateTime.UtcNow
-                });
+                return StatusCode(500, new { success = false, message = "Error fetching loose cargo statistics" });
             }
         }
 
         /// <summary>
         /// Get loose cargo detail by ID (with manifest items)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-notfound fallback.
         [HttpGet("{id}")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<IActionResult> GetLooseCargoDetail(int id)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    return NotFound(new { success = false, message = "Loose cargo record not found" });
-                }
-
                 var detail = await _looseCargoService.GetDetailAsync(id);
 
                 if (detail == null)
@@ -236,18 +169,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get loose cargo detail by declaration number (with manifest items)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-notfound fallback.
         [HttpGet("declaration/{declarationNumber}")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<IActionResult> GetLooseCargoDetailByDeclaration(string declarationNumber)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    return NotFound(new { success = false, message = "Loose cargo record not found" });
-                }
-
                 var detail = await _looseCargoService.GetDetailByDeclarationNumberAsync(declarationNumber);
 
                 if (detail == null)
@@ -278,24 +205,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get recent loose cargo records
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("recent")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<IActionResult> GetRecentLooseCargo([FromQuery] int days = 7)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    return Ok(new
-                    {
-                        success = true,
-                        data = new List<object>(),
-                        count = 0,
-                        timestamp = DateTime.UtcNow
-                    });
-                }
-
                 var records = await _looseCargoService.GetRecentRecordsAsync(days);
 
                 return Ok(new

@@ -25,19 +25,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get all submission queue items
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty-list fallback.
         [HttpGet]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult> GetAllSubmissionItems([FromQuery] int limit = 100)
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty list if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new List<object>());
-                }
-
                 var items = await _context.ICUMSSubmissionQueues
                     .OrderByDescending(x => x.Priority)
                     .ThenBy(x => x.CreatedAt)
@@ -49,35 +42,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting submission queue items");
-                // ✅ FIX: Return empty list instead of 500 to prevent frontend errors
-                return Ok(new List<object>());
+                return StatusCode(500, new { error = "Failed to load submission queue items" });
             }
         }
 
         /// <summary>
         /// Get submission queue statistics
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-zero fallback.
         [HttpGet("stats")]
-        [AllowAnonymous] // ✅ FIX: Allow access, check permission inside
         public async Task<ActionResult> GetSubmissionStatistics()
         {
             try
             {
-                // ✅ FIX: Check permission gracefully
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return default stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new
-                    {
-                        pending = 0,
-                        submitting = 0,
-                        successful = 0,
-                        failed = 0,
-                        successfulToday = 0,
-                        failedToday = 0
-                    });
-                }
-
                 var now = DateTime.UtcNow;
                 var today = now.Date;
 
@@ -96,16 +73,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error getting submission statistics");
-                // ✅ FIX: Return default stats instead of 500 to prevent frontend errors
-                return Ok(new
-                {
-                    pending = 0,
-                    submitting = 0,
-                    successful = 0,
-                    failed = 0,
-                    successfulToday = 0,
-                    failedToday = 0
-                });
+                return StatusCode(500, new { error = "Failed to load submission statistics" });
             }
         }
 

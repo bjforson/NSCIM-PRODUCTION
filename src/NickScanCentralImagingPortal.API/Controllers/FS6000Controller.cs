@@ -264,21 +264,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get daily statistics grouped by date (matches ASE pattern)
         /// </summary>
+        // 2026-04-19: removed [AllowAnonymous] + fake-empty fallback.
         [HttpGet("stats")]
-        [AllowAnonymous] // Allow access, check permission inside (matches ASE pattern)
         public async Task<ActionResult<object>> GetStats(
             [FromQuery] DateTime? startDate = null,
             [FromQuery] DateTime? endDate = null)
         {
             try
             {
-                // Check permission gracefully (matches ASE pattern)
-                if (!User.Identity?.IsAuthenticated ?? true)
-                {
-                    // Return empty stats if not authenticated (prevents 302 redirect → 404)
-                    return Ok(new List<object>());
-                }
-
                 var queryStart = startDate.HasValue
                     ? DateTime.SpecifyKind(startDate.Value.Date, DateTimeKind.Utc)
                     : DateTime.SpecifyKind(DateTime.UtcNow.Date.AddDays(-30), DateTimeKind.Utc);
@@ -307,8 +300,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving FS6000 stats");
-                // Return empty list instead of 500 to prevent frontend errors (matches ASE pattern)
-                return Ok(new List<object>());
+                return StatusCode(500, new { error = "Failed to load FS6000 stats" });
             }
         }
 

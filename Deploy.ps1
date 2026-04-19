@@ -277,17 +277,18 @@ if ($WebAppOnly -or (-not $ApiOnly)) {
 #   * rollForward=latestMajor so net8-built assemblies run on net10 host runtime
 #   * NSSM env var hands the ImageSplitter the FS6000 UNC path (LocalSystem cannot
 #     use the user-mapped Z:\ drive that the operator sees)
-if (-not $SkipBuild) {
-    Write-Header "Phase 3.5: Post-publish config"
-    if ($ApiOnly -or (-not $WebAppOnly)) {
-        Set-RuntimeConfigRollForward $API_PUBLISH
-    }
-    if ($WebAppOnly -or (-not $ApiOnly)) {
-        Set-RuntimeConfigRollForward $WEBAPP_PUBLISH
-    }
-    if (-not $WebAppOnly) {
-        Set-NssmEnvPair $SERVICE_ENGINE "NICKSCAN_FS6000_SHARE" "\\172.16.1.1\Image\23301FS01"
-    }
+# Runs on every deploy — including -SkipBuild — because the helpers are idempotent
+# and the publish/ dir may have been refreshed by a hand-copy before the operator
+# ran Deploy.ps1 -SkipBuild to cycle services.
+Write-Header "Phase 3.5: Post-publish config"
+if ($ApiOnly -or (-not $WebAppOnly)) {
+    Set-RuntimeConfigRollForward $API_PUBLISH
+}
+if ($WebAppOnly -or (-not $ApiOnly)) {
+    Set-RuntimeConfigRollForward $WEBAPP_PUBLISH
+}
+if (-not $WebAppOnly) {
+    Set-NssmEnvPair $SERVICE_ENGINE "NICKSCAN_FS6000_SHARE" "\\172.16.1.1\Image\23301FS01"
 }
 
 # --- Phase 4: Start services ---
