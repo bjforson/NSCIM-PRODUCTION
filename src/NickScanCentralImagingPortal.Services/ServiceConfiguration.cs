@@ -366,6 +366,15 @@ namespace NickScanCentralImagingPortal.Services
             // every 5 min. "Never abandon" — a scan stays in its working set until all
             // three channels are in fs6000images or it ages out of the 7-day window.
             services.AddHostedService<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelBackfillWorker>();
+
+            // v2.9.6: typed HttpClient for the Python inspector's /composite/ endpoint.
+            // Used by FS6000ImagePipeline to render 16-bit composites from DB-ingested
+            // raw channels. Base URL matches the Raw Image Engine (NSCIM_ImageSplitter).
+            services.AddHttpClient<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000CompositeProxyClient>(client =>
+            {
+                client.BaseAddress = new Uri("http://localhost:5320/");
+                client.Timeout = TimeSpan.FromSeconds(30);
+            });
             services.AddScoped<ICUMSIntegrationService>();
             // Image processing pipeline services
             services.AddScoped<IAdvancedImageProcessingService, NickScanCentralImagingPortal.Services.ImageProcessing.AdvancedImageProcessingService>();

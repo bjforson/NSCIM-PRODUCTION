@@ -30,6 +30,35 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         /// Returns a per-call report (channels ingested, bytes, failures).
         /// </summary>
         Task<FS6000RawChannelIngestionReport> IngestFS6000RawChannelsAsync(Guid scanId, string folderPath, CancellationToken ct = default);
+
+        /// <summary>
+        /// Report the pixel dimensions of the image that <see cref="GetCompleteContainerDataAsync"/>
+        /// will currently serve for <paramref name="containerNumber"/>, plus a short
+        /// string identifying the serving mode. Consumed by annotation endpoints
+        /// so they can scale stored coordinates into the current image's space.
+        /// Returns <c>(0, 0, "unknown")</c> if the container or scan can't be resolved.
+        /// </summary>
+        Task<ServedImageDimensions> GetServedImageDimensionsAsync(string containerNumber, CancellationToken ct = default);
+    }
+
+    /// <summary>
+    /// Describes the image that <see cref="IImageProcessingService.GetCompleteContainerDataAsync"/>
+    /// currently serves for a container.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Mode"/> values (stable; used for annotation coordspace tagging):
+    /// <list type="bullet">
+    /// <item><c>"fs6000-vendorjpeg"</c> — vendor-rendered 8-bit JPEG, ~2295x1378.</item>
+    /// <item><c>"fs6000-composite16bit"</c> — server-rendered composite from 16-bit raw channels, ~3256x1378 (varies per scan).</item>
+    /// <item><c>"ase"</c> — ASE percentile-stretched JPEG, ASE-native dims.</item>
+    /// <item><c>"unknown"</c> — container/scan not resolvable.</item>
+    /// </list>
+    /// </remarks>
+    public class ServedImageDimensions
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Mode { get; set; } = "unknown";
     }
 
     /// <summary>

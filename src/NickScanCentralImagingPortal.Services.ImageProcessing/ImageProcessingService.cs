@@ -1,4 +1,6 @@
 using System;
+using System.Data;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -429,6 +431,173 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 ErrorMessage = r.ErrorMessage,
                 LastError = r.LastError,
             };
+        }
+
+        /// <summary>
+        /// Report the pixel dimensions of the image currently served by
+        /// <see cref="GetCompleteContainerDataAsync"/> for a container.
+        ///
+        /// Resolution logic:
+        ///   1. Detect scanner type.
+        ///   2. FS6000 with all three raw channels in fs6000images →
+        ///      parse width/height from the HighEnergy .img header (6 bytes).
+        ///      Mode = "fs6000-composite16bit".
+        ///   3. FS6000 without full raw channels → parse width/height from
+        ///      the vendor JPEG (imagetype='Main'). Mode = "fs6000-vendorjpeg".
+        ///   4. ASE → currently not dimension-introspected (ASE pipeline already
+        ///      percentile-renders at native ASE dims; the annotation scaling
+        ///      story there is orthogonal to this v2.9.6 change).
+        ///      Mode = "ase".
+        ///   5. Anything unresolvable → <c>(0, 0, "unknown")</c>.
+        ///
+        /// Efficient on the hot path — a single <c>substring()</c> query pulls
+        /// only the first 6 bytes (img) or 4 KB (JPEG), not the full blob.
+        /// </summary>
+        public async Task<ServedImageDimensions> GetServedImageDimensionsAsync(string containerNumber, CancellationToken ct = default)
+        {
+            try
+            {
+                var scannerType = await DetectScannerTypeAsync(containerNumber);
+
+                if (scannerType == ScannerType.FS6000)
+                {
+                    var scan = await _dbContext.FS6000Scans
+                        .AsNoTracking()
+                        .Where(s => s.ContainerNumber == containerNumber)
+                        .OrderByDescending(s => s.ScanTime)
+                        .Select(s => new { s.Id })
+                        .FirstOrDefaultAsync(ct);
+
+                    if (scan == null) return new ServedImageDimensions { Mode = "unknown" };
+
+                    var channels = await _dbContext.FS6000Images
+                        .AsNoTracking()
+                        .Where(i => i.ScanId == scan.Id
+                                 && (i.ImageType == "HighEnergy" || i.ImageType == "LowEnergy" || i.ImageType == "Material"))
+                        .Select(i => i.ImageType)
+                        .ToListAsync(ct);
+
+                    bool hasAllRaw = channels.Contains("HighEnergy")
+                                     && channels.Contains("LowEnergy")
+                                     && channels.Contains("Material");
+
+                    if (hasAllRaw)
+                    {
+                        var imgHeader = await ReadBytesFromImageAsync(scan.Id, "HighEnergy", 6, ct);
+                        var rawDims = ParseImgHeaderDimensions(imgHeader);
+                        if (rawDims.HasValue)
+                        {
+                            return new ServedImageDimensions
+                            {
+                                Width = rawDims.Value.w,
+                                Height = rawDims.Value.h,
+                                Mode = "fs6000-composite16bit"
+                            };
+                        }
+                        _logger.LogWarning("[SERVED-DIMS] FS6000 scan {ScanId} has all 3 raw channels but HighEnergy header parse failed — falling back to vendor JPEG", scan.Id);
+                    }
+
+                    var jpegHead = await ReadBytesFromImageAsync(scan.Id, "Main", 4096, ct);
+                    var jpegDims = ParseJpegDimensions(jpegHead);
+                    if (jpegDims.HasValue)
+                    {
+                        return new ServedImageDimensions
+                        {
+                            Width = jpegDims.Value.w,
+                            Height = jpegDims.Value.h,
+                            Mode = "fs6000-vendorjpeg"
+                        };
+                    }
+
+                    return new ServedImageDimensions { Mode = "unknown" };
+                }
+
+                if (scannerType == ScannerType.ASE)
+                {
+                    // ASE pipeline already renders from 16-bit raw. Annotation
+                    // coordinate space for ASE is out of scope for v2.9.6.
+                    // Caller treats mode=="ase" as "don't scale; historical
+                    // behavior applies".
+                    return new ServedImageDimensions { Mode = "ase" };
+                }
+
+                return new ServedImageDimensions { Mode = "unknown" };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[SERVED-DIMS] Failed to resolve dimensions for container {Container}", containerNumber);
+                return new ServedImageDimensions { Mode = "unknown" };
+            }
+        }
+
+        private async Task<byte[]?> ReadBytesFromImageAsync(Guid scanId, string imageType, int maxBytes, CancellationToken ct)
+        {
+            // Use raw SQL with substring() to fetch only a small prefix of the
+            // blob rather than the full (up to 10 MB) image data.
+            var conn = _dbContext.Database.GetDbConnection();
+            var wasOpen = conn.State == ConnectionState.Open;
+            if (!wasOpen) await conn.OpenAsync(ct);
+            try
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT substring(imagedata from 1 for @p_max) FROM fs6000images WHERE scanid = @p_scan AND imagetype = @p_type LIMIT 1";
+                var pMax = cmd.CreateParameter(); pMax.ParameterName = "p_max";  pMax.Value = maxBytes; cmd.Parameters.Add(pMax);
+                var pScan = cmd.CreateParameter(); pScan.ParameterName = "p_scan"; pScan.Value = scanId;  cmd.Parameters.Add(pScan);
+                var pType = cmd.CreateParameter(); pType.ParameterName = "p_type"; pType.Value = imageType; cmd.Parameters.Add(pType);
+                var result = await cmd.ExecuteScalarAsync(ct);
+                return result as byte[];
+            }
+            finally
+            {
+                if (!wasOpen) await conn.CloseAsync();
+            }
+        }
+
+        /// <summary>
+        /// Parse a FS6000 .img header. Width is at bytes 2–3 (big-endian u16),
+        /// height at bytes 4–5. See services/image-splitter/inspector/decoders/fs6000.py
+        /// for the full format spec.
+        /// </summary>
+        private static (int w, int h)? ParseImgHeaderDimensions(byte[]? bytes)
+        {
+            if (bytes == null || bytes.Length < 6) return null;
+            int w = (bytes[2] << 8) | bytes[3];
+            int h = (bytes[4] << 8) | bytes[5];
+            if (w <= 0 || h <= 0 || w > 100000 || h > 100000) return null;
+            return (w, h);
+        }
+
+        /// <summary>
+        /// Parse a JPEG's first SOF0 / SOF2 marker to extract width and height.
+        /// The marker structure is: 0xFF, 0xC0|0xC2, length (2 bytes), precision
+        /// (1 byte), height (2 bytes BE), width (2 bytes BE). Returns null if
+        /// no marker is found in the provided prefix.
+        /// </summary>
+        private static (int w, int h)? ParseJpegDimensions(byte[]? bytes)
+        {
+            if (bytes == null || bytes.Length < 10) return null;
+            int start = -1;
+            for (int i = 0; i + 2 < bytes.Length; i++)
+            {
+                if (bytes[i] == 0xFF && bytes[i + 1] == 0xD8 && bytes[i + 2] == 0xFF)
+                {
+                    start = i;
+                    break;
+                }
+            }
+            if (start < 0) return null;
+
+            for (int p = start; p + 9 < bytes.Length; p++)
+            {
+                if (bytes[p] == 0xFF && (bytes[p + 1] == 0xC0 || bytes[p + 1] == 0xC2))
+                {
+                    int height = (bytes[p + 5] << 8) | bytes[p + 6];
+                    int width = (bytes[p + 7] << 8) | bytes[p + 8];
+                    if (width > 0 && height > 0 && width < 100000 && height < 100000)
+                        return (width, height);
+                }
+            }
+            return null;
         }
     }
 }

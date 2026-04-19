@@ -69,5 +69,19 @@ namespace NickScanCentralImagingPortal.Core.Entities
         // linkage exists so the COCO export and any future per-decision query
         // can join cleanly without depending on a free-text JSON blob.
         public int? ImageAnalysisDecisionId { get; set; }
+
+        // ── Coordinate-space tracking (v2.9.6) ──
+        // Pixel dimensions of the image this annotation was drawn against.
+        // When the same container is later served with a different-dimensioned
+        // image (e.g. the 16-bit FS6000 composite at 3256x1378 vs the vendor
+        // JPEG at 2295x1378), the read path scales X1/Y1/X2/Y2 from this
+        // stored coord space to the currently-served image's dims so the
+        // annotation lands in the right place.
+        //
+        // Null on all rows created before v2.9.6 (~73 legacy rows as of the
+        // upgrade). Legacy rows are treated as vendor-JPEG coord space for
+        // their scanner type on read.
+        public int? CoordSpaceWidth { get; set; }
+        public int? CoordSpaceHeight { get; set; }
     }
 }

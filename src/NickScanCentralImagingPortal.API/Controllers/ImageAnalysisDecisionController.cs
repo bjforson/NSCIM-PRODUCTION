@@ -30,6 +30,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IMemoryCache? _memoryCache;
         private readonly IAiWorkflowLineageService _aiLineage;
         private readonly IManifestSnapshotService _manifestSnapshot;
+        // v2.9.6: used to tag each typed ContainerAnnotation row with the
+        // dimensions of the image it was drawn against, so CocoExport /
+        // future scalers can map fractional coords back to real pixels on
+        // whichever image the scan is currently being served with
+        // (vendor JPEG ~2295w vs 16-bit composite ~3256w).
+        private readonly IImageProcessingService _imageProcessingService;
 
         // Track unexpected 0-rows WorkflowStage UPDATEs for monitoring/alerting
         private static int _workflowStageUpdateZeroRowsUnexpectedCount;
@@ -40,6 +46,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             ILogger<ImageAnalysisDecisionController> logger,
             IAiWorkflowLineageService aiLineage,
             IManifestSnapshotService manifestSnapshot,
+            IImageProcessingService imageProcessingService,
             ReadyGroupsCacheService? readyGroupsCache = null,
             IMemoryCache? memoryCache = null)
         {
@@ -48,6 +55,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _logger = logger;
             _aiLineage = aiLineage;
             _manifestSnapshot = manifestSnapshot;
+            _imageProcessingService = imageProcessingService;
             _readyGroupsCache = readyGroupsCache;
             _memoryCache = memoryCache;
         }
@@ -1186,6 +1194,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             _context.ContainerAnnotations.RemoveRange(priorTyped);
                         }
 
+                        // v2.9.6: capture the dimensions of the image these
+                        // annotations were drawn against. The frontend stores
+                        // rects as 0-1 fractions for new annotations, so x/y/w/h
+                        // here are in [0,1]; the coord space dims let
+                        // downstream consumers (CocoExport, future per-decision
+                        // scalers) know which image dimensions the fractions
+                        // map to — important now that FS6000 can be served as
+                        // a 16-bit composite (~3256 wide) or vendor JPEG
+                        // (~2295 wide) for the same container.
+                        ServedImageDimensions? servedDims = null;
+                        try
+                        {
+                            servedDims = await _imageProcessingService.GetServedImageDimensionsAsync(request.ContainerNumber);
+                        }
+                        catch (Exception dimsEx)
+                        {
+                            _logger.LogWarning(dimsEx,
+                                "v2.9.6 served-image-dimension lookup failed for decision {DecisionId} ({Container}); saving annotation rows without coord-space tag",
+                                decisionIdForSnapshot, request.ContainerNumber);
+                        }
+
                         using var areasDoc = System.Text.Json.JsonDocument.Parse(request.SuspiciousAreas);
                         if (areasDoc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                         {
@@ -1215,6 +1244,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     ImageAnalysisDecisionId = decisionIdForSnapshot,
                                     ThreatCategoryId = request.ThreatCategoryId,
                                     RevenueAnomalyCategoryId = request.RevenueAnomalyCategoryId,
+                                    // v2.9.6: coord-space provenance (null if lookup failed)
+                                    CoordSpaceWidth = servedDims?.Width > 0 ? servedDims.Width : (int?)null,
+                                    CoordSpaceHeight = servedDims?.Height > 0 ? servedDims.Height : (int?)null,
                                 });
                             }
                             await _context.SaveChangesAsync();

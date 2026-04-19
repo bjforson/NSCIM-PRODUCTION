@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +8,9 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageProcessing.FS6000;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
 
 namespace NickScanCentralImagingPortal.Services.ImageProcessing
 {
@@ -14,13 +18,18 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
     {
         private readonly ILogger<FS6000ImagePipeline> _logger;
         private readonly ApplicationDbContext _context;
+        private readonly FS6000CompositeProxyClient? _compositeProxy;
 
         public ScannerType ScannerType => ScannerType.FS6000;
 
-        public FS6000ImagePipeline(ILogger<FS6000ImagePipeline> logger, ApplicationDbContext context)
+        public FS6000ImagePipeline(
+            ILogger<FS6000ImagePipeline> logger,
+            ApplicationDbContext context,
+            FS6000CompositeProxyClient? compositeProxy = null)
         {
             _logger = logger;
             _context = context;
+            _compositeProxy = compositeProxy;
         }
 
         public async Task<Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber)
@@ -159,10 +168,21 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         }
 
         /// <summary>
-        /// Get complete container data including image and full scanner record
+        /// Get complete container data including image and full scanner record.
+        ///
+        /// v2.9.6 serving rules for the "Main" image (no explicit imageType):
+        ///   1. If fs6000images has HighEnergy + LowEnergy + Material blobs for
+        ///      this scan, render a 16-bit composite via the Python inspector,
+        ///      re-encode as JPEG at the composite's native dimensions
+        ///      (typically 3256x1378 — do NOT resize). This preserves the full
+        ///      spatial fidelity of the raw scanner data.
+        ///   2. Otherwise, fall back to the vendor JPEG stored in fs6000images
+        ///      (imagetype='Main') at its native dimensions (typically 2295x1378).
+        /// Explicit imageType requests (Icon, CCR, LPR, Manifest) always bypass
+        /// the 16-bit composite path and return the exact stored blob.
         /// </summary>
         /// <param name="containerNumber">Container number</param>
-        /// <param name="imageType">Optional: Filter by image type (Main, Icon, CCR, LPR, Manifest). If not provided, returns first available image.</param>
+        /// <param name="imageType">Optional: Filter by image type (Main, Icon, CCR, LPR, Manifest). If not provided, returns the canonical "viewer" image (Main with 16-bit composite upgrade when available).</param>
         public async Task<ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber, string? imageType = null)
         {
             _logger.LogInformation("Getting complete FS6000 data for container: {ContainerNumber}, imageType: {ImageType}", containerNumber, imageType ?? "default");
@@ -182,7 +202,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 // ✅ FIX: Filter by image type if provided, otherwise get first available image
                 var image = !string.IsNullOrEmpty(imageType)
                     ? scan.Images.FirstOrDefault(i => i.ImageType.Equals(imageType, StringComparison.OrdinalIgnoreCase))
-                    : scan.Images.FirstOrDefault();
+                    : scan.Images.FirstOrDefault(i => i.ImageType == "Main") ?? scan.Images.FirstOrDefault();
 
                 if (image == null || image.ImageData == null)
                 {
@@ -190,11 +210,42 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     return null;
                 }
 
+                // v2.9.6: if this is the default ("Main") serve path and the scan
+                // has all three raw channels, render from 16-bit composite
+                // instead of returning the vendor JPEG. No resize — native dims.
+                byte[]? imageBytes = null;
+                string pipelineTag = "FS6000-Base64-to-JPEG";
+
+                bool isMainServe = string.IsNullOrEmpty(imageType)
+                    || imageType.Equals("Main", StringComparison.OrdinalIgnoreCase);
+
+                if (isMainServe && _compositeProxy != null)
+                {
+                    var hasHigh = scan.Images.Any(i => i.ImageType == "HighEnergy");
+                    var hasLow = scan.Images.Any(i => i.ImageType == "LowEnergy");
+                    var hasMat = scan.Images.Any(i => i.ImageType == "Material");
+
+                    if (hasHigh && hasLow && hasMat)
+                    {
+                        imageBytes = await TryRenderComposite16BitAsync(scan.Id, containerNumber);
+                        if (imageBytes != null)
+                        {
+                            pipelineTag = "FS6000-Composite16bit";
+                        }
+                    }
+                }
+
+                // Fallback (or non-Main request): vendor JPEG / stored bytes as-is
+                if (imageBytes == null)
+                {
+                    imageBytes = ConvertBase64ToJpeg(image.ImageData);
+                }
+
                 // ✅ FIX: Get correct MIME type based on image type
                 var mimeType = GetMimeTypeFromImageType(image.ImageType);
+                // If we served the composite, it's always JPEG
+                if (pipelineTag == "FS6000-Composite16bit") mimeType = "image/jpeg";
 
-                // Convert image to JPEG bytes (or keep original format for non-JPEG images)
-                var imageBytes = ConvertBase64ToJpeg(image.ImageData);
                 var base64String = Convert.ToBase64String(imageBytes);
 
                 // Build complete response
@@ -206,10 +257,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     ImageBytes = imageBytes,
                     MimeType = mimeType, // ✅ FIX: Use correct MIME type based on image type
                     ScanTime = scan.ScanTime,
-                    ProcessingPipeline = "FS6000-Base64-to-JPEG",
+                    ProcessingPipeline = pipelineTag,
                     FromCache = false,
                     ImageSizeBytes = imageBytes.Length,
-                    Quality = "High",
+                    Quality = pipelineTag == "FS6000-Composite16bit" ? "High-16bit" : "High",
 
                     // Complete FS6000 scanner data
                     FS6000Data = new FS6000ScanData
@@ -274,6 +325,50 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 "manifest" => "application/pdf",
                 _ => "image/jpeg" // Default to JPEG
             };
+        }
+
+        /// <summary>
+        /// Attempt to render the FS6000 16-bit composite via the Python inspector
+        /// and re-encode as JPEG. Returns null on any failure so the caller can
+        /// fall back to the vendor JPEG. Dimensions are preserved from the
+        /// composite output — NO resize. See v2.9.6 change notes.
+        /// </summary>
+        private async Task<byte[]?> TryRenderComposite16BitAsync(Guid scanId, string containerNumber)
+        {
+            if (_compositeProxy == null) return null;
+
+            try
+            {
+                var pngBytes = await _compositeProxy.GetCompositePngAsync(scanId);
+                if (pngBytes == null || pngBytes.Length == 0)
+                {
+                    _logger.LogWarning("[FS6000-COMPOSITE] scan {ScanId}: proxy returned empty payload", scanId);
+                    return null;
+                }
+
+                // Re-encode PNG → JPEG at native dims (no resize). Quality 90 is a
+                // visually-lossless choice for x-ray scans; the composite is already
+                // 8-bit BGR so JPEG's lossy chroma subsampling doesn't cost us anything
+                // visible.
+                using var ms = new MemoryStream(pngBytes);
+                using var img = await Image.LoadAsync(ms);
+                using var outMs = new MemoryStream();
+                await img.SaveAsJpegAsync(outMs, new JpegEncoder { Quality = 90 });
+                var jpeg = outMs.ToArray();
+                _logger.LogInformation("[FS6000-COMPOSITE] scan {ScanId} ({Container}): rendered {Width}x{Height} composite, {OutBytes} bytes JPEG",
+                    scanId, containerNumber, img.Width, img.Height, jpeg.Length);
+                return jpeg;
+            }
+            catch (System.Net.Http.HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "[FS6000-COMPOSITE] Python inspector rejected composite request for scan {ScanId} — falling back to vendor JPEG", scanId);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[FS6000-COMPOSITE] Unexpected error rendering composite for scan {ScanId} — falling back to vendor JPEG", scanId);
+                return null;
+            }
         }
     }
 }
