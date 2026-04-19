@@ -362,6 +362,10 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<ASEImagePipeline>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester>();
             services.AddSingleton<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker>();
+            // 2026-04-19: worker closes the gap between fs6000scans and raw-channel rows
+            // every 5 min. "Never abandon" — a scan stays in its working set until all
+            // three channels are in fs6000images or it ages out of the 7-day window.
+            services.AddHostedService<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelBackfillWorker>();
             services.AddScoped<ICUMSIntegrationService>();
             // Image processing pipeline services
             services.AddScoped<IAdvancedImageProcessingService, NickScanCentralImagingPortal.Services.ImageProcessing.AdvancedImageProcessingService>();

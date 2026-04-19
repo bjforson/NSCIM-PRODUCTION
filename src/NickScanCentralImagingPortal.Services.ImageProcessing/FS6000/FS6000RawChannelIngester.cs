@@ -99,7 +99,14 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
 
                 try
                 {
-                    byte[] bytes = await File.ReadAllBytesAsync(file, ct);
+                    // Robust read: retry on IOException (file lock from file-sync
+                    // still touching the Archive folder, etc.). 4 attempts with
+                    // exponential backoff covers transient contention. If still
+                    // failing after 4 attempts we throw and let the caller
+                    // (worker or backfill) retry on its next cycle — never
+                    // abandon, the next cycle's query will still see the
+                    // missing channel and try again.
+                    byte[] bytes = await ReadFileWithRetryAsync(file, ct);
 
                     var entity = new FS6000Image
                     {
@@ -145,6 +152,48 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Read a file with retry-on-IOException. Used instead of
+        /// <see cref="File.ReadAllBytesAsync"/> because the .img files — even
+        /// after they've moved to Archive/ — can briefly be held by the
+        /// file-sync service during a copy/verify step, or by an antivirus
+        /// scan, or by a concurrent reader. 4 attempts with exp backoff
+        /// covers typical transient contention (500ms, 1s, 2s, 4s = ~7.5s
+        /// max wait). On the 4th failure we throw — the caller is expected
+        /// to try again on the next cycle.
+        ///
+        /// Uses <see cref="FileShare.ReadWrite"/> so we don't block another
+        /// process that legitimately has the file open for reading.
+        /// </summary>
+        private static async Task<byte[]> ReadFileWithRetryAsync(string path, CancellationToken ct)
+        {
+            const int maxAttempts = 4;
+            int delayMs = 500;
+
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    using var fs = new FileStream(
+                        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true);
+                    var buf = new byte[fs.Length];
+                    int read = 0;
+                    while (read < buf.Length)
+                    {
+                        int n = await fs.ReadAsync(buf.AsMemory(read, buf.Length - read), ct);
+                        if (n == 0) break;
+                        read += n;
+                    }
+                    return buf;
+                }
+                catch (IOException) when (attempt < maxAttempts)
+                {
+                    await Task.Delay(delayMs, ct);
+                    delayMs *= 2;
+                }
+            }
         }
 
         private static bool IsUniqueViolation(DbUpdateException ex)
