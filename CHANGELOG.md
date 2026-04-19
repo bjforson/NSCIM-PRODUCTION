@@ -22,6 +22,91 @@ For each release, this file records:
 
 ---
 
+## [2.9.7] — 2026-04-19 — FS6000 16-bit composite: native C# decoder + compositor (Python proxy retired to fallback)
+
+Drops the HTTP hop to the Python inspector for the FS6000 "Main" serving path.
+The image-processing pipeline now decodes the three raw channel blobs
+(`HighEnergy`, `LowEnergy`, `Material`) and builds the vendor-style colorized
+dual-energy composite entirely in C#. The Python inspector service
+(`NSCIM_ImageSplitter`, port 5320) is kept as a one-release safety net —
+invoked only when the native path throws — and is scheduled to retire in
+v2.9.8.
+
+### Why
+
+The 2.9.6 path shipped the 16-bit upgrade but routed every cache-miss composite
+through an HTTP call to the Python inspector. This added ~150 ms of round-trip
+per render, cross-process serialization churn, and a hard dependency on a
+second Windows service being healthy. Moving the decode/composite into the
+same process removes all three costs and makes the code path visible in one
+project.
+
+### What's new
+
+- **`FS6000FormatDecoder`** (`src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000FormatDecoder.cs`)
+  — pure-C# parser for the vendor's 36-byte BE header and big-endian pixel
+  payload. Uses `BinaryPrimitives.ReverseEndianness` (SIMD-vectorized BSWAP on
+  modern x64) for the 6 MB byte-swap pass, applies the same vertical flip the
+  Python decoder does, and returns the three channels as native-endian
+  `ushort[]` / `byte[]`.
+- **`FS6000Compositor`** (`src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000Compositor.cs`)
+  — port of `composite_fs6000_color` from the Python inspector, including the
+  256-entry material LUT, histogram-based percentile clip, invert,
+  brightness-boost (×1.15), and gamma (0.9) passes. Output is RGB24 directly
+  (not BGR — ImageSharp's `PngEncoder` wants RGB, and `cv2.imencode` produces
+  the same on-disk RGB bytes).
+- **`FS6000ImagePipeline`** — the default "Main" serving path now tries the
+  native C# renderer first (`FS6000-Composite16bit-Native`), falls back to the
+  Python proxy on any exception (`FS6000-Composite16bit-PythonFallback`), and
+  finally to the vendor JPEG if both composite paths fail.
+- **Pixel-parity test harness** (`tools/fs6000-parity-test/`) — standalone
+  console app that fetches a scan's three blobs from Postgres, renders both
+  the native and Python composites, and diffs every pixel. Fails the build if
+  mean-|Δ| exceeds 1.0 per channel or <99% of pixels are within ±2.
+
+### Validation
+
+Ran the parity harness against scan `b24bc648-0290-499f-b2fc-53ae16090616`
+(container FCIU5297925):
+
+```
+total pixels    : 3,162,510
+identical       : 3,162,510  (100.000%)
+mean |Δ|  R=0.0000  G=0.0000  B=0.0000
+max  |Δ|  R=0  G=0  B=0
+```
+
+3.16 M pixels, zero divergence — byte-for-byte identical to the Python
+output. Timings on the production host: decode 35 ms, composite + PNG
+encode 1.36 s (dominated by the PNG encoder; the actual blend pass is ~150
+ms — the PNG→JPEG re-encode in the pipeline adds another ~300 ms). The
+Python proxy path was ~1.4 s round-trip, so net serving latency is roughly
+unchanged but with one fewer network hop and no dependency on the inspector
+service being up.
+
+### Operator notes
+
+- **No schema changes.** Serving-only refactor; the DB `fs6000images` table,
+  `ContainerAnnotation.CoordSpaceWidth/Height` columns, and all other
+  schema artifacts from 2.9.6 carry forward unchanged.
+- **Python inspector is still running** and still the fallback. Leave
+  `NSCIM_ImageSplitter` Windows service enabled until v2.9.8 ships.
+- **Watch the logs** for `FS6000-COMPOSITE-NATIVE` and
+  `FS6000-Composite16bit-PythonFallback` pipeline tags in the first 24 h
+  of production miles. The fallback should fire 0 times — any count > 0
+  means the native decoder tripped on a blob variant we didn't cover in
+  testing.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000FormatDecoder.cs` (new)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000Compositor.cs` (new)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000ImagePipeline.cs` (serve-path changes)
+- `src/Directory.Build.props` (2.9.6 → 2.9.7)
+- `tools/fs6000-parity-test/` (new parity harness)
+
+---
+
 ## [2.9.0] — 2026-04-19 — Pipeline ops fixes (audit SLA, FS6000 retry, submission scheduler, dashboard UX)
 
 Hot-patched on the deploy target (`C:\NICK ERP\src`) during the 2026-04-19

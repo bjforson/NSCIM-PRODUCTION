@@ -170,14 +170,19 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         /// <summary>
         /// Get complete container data including image and full scanner record.
         ///
-        /// v2.9.6 serving rules for the "Main" image (no explicit imageType):
+        /// v2.9.7 serving rules for the "Main" image (no explicit imageType):
         ///   1. If fs6000images has HighEnergy + LowEnergy + Material blobs for
-        ///      this scan, render a 16-bit composite via the Python inspector,
+        ///      this scan, render a 16-bit composite using the native C#
+        ///      decoder + compositor (FS6000FormatDecoder + FS6000Compositor),
         ///      re-encode as JPEG at the composite's native dimensions
-        ///      (typically 3256x1378 — do NOT resize). This preserves the full
-        ///      spatial fidelity of the raw scanner data.
-        ///   2. Otherwise, fall back to the vendor JPEG stored in fs6000images
-        ///      (imagetype='Main') at its native dimensions (typically 2295x1378).
+        ///      (2295x1378 — no resize, matches header dims exactly).
+        ///   2. If the native path throws (truncated blob, header mismatch,
+        ///      etc.), fall back to the Python inspector over HTTP. This is a
+        ///      transitional safety net from v2.9.6 → v2.9.7; retire in v2.9.8
+        ///      once the native path has accumulated production miles.
+        ///   3. If both composite paths fail, serve the vendor JPEG stored in
+        ///      fs6000images (imagetype='Main') at its native dimensions
+        ///      (typically 2295x1378).
         /// Explicit imageType requests (Icon, CCR, LPR, Manifest) always bypass
         /// the 16-bit composite path and return the exact stored blob.
         /// </summary>
@@ -210,27 +215,40 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     return null;
                 }
 
-                // v2.9.6: if this is the default ("Main") serve path and the scan
+                // v2.9.7: if this is the default ("Main") serve path and the scan
                 // has all three raw channels, render from 16-bit composite
                 // instead of returning the vendor JPEG. No resize — native dims.
+                //
+                // Order: native C# path → Python HTTP proxy fallback → vendor JPEG.
                 byte[]? imageBytes = null;
                 string pipelineTag = "FS6000-Base64-to-JPEG";
 
                 bool isMainServe = string.IsNullOrEmpty(imageType)
                     || imageType.Equals("Main", StringComparison.OrdinalIgnoreCase);
 
-                if (isMainServe && _compositeProxy != null)
+                if (isMainServe)
                 {
-                    var hasHigh = scan.Images.Any(i => i.ImageType == "HighEnergy");
-                    var hasLow = scan.Images.Any(i => i.ImageType == "LowEnergy");
-                    var hasMat = scan.Images.Any(i => i.ImageType == "Material");
+                    var highBlob = scan.Images.FirstOrDefault(i => i.ImageType == "HighEnergy")?.ImageData;
+                    var lowBlob = scan.Images.FirstOrDefault(i => i.ImageType == "LowEnergy")?.ImageData;
+                    var matBlob = scan.Images.FirstOrDefault(i => i.ImageType == "Material")?.ImageData;
 
-                    if (hasHigh && hasLow && hasMat)
+                    if (highBlob != null && lowBlob != null && matBlob != null)
                     {
-                        imageBytes = await TryRenderComposite16BitAsync(scan.Id, containerNumber);
+                        // 1) Primary: native C# decode + composite (no network hop)
+                        imageBytes = TryRenderCompositeNative(scan.Id, containerNumber, highBlob, lowBlob, matBlob);
                         if (imageBytes != null)
                         {
-                            pipelineTag = "FS6000-Composite16bit";
+                            pipelineTag = "FS6000-Composite16bit-Native";
+                        }
+
+                        // 2) Fallback: Python inspector HTTP proxy
+                        if (imageBytes == null && _compositeProxy != null)
+                        {
+                            imageBytes = await TryRenderComposite16BitAsync(scan.Id, containerNumber);
+                            if (imageBytes != null)
+                            {
+                                pipelineTag = "FS6000-Composite16bit-PythonFallback";
+                            }
                         }
                     }
                 }
@@ -243,8 +261,9 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
 
                 // ✅ FIX: Get correct MIME type based on image type
                 var mimeType = GetMimeTypeFromImageType(image.ImageType);
-                // If we served the composite, it's always JPEG
-                if (pipelineTag == "FS6000-Composite16bit") mimeType = "image/jpeg";
+                // If we served the composite (any variant), it's always JPEG
+                if (pipelineTag.StartsWith("FS6000-Composite16bit", StringComparison.Ordinal))
+                    mimeType = "image/jpeg";
 
                 var base64String = Convert.ToBase64String(imageBytes);
 
@@ -260,7 +279,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     ProcessingPipeline = pipelineTag,
                     FromCache = false,
                     ImageSizeBytes = imageBytes.Length,
-                    Quality = pipelineTag == "FS6000-Composite16bit" ? "High-16bit" : "High",
+                    Quality = pipelineTag.StartsWith("FS6000-Composite16bit", StringComparison.Ordinal) ? "High-16bit" : "High",
 
                     // Complete FS6000 scanner data
                     FS6000Data = new FS6000ScanData
@@ -325,6 +344,62 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 "manifest" => "application/pdf",
                 _ => "image/jpeg" // Default to JPEG
             };
+        }
+
+        /// <summary>
+        /// Attempt to render the FS6000 16-bit composite using the native C#
+        /// decoder + compositor (no Python round-trip). Re-encodes PNG → JPEG
+        /// at quality 90 for wire compatibility with the existing serving path.
+        /// Returns null on any failure so the caller can fall back to the
+        /// Python HTTP proxy. See v2.9.7 change notes.
+        /// </summary>
+        private byte[]? TryRenderCompositeNative(
+            Guid scanId,
+            string containerNumber,
+            byte[] highBlob,
+            byte[] lowBlob,
+            byte[] materialBlob)
+        {
+            try
+            {
+                var started = DateTime.UtcNow;
+
+                var decoded = FS6000FormatDecoder.Decode(highBlob, lowBlob, materialBlob);
+                var pngBytes = FS6000Compositor.CompositeRgbPng(decoded);
+
+                // Re-encode PNG → JPEG at native dims (no resize). Quality 90 is
+                // a visually-lossless choice for x-ray scans; the composite is
+                // already 8-bit RGB so JPEG's lossy chroma subsampling doesn't
+                // cost us anything visible.
+                using var ms = new MemoryStream(pngBytes);
+                using var img = Image.Load(ms);
+                using var outMs = new MemoryStream();
+                img.SaveAsJpeg(outMs, new JpegEncoder { Quality = 90 });
+                var jpeg = outMs.ToArray();
+
+                var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
+                _logger.LogInformation(
+                    "[FS6000-COMPOSITE-NATIVE] scan {ScanId} ({Container}): rendered {Width}x{Height} composite in {ElapsedMs:F0}ms, {OutBytes} bytes JPEG",
+                    scanId, containerNumber, decoded.Width, decoded.Height, elapsed, jpeg.Length);
+                return jpeg;
+            }
+            catch (InvalidDataException ex)
+            {
+                // Header/format problem in the stored blob. The Python fallback
+                // won't fare any better (it uses the same bytes), but we log
+                // loudly so it shows up in triage.
+                _logger.LogWarning(ex,
+                    "[FS6000-COMPOSITE-NATIVE] scan {ScanId} ({Container}): invalid channel data — falling back to Python proxy",
+                    scanId, containerNumber);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "[FS6000-COMPOSITE-NATIVE] scan {ScanId} ({Container}): unexpected native render failure — falling back to Python proxy",
+                    scanId, containerNumber);
+                return null;
+            }
         }
 
         /// <summary>
