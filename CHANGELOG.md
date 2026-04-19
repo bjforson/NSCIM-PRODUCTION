@@ -126,6 +126,81 @@ for per-file notes and the out-of-source config mutations).
 
 ---
 
+## [2.9.2] — 2026-04-19 — Retroactive half-state CMR fix for 17 rows that predate 1.13.0
+
+Third release of the day — scoped, data-only. No code changes, no binary
+behaviour changes from 2.9.1; the version bump exists so the CHANGELOG has
+a home for the new migration script and its operator notes.
+
+### What's fixed
+
+- **17 regime-40 CMR rows that were stuck with declaration numbers.** These
+  were ingested 2026-04-08 to 2026-04-10 — around the 1.13.0 rollout
+  window — on an instance that hadn't yet picked up the implicit CMR→IM
+  upgrade handler in `IcumJsonIngestionService.cs` (or before
+  `02-backfill-half-state-cmr.sql` ran). On every one of them
+  `updatedat = createdat`, so nothing has touched them since. With
+  `CMRRedownloadQueue` empty, no background process was ever going to
+  re-fetch them either. They were sitting as `clearancetype='CMR'` with a
+  populated `declarationnumber` and regime code `40` — the exact state the
+  1.13.0 implicit-upgrade handler was written to catch on ingest.
+
+  The new script `03-backfill-regime40-half-state-cmr.sql` applies the
+  same rule retroactively: `clearancetype='IM'`,
+  `originalclearancetype='CMR'`, `cmrupgradedat=now()`,
+  `updatedat=now()`. Scoped tightly to `regimecode='40'` so it cannot
+  touch the 21 regime-80 transit CMRs under declaration `80426261787`
+  (see Operational notes below).
+
+### Tools / infra
+
+- `tools/migrations/cmr-upgrade-provenance/03-backfill-regime40-half-state-cmr.sql`
+  — new idempotent backfill script, regime-40 scoped. Runs against the
+  `nickscan_downloads` database. Already applied in production on
+  2026-04-19 (17 rows updated; timing ~160 ms).
+
+### Operational notes for the deploy
+
+- **Do NOT re-run `02-backfill-half-state-cmr.sql`.** That script is
+  unscoped on `regimecode` and would flip the 21 regime-80 transit CMRs
+  under declaration `80426261787` to IM. Per operator guidance on
+  2026-04-19, regime-80 CMRs are transit and CMR is their correct
+  terminal state — the 1.13.0 CHANGELOG's "80 = inward processing"
+  classification does not apply here. Use the regime-40-only script from
+  this release as the template for any future half-state cleanup.
+- A wider follow-up may be warranted: the ingestion-time implicit-upgrade
+  handler (`IcumJsonIngestionService.cs` line ~593) still treats regime
+  prefix `8` as IM, matching the 1.13.0 design. If the operator's
+  regime-80-is-transit rule is general rather than a one-declaration
+  exception, that handler should be tightened to exclude regime 80. Not
+  shipped in this release because scope is stuck-data cleanup only.
+- Edge case on declaration `40426261448`: one of the 17 upgraded rows
+  (`id=65144`, VIN `WNKKL3D300A140069`) was already superseded by an
+  authoritative IM row (`id=76873`, VIN `VNKKL3D300A140069`) — same car,
+  corrected VIN (W→V) between declaration v0 and v4. Both are now IM
+  under the same declaration with different VINs. Operator may want to
+  delete `id=65144` as stale; deliberately left in place because "delete
+  the wrong-VIN row" was out of scope for this one-shot categorisation
+  fix.
+
+### Verification
+
+After apply, `/api/diagnostics/cmr-lifecycle` should show
+`stuckHalfStateCmr` reduced by 17 and `upgradedTotal` increased by 17.
+Post-apply DB snapshot (recorded 2026-04-19):
+
+```
+stuck_regime40_cmr    = 0     (was 17)
+untouched_regime80_cmr = 21   (unchanged — correct)
+upgraded_im_from_cmr   = 1,257 (was 1,240)
+```
+
+### Commits in this release
+
+- `<TBD>` — 2.9.2: regime-40-only half-state CMR backfill + version bump.
+
+---
+
 ## [2.9.1] — 2026-04-19 — Security audit + Live Analytics dashboard fixes (same-day follow-up to 2.9.0)
 
 Same-day follow-up to 2.9.0 consolidating the security and UX fixes that
