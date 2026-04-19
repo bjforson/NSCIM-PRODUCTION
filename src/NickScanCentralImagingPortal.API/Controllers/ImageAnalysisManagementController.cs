@@ -11,6 +11,12 @@ using NickScanCentralImagingPortal.Infrastructure.Data;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
+    // 2026-04-19: added class-level [Authorize] after a security audit found the
+    // per-action [AllowAnonymous] markers were serving as the only auth gate on
+    // admin/operational endpoints (agent settings, audit log, assignments, etc.).
+    // Removing [AllowAnonymous] alone was insufficient because the class had no
+    // default auth requirement — requests fell through to anonymous-allowed.
+    [Authorize]
     [ApiController]
     [Route("api/image-analysis-management")]
     public class ImageAnalysisManagementController : ControllerBase
