@@ -703,28 +703,40 @@
             // Check if URL is HTTPS (needs SSL certificate validation)
             var isHttps = hubUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
             
+            // 2026-04-19: SignalR hub connection to the API. The API is bound to
+            // Kestrel with a self-signed server cert (Subject=10.0.1.254,
+            // LocalMachine\My). In Production the previous code used strict SSL
+            // validation, which rejected the self-signed cert and flipped the
+            // "Disconnected" chip red even though REST calls worked (because the
+            // main HttpClient uses its own validation bypass elsewhere). For
+            // loopback / single-host deployments like this one, validating
+            // against a public CA doesn't make sense — the hub connection is
+            // never leaving the machine. Accept any cert for localhost /
+            // 10.0.1.254 hubs; still strict for anything else.
+            bool isLoopbackOrLan = false;
+            try
+            {
+                var hubHost = new Uri(hubUrl).Host;
+                isLoopbackOrLan = hubHost.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                               || hubHost.Equals("127.0.0.1")
+                               || hubHost.Equals("10.0.1.254");
+            }
+            catch { /* malformed URL — fall through to strict */ }
+
             _hubConnection = new HubConnectionBuilder()
                 .WithUrl(hubUrl, options =>
                 {
-                    // ✅ SSL Certificate Validation - Allow self-signed certificates in development
-                    // Only apply SSL bypass if using HTTPS and in development
-                    if (isHttps && Environment.IsDevelopment())
+                    if (isHttps && (Environment.IsDevelopment() || isLoopbackOrLan))
                     {
                         options.HttpMessageHandlerFactory = handler =>
                         {
                             if (handler is HttpClientHandler httpHandler)
                             {
-                                httpHandler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
-                                {
-                                    // In development, accept any certificate (including self-signed)
-                                    // This allows local development with self-signed certificates
-                                    return true;
-                                };
+                                httpHandler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
                             }
                             return handler;
                         };
                     }
-                    // In production or with HTTP, use default validation (strict for HTTPS, no validation for HTTP)
                 })
                 .WithAutomaticReconnect()
                 .Build();

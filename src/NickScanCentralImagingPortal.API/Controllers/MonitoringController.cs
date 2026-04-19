@@ -118,7 +118,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 int fs6000ImageCount = 0, aseScanCount = 0;
                 int todayContainers = 0, todayFS6000Scans = 0, todayAseScans = 0;
 
-                try { containerCount = await _dbContext.Containers.CountAsync(); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to get container count for monitoring"); }
+                // 2026-04-19: was Containers.CountAsync() which queries an empty
+                // legacy table. The operational "total containers" number users
+                // expect on the dashboard is the count of tracked completeness
+                // statuses (3.7k+ here, one per physical container under NSCIM).
+                try { containerCount = await _dbContext.ContainerCompletenessStatuses.CountAsync(); } catch (Exception ex) { _logger.LogWarning(ex, "Failed to get container count for monitoring"); }
                 try
                 {
                     // Check if ContainerImages table exists before querying
@@ -149,7 +153,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 try
                 {
-                    todayContainers = await _dbContext.Containers
+                    // 2026-04-19: same table switch as the total — count completeness
+                    // statuses created today, which corresponds to "new containers
+                    // picked up today" operationally.
+                    todayContainers = await _dbContext.ContainerCompletenessStatuses
                         .Where(c => c.CreatedAt >= todayStart && c.CreatedAt < todayEnd)
                         .CountAsync();
                 }
