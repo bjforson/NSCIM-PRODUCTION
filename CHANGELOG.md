@@ -126,6 +126,63 @@ for per-file notes and the out-of-source config mutations).
 
 ---
 
+## [2.9.1] — 2026-04-19 — Security audit + Live Analytics dashboard fixes (same-day follow-up to 2.9.0)
+
+Same-day follow-up to 2.9.0 consolidating the security and UX fixes that
+shipped in the afternoon. No migrations, no operator config changes — the
+code changes from commits `b539597`, `0b02371`, `0cfd086`, `a89f7ad`, and
+`d74ff09` are all baked into 2.9.1.
+
+### What's fixed
+
+- **API returns honest 401s.** The `[AllowAnonymous] + return-fake-zeros`
+  anti-pattern has been removed from every endpoint that had it across
+  nine controllers (ICUMSDownloadQueue, ICUMSSubmissionQueue, AuditReview,
+  LooseCargo, Ase, FS6000, ImageAnalysis, ImageAnalysisManagement —
+  class-level `[Authorize]` added; previously missing — and a single
+  Gateway admin endpoint). Sessions that have expired now produce a clean
+  401 instead of a dashboard full of plausible zeros. 19 individual action
+  sites touched.
+- **Gateway admin endpoints gated.** `DELETE /api/Gateway/admin/cache/placeholders`
+  and `GET /api/Gateway/admin/cache/stats` both had `// TODO: Add
+  [Authorize(Roles = "Admin")]` comments that had never been acted on.
+  Now require Admin / SuperAdmin.
+- **Total Containers on /dashboard Live Analytics showed 0 despite 3,776
+  tracked containers.** `MonitoringController.GetDatabaseStatistics` was
+  counting an empty `Containers` legacy table; switched to
+  `ContainerCompletenessStatuses` which is where operational container
+  records actually live.
+- **Live Analytics "Disconnected" chip.** `AnalyticsPanel.razor` only
+  bypassed self-signed TLS validation for SignalR hub connections when
+  `Environment.IsDevelopment()` was true. In Production the strict
+  validation rejected our loopback Kestrel cert and the websocket refused
+  to connect. Bypass now also applies to hubs on `localhost`, `127.0.0.1`,
+  and `10.0.1.254`, regardless of environment.
+- **CMR pre-declaration "Green" annotated as placeholder** (see 2.9.0's
+  same-day commit `0b02371` for detail). Clearance Type chip is now
+  purple for CMR so it cannot be mistaken for a risk-level indicator.
+
+### What's hardened
+
+- `AuthenticatedHttpMessageHandler` upgrades silent auth failures to
+  Warning-level logs and adds a dedicated Warning when the API returns
+  401. Expired sessions are now visible in the WebApp log tail instead
+  of showing up only as downstream UI symptoms.
+- `IcumsDownloadQueue.razor` initial values (`{3, 8, 156, 0, 2}`) zeroed
+  so the page doesn't briefly render fake activity on first paint.
+
+### Tools / infra
+
+- Two idempotent migration scripts in
+  `tools/migrations/post-hotpatch-20260419/` for the DB tuning
+  (`01-decisionagent-tuning.sql`) and the machine env var
+  (`02-set-machine-env.ps1`). Validated by running against this box —
+  both are no-ops since the live values were already applied, but they
+  prove the scripts work for a future cold rebuild.
+- `Deploy.ps1` Phase 3.5 no longer skipped on `-SkipBuild`.
+
+---
+
 ## [1.23.0 – 2.8.0] — 2026-04-09 to 2026-04-19 — release notes not maintained
 
 Change-log entries were not written for the releases that shipped between
