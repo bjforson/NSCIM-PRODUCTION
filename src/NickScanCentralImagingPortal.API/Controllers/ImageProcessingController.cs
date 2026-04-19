@@ -1015,5 +1015,163 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _ => "application/octet-stream"
             };
         }
+
+        // ────────────────────────────────────────────────────────────────────────
+        //  FS6000 raw-channel backfill
+        //  2026-04-19: replaces the broken inline .img loop that lived in
+        //  Services.FS6000.IngestionService.cs. See FS6000RawChannelIngester
+        //  for the full rationale. The backfill walks fs6000scans in a given
+        //  date window and ingests HighEnergy/LowEnergy/Material rows from
+        //  Archive/ folders. Idempotent; re-runnable.
+        // ────────────────────────────────────────────────────────────────────────
+
+        [HttpPost("backfill/fs6000-raw-channels")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public IActionResult StartFs6000RawChannelBackfill(
+            [FromServices] NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker tracker,
+            [FromServices] IServiceScopeFactory scopeFactory,
+            [FromQuery] DateTime? startDate = null,
+            [FromQuery] DateTime? endDate = null)
+        {
+            var from = DateTime.SpecifyKind(startDate ?? DateTime.UtcNow.Date.AddDays(-30), DateTimeKind.Utc);
+            var to   = DateTime.SpecifyKind(endDate   ?? DateTime.UtcNow.Date.AddDays(1),   DateTimeKind.Utc);
+            if (to <= from)
+            {
+                return BadRequest(new { error = "endDate must be greater than startDate" });
+            }
+
+            int total;
+            using (var scope = scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                total = db.FS6000Scans.Count(s => s.ScanTime >= from && s.ScanTime < to);
+            }
+
+            if (!tracker.TryStart(from, to, total, out var jobId))
+            {
+                return Conflict(new
+                {
+                    error = "A backfill job is already in progress",
+                    jobId = tracker.JobId,
+                    startedAtUtc = tracker.StartedAtUtc,
+                    processed = tracker.Processed,
+                    totalScans = tracker.TotalScans,
+                });
+            }
+
+            _ = Task.Run(async () => await RunFs6000BackfillAsync(scopeFactory, tracker, from, to));
+
+            return Accepted(new
+            {
+                jobId,
+                status = "started",
+                totalScans = total,
+                fromDate = from,
+                toDate = to,
+                statusEndpoint = "/api/imageprocessing/backfill/fs6000-raw-channels/status",
+            });
+        }
+
+        [HttpGet("backfill/fs6000-raw-channels/status")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public IActionResult GetFs6000RawChannelBackfillStatus(
+            [FromServices] NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker tracker)
+        {
+            return Ok(new
+            {
+                inProgress            = tracker.IsRunning,
+                jobId                 = tracker.JobId,
+                startedAtUtc          = tracker.StartedAtUtc,
+                finishedAtUtc         = tracker.FinishedAtUtc,
+                fromDate              = tracker.FromDate,
+                toDate                = tracker.ToDate,
+                totalScans            = tracker.TotalScans,
+                processed             = tracker.Processed,
+                scansWithNewChannels  = tracker.ScansWithNewChannels,
+                scansAlreadyComplete  = tracker.ScansAlreadyComplete,
+                scansFailed           = tracker.ScansFailed,
+                channelsIngested      = tracker.ChannelsIngested,
+                bytesIngested         = tracker.BytesIngested,
+                lastError             = tracker.LastError,
+            });
+        }
+
+        private async Task RunFs6000BackfillAsync(
+            IServiceScopeFactory scopeFactory,
+            NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker tracker,
+            DateTime from,
+            DateTime to)
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var db  = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var svc = scope.ServiceProvider.GetRequiredService<IImageProcessingService>();
+
+                var scans = await db.FS6000Scans
+                    .AsNoTracking()
+                    .Where(s => s.ScanTime >= from && s.ScanTime < to)
+                    .OrderBy(s => s.ScanTime)
+                    .Select(s => new { s.Id, s.FilePath, s.ContainerNumber })
+                    .ToListAsync();
+
+                _logger.LogInformation("[FS6000-BACKFILL] Starting for {Count} scans between {From:O} and {To:O}",
+                    scans.Count, from, to);
+
+                foreach (var scan in scans)
+                {
+                    try
+                    {
+                        var folder = ResolveStableFolderPath(scan.FilePath);
+                        var report = await svc.IngestFS6000RawChannelsAsync(scan.Id, folder);
+                        tracker.RecordScan(new NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.RawChannelIngestionResult
+                        {
+                            ScanId           = report.ScanId,
+                            FolderPath       = report.FolderPath,
+                            IngestedChannels = report.IngestedChannels,
+                            IngestedBytes    = report.IngestedBytes,
+                            AlreadyPresent   = report.AlreadyPresent,
+                            MissingFiles     = report.MissingFiles,
+                            FailedChannels   = report.FailedChannels,
+                            ErrorMessage     = report.ErrorMessage,
+                            LastError        = report.LastError,
+                        });
+
+                        if (tracker.Processed % 50 == 0)
+                        {
+                            _logger.LogInformation(
+                                "[FS6000-BACKFILL] Progress {Done}/{Total} | new={New} already={Already} failed={Failed} bytes={Bytes}",
+                                tracker.Processed, tracker.TotalScans,
+                                tracker.ScansWithNewChannels, tracker.ScansAlreadyComplete, tracker.ScansFailed, tracker.BytesIngested);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[FS6000-BACKFILL] Scan {ScanId} ({Container}) failed", scan.Id, scan.ContainerNumber);
+                        tracker.RecordScanException(ex.Message);
+                    }
+                }
+
+                _logger.LogInformation(
+                    "[FS6000-BACKFILL] Completed. Total={Total} New={New} Already={Already} Failed={Failed} Bytes={Bytes}",
+                    tracker.TotalScans, tracker.ScansWithNewChannels,
+                    tracker.ScansAlreadyComplete, tracker.ScansFailed, tracker.BytesIngested);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[FS6000-BACKFILL] Fatal error in backfill job");
+                tracker.RecordScanException("fatal: " + ex.Message);
+            }
+            finally
+            {
+                tracker.Finish();
+            }
+        }
+
+        private static string ResolveStableFolderPath(string? recordedPath)
+        {
+            if (string.IsNullOrWhiteSpace(recordedPath)) return string.Empty;
+            return recordedPath.Replace(@"\Staging\", @"\Archive\", StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

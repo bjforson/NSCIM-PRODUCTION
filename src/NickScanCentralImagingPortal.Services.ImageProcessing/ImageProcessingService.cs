@@ -396,5 +396,39 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             _logger.LogWarning("Pipeline does not support complete data retrieval for scanner type: {ScannerType}", scannerType);
             return null;
         }
+
+        /// <summary>
+        /// Ingest FS6000 raw .img channels from a stable folder into
+        /// fs6000images. Delegates to <see cref="NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester"/>.
+        /// Used by the backfill endpoint and (eventually) by any live hook
+        /// that fires after the scan folder has been archived.
+        /// </summary>
+        public async Task<Core.Interfaces.FS6000RawChannelIngestionReport> IngestFS6000RawChannelsAsync(
+            Guid scanId,
+            string folderPath,
+            System.Threading.CancellationToken ct = default)
+        {
+            var ingester = _serviceProvider.GetService(typeof(FS6000.FS6000RawChannelIngester))
+                           as FS6000.FS6000RawChannelIngester;
+            if (ingester == null)
+            {
+                throw new InvalidOperationException(
+                    "FS6000RawChannelIngester is not registered. Register it as Scoped in Program.cs.");
+            }
+
+            var r = await ingester.IngestAsync(scanId, folderPath, ct);
+            return new Core.Interfaces.FS6000RawChannelIngestionReport
+            {
+                ScanId = r.ScanId,
+                FolderPath = r.FolderPath,
+                IngestedChannels = r.IngestedChannels,
+                IngestedBytes = r.IngestedBytes,
+                AlreadyPresent = r.AlreadyPresent,
+                MissingFiles = r.MissingFiles,
+                FailedChannels = r.FailedChannels,
+                ErrorMessage = r.ErrorMessage,
+                LastError = r.LastError,
+            };
+        }
     }
 }

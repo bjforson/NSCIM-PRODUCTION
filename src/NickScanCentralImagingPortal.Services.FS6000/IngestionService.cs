@@ -824,36 +824,16 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                         _logger.LogDebug("Prepared image for storage - Container: {Container}, File: {FileName}, Size: {Size} bytes, Type: {ImageType}",
                             scan.ContainerNumber, image.FileName, image.FileSizeBytes, image.ImageType);
 
-                        // Also ingest raw .img channel files (high, low, material) if present
-                        var imgChannelFiles = Directory.GetFiles(folderPath, "*.img");
-                        foreach (var imgFile in imgChannelFiles)
-                        {
-                            try
-                            {
-                                var imgType = GetImageTypeFromFileName(Path.GetFileName(imgFile));
-                                if (imgType is not ("HighEnergy" or "LowEnergy" or "Material"))
-                                    continue;
-
-                                byte[] imgBytes = await ReadFileWithRetryAsync(imgFile, scan.ContainerNumber);
-                                var imgImage = new FS6000Image
-                                {
-                                    ScanId = scan.Id,
-                                    ImageType = imgType,
-                                    FileName = Path.GetFileName(imgFile),
-                                    ImageData = imgBytes,
-                                    FileSizeBytes = imgBytes.Length,
-                                    CreatedAt = DateTime.UtcNow
-                                };
-                                imagesToAdd.Add(imgImage);
-                                _logger.LogDebug("Prepared .img for storage - Container: {Container}, File: {FileName}, Size: {Size} bytes, Type: {ImageType}",
-                                    scan.ContainerNumber, imgImage.FileName, imgImage.FileSizeBytes, imgImage.ImageType);
-                            }
-                            catch (Exception imgEx)
-                            {
-                                _logger.LogError(imgEx, "Error processing .img file for container {Container}: {FilePath}", scan.ContainerNumber, imgFile);
-                                // Non-fatal: JPEG ingestion already succeeded
-                            }
-                        }
+                        // 2026-04-19: raw .img channel ingestion (high / low / material) is NO
+                        // LONGER done here. Reading 10 MB .img files while the FS6000 scanner
+                        // software was still copying them into Staging/ caused a file-lock race
+                        // that silently dropped ~95% of Low/Material rows and 95% of all channels
+                        // overall. The logic now lives in the image-processing pipeline
+                        // (Services.ImageProcessing/FS6000/FS6000RawChannelIngester) and reads
+                        // from Data/FS6000/Archive/ after file-sync has stabilised the files.
+                        //
+                        // It's driven by POST /api/imageprocessing/backfill/fs6000-raw-channels
+                        // (run on demand or on a schedule). The JPEG path above is unaffected.
                     }
                     catch (Exception ex)
                     {

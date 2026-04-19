@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using NickScanCentralImagingPortal.Core.Models;
 
@@ -18,6 +19,35 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         Task<string> GetImageAsBase64Async(string containerNumber, ScannerType? preferredScanner = null);
         Task<Core.Models.ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber);
         Task<Core.Models.ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber, string? imageType);
+
+        /// <summary>
+        /// Ingest the three FS6000 raw .img channels (HighEnergy / LowEnergy /
+        /// Material) for a scan into the fs6000images table. Caller MUST pass
+        /// a stable folder path (Archive/, never Staging/) — reads are direct
+        /// and will race the scanner's own file handles if Staging is used.
+        /// Idempotent: upserts via a unique index, re-runs are no-ops for
+        /// channels that already have rows.
+        /// Returns a per-call report (channels ingested, bytes, failures).
+        /// </summary>
+        Task<FS6000RawChannelIngestionReport> IngestFS6000RawChannelsAsync(Guid scanId, string folderPath, CancellationToken ct = default);
+    }
+
+    /// <summary>
+    /// Thin projection of <c>RawChannelIngestionResult</c> for the public
+    /// interface — the full type lives in Services.ImageProcessing and would
+    /// create a circular reference if exposed here.
+    /// </summary>
+    public class FS6000RawChannelIngestionReport
+    {
+        public Guid ScanId { get; set; }
+        public string FolderPath { get; set; } = string.Empty;
+        public int IngestedChannels { get; set; }
+        public long IngestedBytes { get; set; }
+        public int AlreadyPresent { get; set; }
+        public int MissingFiles { get; set; }
+        public int FailedChannels { get; set; }
+        public string? ErrorMessage { get; set; }
+        public string? LastError { get; set; }
     }
 
 

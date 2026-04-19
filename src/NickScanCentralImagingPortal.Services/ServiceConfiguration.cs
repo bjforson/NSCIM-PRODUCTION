@@ -360,6 +360,8 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.IImageAnnotationRenderer, NickScanCentralImagingPortal.Services.ImageProcessing.ImageAnnotationRenderer>();
             services.AddScoped<FS6000ImagePipeline>();
             services.AddScoped<ASEImagePipeline>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester>();
+            services.AddSingleton<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker>();
             services.AddScoped<ICUMSIntegrationService>();
             // Image processing pipeline services
             services.AddScoped<IAdvancedImageProcessingService, NickScanCentralImagingPortal.Services.ImageProcessing.AdvancedImageProcessingService>();
