@@ -34,6 +34,48 @@
     <DialogContent>
         <div style="display: flex; flex-direction: column; height: 100%; max-height: calc(100vh - 64px); overflow: hidden;">
 
+            @* v2.11.0 Phase 3 — pixel probe floating chip. position:fixed so
+               it tracks the cursor in screen space regardless of image zoom /
+               rotate. Stays outside the transform wrapper so CSS transforms
+               don't distort it. pointer-events:none so it never intercepts
+               events going back to the probe overlay. *@
+            @if (_pixelProbeEnabled && _probeData != null)
+            {
+                var chipStyle = $"position: fixed; left: {_probeClientX + 16}px; top: {_probeClientY + 16}px;" +
+                                " background: rgba(15,20,30,0.92); color: #eceff1; padding: 6px 10px;" +
+                                " border-radius: 4px; border: 1px solid rgba(255,255,255,0.15);" +
+                                " font-family: 'Consolas','Courier New',monospace; font-size: 11px;" +
+                                " line-height: 1.4; z-index: 9999; pointer-events: none;" +
+                                " box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 180px;";
+                <div style="@chipStyle">
+                    <div style="color:#90caf9; font-weight:600; font-size:10px; letter-spacing:0.5px;">
+                        @($"({_probeData.X}, {_probeData.Y})")
+                    </div>
+                    @if (_probeData.HighEnergy.HasValue)
+                    {
+                        <div>HE = <span style="color:#ffb74d">@_probeData.HighEnergy</span></div>
+                    }
+                    @if (_probeData.LowEnergy.HasValue)
+                    {
+                        <div>LE = <span style="color:#ffb74d">@_probeData.LowEnergy</span></div>
+                    }
+                    @if (_probeData.Material.HasValue)
+                    {
+                        <div>Mat = <span style="color:#ffb74d">@_probeData.Material</span>
+                        @if (!string.IsNullOrEmpty(_probeData.MaterialCategory))
+                        {
+                            <span style="color:#81c784; margin-left:6px;">@_probeData.MaterialCategory</span>
+                        }
+                        </div>
+                    }
+                    @if (_probeData.Red.HasValue)
+                    {
+                        var rgbBox = $"display:inline-block; width:10px; height:10px; background:rgb({_probeData.Red},{_probeData.Green},{_probeData.Blue}); border:1px solid rgba(255,255,255,0.3); vertical-align:middle; margin-right:6px;";
+                        <div>RGB <span style="@rgbBox"></span><span style="color:#ffb74d">@($"({_probeData.Red},{_probeData.Green},{_probeData.Blue})")</span></div>
+                    }
+                </div>
+            }
+
             @* ═══ ROW 1: Compact Horizontal Toolbar ═══ *@
             <div style="background: linear-gradient(135deg, #455a64 0%, #607d8b 100%); padding: 6px 12px; display: flex; align-items: center; gap: 8px; overflow-x: auto; flex-shrink: 0; border-bottom: 2px solid #78909c;">
                 @* Zoom Controls *@
@@ -218,6 +260,13 @@
                                OnClick="ToggleMagnifier"
                                Style="@(_magnifierEnabled ? "color:#ffb74d;" : "color:white;")"
                                Size="Size.Small" Title="@(_magnifierEnabled ? "Magnifier ON (hover image)" : "Magnifier")" />
+
+                @* v2.11.0 Phase 3 — Pixel Probe hover chip toggle *@
+                <MudIconButton Icon="@Icons.Material.Outlined.Colorize"
+                               OnClick="TogglePixelProbe"
+                               Style="@(_pixelProbeEnabled ? "color:#81c784;" : "color:white;")"
+                               Size="Size.Small"
+                               Title="@(_pixelProbeEnabled ? "Pixel Probe ON — hover for HE/LE/Material/RGB" : "Pixel Probe (hover chip)")" />
 
                 @* Goods Description quick reference *@
                 <MudIconButton Icon="@Icons.Material.Outlined.Description"
@@ -501,6 +550,16 @@
                              @onmousemove="HandleDrawMouseMove"
                              @onmouseup="HandleDrawMouseUp"
                              @onmouseleave="HandleDrawMouseLeave" />
+
+                        @* v2.11.0 Phase 3 — pixel probe overlay. Sibling of draw
+                           overlay; only intercepts events when _pixelProbeEnabled.
+                           z-index 24 puts it just below draw overlay so draw wins
+                           when both are on (draw mode is a deliberate action;
+                           probe is always-on ambient telemetry). *@
+                        <div @ref="_probeOverlay"
+                             style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 24; pointer-events: @(_pixelProbeEnabled && !_drawMode ? "auto" : "none"); cursor: crosshair;"
+                             @onmousemove="HandleProbeMouseMove"
+                             @onmouseleave="HandleProbeMouseLeave"></div>
 
                     <!-- SVG Overlay for Object Detection -->
                     @if (_detectionResult != null && _detectionResult.Success && _showDetectionOverlays)
@@ -1139,6 +1198,7 @@
     // is reported by the browser in image-local (pre-transform) coordinates, which is
     // the only frame that survives zoom/rotate/resize without drift.
     private ElementReference _drawOverlay;
+    private ElementReference _probeOverlay; // v2.11.0 Phase 3 pixel probe
     private bool _canvasInitialized = false;
     private bool _canvasVisible = false;
     private bool _loupeVisible = false;
@@ -1243,6 +1303,23 @@
     private double _serverLevelPct  = DefaultServerLevelPct;
     private System.Threading.Timer? _windowLevelDebounceTimer;
     private const int WindowLevelDebounceMs = 180;
+
+    // v2.11.0 Phase 3 — pixel probe hover chip. When enabled, hovering the
+    // image fires throttled /pixel requests and shows a floating chip with
+    // HE/LE/Material/RGB + category label at the cursor.
+    //
+    // Overlay offsetX/Y is scale-invariant (lives inside the transform wrapper
+    // so zoom/rotate don't affect coordinates) → use directly as native pixel
+    // coords for the API call. ClientX/Y drives chip positioning so the chip
+    // always tracks the cursor on screen regardless of transform.
+    private bool _pixelProbeEnabled = false;
+    private NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult? _probeData;
+    private double _probeClientX = 0;
+    private double _probeClientY = 0;
+    private int _probeLastX = 0;
+    private int _probeLastY = 0;
+    private System.Threading.Timer? _probeDebounceTimer;
+    private const int ProbeDebounceMs = 80;
     
     // Pan state
     private bool _isPanning = false;
@@ -1525,6 +1602,10 @@
             _serverWindowPct = DefaultServerWindowPct;
             _serverLevelPct  = DefaultServerLevelPct;
 
+            // v2.11.0 Phase 3 — drop the stale probe chip; coords from the
+            // previous scan are meaningless against the new one.
+            _probeData = null;
+
             await LoadExistingTags();
             await LoadExistingRectangles();
             await LoadModeCapabilitiesAsync();
@@ -1715,6 +1796,68 @@
     /// </summary>
     private bool IsWindowLevelEffective()
         => !(string.IsNullOrEmpty(_activeMode) || _activeMode == "composite");
+
+    // ── v2.11.0 Phase 3 — pixel probe ────────────────────────────────────
+
+    /// <summary>Toggle pixel-probe mode on/off from the toolbar button.</summary>
+    private void TogglePixelProbe()
+    {
+        _pixelProbeEnabled = !_pixelProbeEnabled;
+        if (!_pixelProbeEnabled)
+        {
+            _probeData = null;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Mouse-move on the probe overlay. OffsetX/Y on the overlay is in image-
+    /// native pixel coords (the overlay lives inside the transform wrapper and
+    /// has no CSS transform of its own, so offset is scale-invariant). ClientX/Y
+    /// drives the floating chip's screen position via position:fixed so it
+    /// tracks the cursor regardless of zoom/rotate.
+    /// </summary>
+    private void HandleProbeMouseMove(Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
+    {
+        if (!_pixelProbeEnabled) return;
+        _probeLastX = (int)e.OffsetX;
+        _probeLastY = (int)e.OffsetY;
+        _probeClientX = e.ClientX;
+        _probeClientY = e.ClientY;
+
+        // Coalesce bursts — mouse-move fires 100s of times/sec during a drag.
+        _probeDebounceTimer?.Dispose();
+        _probeDebounceTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                if (!_pixelProbeEnabled) return;
+                try
+                {
+                    var probe = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
+                        $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/pixel?x={_probeLastX}&y={_probeLastY}");
+                    if (probe != null && _pixelProbeEnabled)
+                    {
+                        _probeData = probe;
+                        StateHasChanged();
+                    }
+                }
+                catch
+                {
+                    // Soft-fail — a transient 404 / 500 on a hover tick is
+                    // non-critical; stale data stays visible until the next
+                    // successful tick. Nothing to log at this level.
+                }
+            });
+        }, null, ProbeDebounceMs, System.Threading.Timeout.Infinite);
+    }
+
+    /// <summary>Clear the chip when the cursor leaves the image.</summary>
+    private void HandleProbeMouseLeave()
+    {
+        _probeData = null;
+        StateHasChanged();
+    }
 
     private async Task LoadAiSuggestion()
     {
@@ -2319,6 +2462,7 @@
         // unmounts; otherwise the Timer callback could call StateHasChanged()
         // on a disposed component and throw.
         try { _windowLevelDebounceTimer?.Dispose(); _windowLevelDebounceTimer = null; } catch { }
+        try { _probeDebounceTimer?.Dispose();        _probeDebounceTimer = null; }        catch { }
 
         try
         {
