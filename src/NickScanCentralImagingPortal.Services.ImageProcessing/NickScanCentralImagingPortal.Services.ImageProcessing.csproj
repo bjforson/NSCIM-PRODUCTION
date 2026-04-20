@@ -24,4 +24,15 @@
     <ProjectReference Include="..\NickScanCentralImagingPortal.Infrastructure\NickScanCentralImagingPortal.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!--
+    v2.10.1: the empirical vendor-LUT fitted from 240M production pixels
+    (tools/vendor-lut-research/). Embedded directly in the assembly so the
+    deploy pipeline doesn't need to ship a sidecar file; loaded lazily by
+    FS6000VendorLutCompositor on first use. ~768 KB — negligible next to
+    the existing DLL size.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="FS6000\vendor_lut_v1.bin" />
+  </ItemGroup>
+
 </Project>

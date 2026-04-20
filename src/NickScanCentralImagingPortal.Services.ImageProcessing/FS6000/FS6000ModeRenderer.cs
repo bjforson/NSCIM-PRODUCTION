@@ -81,15 +81,23 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         {
             return mode switch
             {
-                Fs6000RenderMode.Composite    => RenderCompositeJpeg(decoded, FS6000Compositor.DefaultMaterialLut, loPct, hiPct, gamma, edge: false),
-                Fs6000RenderMode.Edge         => RenderCompositeJpeg(decoded, FS6000Compositor.DefaultMaterialLut, loPct, hiPct, gamma, edge: true),
-                Fs6000RenderMode.OrganicStrip => RenderCompositeJpeg(decoded, BuildStrippedLut(OrganicBandStart, OrganicBandEnd), loPct, hiPct, gamma, edge: false),
-                Fs6000RenderMode.MetalStrip   => RenderCompositeJpeg(decoded, BuildStrippedLut(MetalBandStart,   MetalBandEnd),   loPct, hiPct, gamma, edge: false),
-                Fs6000RenderMode.BlackWhite   => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma, invert: true),
-                Fs6000RenderMode.Inverse      => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma, invert: false),
-                Fs6000RenderMode.HighPen      => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma: gamma == 1.0f ? 1.8f : gamma, invert: true),
-                Fs6000RenderMode.LowPen       => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma: gamma == 1.0f ? 0.5f : gamma, invert: true),
-                Fs6000RenderMode.Diff         => RenderDualEnergyDiffJpeg(decoded),
+                // v2.10.1: composite now uses the empirical vendor-LUT fitted
+                // from 240 M production pixels. Reconstruction error vs.
+                // the real vendor JPEG is ~4 RGB units/channel on held-out
+                // scans — visually indistinguishable. The previous
+                // RenderCompositeJpeg (Python-ported recipe) is kept as
+                // CompositeLegacy below for A/B comparisons and as a fallback
+                // if the LUT ever fails to load.
+                Fs6000RenderMode.Composite       => FS6000VendorLutCompositor.RenderJpeg(decoded),
+                Fs6000RenderMode.CompositeLegacy => RenderCompositeJpeg(decoded, FS6000Compositor.DefaultMaterialLut, loPct, hiPct, gamma, edge: false),
+                Fs6000RenderMode.Edge            => RenderCompositeJpeg(decoded, FS6000Compositor.DefaultMaterialLut, loPct, hiPct, gamma, edge: true),
+                Fs6000RenderMode.OrganicStrip    => RenderCompositeJpeg(decoded, BuildStrippedLut(OrganicBandStart, OrganicBandEnd), loPct, hiPct, gamma, edge: false),
+                Fs6000RenderMode.MetalStrip      => RenderCompositeJpeg(decoded, BuildStrippedLut(MetalBandStart,   MetalBandEnd),   loPct, hiPct, gamma, edge: false),
+                Fs6000RenderMode.BlackWhite      => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma, invert: true),
+                Fs6000RenderMode.Inverse         => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma, invert: false),
+                Fs6000RenderMode.HighPen         => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma: gamma == 1.0f ? 1.8f : gamma, invert: true),
+                Fs6000RenderMode.LowPen          => RenderGrayscaleJpeg(decoded, loPct, hiPct, gamma: gamma == 1.0f ? 0.5f : gamma, invert: true),
+                Fs6000RenderMode.Diff            => RenderDualEnergyDiffJpeg(decoded),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), $"unknown render mode: {mode}"),
             };
         }
@@ -107,6 +115,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             return k switch
             {
                 "composite" or "color" or "default"                 => Fs6000RenderMode.Composite,
+                "composite-legacy" or "composite-python" or "composite-v1" => Fs6000RenderMode.CompositeLegacy,
                 "bw" or "blackwhite" or "black-white" or "grayscale" or "greyscale" => Fs6000RenderMode.BlackWhite,
                 "inverse" or "inverse-video" or "negative"         => Fs6000RenderMode.Inverse,
                 "high-pen" or "highpen" or "high-penetration"      => Fs6000RenderMode.HighPen,
@@ -264,5 +273,13 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         MetalStrip = 6,
         Edge = 7,
         Diff = 8,
+        /// <summary>
+        /// v2.10.0 original composite recipe (port of Python
+        /// <c>composite_fs6000_color</c>). Kept after v2.10.1 as an A/B
+        /// comparison against the new vendor-LUT composite, and as a
+        /// fallback if the embedded LUT ever fails to load. Not exposed
+        /// in the default UI mode toolbar.
+        /// </summary>
+        CompositeLegacy = 9,
     }
 }
