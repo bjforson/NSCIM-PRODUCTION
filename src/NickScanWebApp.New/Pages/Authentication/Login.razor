@@ -48,6 +48,12 @@
     <symbol id="nsc-i-eye" viewBox="0 0 24 24"><path fill="currentColor" d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></symbol>
     <symbol id="nsc-i-eye-off" viewBox="0 0 24 24"><path fill="currentColor" d="M12 7a5 5 0 0 1 5 5c0 .65-.13 1.26-.36 1.83l2.92 2.92A11.55 11.55 0 0 0 23 12c-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-4 .7l2.17 2.15C10.74 7.13 11.35 7 12 7zm-1.07 1.14L13 10.21V10a2 2 0 0 0-2-2l-.07.14zM2.71 3.16a1 1 0 0 0 0 1.41l1.97 1.97A11.73 11.73 0 0 0 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l2.73 2.73a1 1 0 0 0 1.41-1.41L4.13 3.16a1 1 0 0 0-1.42 0zM12 17a5 5 0 0 1-5-5c0-.77.18-1.5.5-2.16l1.53 1.53A2.99 2.99 0 0 0 12 15l1.63 1.63c-.5.23-1.07.37-1.63.37zm2.74-3.27-2.85-2.85a2.97 2.97 0 0 1 2.85 2.85z"/></symbol>
     <symbol id="nsc-i-alert" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-2h2zm0-4h-2V7h2z"/></symbol>
+    <symbol id="nsc-i-gavel" viewBox="0 0 24 24"><path fill="currentColor" d="m1 21 6-6 3 3-6 6zm12.5-12.5 4 4L14 12l-1.5-1.5 1-1zM21.7 6.3l-4-4a1 1 0 0 0-1.4 0l-2 2a1 1 0 0 0 0 1.4l1 1-5 5 1 1 5-5 1 1a1 1 0 0 0 1.4 0l2-2a1 1 0 0 0 0-1.4z"/></symbol>
+    <symbol id="nsc-i-check" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></symbol>
+    <symbol id="nsc-i-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm4 11h-5V7h1.5v4.5H16V13z"/></symbol>
+    <symbol id="nsc-i-users" viewBox="0 0 24 24"><path fill="currentColor" d="M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm-8 0a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-2.7 0-8 1.3-8 4v3h16v-3c0-2.7-5.3-4-8-4zm8 0c-.3 0-.7 0-1.1.1 1.3 1 2.1 2.3 2.1 3.9v3h7v-3c0-2.7-5.3-4-8-4z"/></symbol>
+    <symbol id="nsc-i-pulse" viewBox="0 0 24 24"><path fill="currentColor" d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="nsc-i-uptime" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10h-2a8 8 0 1 1-8-8V2zm7.3 2.3-6 6 1.4 1.4 6-6z"/></symbol>
 </svg>
 
 <div class="nsc-login">
@@ -66,23 +72,56 @@
                 Central imaging, customs workflow, and AI-powered cargo analysis — one secure platform for the full inspection lifecycle.
             </p>
 
+            @* Tier 1 — primary (big number cards) *@
             <div class="nsc-stats-row anim anim-4">
-                <div class="nsc-stat"><span class="nsc-stat-num">3,174</span><span class="nsc-stat-label">Containers</span></div>
+                <div class="nsc-stat"><span class="nsc-stat-num">@_stats.TotalContainers.ToString("N0")</span><span class="nsc-stat-label">Containers</span></div>
                 <div class="nsc-stat-divider"></div>
-                <div class="nsc-stat"><span class="nsc-stat-num">130</span><span class="nsc-stat-label">Today's Scans</span></div>
+                <div class="nsc-stat"><span class="nsc-stat-num">@_stats.TodaysScans.ToString("N0")</span><span class="nsc-stat-label">Today's Scans</span></div>
                 <div class="nsc-stat-divider"></div>
-                <div class="nsc-stat"><span class="nsc-stat-num">74.7%</span><span class="nsc-stat-label">Completeness</span></div>
+                <div class="nsc-stat"><span class="nsc-stat-num">@_stats.CompletenessPercent.ToString("0.0")%</span><span class="nsc-stat-label">Completeness</span></div>
                 <div class="nsc-stat-divider"></div>
-                <div class="nsc-stat"><span class="nsc-stat-num">100%</span><span class="nsc-stat-label">Success</span></div>
+                <div class="nsc-stat"><span class="nsc-stat-num">@_stats.SuccessRatePercent.ToString("0.0")%</span><span class="nsc-stat-label">Success</span></div>
             </div>
 
-            <div class="nsc-features anim anim-5">
+            @* Tier 2 — today's activity (pill row) *@
+            <div class="nsc-activity-row anim anim-5">
+                <div class="nsc-activity"><svg><use href="#nsc-i-ai"/></svg><span class="nsc-activity-num">@_stats.AiDecisionsToday.ToString("N0")</span><span class="nsc-activity-lbl">AI Decisions</span></div>
+                <div class="nsc-activity"><svg><use href="#nsc-i-gavel"/></svg><span class="nsc-activity-num">@_stats.AuditsCompletedToday.ToString("N0")</span><span class="nsc-activity-lbl">Audits</span></div>
+                <div class="nsc-activity"><svg><use href="#nsc-i-check"/></svg><span class="nsc-activity-num">@_stats.ContainersClearedToday.ToString("N0")</span><span class="nsc-activity-lbl">Cleared</span></div>
+                <div class="nsc-activity"><svg><use href="#nsc-i-clock"/></svg><span class="nsc-activity-num">@FormatAvgClearTime(_stats.AvgHoursToClear)</span><span class="nsc-activity-lbl">Avg Clear</span></div>
+            </div>
+
+            @* Tier 3 — system health (ticker strip) *@
+            <div class="nsc-health-strip anim anim-6">
+                <div class="nsc-health @(_stats.ScannersOnline == _stats.ScannersTotal ? "nsc-health-ok" : "nsc-health-warn")">
+                    <span class="nsc-health-dot"></span>
+                    <svg><use href="#nsc-i-scanner"/></svg>
+                    <span>@_stats.ScannersOnline/@_stats.ScannersTotal Scanners</span>
+                </div>
+                <div class="nsc-health nsc-health-ok">
+                    <span class="nsc-health-dot"></span>
+                    <svg><use href="#nsc-i-users"/></svg>
+                    <span>@_stats.ActiveOperators @(_stats.ActiveOperators == 1 ? "Operator" : "Operators")</span>
+                </div>
+                <div class="nsc-health @(_stats.SystemsOperational ? "nsc-health-ok" : "nsc-health-err")">
+                    <span class="nsc-health-dot"></span>
+                    <svg><use href="#nsc-i-pulse"/></svg>
+                    <span>@(_stats.SystemsOperational ? "All Systems OK" : "Degraded")</span>
+                </div>
+                <div class="nsc-health nsc-health-ok">
+                    <span class="nsc-health-dot"></span>
+                    <svg><use href="#nsc-i-uptime"/></svg>
+                    <span>Up @FormatUptime(_stats.UptimeDays)</span>
+                </div>
+            </div>
+
+            <div class="nsc-features anim anim-7">
                 <div class="nsc-feature"><div class="nsc-feature-icon"><svg><use href="#nsc-i-scanner"/></svg></div><span>Real-time FS6000, ASE &amp; Heimann scanning</span></div>
                 <div class="nsc-feature"><div class="nsc-feature-icon"><svg><use href="#nsc-i-hub"/></svg></div><span>ICUMS integration with automated BOE matching</span></div>
                 <div class="nsc-feature"><div class="nsc-feature-icon"><svg><use href="#nsc-i-ai"/></svg></div><span>AI image analysis &amp; autonomous decision support</span></div>
             </div>
 
-            <div class="nsc-pills anim anim-6">
+            <div class="nsc-pills anim anim-8">
                 <span class="nsc-pill">Image Review</span>
                 <span class="nsc-pill">Completeness</span>
                 <span class="nsc-pill">Analytics</span>
@@ -91,7 +130,7 @@
                 <span class="nsc-pill">Vehicles</span>
             </div>
 
-            <p class="nsc-powered anim anim-7">Powered by Nick TC-Scan Ltd</p>
+            <p class="nsc-powered anim anim-9">Powered by Nick TC-Scan Ltd</p>
         </div>
     </div>
 
@@ -199,7 +238,8 @@
         background: #1B2537;
         display: flex;
         align-items: center;
-        padding: 48px 56px;
+        /* Fluid padding — tighter on narrow viewports, generous on wide ones */
+        padding: clamp(28px, 3.5vw, 48px) clamp(28px, 4vw, 56px);
         position: relative;
         overflow: hidden;
     }
@@ -221,7 +261,14 @@
         border-radius: 50%;
         pointer-events: none;
     }
-    .nsc-login-left-inner { position: relative; z-index: 1; max-width: 480px; }
+    .nsc-login-left-inner {
+        position: relative;
+        z-index: 1;
+        /* Let the inner column breathe up to 560px on wide displays,
+           clamp down to 100% of the panel on narrow */
+        width: 100%;
+        max-width: clamp(380px, 36vw, 560px);
+    }
 
     .nsc-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 40px; }
     .nsc-logo-icon {
@@ -236,44 +283,103 @@
 
     .nsc-headline {
         color: #fff;
-        font-size: 2.4rem;
+        font-size: clamp(1.75rem, 2.4vw, 2.4rem);
         font-weight: 800;
         line-height: 1.15;
-        margin: 0 0 16px;
+        margin: 0 0 14px;
     }
     .nsc-subheadline {
         color: rgba(255, 255, 255, 0.7);
-        font-size: 15px;
+        font-size: clamp(13px, 1vw, 15px);
         line-height: 1.6;
-        margin: 0 0 36px;
-        max-width: 420px;
+        margin: 0 0 clamp(20px, 2.5vw, 36px);
+        max-width: 480px;
     }
 
     .nsc-stats-row {
-        display: flex; align-items: center; gap: 20px;
-        margin-bottom: 36px; flex-wrap: wrap;
+        display: flex; align-items: center;
+        gap: clamp(12px, 1.5vw, 20px);
+        margin-bottom: clamp(16px, 2vw, 24px);
+        flex-wrap: wrap;
     }
-    .nsc-stat { text-align: center; }
+    .nsc-stat { text-align: center; flex: 0 0 auto; }
     .nsc-stat-num {
         display: block;
         color: #4facfe;
-        font-size: 1.8rem;
+        font-size: clamp(1.35rem, 1.7vw, 1.8rem);
         font-weight: 800;
+        line-height: 1.1;
     }
     .nsc-stat-label {
         display: block;
         color: rgba(255, 255, 255, 0.5);
-        font-size: 11px; font-weight: 600;
+        font-size: clamp(10px, 0.75vw, 11px);
+        font-weight: 600;
         text-transform: uppercase; letter-spacing: 1px;
         margin-top: 2px;
+        white-space: nowrap;
     }
-    .nsc-stat-divider { width: 1px; height: 36px; background: rgba(255, 255, 255, 0.1); }
+    .nsc-stat-divider { width: 1px; height: 32px; background: rgba(255, 255, 255, 0.1); }
 
-    .nsc-features { display: flex; flex-direction: column; gap: 14px; margin-bottom: 28px; }
+    /* ── Tier 2: today's activity (pill row) ─────────────────── */
+    .nsc-activity-row {
+        display: flex; flex-wrap: wrap;
+        gap: clamp(6px, 0.8vw, 10px);
+        margin-bottom: clamp(14px, 1.8vw, 20px);
+    }
+    .nsc-activity {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 12px;
+        background: rgba(79, 172, 254, 0.08);
+        border: 1px solid rgba(79, 172, 254, 0.12);
+        border-radius: 10px;
+        flex: 1 1 120px;
+        min-width: 0;
+    }
+    .nsc-activity svg { width: 16px; height: 16px; color: #4facfe; flex-shrink: 0; }
+    .nsc-activity-num {
+        color: #fff; font-size: 15px; font-weight: 700;
+        flex-shrink: 0;
+    }
+    .nsc-activity-lbl {
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 11px; font-weight: 500;
+        text-transform: uppercase; letter-spacing: 0.5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* ── Tier 3: system health (ticker strip) ────────────────── */
+    .nsc-health-strip {
+        display: flex; flex-wrap: wrap;
+        gap: clamp(8px, 1vw, 14px) clamp(12px, 1.5vw, 18px);
+        margin-bottom: clamp(18px, 2.2vw, 26px);
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+    }
+    .nsc-health {
+        display: flex; align-items: center; gap: 6px;
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 11.5px; font-weight: 600;
+        letter-spacing: 0.2px;
+    }
+    .nsc-health svg { width: 13px; height: 13px; opacity: 0.55; }
+    .nsc-health-dot {
+        display: inline-block;
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .nsc-health-ok .nsc-health-dot { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.5); }
+    .nsc-health-warn .nsc-health-dot { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); }
+    .nsc-health-err .nsc-health-dot { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.5); }
+
+    .nsc-features { display: flex; flex-direction: column; gap: clamp(10px, 1.2vw, 14px); margin-bottom: clamp(18px, 2.2vw, 28px); }
     .nsc-feature {
         display: flex; align-items: center; gap: 12px;
         color: rgba(255, 255, 255, 0.82);
-        font-size: 14px; font-weight: 500;
+        font-size: clamp(12px, 0.95vw, 14px); font-weight: 500;
     }
     .nsc-feature-icon {
         width: 32px; height: 32px;
@@ -284,12 +390,12 @@
     }
     .nsc-feature-icon svg { width: 18px; height: 18px; color: #4facfe; }
 
-    .nsc-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 32px; }
+    .nsc-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: clamp(20px, 2.5vw, 32px); }
     .nsc-pill {
         background: rgba(255, 255, 255, 0.06);
         color: rgba(255, 255, 255, 0.85);
         padding: 6px 14px; border-radius: 20px;
-        font-size: 12px; font-weight: 600;
+        font-size: clamp(11px, 0.8vw, 12px); font-weight: 600;
         border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
@@ -447,13 +553,15 @@
 
     /* ── Entrance animations ─────────────────────────────────── */
     .anim { opacity: 0; transform: translateY(18px); animation: nsc-fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-    .anim-1 { animation-delay: 0.08s; }
-    .anim-2 { animation-delay: 0.18s; }
-    .anim-3 { animation-delay: 0.28s; }
-    .anim-4 { animation-delay: 0.38s; }
-    .anim-5 { animation-delay: 0.48s; }
-    .anim-6 { animation-delay: 0.58s; }
-    .anim-7 { animation-delay: 0.68s; }
+    .anim-1 { animation-delay: 0.06s; }
+    .anim-2 { animation-delay: 0.14s; }
+    .anim-3 { animation-delay: 0.22s; }
+    .anim-4 { animation-delay: 0.30s; }
+    .anim-5 { animation-delay: 0.38s; }
+    .anim-6 { animation-delay: 0.46s; }
+    .anim-7 { animation-delay: 0.54s; }
+    .anim-8 { animation-delay: 0.62s; }
+    .anim-9 { animation-delay: 0.70s; }
     .anim-card { opacity: 0; transform: translateX(32px) scale(0.97); animation: nsc-fade-card 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; animation-delay: 0.25s; }
     .anim-logo { animation: nsc-logo-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.05s forwards; opacity: 0; transform: scale(0.6) rotate(-180deg); }
     @@keyframes nsc-fade-up { to { opacity: 1; transform: translateY(0); } }
@@ -468,8 +576,28 @@
         }
     }
 
-    /* ── Mobile ──────────────────────────────────────────────── */
-    @@media (max-width: 900px) {
+    /* ── Responsive tiers ────────────────────────────────────── */
+
+    /* Mid-width (1024–1280px): keep left panel but tighten further,
+       hide the lowest-priority pills + last feature row so the stack
+       doesn't get crushed between the stat cards and form. */
+    @@media (max-width: 1280px) {
+        .nsc-login-right { width: 420px; min-width: 380px; padding: 32px; }
+        .nsc-pill:nth-child(n+5) { display: none; } /* keep first 4 pills only */
+    }
+
+    /* Laptop / narrow desktop (1024–1200px): stats wrap 2×2, dividers
+       hidden so wrapped rows don't show stray vertical lines. */
+    @@media (max-width: 1200px) {
+        .nsc-stat { flex: 1 0 40%; }
+        .nsc-stat-divider { display: none; }
+        .nsc-activity { flex-basis: calc(50% - 5px); }
+    }
+
+    /* Below 1024px: drop the entire left panel and go form-card-only.
+       Form card gets a subtle slate header strip at the top so the
+       NSCIS brand is still visible. */
+    @@media (max-width: 1024px) {
         .nsc-login { flex-direction: column; }
         .nsc-login-left { display: none; }
         .nsc-login-right {
@@ -478,6 +606,17 @@
             background: linear-gradient(180deg, #E0F2FE 0%, #F8FAFC 100%);
         }
         .nsc-form-card { max-width: 100%; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04); }
+    }
+
+    /* Short viewports (docked windows, laptops with DevTools open):
+       compress vertical gaps so nothing scrolls. */
+    @@media (max-height: 780px) {
+        .nsc-login-left { padding-top: 20px; padding-bottom: 20px; }
+        .nsc-logo { margin-bottom: 20px; }
+        .nsc-headline { font-size: clamp(1.5rem, 2vw, 1.9rem); margin-bottom: 10px; }
+        .nsc-subheadline { margin-bottom: 16px; }
+        .nsc-features { gap: 8px; margin-bottom: 12px; }
+        .nsc-pills { margin-bottom: 14px; }
     }
 
     /* Chrome autofill — keep the slate-blue focus ring even when the field
@@ -497,6 +636,26 @@
     private string errorMessage = string.Empty;
     private bool _showPassword = false;
     private ElementReference _usernameInputRef;
+
+    // Live system stats shown on the left panel. Defaults are conservative
+    // "looks fine when the API is unreachable" placeholder values — if the
+    // /api/public/system-stats fetch fails, the page still looks polished.
+    private PublicSystemStats _stats = new()
+    {
+        TotalContainers = 0,
+        TodaysScans = 0,
+        CompletenessPercent = 0,
+        SuccessRatePercent = 100.0,
+        AiDecisionsToday = 0,
+        AuditsCompletedToday = 0,
+        ContainersClearedToday = 0,
+        AvgHoursToClear = 0,
+        ScannersOnline = 3,
+        ScannersTotal = 3,
+        ActiveOperators = 0,
+        SystemsOperational = true,
+        UptimeDays = 0,
+    };
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -530,6 +689,71 @@
         {
             errorMessage = "Server restarted. Please log in again.";
         }
+
+        // Fetch live system stats in the background — non-blocking so the page
+        // renders immediately with placeholders, then updates once the API
+        // responds. A failure here must never prevent login.
+        _ = LoadSystemStatsAsync();
+    }
+
+    private async Task LoadSystemStatsAsync()
+    {
+        try
+        {
+            using var httpClient = HttpClientFactory.CreateClient("NickScanAPI");
+            httpClient.Timeout = TimeSpan.FromSeconds(5); // don't block the login flow
+            var fresh = await httpClient.GetFromJsonAsync<PublicSystemStats>("/api/public/system-stats");
+            if (fresh != null)
+            {
+                _stats = fresh;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Public system-stats fetch failed — keeping placeholder values on the login page");
+            // Silent fallback — the defaults initialised above stay in place.
+        }
+    }
+
+    private static string FormatAvgClearTime(double hours)
+    {
+        if (hours <= 0) return "—";
+        if (hours < 1) return $"{Math.Round(hours * 60)}m";
+        if (hours < 24) return $"{hours:0.0}h";
+        return $"{hours / 24:0.0}d";
+    }
+
+    private static string FormatUptime(double days)
+    {
+        if (days < 1.0 / 24) return "<1h";
+        if (days < 1) return $"{(int)Math.Round(days * 24)}h";
+        if (days < 30) return $"{(int)Math.Round(days)}d";
+        var months = days / 30;
+        return $"{months:0.0}mo";
+    }
+
+    /// <summary>
+    /// DTO mirroring <c>NickScanCentralImagingPortal.API.Controllers.PublicSystemStats</c>.
+    /// Declared here (instead of shared) so the WebApp doesn't take a
+    /// project reference on the API for a single JSON contract.
+    /// </summary>
+    public class PublicSystemStats
+    {
+        public int TotalContainers { get; set; }
+        public int TodaysScans { get; set; }
+        public double CompletenessPercent { get; set; }
+        public double SuccessRatePercent { get; set; }
+        public int AiDecisionsToday { get; set; }
+        public int AuditsCompletedToday { get; set; }
+        public int ContainersClearedToday { get; set; }
+        public double AvgHoursToClear { get; set; }
+        public int ScannersOnline { get; set; }
+        public int ScannersTotal { get; set; }
+        public int ActiveOperators { get; set; }
+        public bool SystemsOperational { get; set; }
+        public double UptimeDays { get; set; }
+        public DateTime AsOf { get; set; }
     }
 
     public class LoginModel
