@@ -440,6 +440,11 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             CancellationToken ct = default)
             => await _pipeline.GetCapabilitiesAsync(containerNumber, ct);
 
+        public async Task<RawPlaneResult?> GetRawPlaneAsync(
+            string containerNumber, string plane,
+            CancellationToken ct = default)
+            => await _pipeline.GetRawPlaneAsync(containerNumber, plane, ct);
+
         /// <summary>
         /// Ingest FS6000 raw .img channels from a stable folder into
         /// fs6000images. Delegates to <see cref="NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester"/>.

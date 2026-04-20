@@ -81,6 +81,24 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
             CancellationToken ct = default);
 
         /// <summary>
+        /// v2.12.0 — Phase 4. Return the raw pixel buffer for one channel of
+        /// a decoded scan. Powers the client-side 16-bit viewer: instead of
+        /// round-tripping to the server on every window/level slider tick,
+        /// the UI fetches this once per scan + plane then runs window/level
+        /// in JavaScript on the ArrayBuffer for zero-latency contrast
+        /// adjustment.
+        ///
+        /// Returns a payload with raw bytes + geometry + bit-depth metadata,
+        /// or null when the scan has no decodable channels. For 16-bit energy
+        /// channels the bytes are little-endian uint16 packed row-major
+        /// (<c>W*H*2</c> bytes). For material the bytes are uint8 (<c>W*H</c>).
+        /// </summary>
+        Task<RawPlaneResult?> GetRawPlaneAsync(
+            string containerNumber,
+            string plane,
+            CancellationToken ct = default);
+
+        /// <summary>
         /// Ingest the three FS6000 raw .img channels (HighEnergy / LowEnergy /
         /// Material) for a scan into the fs6000images table. Caller MUST pass
         /// a stable folder path (Archive/, never Staging/) — reads are direct
@@ -190,6 +208,25 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public double DominantPercent { get; set; }
         /// <summary>Per-category breakdown — keys: background, noise, organic, metal.</summary>
         public Dictionary<string, double> CategoryDistribution { get; set; } = new();
+    }
+
+    /// <summary>
+    /// v2.12.0 — raw pixel buffer payload from
+    /// <see cref="IImageProcessingService.GetRawPlaneAsync"/>. Powers the
+    /// Phase 4 client-side 16-bit viewer. The <see cref="Bytes"/> are
+    /// either little-endian uint16 (for <c>he</c> / <c>le</c> / 16-bit
+    /// single-view channels) or uint8 (for <c>material</c>), always
+    /// row-major.
+    /// </summary>
+    public class RawPlaneResult
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public string Plane { get; set; } = string.Empty;            // "he" | "le" | "material"
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int BitDepth { get; set; }                            // 16 for energies; 8 for material
+        public string SourceFormat { get; set; } = string.Empty;     // DecodedScan.SourceFormatTag
+        public byte[] Bytes { get; set; } = Array.Empty<byte>();
     }
 
     /// <summary>

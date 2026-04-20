@@ -394,6 +394,56 @@
                         </MudTooltip>
                     }
 
+                    @* v2.12.0 Phase 4 — raw 16-bit mode toggle + plane selector.
+                       Only shown when the scan has structurally-rich content
+                       (dual-energy OR single-view with at least one channel);
+                       the same capability gate that enables _supportedModes
+                       covers this. Toggling swaps <img> for a <canvas> whose
+                       pixels are window/levelled entirely in JS. *@
+                    <div style="width:1px; height:22px; background:rgba(255,255,255,0.15); margin:0 4px;"></div>
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(_rawMode ? Color.Success : Color.Default)"
+                             Variant="@(_rawMode ? Variant.Filled : Variant.Outlined)"
+                             Style="@(_rawMode ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                             OnClick="ToggleRawMode"
+                             Title="Raw 16-bit client-side view \u2014 window/level runs in the browser for zero-latency contrast">
+                        @(_rawMode ? "RAW 16-bit ON" : "Raw 16-bit")
+                    </MudChip>
+                    @if (_rawMode)
+                    {
+                        @* Plane selector: only offer planes the scan variant has *@
+                        <MudChip T="string" Size="Size.Small"
+                                 Color="@(_rawPlane == "he" ? Color.Info : Color.Default)"
+                                 Variant="@(_rawPlane == "he" ? Variant.Filled : Variant.Outlined)"
+                                 Style="@(_rawPlane == "he" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                                 OnClick="@(() => SelectRawPlane("he"))">HE</MudChip>
+                        @if (_scanVariant != "ase-single-view")
+                        {
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_rawPlane == "le" ? Color.Info : Color.Default)"
+                                     Variant="@(_rawPlane == "le" ? Variant.Filled : Variant.Outlined)"
+                                     Style="@(_rawPlane == "le" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                                     OnClick="@(() => SelectRawPlane("le"))">LE</MudChip>
+                            <MudChip T="string" Size="Size.Small"
+                                     Color="@(_rawPlane == "material" ? Color.Info : Color.Default)"
+                                     Variant="@(_rawPlane == "material" ? Variant.Filled : Variant.Outlined)"
+                                     Style="@(_rawPlane == "material" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                                     OnClick="@(() => SelectRawPlane("material"))">MAT</MudChip>
+                        }
+                        @if (_rawLoading)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Color="Color.Info" />
+                        }
+                        @if (!string.IsNullOrEmpty(_rawGeometryLabel))
+                        {
+                            <MudText Typo="Typo.caption" Style="color:#81c784; font-family:monospace;">@_rawGeometryLabel</MudText>
+                        }
+                        @if (!string.IsNullOrEmpty(_rawError))
+                        {
+                            <MudText Typo="Typo.caption" Style="color:#ef5350; font-family:monospace;">@_rawError</MudText>
+                        }
+                    }
+
                     @if (!string.IsNullOrEmpty(_scanVariant))
                     {
                         <div style="flex:1"></div>
@@ -531,6 +581,14 @@
                         @* Canvas overlay for advanced pixel processing *@
                         <canvas @ref="_canvasElement"
                                 style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: @(_canvasVisible ? "block" : "none"); z-index: 5; pointer-events: none;" />
+
+                        @* v2.12.0 Phase 4 — raw 16-bit canvas. Rendered from a
+                           cached ArrayBuffer by JS (Raw16BitViewer). Sits
+                           above the <img> (z-index 6 > 0) and covers it when
+                           raw mode is active; hidden otherwise so the JPEG
+                           path is unaffected. *@
+                        <canvas @ref="_rawCanvas"
+                                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: @(_rawMode ? "block" : "none"); z-index: 6; pointer-events: none; background: #000;" />
 
                         @* Loupe (magnifying glass) overlay *@
                         <canvas @ref="_loupeCanvas"
@@ -1320,6 +1378,18 @@
     private int _probeLastY = 0;
     private System.Threading.Timer? _probeDebounceTimer;
     private const int ProbeDebounceMs = 80;
+
+    // v2.12.0 Phase 4 — client-side 16-bit viewer. Toggle swaps the <img>
+    // for a <canvas> where raw pixel data is window/levelled entirely in
+    // JavaScript. Zero server round-trips on slider drag; real 16-bit
+    // dynamic range instead of JPEG-lossy 8-bit.
+    private bool _rawMode = false;
+    private string _rawPlane = "he";       // "he" | "le" | "material"
+    private bool _rawLoading = false;
+    private string _rawError = "";
+    private string _rawGeometryLabel = ""; // e.g. "3256×1378 @ 16-bit · 8.5 MB"
+    private ElementReference _rawCanvas;
+    private DateTime _rawLastRenderAt = DateTime.MinValue;
     
     // Pan state
     private bool _isPanning = false;
@@ -1606,6 +1676,14 @@
             // previous scan are meaningless against the new one.
             _probeData = null;
 
+            // v2.12.0 Phase 4 — drop raw-mode state + flush JS buffer cache
+            // so the next scan doesn't render from the previous scan's bytes.
+            _rawMode = false;
+            _rawPlane = "he";
+            _rawGeometryLabel = "";
+            _rawError = "";
+            try { _ = JS.InvokeVoidAsync("Raw16BitViewer.clearCache", _lastContainerNumber); } catch { }
+
             await LoadExistingTags();
             await LoadExistingRectangles();
             await LoadModeCapabilitiesAsync();
@@ -1749,10 +1827,22 @@
         _windowLevelDebounceTimer?.Dispose();
         _windowLevelDebounceTimer = new System.Threading.Timer(async _ =>
         {
-            await InvokeAsync(() =>
+            await InvokeAsync(async () =>
             {
-                _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
-                StateHasChanged();
+                if (_rawMode)
+                {
+                    // v2.12.0 — client-side rerender from cached buffer. No
+                    // server round-trip; pure JS window/level on the raw
+                    // 16-bit array. ~20-60ms for a full re-render.
+                    await RerenderRawFromCacheAsync();
+                }
+                else
+                {
+                    // JPEG path: bump cache buster so the <img> refetches
+                    // with the new ?loPct=&hiPct= params.
+                    _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+                    StateHasChanged();
+                }
             });
         }, null, WindowLevelDebounceMs, System.Threading.Timeout.Infinite);
     }
@@ -1857,6 +1947,112 @@
     {
         _probeData = null;
         StateHasChanged();
+    }
+
+    // ── v2.12.0 Phase 4 — client-side 16-bit viewer ─────────────────────
+
+    /// <summary>Toggle raw-mode on/off. Enabling triggers an initial load
+    /// + render for the current plane.</summary>
+    private async Task ToggleRawMode()
+    {
+        _rawMode = !_rawMode;
+        if (_rawMode)
+        {
+            await LoadAndRenderRawPlaneAsync();
+        }
+        else
+        {
+            _rawError = "";
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>Switch plane (HE/LE/Material). Fetches + renders the new
+    /// plane, caching per (container, plane).</summary>
+    private async Task SelectRawPlane(string plane)
+    {
+        if (plane == _rawPlane) return;
+        _rawPlane = plane;
+        if (_rawMode)
+        {
+            await LoadAndRenderRawPlaneAsync();
+        }
+    }
+
+    /// <summary>Fetch + render the current raw plane. Called on toggle,
+    /// plane switch, or window/level change where the plane buffer isn't
+    /// yet cached client-side.</summary>
+    private async Task LoadAndRenderRawPlaneAsync()
+    {
+        if (!_rawMode || string.IsNullOrEmpty(ContainerNumber)) return;
+        _rawLoading = true;
+        _rawError = "";
+        StateHasChanged();
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            // Derive the percentile-style (level, window) from the server-
+            // side slider positions. Same UX as the JPEG path but now the
+            // tone mapping runs in the browser instead of re-rendering on
+            // the server.
+            var meta = await JS.InvokeAsync<RawPlaneMeta>(
+                "Raw16BitViewer.loadAndRender",
+                _rawCanvas, apiBaseUrl, ContainerNumber, _rawPlane,
+                _serverLevelPct, _serverWindowPct, /*invert*/ true);
+            if (meta != null)
+            {
+                string sizeLabel = meta.Bytes > 1024 * 1024
+                    ? $"{meta.Bytes / 1024.0 / 1024.0:F1} MB"
+                    : $"{meta.Bytes / 1024.0:F0} KB";
+                _rawGeometryLabel = $"{meta.Width}×{meta.Height} @ {meta.BitDepth}-bit · {sizeLabel}";
+                _rawLastRenderAt = DateTime.UtcNow;
+            }
+        }
+        catch (Exception ex)
+        {
+            _rawError = ex.Message.Length > 160 ? ex.Message.Substring(0, 160) + "…" : ex.Message;
+            Console.WriteLine($"[Raw16] {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _rawLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Re-run window/level on the already-cached plane buffer.
+    /// This is the zero-server-round-trip hot path — every slider tick
+    /// in raw mode calls this, not LoadAndRenderRawPlaneAsync.</summary>
+    private async Task RerenderRawFromCacheAsync()
+    {
+        if (!_rawMode || string.IsNullOrEmpty(ContainerNumber)) return;
+        try
+        {
+            bool ok = await JS.InvokeAsync<bool>(
+                "Raw16BitViewer.rerenderFromCache",
+                _rawCanvas, ContainerNumber, _rawPlane,
+                _serverLevelPct, _serverWindowPct, /*invert*/ true);
+            if (!ok)
+            {
+                // Cache miss — full load path
+                await LoadAndRenderRawPlaneAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Raw16 rerender] {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>DTO matching what Raw16BitViewer.loadAndRender returns.</summary>
+    public class RawPlaneMeta
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int BitDepth { get; set; }
+        public string Plane { get; set; } = "";
+        public string SourceFormat { get; set; } = "";
+        public long Bytes { get; set; }
     }
 
     private async Task LoadAiSuggestion()

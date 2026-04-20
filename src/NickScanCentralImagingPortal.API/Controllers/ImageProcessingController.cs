@@ -1089,6 +1089,64 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         /// <summary>
+        /// v2.12.0 Phase 4 — raw pixel-buffer export. Returns the requested
+        /// plane's byte buffer as <c>application/octet-stream</c>, with
+        /// geometry + bit-depth in response headers so the client can
+        /// interpret the buffer without a separate metadata request.
+        ///
+        /// <list type="bullet">
+        ///   <item><c>plane=he</c>: little-endian uint16 buffer, W*H*2 bytes</item>
+        ///   <item><c>plane=le</c>: little-endian uint16 buffer, W*H*2 bytes
+        ///   (404 when the scan is single-view)</item>
+        ///   <item><c>plane=material</c>: uint8 buffer, W*H bytes
+        ///   (404 when the scan has no material classification)</item>
+        /// </list>
+        ///
+        /// 1-minute cache — decoded scans stay hot for 30s on the server
+        /// anyway, but a repeated client-side re-fetch within a minute is
+        /// a likely pattern (e.g. operator switches planes and back).
+        /// </summary>
+        [AllowAnonymous]
+        [HttpGet("container/{containerNumber}/raw")]
+        [ProducesResponseType(200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(404)]
+        public async Task<ActionResult> GetRawPlane(
+            string containerNumber,
+            [FromQuery] string plane = "he")
+        {
+            try
+            {
+                var result = await _imageProcessingService.GetRawPlaneAsync(containerNumber, plane);
+                if (result == null)
+                {
+                    return NotFound(new
+                    {
+                        error = $"Raw plane '{plane}' not available for this scan",
+                        container = containerNumber,
+                    });
+                }
+                Response.Headers["X-Width"]         = result.Width.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                Response.Headers["X-Height"]        = result.Height.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                Response.Headers["X-BitDepth"]      = result.BitDepth.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                Response.Headers["X-Plane"]         = result.Plane;
+                Response.Headers["X-Source-Format"] = result.SourceFormat;
+                // Expose the X-* headers to cross-origin JS fetches (Blazor
+                // Server is same-origin here, but if the WebApp ever moves
+                // to a different origin we need these exposed for headers.get()).
+                Response.Headers["Access-Control-Expose-Headers"] =
+                    "X-Width, X-Height, X-BitDepth, X-Plane, X-Source-Format";
+                Response.Headers.CacheControl = "private, max-age=60";
+                return File(result.Bytes, "application/octet-stream");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Raw plane failed for {Container} plane={Plane}", containerNumber, plane);
+                return StatusCode(500, new { error = "Raw plane export failed", message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Downscale a JPEG byte buffer to a thumbnail (max 240 px on the long
         /// edge). Shared helper between the mode-render path and the legacy
         /// size=thumbnail branch. Returns null on decode failure so the caller

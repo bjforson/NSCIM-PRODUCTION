@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -70,6 +71,94 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel
             var decoded = await _router.GetDecodedAsync(containerNumber, ct);
             if (decoded == null) return null;
             return ScanPixelProbe.Probe(decoded, x, y);
+        }
+
+        /// <summary>
+        /// v2.12.0 Phase 4 — raw pixel-buffer export for the client-side
+        /// 16-bit viewer. Plane is <c>"he"</c>, <c>"le"</c>, or <c>"material"</c>
+        /// (case-insensitive). Returns null when the scan can't be decoded
+        /// or the requested plane isn't present on this variant (e.g. asking
+        /// for <c>le</c> on a single-view scan).
+        /// </summary>
+        public async Task<RawPlaneResult?> GetRawPlaneAsync(
+            string containerNumber, string plane,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(plane)) return null;
+            var decoded = await _router.GetDecodedAsync(containerNumber, ct);
+            if (decoded == null) return null;
+
+            string planeKey = plane.Trim().ToLowerInvariant();
+
+            // Channel lookup: prefer explicit High/Low; "he" or single-view's
+            // sole channel both resolve to the primary energy.
+            if (planeKey == "he" || planeKey == "high")
+            {
+                var ch = decoded.ChannelByKind(EnergyKind.High)
+                      ?? decoded.ChannelByKind(EnergyKind.Single);
+                if (ch == null) return null;
+                return new RawPlaneResult
+                {
+                    ContainerNumber = containerNumber,
+                    Plane           = "he",
+                    Width           = decoded.Width,
+                    Height          = decoded.Height,
+                    BitDepth        = ch.BitDepth,
+                    SourceFormat    = decoded.SourceFormatTag,
+                    Bytes           = UShortArrayToLittleEndianBytes(ch.Pixels),
+                };
+            }
+            if (planeKey == "le" || planeKey == "low")
+            {
+                var ch = decoded.ChannelByKind(EnergyKind.Low);
+                if (ch == null) return null;
+                return new RawPlaneResult
+                {
+                    ContainerNumber = containerNumber,
+                    Plane           = "le",
+                    Width           = decoded.Width,
+                    Height          = decoded.Height,
+                    BitDepth        = ch.BitDepth,
+                    SourceFormat    = decoded.SourceFormatTag,
+                    Bytes           = UShortArrayToLittleEndianBytes(ch.Pixels),
+                };
+            }
+            if (planeKey == "material" || planeKey == "mat")
+            {
+                if (decoded.Material == null) return null;
+                // Copy the byte[] so callers can't mutate the decoded IR.
+                var copy = new byte[decoded.Material.Classes.Length];
+                Buffer.BlockCopy(decoded.Material.Classes, 0, copy, 0, copy.Length);
+                return new RawPlaneResult
+                {
+                    ContainerNumber = containerNumber,
+                    Plane           = "material",
+                    Width           = decoded.Width,
+                    Height          = decoded.Height,
+                    BitDepth        = 8,
+                    SourceFormat    = decoded.SourceFormatTag,
+                    Bytes           = copy,
+                };
+            }
+
+            _logger.LogWarning(
+                "[Pipeline] GetRawPlaneAsync: unknown plane '{Plane}' for {Container}",
+                plane, containerNumber);
+            return null;
+        }
+
+        /// <summary>
+        /// Re-pack a <c>ushort[]</c> as a little-endian <c>byte[]</c> wire
+        /// buffer. On x64 <c>ushort[]</c> IS already little-endian in memory,
+        /// so Buffer.BlockCopy is the cheapest path — O(bytes), no
+        /// per-element work. On a future big-endian host this would need
+        /// byteswap, but all our deploy targets are x64 / ARM64 little-endian.
+        /// </summary>
+        private static byte[] UShortArrayToLittleEndianBytes(ushort[] src)
+        {
+            var dst = new byte[src.Length * sizeof(ushort)];
+            Buffer.BlockCopy(src, 0, dst, 0, dst.Length);
+            return dst;
         }
 
         /// <summary>ROI analysis for a rectangle.</summary>
