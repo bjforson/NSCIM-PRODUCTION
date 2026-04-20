@@ -22,7 +22,10 @@ resolution, with access to the underlying 16-bit data for windowing / measuremen
 
 ## Current version
 
-`2.10.2` — vendor-faithful FS6000 composite now shipped as default image.
+`2.10.3` — Phase 1 frontend: mode-catalog toolbar wired into
+`ImageAnalysisViewer.razor`. Calls `/mode-capabilities` on open, renders
+a "Render Mode" row with Default + per-variant mode chips, and appends
+`?mode=X` to the image URL on selection.
 See `src/Directory.Build.props`.
 
 ---
@@ -33,7 +36,7 @@ See `src/Directory.Build.props`.
 |---|-------|--------|---------|----------|-------|
 | 0 | Mode catalog + ROI inspector (v2.10.0) | Done | Shipped | — | 9 modes, capability gating, /roi |
 | 0b | Empirical vendor LUT (v2.10.1–2) | Done | Shipped | — | 240M-pixel 3D LUT, ~4 RGB/ch error |
-| 1 | Single-canvas viewer chassis + mode toolbar | In progress | Done (v2.10.0) | **Not started** | backbone for 2–5 |
+| 1 | Single-canvas viewer chassis + mode toolbar | Shipped backend + frontend, awaiting visual sign-off | Done (v2.10.0) | Done (v2.10.3) | backbone for 2–5 |
 | 2 | Windowing slider (server tone-curve) | Not started | Needs `?window=`, `?level=` params | Debounced slider | ~1 day |
 | 3 | Pixel-value probe | Not started | `/pixel?x=&y=` endpoint | Hover chip | ~½ day |
 | 4 | Client-side 16-bit viewer | Not started | Raw-binary endpoint (HE/LE/Material) | JS canvas W/L | ~1.5 days; real 16-bit parity |
@@ -47,21 +50,28 @@ should go last so Phases 1–3 stabilise the UX first.
 
 ## Next session entry point
 
-**Currently:** Phase 1 frontend not started.
-**Start here:** `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
-(the main operator viewer — called from `ContainerDetails.razor` and
-`Pages/ImageAnalysis/*`). Around line 1280–1320 is the image URL builder. Phase 1 adds:
+**Currently:** Phase 1 shipped in v2.10.3. Awaits visual sign-off against real
+FS6000 + real ASE tri-panel + real ASE single-view scans before moving on.
 
-1. On open, GET `/api/ImageProcessing/container/{id}/mode-capabilities` → cache the
-   `{variant, supportedModes[]}` response.
-2. Render a mode toolbar above the canvas showing only the supported modes for this scan.
-3. Clicking a mode flips a `_activeMode` field and re-issues the image URL with
-   `?mode={name}` — the backend already handles this.
-4. Default mode = `composite` (what the viewer shows today).
+**To verify:**
 
-**Do not** start Phase 2–5 until Phase 1 is visually working against a real FS6000 scan
-and a real ASE tri-panel scan. The toolbar gating matters: single-view ASE scans
-(92% of ASE production) must only show `bw`, `inverse`, `edge` — the rest 422.
+1. Open a container with a FS6000 scan. "Render Mode" row should show `Default` +
+   all 9 mode chips. Click each — canvas should swap.
+2. Open a single-view ASE (should be ~92% of ASE scans in production). "Render Mode"
+   row should show `Default` + only `B/W`, `Inverse`, `Edge`.
+3. Open a tri-panel ASE (8% of ASE). Should show all 9.
+4. Check the variant label at the right edge of the toolbar: `fs6000` / `ase-tri-panel`
+   / `ase-single-view`.
+
+**If sign-off passes, start Phase 2** (windowing slider). Open
+`ImageProcessingController.cs` around line 791 — the `?mode=` path is the
+template; add `?window=` and `?level=` the same way, thread them through
+`IImageProcessingService.GetRenderedImageBytesAsync`, and apply the tone curve
+in `FS6000ModeRenderer` before the 8-bit conversion step.
+
+**If sign-off fails**, the toolbar is hidden entirely when `/mode-capabilities`
+returns empty — viewer still works on the default render path, so failure is
+soft. Check browser console for `[LoadModeCapabilitiesAsync]` errors.
 
 ---
 
@@ -115,25 +125,25 @@ and a real ASE tri-panel scan. The toolbar gating matters: single-view ASE scans
 - **Research tools:** `tools/vendor-lut-research/` — `01_le_diagnostic.py`,
   `02_build_3d_lut.py`, `03_validate.py`, `holdout_scans.txt`.
 
-### Phase 1 — Single-canvas viewer chassis + mode toolbar
+### Phase 1 — Single-canvas viewer chassis + mode toolbar (v2.10.3)
 
 - **Goal:** one canvas + a toolbar of mode buttons. Click a button → canvas swaps to that mode.
-- **Why first:** Phases 2–5 all need a place to mount their UI. Without a chassis they'd
-  each reinvent their own.
-- **Backend:** already shipped in v2.10.0 (`?mode=X` on the image endpoint).
-- **Frontend work (all in `ImageAnalysisViewer.razor`):**
-  - Call `/mode-capabilities` in `OnInitializedAsync`; cache the response.
-  - Add a `MudToggleGroup` (or button row) above the canvas binding `_activeMode`.
-  - Disable/hide buttons not in `supportedModes`.
-  - In `GetCurrentImageUrl()`, append `&mode={_activeMode}` when `_activeMode != "composite"`
-    (composite is the default — no query param needed).
-  - Bump `_imageCacheBuster` on mode change so the browser refetches.
-  - Show a toast if the endpoint returns 422 (shouldn't happen if gating is correct,
-    but belt-and-braces).
-- **Acceptance:** open a container with a FS6000 scan, see all 9 buttons, click each,
-  watch canvas swap. Open a single-view ASE, see only bw/inverse/edge. Open a tri-panel
-  ASE, see all 9.
-- **Estimate:** 1 day.
+- **Why first:** Phases 2–5 all need a place to mount their UI.
+- **Backend:** shipped in v2.10.0 (`?mode=X` on the image endpoint).
+- **Frontend:** shipped in v2.10.3 in `ImageAnalysisViewer.razor`:
+  - New fields: `_activeMode`, `_scanVariant`, `_supportedModes`,
+    `_modeCapabilitiesLoaded`, `ModeLabels` dictionary.
+  - New methods: `LoadModeCapabilitiesAsync()` (soft-fails — toolbar hidden if API down),
+    `SelectMode(string)` (bumps cache buster so `<img>` @key flips).
+  - Toolbar row rendered between Row 1 (existing tool chrome) and Row 2 (70/30 content),
+    only when capabilities loaded and `_supportedModes.Count > 0`.
+  - `GetCurrentImageUrl()` appends `&mode={url-escaped}` when `_activeMode != ""`.
+  - `OnInitializedAsync` + `OnParametersSetAsync` both reset state + reload.
+  - Mode applies only on the default render path. `_useEnhancedImage` path
+    (`/api/image-analysis/{id}/enhanced`) is a separate pipeline and intentionally
+    ignores mode; documented inline.
+- **Acceptance (pending):** manual visual sign-off against real FS6000, real ASE tri-panel,
+  real ASE single-view. See [Next Session Entry Point](#next-session-entry-point).
 
 ### Phase 2 — Windowing slider (server tone-curve)
 
@@ -232,6 +242,9 @@ and a real ASE tri-panel scan. The toolbar gating matters: single-view ASE scans
 
 ### API
 - `Controllers/ImageProcessingController.cs` — `?mode=`, `/mode-capabilities`, `/roi`
+
+### WebApp (Blazor)
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor` — Phase 1 mode toolbar (v2.10.3)
 
 ### Project files
 - `Services.ImageProcessing.csproj` — `<EmbeddedResource Include="FS6000\vendor_lut_v1.bin" />`

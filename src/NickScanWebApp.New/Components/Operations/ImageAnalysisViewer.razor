@@ -275,6 +275,43 @@
                                Style="color:white;" Size="Size.Small" Title="Enhance Selected Region" />
             </div>
 
+            @* ═══ ROW 1b: Mode Catalog Toolbar (v2.10.0) ═══
+               Vendor-vocabulary modes — composite / bw / inverse / high-pen / low-pen /
+               organic / metal / edge / diff. Only the modes the server advertises as
+               supported for this scan variant appear; single-view ASE scans only see
+               bw/inverse/edge because the others need two energy channels.
+               Hidden entirely until capabilities load, and if the scan has no
+               modes at all (e.g. /mode-capabilities 404'd on an old API).
+               _activeMode == "" means "server default"; clicking Default reverts. *@
+            @if (_modeCapabilitiesLoaded && _supportedModes.Count > 0)
+            {
+                <div style="background: #263238; padding: 4px 12px; display: flex; align-items: center; gap: 6px; overflow-x: auto; flex-shrink: 0; border-bottom: 1px solid #37474f;">
+                    <MudText Typo="Typo.caption" Style="color:#b0bec5; font-weight:600; min-width:90px;">RENDER MODE</MudText>
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@(_activeMode == "" ? Color.Primary : Color.Default)"
+                             Variant="@(_activeMode == "" ? Variant.Filled : Variant.Outlined)"
+                             Style="@(_activeMode == "" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                             OnClick="@(() => SelectMode(""))"
+                             Title="Server default (composite for dual-energy, bw for single-view)">Default</MudChip>
+                    @foreach (var mode in _supportedModes)
+                    {
+                        var label = ModeLabels.TryGetValue(mode, out var l) ? l : mode;
+                        var isActive = _activeMode == mode;
+                        <MudChip T="string" Size="Size.Small"
+                                 Color="@(isActive ? Color.Primary : Color.Default)"
+                                 Variant="@(isActive ? Variant.Filled : Variant.Outlined)"
+                                 Style="@(isActive ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
+                                 OnClick="@(() => SelectMode(mode))"
+                                 Title="@($"Render as {label}")">@label</MudChip>
+                    }
+                    @if (!string.IsNullOrEmpty(_scanVariant))
+                    {
+                        <div style="flex:1"></div>
+                        <MudText Typo="Typo.caption" Style="color:#78909c; font-style:italic;">@_scanVariant</MudText>
+                    }
+                </div>
+            }
+
             @* ═══ ROW 2: Main 70/30 Content Area ═══ *@
             <div style="display: flex; flex-direction: row; flex: 1; overflow: hidden;">
 
@@ -1117,6 +1154,32 @@
     private bool _isFullscreen = false;
     private bool _useEnhancedImage = false; // Phase 1: Enhanced image toggle
     private string _imageCacheBuster = ""; // Cache buster to force image reload when toggling
+
+    // v2.10.0 Mode Catalog — populated on open from /mode-capabilities.
+    // _activeMode = "" means "default render": the backend picks composite for
+    // dual-energy (FS6000 / ASE tri-panel) and bw for single-view ASE, so no
+    // client-side per-variant branching is needed when nothing is selected.
+    // When non-empty, GetCurrentImageUrl() appends ?mode={_activeMode}.
+    private string _activeMode = "";
+    private string _scanVariant = "";             // "fs6000" | "ase-tri-panel" | "ase-single-view" | ""
+    private List<string> _supportedModes = new(); // from /mode-capabilities; empty = toolbar hidden
+    private bool _modeCapabilitiesLoaded = false; // gate: only render toolbar after the call completes
+
+    // Friendly labels for the 9 catalog modes. Operator-facing vocabulary matches
+    // Smiths Heimann / Rapiscan / Nuctech naming so trained operators recognise them.
+    private static readonly Dictionary<string, string> ModeLabels = new()
+    {
+        ["composite"]      = "Composite",
+        ["composite-legacy"] = "Composite (legacy)",
+        ["bw"]             = "B/W",
+        ["inverse"]        = "Inverse",
+        ["high-pen"]       = "High Pen",
+        ["low-pen"]        = "Low Pen",
+        ["organic-strip"]  = "Organic",
+        ["metal-strip"]    = "Metal",
+        ["edge"]           = "Edge",
+        ["diff"]           = "Diff",
+    };
     
     // Pan state
     private bool _isPanning = false;
@@ -1310,15 +1373,24 @@
             {
                 return string.Empty;
             }
+
+            // v2.10.0 — apply mode-catalog selection. Only on the default render
+            // path (not the /enhanced endpoint, which is a separate pipeline).
+            // _activeMode == "" means "server default", so no query param.
+            if (!string.IsNullOrEmpty(_activeMode))
+            {
+                var sep = baseUrl.Contains("?") ? "&" : "?";
+                baseUrl = $"{baseUrl}{sep}mode={Uri.EscapeDataString(_activeMode)}";
+            }
         }
-        
+
         // ✅ FIX: Add cache buster to force browser to reload image when toggling
         if (!string.IsNullOrEmpty(_imageCacheBuster))
         {
             var separator = baseUrl.Contains("?") ? "&" : "?";
             return $"{baseUrl}{separator}v={_imageCacheBuster}";
         }
-        
+
         return baseUrl;
     }
 
@@ -1366,8 +1438,17 @@
             _crossRecordInfo = null;
             _imageLoadRetries = 0;
 
+            // v2.10.0 — container changed, so the scan variant may have changed too.
+            // Drop the cached capability manifest and any selected mode; the next
+            // OnInitializedAsync cycle (or explicit call below) will re-fetch.
+            _activeMode = "";
+            _scanVariant = "";
+            _supportedModes = new List<string>();
+            _modeCapabilitiesLoaded = false;
+
             await LoadExistingTags();
             await LoadExistingRectangles();
+            await LoadModeCapabilitiesAsync();
         }
     }
 
@@ -1409,6 +1490,10 @@
             await LoadObjectDetection();
             await LoadQualityAssessment();
             await LoadAiSuggestion();
+            // v2.10.0 — load the mode-catalog manifest so the toolbar knows which
+            // mode buttons to render for this scan's variant (FS6000 vs ASE
+            // tri-panel vs ASE single-view). Soft-fails if the endpoint is down.
+            await LoadModeCapabilitiesAsync();
         }
     }
 
@@ -1430,6 +1515,66 @@
             // The Save path still works because both ids are optional on the request.
             Console.WriteLine($"[LoadFindingCategoriesAsync] ERROR: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// v2.10.0 — fetch the mode-catalog capability manifest for this scan and
+    /// render the mode toolbar. FS6000 always returns 9 modes; ASE tri-panel
+    /// returns 9; ASE single-view returns 3 (bw/inverse/edge) because the
+    /// other modes need two energy channels.
+    ///
+    /// Failure is soft: if the endpoint 404s (no scan yet) or 500s (old API),
+    /// _supportedModes stays empty and the toolbar row simply doesn't render.
+    /// Viewer still works on the default render path.
+    /// </summary>
+    private async Task LoadModeCapabilitiesAsync()
+    {
+        if (string.IsNullOrEmpty(ContainerNumber))
+        {
+            _modeCapabilitiesLoaded = true;
+            return;
+        }
+        try
+        {
+            var caps = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
+                $"/api/ImageProcessing/container/{ContainerNumber}/mode-capabilities");
+            if (caps != null)
+            {
+                _scanVariant    = caps.Variant ?? "";
+                _supportedModes = (caps.SupportedModes ?? Array.Empty<string>()).ToList();
+            }
+            else
+            {
+                _scanVariant    = "";
+                _supportedModes = new List<string>();
+            }
+        }
+        catch (Exception ex)
+        {
+            // Soft-fail — log and leave the toolbar empty. Operator still
+            // gets the default render via the unified image endpoint.
+            Console.WriteLine($"[LoadModeCapabilitiesAsync] {ex.GetType().Name}: {ex.Message}");
+            _scanVariant    = "";
+            _supportedModes = new List<string>();
+        }
+        finally
+        {
+            _modeCapabilitiesLoaded = true;
+        }
+    }
+
+    /// <summary>
+    /// Operator picked a mode from the toolbar. "" = default render (server
+    /// chooses composite for dual-energy / bw for single-view). Non-empty =
+    /// append ?mode=X to the image URL. Bumps the cache buster so the
+    /// @key changes and the &lt;img&gt; element re-fetches.
+    /// </summary>
+    private void SelectMode(string mode)
+    {
+        if (mode == _activeMode) return;              // idempotent — no flicker
+        _activeMode = mode ?? "";
+        _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+        StateHasChanged();
     }
 
     private async Task LoadAiSuggestion()
