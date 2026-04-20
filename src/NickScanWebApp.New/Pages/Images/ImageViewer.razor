@@ -2,6 +2,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisView)]
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
+@using NickScanCentralImagingPortal.Core.Models
 @using NickScanWebApp.New.Services
 @using NickScanWebApp.New.Services.Permissions
 @using System
@@ -538,17 +539,19 @@
     
     private async Task LoadImageMetadata()
     {
+        // Pull scanner type + scan date from the unified complete-container endpoint.
+        // The legacy /api/image/container/{c} path this used to hit returns 404
+        // (dead route), so the old code silently swallowed the exception and
+        // left _scannerType empty — that was masking the fact the metadata
+        // row was never loading at all.
         try
         {
-            // Try to get image metadata from API
-            var images = await ApiService.GetAsync<List<ImageMetadataDto>>(
-                $"/api/image/container/{ContainerNumber}");
-            
-            var firstImage = images?.FirstOrDefault();
-            if (firstImage != null)
+            var data = await ApiService.GetAsync<ContainerImageDataResponse>(
+                $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete");
+            if (data != null)
             {
-                _scannerType = firstImage.ScannerType ?? "";
-                _scanDate = firstImage.ScanDate;
+                _scannerType = data.DetectedScanner.ToString();
+                _scanDate = data.ScanTime;
             }
         }
         catch (Exception ex)

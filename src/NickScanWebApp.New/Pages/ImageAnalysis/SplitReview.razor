@@ -421,7 +421,10 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        _apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "https://10.0.0.79:5206";
+        // Fallback must be the cert-matching hostname (SSL cert CN = 10.0.1.254),
+        // not a stale dev-machine IP — otherwise split-review image loads fail
+        // silently when ApiSettings:BaseUrl is missing from config.
+        _apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "https://10.0.1.254:5206";
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         _currentUser = authState.User?.Identity?.Name ?? "unknown";
         await LoadJobs();
