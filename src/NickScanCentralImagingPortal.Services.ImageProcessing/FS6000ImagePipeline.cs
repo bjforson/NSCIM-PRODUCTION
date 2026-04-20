@@ -404,21 +404,21 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 var started = DateTime.UtcNow;
 
                 var decoded = FS6000FormatDecoder.Decode(highBlob, lowBlob, materialBlob);
-                var pngBytes = FS6000Compositor.CompositeRgbPng(decoded);
 
-                // Re-encode PNG → JPEG at native dims (no resize). Quality 90 is
-                // a visually-lossless choice for x-ray scans; the composite is
-                // already 8-bit RGB so JPEG's lossy chroma subsampling doesn't
-                // cost us anything visible.
-                using var ms = new MemoryStream(pngBytes);
-                using var img = Image.Load(ms);
-                using var outMs = new MemoryStream();
-                img.SaveAsJpeg(outMs, new JpegEncoder { Quality = 90 });
-                var jpeg = outMs.ToArray();
+                // v2.10.2: route the default composite through the empirical
+                // vendor-LUT compositor. The previous FS6000Compositor was a
+                // port of a Python recipe that produced washed-out output
+                // (pale pastel blue + bright cargo interior) that didn't
+                // match what operators see on the vendor console. The LUT
+                // was fitted from 240 M production pixels and reconstructs
+                // the vendor's own Main JPEG at ~4 RGB units mean error —
+                // visually indistinguishable. Also drops the PNG→JPEG
+                // re-encode step since the LUT compositor emits JPEG directly.
+                var jpeg = FS6000VendorLutCompositor.RenderJpeg(decoded);
 
                 var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
                 _logger.LogInformation(
-                    "[FS6000-COMPOSITE-NATIVE] scan {ScanId} ({Container}): rendered {Width}x{Height} composite in {ElapsedMs:F0}ms, {OutBytes} bytes JPEG",
+                    "[FS6000-COMPOSITE-NATIVE] scan {ScanId} ({Container}): rendered {Width}x{Height} vendor-LUT composite in {ElapsedMs:F0}ms, {OutBytes} bytes JPEG",
                     scanId, containerNumber, decoded.Width, decoded.Height, elapsed, jpeg.Length);
                 return jpeg;
             }
