@@ -1097,6 +1097,136 @@
                         </MudStack>
                     }
 
+                    @* ═══ v2.13.0 Phase 5 — ROI Inspector Panel ═══
+                       Fires when the operator draws or selects a rectangle.
+                       Shows per-channel 16-bit stats, material-class
+                       distribution, and 240px preview thumbnails. Powered by
+                       GET /api/ImageProcessing/container/{id}/roi (shipped
+                       in v2.10.0, routed through the unified pipeline in
+                       v2.11.0). *@
+                    <MudDivider Class="my-3" />
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                        <MudIcon Icon="@Icons.Material.Outlined.Analytics" Style="color:#546e7a;" Size="Size.Small" />
+                        <MudText Typo="Typo.overline" Style="color:#546e7a; font-weight:700; letter-spacing:2px;">ROI INSPECTOR</MudText>
+                        <div style="flex:1"></div>
+                        @if (_roiData != null || _roiLoading || !string.IsNullOrEmpty(_roiError))
+                        {
+                            <MudIconButton Icon="@(_roiPanelOpen ? Icons.Material.Outlined.ExpandLess : Icons.Material.Outlined.ExpandMore)"
+                                           Size="Size.Small" OnClick="ToggleRoiPanel" />
+                        }
+                    </MudStack>
+                    @if (_roiLoading)
+                    {
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Color="Color.Info" />
+                            <MudText Typo="Typo.caption" Style="color:#666;">Computing ROI stats…</MudText>
+                        </MudStack>
+                    }
+                    else if (!string.IsNullOrEmpty(_roiError))
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Variant="Variant.Text">@_roiError</MudAlert>
+                    }
+                    else if (_roiData == null)
+                    {
+                        <MudText Typo="Typo.caption" Style="color:#999;" Class="mb-2">
+                            Draw or click a rectangle above to see per-channel stats + material breakdown.
+                        </MudText>
+                    }
+                    else if (_roiPanelOpen)
+                    {
+                        var roi = _roiData;
+                        string dominantColor = roi.Material.DominantCategory switch
+                        {
+                            "metal"   => "#4a90e2",
+                            "organic" => "#ff9f43",
+                            "noise"   => "#bdbdbd",
+                            _          => "#90a4ae",
+                        };
+                        <MudStack Spacing="2" Class="mb-2">
+                            @* ROI geometry + timing *@
+                            <div style="font-family: monospace; font-size: 11px; color:#666;">
+                                @($"({roi.X},{roi.Y})  {roi.Width}×{roi.Height} px  · {roi.ElapsedMs} ms")
+                            </div>
+
+                            @* Dominant material chip *@
+                            @if (roi.Material.CategoryDistribution.Values.Any(v => v > 0))
+                            {
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <span style="@($"display:inline-block; width:10px; height:10px; background:{dominantColor}; border-radius:50%;")"></span>
+                                    <MudText Typo="Typo.body2" Style="font-weight:600;">@roi.Material.DominantCategory</MudText>
+                                    <MudText Typo="Typo.caption" Style="color:#666;">@($"({roi.Material.DominantPercent * 100:F1}% of ROI)")</MudText>
+                                </MudStack>
+
+                                @* Material distribution bars *@
+                                <div style="padding: 6px 8px; background:#f5f5f5; border-radius:4px;">
+                                    @foreach (var kv in roi.Material.CategoryDistribution.OrderByDescending(k => k.Value))
+                                    {
+                                        if (kv.Value <= 0) continue;
+                                        string c = kv.Key switch
+                                        {
+                                            "metal"   => "#4a90e2",
+                                            "organic" => "#ff9f43",
+                                            "noise"   => "#bdbdbd",
+                                            _          => "#90a4ae",
+                                        };
+                                        <div style="display:flex; align-items:center; gap:6px; margin:2px 0;">
+                                            <span style="min-width:72px; font-size:11px; color:#555;">@kv.Key</span>
+                                            <div style="flex:1; height:10px; background:#e0e0e0; border-radius:2px; overflow:hidden;">
+                                                <div style="@($"width:{kv.Value * 100:F1}%; height:100%; background:{c};")"></div>
+                                            </div>
+                                            <span style="min-width:42px; font-size:10px; font-family:monospace; text-align:right; color:#555;">@($"{kv.Value * 100:F1}%")</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+
+                            @* Channel stats: HE + LE min/median/max + 32-bucket histogram *@
+                            <div style="padding: 6px 8px; background:#f5f5f5; border-radius:4px;">
+                                <MudText Typo="Typo.caption" Style="color:#333; font-weight:600;">HE channel</MudText>
+                                <div style="font-family:monospace; font-size:10px; color:#555; margin:2px 0;">
+                                    @($"min={roi.HighEnergy.Min} med={roi.HighEnergy.Median:F0} max={roi.HighEnergy.Max} · p1={roi.HighEnergy.P01} p99={roi.HighEnergy.P99}")
+                                </div>
+                                @RenderHistogram(roi.HighEnergy.Histogram, "#546e7a")
+                            </div>
+                            @if (roi.LowEnergy.Max != roi.HighEnergy.Max || roi.LowEnergy.Min != roi.HighEnergy.Min)
+                            {
+                                @* Skip LE panel for single-view scans where HE == LE (backend mirrors for UI) *@
+                                <div style="padding: 6px 8px; background:#f5f5f5; border-radius:4px;">
+                                    <MudText Typo="Typo.caption" Style="color:#333; font-weight:600;">LE channel</MudText>
+                                    <div style="font-family:monospace; font-size:10px; color:#555; margin:2px 0;">
+                                        @($"min={roi.LowEnergy.Min} med={roi.LowEnergy.Median:F0} max={roi.LowEnergy.Max} · p1={roi.LowEnergy.P01} p99={roi.LowEnergy.P99}")
+                                    </div>
+                                    @RenderHistogram(roi.LowEnergy.Histogram, "#8e24aa")
+                                </div>
+                            }
+
+                            @* Preview thumbnails (base64 JPEGs, capped at 240px long side by the backend) *@
+                            <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                                @if (!string.IsNullOrEmpty(roi.HighEnergyPreviewB64))
+                                {
+                                    <div style="display:flex; flex-direction:column; align-items:center;">
+                                        <img src="data:image/jpeg;base64,@roi.HighEnergyPreviewB64" style="max-width:100px; max-height:80px; border:1px solid #ccc; border-radius:2px;" />
+                                        <MudText Typo="Typo.caption" Style="font-size:10px; color:#666;">HE</MudText>
+                                    </div>
+                                }
+                                @if (!string.IsNullOrEmpty(roi.LowEnergyPreviewB64))
+                                {
+                                    <div style="display:flex; flex-direction:column; align-items:center;">
+                                        <img src="data:image/jpeg;base64,@roi.LowEnergyPreviewB64" style="max-width:100px; max-height:80px; border:1px solid #ccc; border-radius:2px;" />
+                                        <MudText Typo="Typo.caption" Style="font-size:10px; color:#666;">LE</MudText>
+                                    </div>
+                                }
+                                @if (!string.IsNullOrEmpty(roi.MaterialPreviewB64))
+                                {
+                                    <div style="display:flex; flex-direction:column; align-items:center;">
+                                        <img src="data:image/jpeg;base64,@roi.MaterialPreviewB64" style="max-width:100px; max-height:80px; border:1px solid #ccc; border-radius:2px;" />
+                                        <MudText Typo="Typo.caption" Style="font-size:10px; color:#666;">MAT</MudText>
+                                    </div>
+                                }
+                            </MudStack>
+                        </MudStack>
+                    }
+
                 </div> @* End RIGHT decision panel *@
 
             </div> @* End 70/30 flex row *@
@@ -1390,6 +1520,18 @@
     private string _rawGeometryLabel = ""; // e.g. "3256×1378 @ 16-bit · 8.5 MB"
     private ElementReference _rawCanvas;
     private DateTime _rawLastRenderAt = DateTime.MinValue;
+
+    // v2.13.0 Phase 5 — ROI inspector side panel. Fires the /roi backend
+    // (shipped in v2.10.0, threaded through the unified pipeline) whenever
+    // the operator finishes drawing a rectangle or selects one. Panel
+    // renders HE / LE histograms, material class distribution, and three
+    // small preview JPEGs so analysts get pinpoint statistics on the
+    // flagged region without having to run an external tool.
+    private bool _roiPanelOpen = true; // panel visible by default; operator can collapse
+    private NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult? _roiData;
+    private bool _roiLoading = false;
+    private string _roiError = "";
+    private int _lastRoiIdx = -1; // _rectangles index whose stats we last fetched
     
     // Pan state
     private bool _isPanning = false;
@@ -1683,6 +1825,12 @@
             _rawGeometryLabel = "";
             _rawError = "";
             try { _ = JS.InvokeVoidAsync("Raw16BitViewer.clearCache", _lastContainerNumber); } catch { }
+
+            // v2.13.0 Phase 5 — clear the ROI panel; rectangles from the old
+            // scan have different pixel dimensions so cached stats don't apply.
+            _roiData = null;
+            _roiError = "";
+            _lastRoiIdx = -1;
 
             await LoadExistingTags();
             await LoadExistingRectangles();
@@ -2054,6 +2202,119 @@
         public string SourceFormat { get; set; } = "";
         public long Bytes { get; set; }
     }
+
+    // ── v2.13.0 Phase 5 — ROI inspector side panel ───────────────────────
+
+    /// <summary>Toggle the ROI panel open/closed. Keeps cached data
+    /// around so reopening is instant.</summary>
+    private void ToggleRoiPanel()
+    {
+        _roiPanelOpen = !_roiPanelOpen;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Fire the ROI inspector for a rectangle. The rectangle's coordinates
+    /// are stored as 0..1 fractions of the image; we multiply by the
+    /// naturalWidth/Height of the currently loaded &lt;img&gt; to produce
+    /// image-native pixel ints, which is what /api/.../roi expects.
+    ///
+    /// Fetching happens on draw-complete + rect-select; repeated calls
+    /// for the same rect short-circuit so clicking the same ROI twice
+    /// doesn't re-fetch.
+    /// </summary>
+    private async Task FetchRoiForRectangleAsync(int rectIdx)
+    {
+        if (rectIdx < 0 || rectIdx >= _rectangles.Count) return;
+        if (rectIdx == _lastRoiIdx && _roiData != null) return; // already shown
+        if (string.IsNullOrEmpty(ContainerNumber)) return;
+
+        _roiLoading = true;
+        _roiError = "";
+        _lastRoiIdx = rectIdx;
+        StateHasChanged();
+        try
+        {
+            // Get image natural dimensions via JS. We do this every call
+            // rather than caching because (a) it's cheap, and (b) container
+            // changes reset the image and we want fresh dims.
+            var dims = await JS.InvokeAsync<ImgDims>("Raw16BitViewer.getImageDims", _imageElement);
+            int naturalW = dims?.NaturalWidth  ?? 0;
+            int naturalH = dims?.NaturalHeight ?? 0;
+            if (naturalW <= 0 || naturalH <= 0)
+            {
+                _roiError = "Image not loaded yet — try again";
+                return;
+            }
+
+            var rect = _rectangles[rectIdx];
+            int x = (int)Math.Round(rect.X      * naturalW);
+            int y = (int)Math.Round(rect.Y      * naturalH);
+            int w = (int)Math.Round(rect.Width  * naturalW);
+            int h = (int)Math.Round(rect.Height * naturalH);
+            if (w < 2 || h < 2)
+            {
+                _roiError = "Rectangle too small for meaningful stats";
+                return;
+            }
+
+            var url = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/roi?x={x}&y={y}&w={w}&h={h}";
+            var roi = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(url);
+            _roiData = roi;
+            if (roi == null)
+            {
+                _roiError = "ROI unavailable for this scan variant";
+            }
+            else
+            {
+                _roiPanelOpen = true; // auto-open on fresh data
+            }
+        }
+        catch (Exception ex)
+        {
+            _roiError = ex.Message.Length > 180 ? ex.Message.Substring(0, 180) + "…" : ex.Message;
+            Console.WriteLine($"[ROI] {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            _roiLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Shape matching Raw16BitViewer.getImageDims() JS output.</summary>
+    public class ImgDims
+    {
+        public int NaturalWidth { get; set; }
+        public int NaturalHeight { get; set; }
+    }
+
+    /// <summary>
+    /// Render a 32-bucket normalised histogram as a small CSS bar chart.
+    /// No chart library dependency — keeps the ROI panel lightweight.
+    /// </summary>
+    private RenderFragment RenderHistogram(double[] buckets, string color) => __builder =>
+    {
+        if (buckets == null || buckets.Length == 0) return;
+        double max = 0;
+        for (int i = 0; i < buckets.Length; i++) if (buckets[i] > max) max = buckets[i];
+        if (max <= 0) max = 1;
+
+        __builder.OpenElement(0, "div");
+        __builder.AddAttribute(1, "style", "display:flex; align-items:flex-end; gap:1px; height:32px; margin-top:4px;");
+        for (int i = 0; i < buckets.Length; i++)
+        {
+            double hFrac = buckets[i] / max;
+            int hPct = (int)Math.Round(hFrac * 100);
+            __builder.OpenElement(2, "div");
+            __builder.AddAttribute(3, "style",
+                $"flex:1; height:{hPct}%; background:{color}; min-width:1px;");
+            __builder.AddAttribute(4, "title",
+                $"Bucket {i}: {buckets[i] * 100:F2}% of ROI");
+            __builder.CloseElement();
+        }
+        __builder.CloseElement();
+    };
 
     private async Task LoadAiSuggestion()
     {
@@ -3633,6 +3894,8 @@
                 _selectedRectIndex = _rectangles.Count - 1;
                 _selectedTagText = "";
                 await SaveRectangles();
+                // v2.13.0 Phase 5 — fire ROI inspector on draw-complete
+                _ = FetchRoiForRectangleAsync(_selectedRectIndex);
             }
             _isDrawing = false;
             _currentRect = null;
@@ -3796,6 +4059,8 @@
             _selectedRectIndex = index;
             _selectedTagText = _rectangles[index].Tag ?? "";
             StateHasChanged();
+            // v2.13.0 Phase 5 — re-populate the ROI panel for the clicked rect.
+            _ = FetchRoiForRectangleAsync(index);
         }
     }
 

@@ -142,9 +142,20 @@
     }
   }
 
+  /**
+   * v2.13.0 Phase 5 — fetch an <img> element's natural dimensions.
+   * Powers the ROI panel's fraction-to-pixel coord conversion. Returns
+   * zeros if the image isn't loaded yet.
+   */
+  function getImageDims(img) {
+    if (!img) return { naturalWidth: 0, naturalHeight: 0 };
+    return { naturalWidth: img.naturalWidth || 0, naturalHeight: img.naturalHeight || 0 };
+  }
+
   window.Raw16BitViewer = {
     loadAndRender,
     rerenderFromCache,
     clearCache,
+    getImageDims,
   };
 })();
