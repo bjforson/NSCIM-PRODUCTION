@@ -94,8 +94,15 @@ builder.Services.AddHttpClient("NickScanAPI", client =>
     var apiUrl = builder.Configuration["ApiSettings:BaseUrl"];
     if (string.IsNullOrEmpty(apiUrl))
     {
+        // Use 10.0.1.254 (not localhost) — the SSL cert's CN is 10.0.1.254,
+        // and rendered image URLs get embedded into <img src=""> tags served
+        // to the browser; the browser silently refuses to load cross-origin
+        // images when the cert hostname doesn't match. localhost:5206 served
+        // the right cert for the WebApp's own server-side HttpClient (which
+        // ignores cert validity via the callback below) but broke every
+        // <img> load client-side.
         apiUrl = builder.Environment.IsProduction()
-            ? "https://localhost:5206"
+            ? "https://10.0.1.254:5206"
             : "http://localhost:5205";
     }
     client.BaseAddress = new Uri(apiUrl);
