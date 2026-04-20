@@ -2,10 +2,10 @@
   <Import Project="../Directory.Build.props" Condition="Exists('../Directory.Build.props')" />
   <PropertyGroup>
     <!-- Centralized version: bump here before each deploy -->
-    <Version>2.9.11</Version>
-    <AssemblyVersion>2.9.11.0</AssemblyVersion>
-    <FileVersion>2.9.11.0</FileVersion>
-    <InformationalVersion>2.9.11</InformationalVersion>
+    <Version>2.10.0</Version>
+    <AssemblyVersion>2.10.0.0</AssemblyVersion>
+    <FileVersion>2.10.0.0</FileVersion>
+    <InformationalVersion>2.10.0</InformationalVersion>
     <!-- Suppress file lock warnings when applications are running during build -->
     <NoWarn>$(NoWarn);MSB3061</NoWarn>
   </PropertyGroup>

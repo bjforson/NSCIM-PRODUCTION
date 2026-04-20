@@ -21,6 +21,40 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         Task<Core.Models.ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber, string? imageType);
 
         /// <summary>
+        /// v2.10.0 mode-catalog rendering: return JPEG bytes for the requested
+        /// operator image mode (composite / bw / organic-strip / metal-strip /
+        /// high-pen / inverse / edge / diff). Returns <c>null</c> when the
+        /// container isn't FS6000 or the scan doesn't have the three raw
+        /// channels required for mode-based rendering — the controller falls
+        /// back to the existing <see cref="GetCompleteContainerDataAsync"/>
+        /// path in that case.
+        /// Parameters <paramref name="loPct"/> / <paramref name="hiPct"/> /
+        /// <paramref name="gamma"/> back the Variable Density + gamma sliders.
+        /// </summary>
+        Task<byte[]?> GetRenderedImageBytesAsync(
+            string containerNumber,
+            string mode,
+            float loPct = 1.0f,
+            float hiPct = 99.5f,
+            float gamma = 1.0f,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// v2.10.0 ROI Inspector: crop a rectangle from the three FS6000 raw
+        /// channels, compute per-channel stats, compute material-class
+        /// distribution, and return small preview JPEGs. Client calls this
+        /// once the operator draws a rectangle on the canvas; response
+        /// powers the side-panel histogram + dominant-Z-class chip.
+        /// Returns <c>null</c> when the container isn't FS6000 or the scan
+        /// lacks raw channels.
+        /// Coordinates are in the image's native pixel space.
+        /// </summary>
+        Task<RoiInspectorResult?> GetRoiInspectorAsync(
+            string containerNumber,
+            int x, int y, int width, int height,
+            CancellationToken ct = default);
+
+        /// <summary>
         /// Ingest the three FS6000 raw .img channels (HighEnergy / LowEnergy /
         /// Material) for a scan into the fs6000images table. Caller MUST pass
         /// a stable folder path (Archive/, never Staging/) — reads are direct
@@ -79,6 +113,58 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public string? LastError { get; set; }
     }
 
+
+    /// <summary>
+    /// Response from <see cref="IImageProcessingService.GetRoiInspectorAsync"/>.
+    /// Flat structure — the consumer is a Blazor component that binds directly
+    /// to named properties, not a complex dashboard.
+    /// </summary>
+    public class RoiInspectorResult
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int ImageWidth { get; set; }
+        public int ImageHeight { get; set; }
+
+        /// <summary>Per-channel stats (HE / LE 16-bit energies).</summary>
+        public ChannelStats HighEnergy { get; set; } = new();
+        public ChannelStats LowEnergy { get; set; } = new();
+
+        /// <summary>Material-class histogram + dominant class within the ROI.</summary>
+        public MaterialStats Material { get; set; } = new();
+
+        /// <summary>Small (max 240px on the long side) preview crops, base64 JPEG.</summary>
+        public string HighEnergyPreviewB64 { get; set; } = string.Empty;
+        public string LowEnergyPreviewB64 { get; set; } = string.Empty;
+        public string MaterialPreviewB64 { get; set; } = string.Empty;
+
+        public long ElapsedMs { get; set; }
+    }
+
+    public class ChannelStats
+    {
+        public int Min { get; set; }
+        public int Max { get; set; }
+        public double Mean { get; set; }
+        public double Median { get; set; }
+        public int P01 { get; set; }
+        public int P99 { get; set; }
+        /// <summary>32-bucket normalized histogram (0..1 per bucket).</summary>
+        public double[] Histogram { get; set; } = Array.Empty<double>();
+    }
+
+    public class MaterialStats
+    {
+        /// <summary>Category with the highest pixel coverage inside the ROI.</summary>
+        public string DominantCategory { get; set; } = "background";
+        /// <summary>0..1, how much of the ROI is the dominant category.</summary>
+        public double DominantPercent { get; set; }
+        /// <summary>Per-category breakdown — keys: background, noise, organic, metal.</summary>
+        public Dictionary<string, double> CategoryDistribution { get; set; } = new();
+    }
 
     public class ImageMetadata
     {

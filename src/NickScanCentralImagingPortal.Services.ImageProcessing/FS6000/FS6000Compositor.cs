@@ -125,7 +125,11 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             int width,
             int height,
             LuminanceSource luminanceSource = LuminanceSource.High,
-            float materialStrength = 0.65f)
+            float materialStrength = 0.65f,
+            byte[,]? customLut = null,
+            float loPct = 1.0f,
+            float hiPct = 99.5f,
+            float gamma = 1.0f)
         {
             int n = width * height;
             if (low.Length != n)
@@ -137,13 +141,15 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             if (materialStrength < 0f || materialStrength > 1f)
                 throw new ArgumentOutOfRangeException(nameof(materialStrength),
                     $"material_strength must be in [0,1]; got {materialStrength}");
+            if (customLut != null && (customLut.GetLength(0) != 256 || customLut.GetLength(1) != 3))
+                throw new ArgumentException($"customLut must be 256x3 RGB, got {customLut.GetLength(0)}x{customLut.GetLength(1)}");
 
             // ── 1. Build 8-bit luminance from the chosen energy channel ──
             byte[] lum8 = luminanceSource switch
             {
-                LuminanceSource.High => NormalizeEnergyToLuminance(high, loPct: 1.0f, hiPct: 99.5f),
-                LuminanceSource.Low => NormalizeEnergyToLuminance(low, loPct: 1.0f, hiPct: 99.5f),
-                LuminanceSource.Avg => NormalizeEnergyToLuminanceAverage(high, low, loPct: 1.0f, hiPct: 99.5f),
+                LuminanceSource.High => NormalizeEnergyToLuminance(high, loPct, hiPct),
+                LuminanceSource.Low => NormalizeEnergyToLuminance(low, loPct, hiPct),
+                LuminanceSource.Avg => NormalizeEnergyToLuminanceAverage(high, low, loPct, hiPct),
                 _ => throw new ArgumentOutOfRangeException(nameof(luminanceSource)),
             };
 
@@ -151,6 +157,23 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             for (int i = 0; i < n; i++)
             {
                 lum8[i] = (byte)(255 - lum8[i]);
+            }
+
+            // ── 2b. Optional operator-supplied gamma on top of the baked-in
+            //        blend-gamma. 1.0 = no change; > 1 brightens midtones
+            //        (useful for "high penetration" style looks); < 1 darkens.
+            //        Applied after invert so the perceptual "gamma correction"
+            //        effect matches what operators expect from a Variable Density
+            //        slider on a vendor console.
+            if (Math.Abs(gamma - 1.0f) > 0.001f)
+            {
+                float invGamma = 1.0f / gamma;
+                for (int i = 0; i < n; i++)
+                {
+                    float v = lum8[i] * (1.0f / 255.0f);
+                    int g = (int)(MathF.Pow(v, invGamma) * 255.0f);
+                    lum8[i] = (byte)(g < 0 ? 0 : (g > 255 ? 255 : g));
+                }
             }
 
             // ── 3. Blend with material LUT + brightness boost + gamma ──
@@ -167,7 +190,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             const float Gamma = 0.9f;
 
             var rgb = new byte[n * 3];
-            var lut = DefaultMaterialLut;
+            var lut = customLut ?? DefaultMaterialLut;
 
             for (int i = 0; i < n; i++)
             {

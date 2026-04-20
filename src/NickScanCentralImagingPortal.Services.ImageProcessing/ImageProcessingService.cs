@@ -400,6 +400,55 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         }
 
         /// <summary>
+        /// v2.10.0 mode-catalog rendering. Only FS6000 currently supports mode
+        /// variants — ASE goes through the existing single-image pipeline.
+        /// </summary>
+        public async Task<byte[]?> GetRenderedImageBytesAsync(
+            string containerNumber,
+            string mode,
+            float loPct = 1.0f,
+            float hiPct = 99.5f,
+            float gamma = 1.0f,
+            CancellationToken ct = default)
+        {
+            var scannerType = await DetectScannerTypeAsync(containerNumber);
+            if (scannerType != ScannerType.FS6000)
+            {
+                // Non-FS6000 containers don't have the three-channel raw data
+                // needed for mode-based rendering. Signal the caller to fall
+                // back to the standard single-image path.
+                return null;
+            }
+
+            var pipeline = GetImagePipeline(scannerType);
+            if (pipeline is FS6000ImagePipeline fs6000Pipeline)
+            {
+                return await fs6000Pipeline.RenderImageInModeAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// v2.10.0 ROI Inspector. FS6000 only — ASE doesn't separate energy
+        /// channels and has no material classification layer.
+        /// </summary>
+        public async Task<RoiInspectorResult?> GetRoiInspectorAsync(
+            string containerNumber,
+            int x, int y, int width, int height,
+            CancellationToken ct = default)
+        {
+            var scannerType = await DetectScannerTypeAsync(containerNumber);
+            if (scannerType != ScannerType.FS6000) return null;
+
+            var pipeline = GetImagePipeline(scannerType);
+            if (pipeline is FS6000ImagePipeline fs6000Pipeline)
+            {
+                return await fs6000Pipeline.BuildRoiInspectorAsync(containerNumber, x, y, width, height, ct);
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Ingest FS6000 raw .img channels from a stable folder into
         /// fs6000images. Delegates to <see cref="NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester"/>.
         /// Used by the backfill endpoint and (eventually) by any live hook

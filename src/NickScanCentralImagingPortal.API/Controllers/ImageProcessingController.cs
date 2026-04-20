@@ -787,21 +787,52 @@ namespace NickScanCentralImagingPortal.API.Controllers
             string containerNumber,
             [FromQuery] string? imageType = null,
             [FromQuery] string size = "full",
-            [FromQuery] bool annotations = false)
+            [FromQuery] bool annotations = false,
+            [FromQuery] string? mode = null,
+            [FromQuery] float? loPct = null,
+            [FromQuery] float? hiPct = null,
+            [FromQuery] float? gamma = null)
         {
             await _imageRequestSemaphore.WaitAsync();
             try
             {
-                _logger.LogInformation("Getting image for container {ContainerNumber} via unified pipeline, imageType: {ImageType}, size: {Size}",
-                    containerNumber, imageType ?? "default", size);
+                _logger.LogInformation("Getting image for container {ContainerNumber} via unified pipeline, imageType: {ImageType}, size: {Size}, mode: {Mode}",
+                    containerNumber, imageType ?? "default", size, mode ?? "-");
 
                 // ── Split intercept: if this container has a chosen split, serve the cropped image ──
                 var splitImage = await TryGetSplitCropImageAsync(containerNumber, size);
                 if (splitImage != null)
                 {
                     _logger.LogInformation("Serving split crop image for container {ContainerNumber}", containerNumber);
-                    Response.Headers.CacheControl = "public, max-age=300";
+                    Response.Headers.CacheControl = "private, max-age=300";
                     return File(splitImage, "image/jpeg");
+                }
+
+                // ── v2.10.0 Mode Catalog: if ?mode= is set and the container is FS6000,
+                //    render via the mode pipeline (composite / bw / organic-strip / metal-strip /
+                //    high-pen / inverse / edge / diff). Falls back to the standard complete-data
+                //    flow when mode is null/empty or the container isn't FS6000.
+                if (!string.IsNullOrWhiteSpace(mode))
+                {
+                    var modeBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
+                        containerNumber,
+                        mode,
+                        loPct ?? 1.0f,
+                        hiPct ?? 99.5f,
+                        gamma ?? 1.0f);
+                    if (modeBytes != null)
+                    {
+                        // Server-side thumbnail if requested.
+                        if (string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase))
+                        {
+                            modeBytes = await ResizeToThumbnailAsync(modeBytes) ?? modeBytes;
+                        }
+                        Response.Headers.CacheControl = "private, max-age=3600";
+                        _logger.LogInformation("[FS6000-MODE] Serving {Container} mode={Mode} size={Bytes} bytes", containerNumber, mode, modeBytes.Length);
+                        return File(modeBytes, "image/jpeg");
+                    }
+                    // null → non-FS6000 or pipeline couldn't render; fall through to legacy path.
+                    _logger.LogDebug("[FS6000-MODE] Pipeline returned null for {Container} mode={Mode} — falling back to legacy path", containerNumber, mode);
                 }
 
                 var completeData = await _imageProcessingService.GetCompleteContainerDataAsync(containerNumber, imageType);
@@ -901,6 +932,81 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         // NOTE: Alternative path /container/{containerNumber}/image removed to avoid route conflicts
         // Use /container/{containerNumber}/complete/image instead
+
+        /// <summary>
+        /// v2.10.0 — ROI Inspector. Crop a rectangle from the 3 FS6000 raw
+        /// channels, return per-channel stats, material-class distribution,
+        /// and small preview JPEGs (base64). Used by the single-canvas viewer's
+        /// side panel when the operator draws an inspection rectangle.
+        /// Returns 404 for non-FS6000 containers or when raw channels aren't
+        /// available (e.g. vendor-JPEG-only scans).
+        /// </summary>
+        [AllowAnonymous]
+        [HttpGet("container/{containerNumber}/roi")]
+        [ProducesResponseType(200, Type = typeof(RoiInspectorResult))]
+        [ProducesResponseType(404)]
+        public async Task<ActionResult<RoiInspectorResult>> GetRoiInspector(
+            string containerNumber,
+            [FromQuery] int x = 0,
+            [FromQuery] int y = 0,
+            [FromQuery] int w = 100,
+            [FromQuery] int h = 100)
+        {
+            if (w <= 0 || h <= 0)
+            {
+                return BadRequest(new { error = "w and h must be positive" });
+            }
+
+            try
+            {
+                var result = await _imageProcessingService.GetRoiInspectorAsync(containerNumber, x, y, w, h);
+                if (result == null)
+                {
+                    return NotFound(new { error = "ROI inspector unavailable — container not found, not FS6000, or lacking raw channels" });
+                }
+                // ROI payload includes ~3 small base64 thumbnails (~6–20 KB each).
+                // private-cache for 5 min so a static rectangle doesn't re-crop on every scroll.
+                Response.Headers.CacheControl = "private, max-age=300";
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ROI inspector failed for {Container} rect=({X},{Y},{W},{H})", containerNumber, x, y, w, h);
+                return StatusCode(500, new { error = "ROI inspector failed", message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Downscale a JPEG byte buffer to a thumbnail (max 240 px on the long
+        /// edge). Shared helper between the mode-render path and the legacy
+        /// size=thumbnail branch. Returns null on decode failure so the caller
+        /// can fall back to the full-size bytes.
+        /// </summary>
+        private async Task<byte[]?> ResizeToThumbnailAsync(byte[] input)
+        {
+            try
+            {
+                const int thumbMaxWidth = 240;
+                const int thumbMaxHeight = 240;
+                using var inputStream = new MemoryStream(input);
+                using var image = await Image.LoadAsync(inputStream);
+                var (newW, newH) = ComputeThumbnailSize(image.Width, image.Height, thumbMaxWidth, thumbMaxHeight);
+                if (newW >= image.Width && newH >= image.Height)
+                {
+                    // Already smaller than thumbnail bounds — don't upscale.
+                    return null;
+                }
+                image.Mutate(x => x.Resize(newW, newH, KnownResamplers.Lanczos3));
+                using var outputStream = new MemoryStream();
+                await image.SaveAsJpegAsync(outputStream, new JpegEncoder { Quality = 85 });
+                return outputStream.ToArray();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Thumbnail resize failed — serving full-size bytes");
+                return null;
+            }
+        }
 
         /// <summary>
         /// Checks if this container has a chosen split crop and returns the cropped image bytes.
