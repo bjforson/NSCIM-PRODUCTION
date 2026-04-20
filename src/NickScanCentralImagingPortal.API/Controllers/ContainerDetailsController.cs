@@ -1973,7 +1973,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         {
                             // ✅ FIX: Return ALL images from ALL scans, not just one
                             // ✅ Use unified image processing pipeline endpoint for all heavy lifting
-                            foreach (var image in scan.Images.OrderBy(i => i.ImageType))
+                            // v2.10.0: filter out the 3 raw-channel blobs (HighEnergy, LowEnergy,
+                            // Material). They're composite INPUTS, not viewable inspection images —
+                            // exposing them as separate image cards was the "4 images but only 1
+                            // loads" UX bug. The single-canvas viewer's mode toolbar makes these
+                            // channels reachable as named recipes (bw / inverse / high-pen /
+                            // organic-strip / metal-strip / diff) built from the 3 raw channels,
+                            // so no data access is lost — just cleaner presentation.
+                            var userFacing = scan.Images
+                                .Where(i => i.ImageType != "HighEnergy"
+                                         && i.ImageType != "LowEnergy"
+                                         && i.ImageType != "Material")
+                                .OrderBy(i => i.ImageType);
+                            foreach (var image in userFacing)
                             {
                                 // ✅ Use unified pipeline endpoint with imageType parameter
                                 // Pipeline handles all processing, conversion, and serving correctly

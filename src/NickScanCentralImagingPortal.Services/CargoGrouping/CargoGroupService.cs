@@ -2540,7 +2540,17 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                         {
                             if (scan.Images != null && ((IEnumerable<dynamic>)scan.Images).Any())
                             {
-                                foreach (var image in ((IEnumerable<dynamic>)scan.Images).OrderBy(i => (string)i.ImageType))
+                                // v2.10.0: same raw-channel filter as ContainerDetailsController —
+                                // HighEnergy/LowEnergy/Material are composite inputs, reached via
+                                // the single-canvas viewer's mode toolbar, not separate cards.
+                                var userFacing = ((IEnumerable<dynamic>)scan.Images)
+                                    .Where(i =>
+                                    {
+                                        string? t = i.ImageType?.ToString();
+                                        return t != "HighEnergy" && t != "LowEnergy" && t != "Material";
+                                    })
+                                    .OrderBy(i => (string)i.ImageType);
+                                foreach (var image in userFacing)
                                 {
                                     var imageType = image.ImageType?.ToString() ?? "Main";
                                     var imageCacheBuster = $"&v={((DateTime)scan.ScanTime).Ticks}";
