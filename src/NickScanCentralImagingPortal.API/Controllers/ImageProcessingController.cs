@@ -839,6 +839,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     //       (e.g. ?mode=composite on a single-view ASE) — return 422 with
                     //       a message pointing the caller at /mode-capabilities.
                     //   (b) no scan at all, or unknown scanner — return 404.
+                    //   (c) mode IS supported per capabilities but the pipeline
+                    //       still failed — capabilities-bug or transient decode
+                    //       failure. 500 so the client doesn't grey out a legit
+                    //       button.
                     // We detect (b) by asking for capabilities; if that too comes back
                     // null, the scan isn't known.
                     var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(containerNumber);
@@ -846,8 +850,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     {
                         return NotFound(new { error = "No scan found for container", container = containerNumber });
                     }
+
+                    // v2.10.5 — distinguish cases (a) and (c). If the mode IS listed
+                    // as supported in capabilities, the render failure is server-side,
+                    // not a client-bad-request.
+                    var normalized = mode.Trim().ToLowerInvariant();
+                    bool claimedSupported = caps.SupportedModes != null
+                        && Array.Exists(caps.SupportedModes,
+                            m => string.Equals(m, normalized, StringComparison.OrdinalIgnoreCase));
+                    if (claimedSupported)
+                    {
+                        _logger.LogError("[MODE] {Container} claimed to support mode '{Mode}' but pipeline returned null — investigate raw-channel state", containerNumber, mode);
+                        return StatusCode(500, new
+                        {
+                            error = $"Render failed for mode '{mode}' even though capabilities claim support — check server logs.",
+                            container = containerNumber,
+                            scanner = caps.Scanner,
+                            variant = caps.Variant,
+                        });
+                    }
+
                     _logger.LogInformation("[MODE] Mode '{Mode}' not supported for {Container} ({Variant}); supported={Supported}",
-                        mode, containerNumber, caps.Variant, string.Join(",", caps.SupportedModes));
+                        mode, containerNumber, caps.Variant, string.Join(",", caps.SupportedModes ?? Array.Empty<string>()));
                     return UnprocessableEntity(new
                     {
                         error = $"Mode '{mode}' not supported for this scan variant",

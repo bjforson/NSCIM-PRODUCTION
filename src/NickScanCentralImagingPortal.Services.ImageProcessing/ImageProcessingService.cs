@@ -452,10 +452,21 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         }
 
         /// <summary>
-        /// v2.10.0 mode-catalog capability manifest. The UI calls this once
-        /// when opening a scan so it can gate its mode-toolbar buttons to
-        /// only the modes that make sense for the scan at hand. Returns null
-        /// for containers with no scan or an unsupported scanner.
+        /// v2.10.0 mode-catalog capability manifest, refined in v2.10.5 so the
+        /// FS6000 branch actually checks which raw channels the scan has in
+        /// the database instead of assuming all three are present.
+        ///
+        /// Older ingests (pre-v2.9.6) and some in-flight scans only have a
+        /// subset of HighEnergy / LowEnergy / Material in fs6000images. If we
+        /// claim the full 9 modes for those, the toolbar shows buttons that
+        /// all 422 on click (because <c>FS6000ImagePipeline.LoadDecodedScanCachedAsync</c>
+        /// needs all three blobs to call <c>FS6000FormatDecoder.Decode</c>).
+        /// Until partial-channel decode lands, return an empty mode list for
+        /// those scans — the toolbar then hides itself and the viewer falls
+        /// back to the vendor Main JPEG, which is better than offering
+        /// guaranteed-broken buttons.
+        ///
+        /// Returns null for containers with no scan or an unsupported scanner.
         /// </summary>
         public async Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
             string containerNumber,
@@ -465,17 +476,60 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             var pipeline = GetImagePipeline(scannerType);
             if (pipeline is FS6000ImagePipeline)
             {
-                // FS6000 always has the full 9-mode catalog when raw channels
-                // are present (which ships of v2.9.6+ enforce at ingest time).
+                // v2.10.5 — verify HE + LE + Material raw channels all exist
+                // before claiming any modes. One cheap query over fs6000images
+                // projecting only imagetype, filtered to this container's scan.
+                var channels = await (
+                    from s in _dbContext.FS6000Scans.AsNoTracking()
+                    where s.ContainerNumber == containerNumber
+                    from i in _dbContext.FS6000Images.AsNoTracking()
+                    where i.ScanId == s.Id
+                    select i.ImageType
+                ).ToListAsync(ct);
+
+                if (channels.Count == 0)
+                {
+                    _logger.LogInformation(
+                        "[MODE-CAPS] No FS6000 images for {Container} — returning no scan found", containerNumber);
+                    return null;
+                }
+
+                bool hasHigh = channels.Contains("HighEnergy");
+                bool hasLow  = channels.Contains("LowEnergy");
+                bool hasMat  = channels.Contains("Material");
+
+                if (hasHigh && hasLow && hasMat)
+                {
+                    return new ScanModeCapabilities
+                    {
+                        Scanner = "FS6000",
+                        Variant = "composite16bit",
+                        SupportedModes = new[]
+                        {
+                            "composite", "bw", "inverse", "high-pen", "low-pen",
+                            "organic-strip", "metal-strip", "edge", "diff",
+                        },
+                    };
+                }
+
+                // Partial raw channels. Until the pipeline can decode without
+                // Material (a separate work item), expose zero modes so the
+                // toolbar hides itself and the viewer falls through to the
+                // vendor Main JPEG path. Variant string tells the UI which
+                // channels were missing so it can optionally display a hint.
+                var missing = new System.Collections.Generic.List<string>();
+                if (!hasHigh) missing.Add("HighEnergy");
+                if (!hasLow)  missing.Add("LowEnergy");
+                if (!hasMat)  missing.Add("Material");
+                _logger.LogInformation(
+                    "[MODE-CAPS] FS6000 {Container} missing raw channel(s) [{Missing}] — mode toolbar will hide",
+                    containerNumber, string.Join(",", missing));
+
                 return new ScanModeCapabilities
                 {
                     Scanner = "FS6000",
-                    Variant = "composite16bit",
-                    SupportedModes = new[]
-                    {
-                        "composite", "bw", "inverse", "high-pen", "low-pen",
-                        "organic-strip", "metal-strip", "edge", "diff",
-                    },
+                    Variant = $"vendor-jpeg-only (missing: {string.Join(",", missing)})",
+                    SupportedModes = Array.Empty<string>(),
                 };
             }
             if (pipeline is ASEImagePipeline asePipeline)

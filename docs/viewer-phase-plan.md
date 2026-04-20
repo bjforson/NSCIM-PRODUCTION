@@ -22,6 +22,20 @@ resolution, with access to the underlying 16-bit data for windowing / measuremen
 
 ## Current version
 
+`2.10.5` — **hotfix**: `GetScanModeCapabilitiesAsync` now checks actual
+raw-channel presence (HighEnergy / LowEnergy / Material) before claiming
+the 9-mode catalog. Before this fix all FS6000 scans were advertised as
+having 9 modes; but **1,079 of 1,318 live FS6000 scans (~82%)** are
+missing at least one raw channel, so clicking any mode chip gave a
+broken image. Those scans now report `SupportedModes=[]` with a
+`vendor-jpeg-only (missing: X,Y)` variant label, which causes the mode
+toolbar to hide itself (keeps Default → vendor Main JPEG serving as
+before). The 239 scans with full raw channels still see the full toolbar.
+Controller also updated to distinguish "mode not claimed" (422) from
+"mode claimed but pipeline failed anyway" (500) so future capability
+regressions are easier to catch. Phase 2 sliders untouched — they live
+on the same toolbar and hide/show together with the mode chips.
+
 `2.10.4` — Phase 2: debounced server-side Window/Level sliders added to
 the RENDER MODE toolbar in `ImageAnalysisViewer.razor`. Maps to existing
 `?loPct=&hiPct=` query params (backend plumbing was already end-to-end
@@ -291,6 +305,17 @@ params, so the no-touch case is identical to v2.10.3. Look for XHR with
 
 ## Open questions / parked items
 
+- **Partial-channel mode rendering.** ~82% of FS6000 scans are missing at least
+  one raw channel (usually Material). v2.10.5 hides the toolbar entirely for
+  those. A follow-up could teach `FS6000FormatDecoder.Decode` to accept a
+  null Material blob and have `FS6000ModeRenderer.RenderJpeg` gate on
+  Material-requiring modes — that would let B/W, Inverse, High Pen, Low Pen,
+  and Diff render for the 29 scans that have HE+LE but no Material. Low
+  urgency: those 29 scans can still show the vendor Main JPEG.
+- **Raw-channel backfill.** 1,036 FS6000 scans have *zero* raw channels —
+  legacy pre-ingest era. The scanner still produces the raw .img files,
+  we just don't have a backfill job pointing at the Archive folder. That's
+  a separate work-item (reuse `FS6000RawChannelIngester`).
 - **LUT refresh cadence.** The LUT was fitted from scans through ~2026-04-19. If the
   vendor firmware or phantom calibration changes materially, error will creep. No
   drift monitor in place yet — worth adding a nightly job that samples N fresh scans
