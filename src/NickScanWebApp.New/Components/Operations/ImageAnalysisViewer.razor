@@ -304,6 +304,47 @@
                                  OnClick="@(() => SelectMode(mode))"
                                  Title="@($"Render as {label}")">@label</MudChip>
                     }
+                    <div style="width:1px; height:22px; background:rgba(255,255,255,0.15); margin:0 4px;"></div>
+
+                    @* v2.10.4 Phase 2 — server-side Window/Level sliders.
+                       Drives ?loPct=&hiPct= on the image URL with a ~180ms debounce
+                       so drags coalesce into one refetch. Dimmed with an info
+                       icon when the active mode is Composite (vendor LUT ignores
+                       tone-curve params) or Default (the no-mode path). *@
+                    @{
+                        var wlEffective = IsWindowLevelEffective();
+                        var wlDim = wlEffective ? "" : "opacity:0.45;";
+                        var wlTooltip = wlEffective
+                            ? "Drag to window the signal range. Reset reverts to server defaults (1% / 99.5%)."
+                            : "Window/Level is ignored in Composite / Default mode (vendor LUT). Pick B/W, Inverse, High Pen, Low Pen, Organic, Metal, Edge, or Diff to activate.";
+                    }
+                    <MudText Typo="Typo.caption" Style="@($"color:#b0bec5; font-weight:600; min-width:44px; {wlDim}")">LEVEL</MudText>
+                    <div style="width:110px; @wlDim">
+                        <MudSlider T="double" @bind-Value="_serverLevelPct" @bind-Value:after="OnWindowLevelSliderChanged"
+                                   Min="0" Max="100" Step="1" Color="Color.Info" Size="Size.Small" />
+                    </div>
+                    <MudText Typo="Typo.caption" Style="@($"color:#b0bec5; min-width:34px; text-align:right; {wlDim}")">@($"{_serverLevelPct:F0}%")</MudText>
+
+                    <MudText Typo="Typo.caption" Style="@($"color:#b0bec5; font-weight:600; min-width:56px; margin-left:8px; {wlDim}")">WINDOW</MudText>
+                    <div style="width:110px; @wlDim">
+                        <MudSlider T="double" @bind-Value="_serverWindowPct" @bind-Value:after="OnWindowLevelSliderChanged"
+                                   Min="2" Max="100" Step="1" Color="Color.Info" Size="Size.Small" />
+                    </div>
+                    <MudText Typo="Typo.caption" Style="@($"color:#b0bec5; min-width:34px; text-align:right; {wlDim}")">@($"{_serverWindowPct:F0}%")</MudText>
+
+                    <MudIconButton Icon="@Icons.Material.Outlined.Refresh"
+                                   Size="Size.Small"
+                                   OnClick="ResetWindowLevel"
+                                   Style="color:#b0bec5;"
+                                   Title="Reset Window/Level" />
+
+                    @if (!wlEffective)
+                    {
+                        <MudTooltip Text="@wlTooltip" Placement="Placement.Bottom">
+                            <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" Style="color:#78909c;" />
+                        </MudTooltip>
+                    }
+
                     @if (!string.IsNullOrEmpty(_scanVariant))
                     {
                         <div style="flex:1"></div>
@@ -1180,6 +1221,28 @@
         ["edge"]           = "Edge",
         ["diff"]           = "Diff",
     };
+
+    // v2.10.4 Phase 2 — server-side Window/Level. Knobs ride on top of the mode
+    // catalog: when non-default, GetCurrentImageUrl() appends ?loPct=&hiPct=.
+    // Backend plumbing (controller → pipeline → FS6000Compositor) was already
+    // shipped in v2.10.0 via the loPct/hiPct params; Phase 2 just drives them.
+    //
+    // Convention: slider values are literal percentile units [0..100].
+    //   level = center of the display range as a percentile of the signal.
+    //   window = width of the display range as a percentile span.
+    //   (window=100, level=50) → omit params → server uses its own default
+    //     percentile clip (1.0 / 99.5), identical to pre-v2.10.4 behaviour.
+    //   (window=40, level=30) → loPct=10, hiPct=50 → narrow band at lower-mid.
+    //
+    // Windowing has no effect on the Composite (vendor-LUT) mode because the
+    // LUT bakes in vendor tone mapping. The UI surfaces this as a dim info
+    // icon when Composite or Default are active.
+    private const double DefaultServerWindowPct = 100.0;
+    private const double DefaultServerLevelPct  = 50.0;
+    private double _serverWindowPct = DefaultServerWindowPct;
+    private double _serverLevelPct  = DefaultServerLevelPct;
+    private System.Threading.Timer? _windowLevelDebounceTimer;
+    private const int WindowLevelDebounceMs = 180;
     
     // Pan state
     private bool _isPanning = false;
@@ -1382,6 +1445,16 @@
                 var sep = baseUrl.Contains("?") ? "&" : "?";
                 baseUrl = $"{baseUrl}{sep}mode={Uri.EscapeDataString(_activeMode)}";
             }
+
+            // v2.10.4 — apply window/level → loPct/hiPct. Only forwarded when the
+            // sliders have been moved from their defaults, so the no-touch case
+            // hits the server's natural percentile clip (1.0 / 99.5).
+            var wl = ComputeLoHiPct();
+            if (wl.HasValue)
+            {
+                var sep = baseUrl.Contains("?") ? "&" : "?";
+                baseUrl = $"{baseUrl}{sep}loPct={wl.Value.Lo.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}&hiPct={wl.Value.Hi.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}";
+            }
         }
 
         // ✅ FIX: Add cache buster to force browser to reload image when toggling
@@ -1445,6 +1518,12 @@
             _scanVariant = "";
             _supportedModes = new List<string>();
             _modeCapabilitiesLoaded = false;
+
+            // v2.10.4 — reset window/level to defaults for the new scan. Signal
+            // ranges differ between scanners / containers so a good window on
+            // the previous scan won't carry over meaningfully.
+            _serverWindowPct = DefaultServerWindowPct;
+            _serverLevelPct  = DefaultServerLevelPct;
 
             await LoadExistingTags();
             await LoadExistingRectangles();
@@ -1576,6 +1655,66 @@
         _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
         StateHasChanged();
     }
+
+    /// <summary>
+    /// v2.10.4 — fired on every window/level slider tick. Coalesces bursts
+    /// of slider drags into one image refetch via a Timer: each tick resets
+    /// the timer, and only after WindowLevelDebounceMs of silence do we
+    /// actually bump the cache buster. Keeps the server from being pounded
+    /// during drags (each refetch is ~40-80ms of decode + render work).
+    /// </summary>
+    private void OnWindowLevelSliderChanged()
+    {
+        _windowLevelDebounceTimer?.Dispose();
+        _windowLevelDebounceTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(() =>
+            {
+                _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+                StateHasChanged();
+            });
+        }, null, WindowLevelDebounceMs, System.Threading.Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Reset window/level to defaults and refetch immediately.
+    /// </summary>
+    private void ResetWindowLevel()
+    {
+        if (_serverWindowPct == DefaultServerWindowPct && _serverLevelPct == DefaultServerLevelPct)
+            return;
+        _serverWindowPct  = DefaultServerWindowPct;
+        _serverLevelPct   = DefaultServerLevelPct;
+        _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Translate the two slider values to (loPct, hiPct) percentile bounds
+    /// that the backend's FS6000Compositor.NormalizeEnergyChannel understands.
+    /// Returns null when the sliders are at their defaults — caller should
+    /// then omit the query params so the server falls back to its own
+    /// defaults (1.0 / 99.5), preserving pre-v2.10.4 visual behaviour.
+    /// </summary>
+    private (double Lo, double Hi)? ComputeLoHiPct()
+    {
+        if (_serverWindowPct == DefaultServerWindowPct && _serverLevelPct == DefaultServerLevelPct)
+            return null;
+        double half = _serverWindowPct / 2.0;
+        double lo = Math.Max(0.0, _serverLevelPct - half);
+        double hi = Math.Min(100.0, _serverLevelPct + half);
+        if (hi - lo < 0.5) hi = Math.Min(100.0, lo + 0.5); // never invert / collapse
+        return (lo, hi);
+    }
+
+    /// <summary>
+    /// True when windowing actually affects the current mode. Composite (vendor
+    /// LUT) bakes tone mapping into the LUT so window/level is a no-op there;
+    /// the UI dims the sliders + shows an info icon instead of silently doing
+    /// nothing.
+    /// </summary>
+    private bool IsWindowLevelEffective()
+        => !(string.IsNullOrEmpty(_activeMode) || _activeMode == "composite");
 
     private async Task LoadAiSuggestion()
     {
@@ -2176,6 +2315,11 @@
 
     public async ValueTask DisposeAsync()
     {
+        // v2.10.4 — kill any pending window/level refetch before the component
+        // unmounts; otherwise the Timer callback could call StateHasChanged()
+        // on a disposed component and throw.
+        try { _windowLevelDebounceTimer?.Dispose(); _windowLevelDebounceTimer = null; } catch { }
+
         try
         {
             await JS.InvokeVoidAsync("ImageAnalysisViewer.detachWheelZoom", _imageContainer);

@@ -22,10 +22,13 @@ resolution, with access to the underlying 16-bit data for windowing / measuremen
 
 ## Current version
 
-`2.10.3` — Phase 1 frontend: mode-catalog toolbar wired into
-`ImageAnalysisViewer.razor`. Calls `/mode-capabilities` on open, renders
-a "Render Mode" row with Default + per-variant mode chips, and appends
-`?mode=X` to the image URL on selection.
+`2.10.4` — Phase 2: debounced server-side Window/Level sliders added to
+the RENDER MODE toolbar in `ImageAnalysisViewer.razor`. Maps to existing
+`?loPct=&hiPct=` query params (backend plumbing was already end-to-end
+in v2.10.0). Defaults omit the params so the server uses its natural
+1%/99.5% clip — pre-v2.10.4 behaviour unchanged when sliders untouched.
+Dimmed + info-icon tooltip when the active mode is Composite / Default
+(vendor LUT bakes in tone mapping).
 See `src/Directory.Build.props`.
 
 ---
@@ -37,7 +40,7 @@ See `src/Directory.Build.props`.
 | 0 | Mode catalog + ROI inspector (v2.10.0) | Done | Shipped | — | 9 modes, capability gating, /roi |
 | 0b | Empirical vendor LUT (v2.10.1–2) | Done | Shipped | — | 240M-pixel 3D LUT, ~4 RGB/ch error |
 | 1 | Single-canvas viewer chassis + mode toolbar | Shipped backend + frontend, awaiting visual sign-off | Done (v2.10.0) | Done (v2.10.3) | backbone for 2–5 |
-| 2 | Windowing slider (server tone-curve) | Not started | Needs `?window=`, `?level=` params | Debounced slider | ~1 day |
+| 2 | Windowing slider (server tone-curve) | Shipped (v2.10.4) | Already existed (`?loPct=&hiPct=`) | Done (debounced) | frontend-only |
 | 3 | Pixel-value probe | Not started | `/pixel?x=&y=` endpoint | Hover chip | ~½ day |
 | 4 | Client-side 16-bit viewer | Not started | Raw-binary endpoint (HE/LE/Material) | JS canvas W/L | ~1.5 days; real 16-bit parity |
 | 5 | ROI inspector side panel | Not started | Done (v2.10.0) | UI wiring only | ~½ day |
@@ -50,28 +53,41 @@ should go last so Phases 1–3 stabilise the UX first.
 
 ## Next session entry point
 
-**Currently:** Phase 1 shipped in v2.10.3. Awaits visual sign-off against real
-FS6000 + real ASE tri-panel + real ASE single-view scans before moving on.
+**Currently:** Phases 1 + 2 shipped (v2.10.3 + v2.10.4). Awaiting visual sign-off.
 
-**To verify:**
+**To verify Phase 1 (mode toolbar):**
 
 1. Open a container with a FS6000 scan. "Render Mode" row should show `Default` +
    all 9 mode chips. Click each — canvas should swap.
 2. Open a single-view ASE (should be ~92% of ASE scans in production). "Render Mode"
    row should show `Default` + only `B/W`, `Inverse`, `Edge`.
 3. Open a tri-panel ASE (8% of ASE). Should show all 9.
-4. Check the variant label at the right edge of the toolbar: `fs6000` / `ase-tri-panel`
-   / `ase-single-view`.
+4. Check the variant label at the right edge of the toolbar.
 
-**If sign-off passes, start Phase 2** (windowing slider). Open
-`ImageProcessingController.cs` around line 791 — the `?mode=` path is the
-template; add `?window=` and `?level=` the same way, thread them through
-`IImageProcessingService.GetRenderedImageBytesAsync`, and apply the tone curve
-in `FS6000ModeRenderer` before the 8-bit conversion step.
+**To verify Phase 2 (windowing):**
 
-**If sign-off fails**, the toolbar is hidden entirely when `/mode-capabilities`
-returns empty — viewer still works on the default render path, so failure is
-soft. Check browser console for `[LoadModeCapabilitiesAsync]` errors.
+5. Pick B/W or High Pen mode. LEVEL and WINDOW sliders should brighten. Drag
+   WINDOW down to ~30% — image should gain contrast (narrower band). Drag LEVEL
+   to 20% — image should darken (band shifts to low end of signal). Drag LEVEL
+   to 80% — image should brighten.
+6. Hit the Refresh icon — image reverts to default render.
+7. Pick Composite or Default. Sliders should dim + a small info icon should
+   appear explaining windowing is ignored by the vendor LUT.
+8. Network tab: only ~one refetch per ~180ms during a slider drag (debounce).
+
+**If sign-off passes, start Phase 3** (pixel-value probe). Add
+`GET /api/ImageProcessing/container/{id}/pixel?x=&y=` endpoint returning
+`{he, le, material, rgb}` from the cached decoded scan; wire a throttled
+mouse-move handler + floating MudChip in `ImageAnalysisViewer.razor`.
+
+**If Phase 1 sign-off fails**, the toolbar is hidden entirely when
+`/mode-capabilities` returns empty — viewer still works on the default
+path. Check browser console for `[LoadModeCapabilitiesAsync]` errors.
+
+**If Phase 2 sign-off fails**, sliders at defaults don't forward any query
+params, so the no-touch case is identical to v2.10.3. Look for XHR with
+`loPct=` / `hiPct=` and check backend logs for the `[FS6000-MODE]` /
+`[ASE-MODE]` lines that include the forwarded values.
 
 ---
 
@@ -145,19 +161,33 @@ soft. Check browser console for `[LoadModeCapabilitiesAsync]` errors.
 - **Acceptance (pending):** manual visual sign-off against real FS6000, real ASE tri-panel,
   real ASE single-view. See [Next Session Entry Point](#next-session-entry-point).
 
-### Phase 2 — Windowing slider (server tone-curve)
+### Phase 2 — Windowing slider (server tone-curve) (v2.10.4)
 
-- **Goal:** operator drags a slider, image brightness/contrast re-renders server-side
-  using the pre-encoded JPEG path.
-- **Backend:**
-  - Add `?window=X&level=Y` to `/complete/image`. Route through mode renderer with an
-    extra tone-curve step on the 16-bit buffer before 8-bit conversion.
-  - Cache key includes window/level so repeat renders are cheap.
-- **Frontend:**
-  - Two MudSliders (window, level) with 150ms debounce.
-  - Bind to `_window`, `_level`; append to image URL when non-default.
-- **Where it lives:** same `ImageAnalysisViewer.razor` — slot into Phase 1's chassis.
-- **Estimate:** 1 day.
+- **Goal:** operator drags sliders, image brightness/contrast re-renders server-side
+  from the raw 16-bit buffers (not post-processed on the client 8-bit JPEG).
+- **Backend:** already shipped in v2.10.0 — `?loPct=&hiPct=` query params flow
+  end-to-end: controller → `IImageProcessingService.GetRenderedImageBytesAsync` →
+  `FS6000ModeRenderer.RenderJpeg` → `FS6000Compositor.NormalizeEnergyChannel`.
+  Phase 2 didn't require any backend changes; it just started driving the knobs.
+- **Frontend (v2.10.4) in `ImageAnalysisViewer.razor`:**
+  - New fields: `_serverWindowPct` (default 100), `_serverLevelPct` (default 50),
+    `_windowLevelDebounceTimer` (System.Threading.Timer).
+  - New methods: `OnWindowLevelSliderChanged()` (180ms debounce — coalesces drag
+    bursts into one refetch), `ResetWindowLevel()`, `ComputeLoHiPct()`
+    (slider → loPct/hiPct mapping), `IsWindowLevelEffective()` (dims + tooltip
+    when mode = Composite / Default, which bake tone via vendor LUT).
+  - Sliders inline in the RENDER MODE row next to the mode chips, with
+    numeric % readouts and a Refresh-icon reset button.
+  - `GetCurrentImageUrl()` appends `&loPct={lo}&hiPct={hi}` only when sliders
+    have been moved from defaults — so the no-touch case preserves the
+    pre-v2.10.4 visual baseline.
+  - Container change resets sliders to defaults; `DisposeAsync` kills the timer.
+- **Mapping:** `half = window/2`; `lo = max(0, level - half)`; `hi = min(100, level + half)`.
+  At defaults (window=100, level=50) → (0, 100) but those params are never sent;
+  server clips at its own (1, 99.5).
+- **Known limitation:** Composite mode (vendor LUT) bakes tonal mapping into the
+  LUT itself, so windowing is a visual no-op there. UI dims the sliders + shows
+  an info icon so operators know to pick a greyscale / colourised mode.
 
 ### Phase 3 — Pixel-value probe
 
