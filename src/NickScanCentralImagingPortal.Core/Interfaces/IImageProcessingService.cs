@@ -55,6 +55,18 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
             CancellationToken ct = default);
 
         /// <summary>
+        /// v2.10.0 scan-mode capability manifest. The single-canvas viewer
+        /// calls this once on open to gate its mode-toolbar buttons to only
+        /// the modes the underlying scan supports. FS6000 always returns
+        /// the full 9 modes; ASE depends on the scan's <c>lineDataType</c>
+        /// (tri-panel = 9 modes, single-view = 3 modes: bw/inverse/edge).
+        /// Returns null when the scanner type can't be resolved.
+        /// </summary>
+        Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
+            string containerNumber,
+            CancellationToken ct = default);
+
+        /// <summary>
         /// Ingest the three FS6000 raw .img channels (HighEnergy / LowEnergy /
         /// Material) for a scan into the fs6000images table. Caller MUST pass
         /// a stable folder path (Archive/, never Staging/) — reads are direct
@@ -164,6 +176,21 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public double DominantPercent { get; set; }
         /// <summary>Per-category breakdown — keys: background, noise, organic, metal.</summary>
         public Dictionary<string, double> CategoryDistribution { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Scan-mode capability manifest returned by
+    /// <see cref="IImageProcessingService.GetScanModeCapabilitiesAsync"/>.
+    /// The frontend mode-toolbar reads <see cref="SupportedModes"/> to decide
+    /// which buttons to render (or grey out) for the currently-open scan.
+    /// <see cref="Variant"/> is an informational tag (e.g. "composite16bit",
+    /// "tri-panel", "single-view") shown as a sub-label or tooltip.
+    /// </summary>
+    public class ScanModeCapabilities
+    {
+        public string Scanner { get; set; } = string.Empty;
+        public string Variant { get; set; } = string.Empty;
+        public string[] SupportedModes { get; set; } = Array.Empty<string>();
     }
 
     public class ImageMetadata

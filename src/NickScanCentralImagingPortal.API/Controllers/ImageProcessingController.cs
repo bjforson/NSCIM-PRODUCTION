@@ -808,10 +808,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return File(splitImage, "image/jpeg");
                 }
 
-                // ── v2.10.0 Mode Catalog: if ?mode= is set and the container is FS6000,
-                //    render via the mode pipeline (composite / bw / organic-strip / metal-strip /
-                //    high-pen / inverse / edge / diff). Falls back to the standard complete-data
-                //    flow when mode is null/empty or the container isn't FS6000.
+                // ── v2.10.0 Mode Catalog: if ?mode= is set, route through the mode
+                //    pipeline (composite / bw / organic-strip / metal-strip / high-pen /
+                //    inverse / edge / diff). Supported for FS6000 + ASE. Unsupported
+                //    modes for the scan variant return a clear 422 so the UI knows
+                //    to grey out that button (it should also have called
+                //    /mode-capabilities on open to pre-filter, but defence in depth).
                 if (!string.IsNullOrWhiteSpace(mode))
                 {
                     var modeBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
@@ -828,11 +830,32 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             modeBytes = await ResizeToThumbnailAsync(modeBytes) ?? modeBytes;
                         }
                         Response.Headers.CacheControl = "private, max-age=3600";
-                        _logger.LogInformation("[FS6000-MODE] Serving {Container} mode={Mode} size={Bytes} bytes", containerNumber, mode, modeBytes.Length);
+                        _logger.LogInformation("[MODE] Serving {Container} mode={Mode} size={Bytes} bytes", containerNumber, mode, modeBytes.Length);
                         return File(modeBytes, "image/jpeg");
                     }
-                    // null → non-FS6000 or pipeline couldn't render; fall through to legacy path.
-                    _logger.LogDebug("[FS6000-MODE] Pipeline returned null for {Container} mode={Mode} — falling back to legacy path", containerNumber, mode);
+
+                    // modeBytes == null when mode is explicitly requested. Two sub-cases:
+                    //   (a) scan exists but the mode isn't supported for the scan variant
+                    //       (e.g. ?mode=composite on a single-view ASE) — return 422 with
+                    //       a message pointing the caller at /mode-capabilities.
+                    //   (b) no scan at all, or unknown scanner — return 404.
+                    // We detect (b) by asking for capabilities; if that too comes back
+                    // null, the scan isn't known.
+                    var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(containerNumber);
+                    if (caps == null)
+                    {
+                        return NotFound(new { error = "No scan found for container", container = containerNumber });
+                    }
+                    _logger.LogInformation("[MODE] Mode '{Mode}' not supported for {Container} ({Variant}); supported={Supported}",
+                        mode, containerNumber, caps.Variant, string.Join(",", caps.SupportedModes));
+                    return UnprocessableEntity(new
+                    {
+                        error = $"Mode '{mode}' not supported for this scan variant",
+                        container = containerNumber,
+                        scanner = caps.Scanner,
+                        variant = caps.Variant,
+                        supportedModes = caps.SupportedModes,
+                    });
                 }
 
                 var completeData = await _imageProcessingService.GetCompleteContainerDataAsync(containerNumber, imageType);
@@ -934,12 +957,44 @@ namespace NickScanCentralImagingPortal.API.Controllers
         // Use /container/{containerNumber}/complete/image instead
 
         /// <summary>
+        /// v2.10.0 — scan-mode capability manifest. The single-canvas viewer
+        /// fetches this once on open so it knows which mode-toolbar buttons
+        /// to render. FS6000 always returns all 9 modes. ASE splits on
+        /// lineDataType: tri-panel = 9 modes, single-view = 3 modes
+        /// (bw / inverse / edge).
+        /// </summary>
+        [AllowAnonymous]
+        [HttpGet("container/{containerNumber}/mode-capabilities")]
+        [ProducesResponseType(200, Type = typeof(ScanModeCapabilities))]
+        [ProducesResponseType(404)]
+        public async Task<ActionResult<ScanModeCapabilities>> GetScanModeCapabilities(string containerNumber)
+        {
+            try
+            {
+                var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(containerNumber);
+                if (caps == null)
+                {
+                    return NotFound(new { error = "No scan found or scanner type not resolvable", container = containerNumber });
+                }
+                Response.Headers.CacheControl = "private, max-age=60";
+                return Ok(caps);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load mode capabilities for {Container}", containerNumber);
+                return StatusCode(500, new { error = "mode-capabilities lookup failed", message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// v2.10.0 — ROI Inspector. Crop a rectangle from the 3 FS6000 raw
-        /// channels, return per-channel stats, material-class distribution,
-        /// and small preview JPEGs (base64). Used by the single-canvas viewer's
-        /// side panel when the operator draws an inspection rectangle.
-        /// Returns 404 for non-FS6000 containers or when raw channels aren't
-        /// available (e.g. vendor-JPEG-only scans).
+        /// channels (or ASE tri-panel channels), return per-channel stats,
+        /// material-class distribution, and small preview JPEGs (base64).
+        /// Used by the single-canvas viewer's side panel when the operator
+        /// draws an inspection rectangle.
+        /// Single-view ASE scans degenerate to a one-channel histogram with
+        /// a "not applicable" material block so the UI can render a
+        /// simplified view without null-checking every field.
         /// </summary>
         [AllowAnonymous]
         [HttpGet("container/{containerNumber}/roi")]

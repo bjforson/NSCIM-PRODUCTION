@@ -400,8 +400,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         }
 
         /// <summary>
-        /// v2.10.0 mode-catalog rendering. Only FS6000 currently supports mode
-        /// variants — ASE goes through the existing single-image pipeline.
+        /// v2.10.0 mode-catalog rendering. FS6000 scans always qualify. ASE
+        /// splits on <c>lineDataType</c>: tri-panel scans (~8% of production)
+        /// get the full 9-mode catalog; single-view scans (~92%) get a
+        /// 3-mode subset (bw / inverse / edge).
         /// </summary>
         public async Task<byte[]?> GetRenderedImageBytesAsync(
             string containerNumber,
@@ -412,25 +414,24 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             CancellationToken ct = default)
         {
             var scannerType = await DetectScannerTypeAsync(containerNumber);
-            if (scannerType != ScannerType.FS6000)
-            {
-                // Non-FS6000 containers don't have the three-channel raw data
-                // needed for mode-based rendering. Signal the caller to fall
-                // back to the standard single-image path.
-                return null;
-            }
-
             var pipeline = GetImagePipeline(scannerType);
             if (pipeline is FS6000ImagePipeline fs6000Pipeline)
             {
                 return await fs6000Pipeline.RenderImageInModeAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
             }
+            if (pipeline is ASEImagePipeline asePipeline)
+            {
+                return await asePipeline.RenderImageInModeAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
+            }
+            // Unknown / unsupported scanner — caller should fall back to legacy path.
             return null;
         }
 
         /// <summary>
-        /// v2.10.0 ROI Inspector. FS6000 only — ASE doesn't separate energy
-        /// channels and has no material classification layer.
+        /// v2.10.0 ROI Inspector. Supported for FS6000 and ASE (both variants).
+        /// Single-view ASE degenerates to a one-channel histogram with a
+        /// "not applicable" material block so the UI can render a simplified
+        /// view without null-checking every field.
         /// </summary>
         public async Task<RoiInspectorResult?> GetRoiInspectorAsync(
             string containerNumber,
@@ -438,12 +439,48 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             CancellationToken ct = default)
         {
             var scannerType = await DetectScannerTypeAsync(containerNumber);
-            if (scannerType != ScannerType.FS6000) return null;
-
             var pipeline = GetImagePipeline(scannerType);
             if (pipeline is FS6000ImagePipeline fs6000Pipeline)
             {
                 return await fs6000Pipeline.BuildRoiInspectorAsync(containerNumber, x, y, width, height, ct);
+            }
+            if (pipeline is ASEImagePipeline asePipeline)
+            {
+                return await asePipeline.BuildRoiInspectorAsync(containerNumber, x, y, width, height, ct);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// v2.10.0 mode-catalog capability manifest. The UI calls this once
+        /// when opening a scan so it can gate its mode-toolbar buttons to
+        /// only the modes that make sense for the scan at hand. Returns null
+        /// for containers with no scan or an unsupported scanner.
+        /// </summary>
+        public async Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
+            string containerNumber,
+            CancellationToken ct = default)
+        {
+            var scannerType = await DetectScannerTypeAsync(containerNumber);
+            var pipeline = GetImagePipeline(scannerType);
+            if (pipeline is FS6000ImagePipeline)
+            {
+                // FS6000 always has the full 9-mode catalog when raw channels
+                // are present (which ships of v2.9.6+ enforce at ingest time).
+                return new ScanModeCapabilities
+                {
+                    Scanner = "FS6000",
+                    Variant = "composite16bit",
+                    SupportedModes = new[]
+                    {
+                        "composite", "bw", "inverse", "high-pen", "low-pen",
+                        "organic-strip", "metal-strip", "edge", "diff",
+                    },
+                };
+            }
+            if (pipeline is ASEImagePipeline asePipeline)
+            {
+                return await asePipeline.GetModeCapabilitiesAsync(containerNumber, ct);
             }
             return null;
         }
