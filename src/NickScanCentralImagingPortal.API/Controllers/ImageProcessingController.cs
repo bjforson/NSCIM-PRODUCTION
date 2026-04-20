@@ -877,8 +877,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogInformation("Returning image via unified pipeline: {ContainerNumber}, Size: {Size}KB, MimeType: {MimeType}, RequestedSize: {RequestedSize}, Annotations: {Annotations}",
                     containerNumber, outputBytes.Length / 1024, mimeType, size, annotations);
 
-                // Add HTTP caching (shorter cache when annotations are included since they may change)
-                Response.Headers.CacheControl = annotations ? "public, max-age=60" : "public, max-age=3600, immutable";
+                // HTTP caching: use `private` so only the end-user's browser caches the image,
+                // NOT the in-process ResponseCachingMiddleware. v2.9.11: we hit a bug where the
+                // middleware was keying its cache poorly across imageType query params, so a
+                // request for HighEnergy poisoned subsequent LowEnergy/Material/Main hits — all
+                // four tabs returned the same bytes. Client-side caching is still beneficial
+                // (browser revalidates in-session scroll-back) without the memory pressure of
+                // holding full JPEG bodies server-side. The app pipeline will gain its own
+                // content-aware byte cache in a later release if cold-render cost becomes an issue.
+                Response.Headers.CacheControl = annotations ? "private, max-age=60" : "private, max-age=3600";
                 return File(outputBytes, mimeType);
             }
             catch (Exception ex)

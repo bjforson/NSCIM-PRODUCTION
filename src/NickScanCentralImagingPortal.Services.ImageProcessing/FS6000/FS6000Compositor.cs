@@ -239,6 +239,15 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         // ── Percentile-based luminance normalization ─────────────────────
 
         /// <summary>
+        /// Public entry point reusing the same percentile-clipping logic the
+        /// composite view uses. <see cref="FS6000ChannelRenderer"/> calls this
+        /// when rendering HighEnergy/LowEnergy as a standalone grayscale JPEG,
+        /// so single-channel tabs match the composite's tonal range.
+        /// </summary>
+        public static byte[] NormalizeEnergyChannel(ReadOnlySpan<ushort> energy, float loPct = 1.0f, float hiPct = 99.5f)
+            => NormalizeEnergyToLuminance(energy, loPct, hiPct);
+
+        /// <summary>
         /// Build an 8-bit luminance buffer from a 16-bit energy channel using
         /// percentile clipping (matches Python's <c>_normalize_energy_to_luminance</c>).
         /// </summary>

@@ -253,6 +253,36 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     }
                 }
 
+                // v2.9.11: raw-channel tabs (HighEnergy / LowEnergy / Material) used to
+                // hand the untouched .img blob to the browser tagged as image/jpeg —
+                // 7 MB of big-endian pixel data labelled "JPEG" → every browser
+                // silently failed the load. Decode + render as a real image here.
+                if (imageBytes == null && !isMainServe && image.ImageData != null)
+                {
+                    bool isRawChannel = imageType!.Equals(FS6000ChannelRenderer.ChannelHighEnergy, StringComparison.OrdinalIgnoreCase)
+                                     || imageType.Equals(FS6000ChannelRenderer.ChannelLowEnergy, StringComparison.OrdinalIgnoreCase)
+                                     || imageType.Equals(FS6000ChannelRenderer.ChannelMaterial, StringComparison.OrdinalIgnoreCase);
+                    if (isRawChannel)
+                    {
+                        try
+                        {
+                            var started = DateTime.UtcNow;
+                            imageBytes = FS6000ChannelRenderer.RenderChannelJpeg(image.ImageData, imageType);
+                            pipelineTag = $"FS6000-RawChannel-{imageType}";
+                            _logger.LogInformation(
+                                "[FS6000-RAW-CHANNEL] scan {ScanId} ({Container}) channel {Channel}: rendered {OutBytes} bytes JPEG in {ElapsedMs:F0}ms",
+                                scan.Id, containerNumber, imageType, imageBytes.Length,
+                                (DateTime.UtcNow - started).TotalMilliseconds);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex,
+                                "[FS6000-RAW-CHANNEL] scan {ScanId} ({Container}) channel {Channel}: render failed — falling back to raw blob",
+                                scan.Id, containerNumber, imageType);
+                        }
+                    }
+                }
+
                 // Fallback (or non-Main request): vendor JPEG / stored bytes as-is
                 if (imageBytes == null)
                 {
@@ -261,8 +291,9 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
 
                 // ✅ FIX: Get correct MIME type based on image type
                 var mimeType = GetMimeTypeFromImageType(image.ImageType);
-                // If we served the composite (any variant), it's always JPEG
-                if (pipelineTag.StartsWith("FS6000-Composite16bit", StringComparison.Ordinal))
+                // If we served the composite or rendered a raw channel, it's always JPEG
+                if (pipelineTag.StartsWith("FS6000-Composite16bit", StringComparison.Ordinal)
+                    || pipelineTag.StartsWith("FS6000-RawChannel-", StringComparison.Ordinal))
                     mimeType = "image/jpeg";
 
                 var base64String = Convert.ToBase64String(imageBytes);
