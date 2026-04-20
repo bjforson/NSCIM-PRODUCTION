@@ -57,13 +57,27 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         /// <summary>
         /// v2.10.0 scan-mode capability manifest. The single-canvas viewer
         /// calls this once on open to gate its mode-toolbar buttons to only
-        /// the modes the underlying scan supports. FS6000 always returns
-        /// the full 9 modes; ASE depends on the scan's <c>lineDataType</c>
-        /// (tri-panel = 9 modes, single-view = 3 modes: bw/inverse/edge).
-        /// Returns null when the scanner type can't be resolved.
+        /// the modes the underlying scan supports. v2.11.0 derives the list
+        /// from scan structure (channel count + material presence), not from
+        /// hardcoded scanner tables, so new scanners + new modes get correct
+        /// capabilities automatically. Returns null when the container has
+        /// no scan on any scanner.
         /// </summary>
         Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
             string containerNumber,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// v2.11.0 — per-pixel probe for the hover chip in the viewer.
+        /// Returns HE / LE / Material + vendor-LUT RGB at (x, y). Single-
+        /// channel scans return only HighEnergy (the sole channel) and leave
+        /// the dual-energy-dependent fields null. Coordinates are image-
+        /// native; clamped to bounds server-side. Returns null when no
+        /// decoded scan is available for the container.
+        /// </summary>
+        Task<PixelValueResult?> GetPixelValueAsync(
+            string containerNumber,
+            int x, int y,
             CancellationToken ct = default);
 
         /// <summary>
@@ -176,6 +190,46 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public double DominantPercent { get; set; }
         /// <summary>Per-category breakdown — keys: background, noise, organic, metal.</summary>
         public Dictionary<string, double> CategoryDistribution { get; set; } = new();
+    }
+
+    /// <summary>
+    /// v2.11.0 response from <see cref="IImageProcessingService.GetPixelValueAsync"/>.
+    /// Powers the viewer's hover chip. Null fields mean "the scan variant
+    /// doesn't carry this channel" — e.g. single-view ASE has no LE or
+    /// material, so those stay null and the UI renders the chip with
+    /// whatever's present.
+    /// </summary>
+    public class PixelValueResult
+    {
+        public string ContainerNumber { get; set; } = string.Empty;
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int ImageWidth { get; set; }
+        public int ImageHeight { get; set; }
+
+        /// <summary>Raw HE value (or sole channel for single-view scans).</summary>
+        public int? HighEnergy { get; set; }
+
+        /// <summary>Raw LE value. Null for single-view.</summary>
+        public int? LowEnergy { get; set; }
+
+        /// <summary>Material class 0..255. Null when scan doesn't carry material.</summary>
+        public int? Material { get; set; }
+
+        /// <summary>Vendor-LUT composite colour at this pixel. Null for
+        /// scans without both energies + material (the LUT needs all three).</summary>
+        public int? Red { get; set; }
+        public int? Green { get; set; }
+        public int? Blue { get; set; }
+
+        /// <summary>Category from the scan's declared material taxonomy
+        /// ("organic" / "metal" / "background" / "noise" / etc.). Empty
+        /// string when no material channel is present.</summary>
+        public string MaterialCategory { get; set; } = string.Empty;
+
+        /// <summary>Scan variant tag — "fs6000-v1", "ase-tri-panel", "ase-single-view",
+        /// etc. Lets the UI format the chip appropriately.</summary>
+        public string Variant { get; set; } = string.Empty;
     }
 
     /// <summary>

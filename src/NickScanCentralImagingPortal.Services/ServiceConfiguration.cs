@@ -361,6 +361,27 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<FS6000ImagePipeline>();
             services.AddScoped<ASEImagePipeline>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelIngester>();
+
+            // v2.11.0 — unified scan processing kernel.
+            //   IScanFormatAdapter: one per wire format (byte layout parser)
+            //   IScanSourceRetriever: one per data source (DB reader)
+            //   ScannerTypeDetector: container → scanner type
+            //   ScanRouter: container → IR (decode + 30s cache)
+            //   ScanProcessingPipeline: the single public orchestrator
+            // Adding a new scanner = register a new IScanFormatAdapter +
+            // IScanSourceRetriever here. No changes to the pipeline or kernel.
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanFormatAdapter,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters.FS6000FormatAdapter>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanFormatAdapter,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters.ASEFormatAdapter>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanSourceRetriever,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retrievers.FS6000SourceRetriever>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanSourceRetriever,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retrievers.ASESourceRetriever>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.IScannerTypeDetector,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.ScannerTypeDetector>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.ScanRouter>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.ScanProcessingPipeline>();
             services.AddSingleton<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000BackfillJobTracker>();
             // 2026-04-19: worker closes the gap between fs6000scans and raw-channel rows
             // every 5 min. "Never abandon" — a scan stays in its working set until all

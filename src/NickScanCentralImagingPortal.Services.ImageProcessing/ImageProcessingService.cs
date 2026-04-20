@@ -8,6 +8,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageProcessing.Kernel;
 
 namespace NickScanCentralImagingPortal.Services.ImageProcessing
 {
@@ -17,17 +18,20 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         private readonly IServiceProvider _serviceProvider;
         private readonly ApplicationDbContext _dbContext;
         private readonly IImageCacheService _cacheService;
+        private readonly ScanProcessingPipeline _pipeline;
 
         public ImageProcessingService(
             ILogger<ImageProcessingService> logger,
             IServiceProvider serviceProvider,
             ApplicationDbContext dbContext,
-            IImageCacheService cacheService)
+            IImageCacheService cacheService,
+            ScanProcessingPipeline pipeline)
         {
             _logger = logger;
             _serviceProvider = serviceProvider;
             _dbContext = dbContext;
             _cacheService = cacheService;
+            _pipeline = pipeline;
         }
 
         public async Task<Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber)
@@ -399,145 +403,42 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             return null;
         }
 
-        /// <summary>
-        /// v2.10.0 mode-catalog rendering. FS6000 scans always qualify. ASE
-        /// splits on <c>lineDataType</c>: tri-panel scans (~8% of production)
-        /// get the full 9-mode catalog; single-view scans (~92%) get a
-        /// 3-mode subset (bw / inverse / edge).
-        /// </summary>
+        // ══════════════════════════════════════════════════════════════════
+        //  v2.11.0 — the four methods below were per-pipeline with cut-and-
+        //  paste dispatcher blocks spread across FS6000ImagePipeline +
+        //  ASEImagePipeline. They're now thin delegations to the scanner-
+        //  agnostic ScanProcessingPipeline, which routes container → IR via
+        //  IScanFormatAdapter + IScanSourceRetriever and runs shared kernel
+        //  operations. Adding a new scanner now requires only new adapter +
+        //  retriever implementations — no changes to this class, no changes
+        //  to the kernel, no changes to the controllers.
+        //
+        //  Partial-channel FS6000 handling (v2.10.5 hotfix) is preserved:
+        //  the pipeline's GetCapabilitiesAsync returns the inventory hint
+        //  when decode fails so the UI still gets the "missing: Material"
+        //  tooltip instead of an empty response.
+        // ══════════════════════════════════════════════════════════════════
+
         public async Task<byte[]?> GetRenderedImageBytesAsync(
-            string containerNumber,
-            string mode,
-            float loPct = 1.0f,
-            float hiPct = 99.5f,
-            float gamma = 1.0f,
+            string containerNumber, string mode,
+            float loPct = 1.0f, float hiPct = 99.5f, float gamma = 1.0f,
             CancellationToken ct = default)
-        {
-            var scannerType = await DetectScannerTypeAsync(containerNumber);
-            var pipeline = GetImagePipeline(scannerType);
-            if (pipeline is FS6000ImagePipeline fs6000Pipeline)
-            {
-                return await fs6000Pipeline.RenderImageInModeAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
-            }
-            if (pipeline is ASEImagePipeline asePipeline)
-            {
-                return await asePipeline.RenderImageInModeAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
-            }
-            // Unknown / unsupported scanner — caller should fall back to legacy path.
-            return null;
-        }
+            => await _pipeline.RenderAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
 
-        /// <summary>
-        /// v2.10.0 ROI Inspector. Supported for FS6000 and ASE (both variants).
-        /// Single-view ASE degenerates to a one-channel histogram with a
-        /// "not applicable" material block so the UI can render a simplified
-        /// view without null-checking every field.
-        /// </summary>
         public async Task<RoiInspectorResult?> GetRoiInspectorAsync(
-            string containerNumber,
-            int x, int y, int width, int height,
+            string containerNumber, int x, int y, int width, int height,
             CancellationToken ct = default)
-        {
-            var scannerType = await DetectScannerTypeAsync(containerNumber);
-            var pipeline = GetImagePipeline(scannerType);
-            if (pipeline is FS6000ImagePipeline fs6000Pipeline)
-            {
-                return await fs6000Pipeline.BuildRoiInspectorAsync(containerNumber, x, y, width, height, ct);
-            }
-            if (pipeline is ASEImagePipeline asePipeline)
-            {
-                return await asePipeline.BuildRoiInspectorAsync(containerNumber, x, y, width, height, ct);
-            }
-            return null;
-        }
+            => await _pipeline.BuildRoiAsync(containerNumber, x, y, width, height, ct);
 
-        /// <summary>
-        /// v2.10.0 mode-catalog capability manifest, refined in v2.10.5 so the
-        /// FS6000 branch actually checks which raw channels the scan has in
-        /// the database instead of assuming all three are present.
-        ///
-        /// Older ingests (pre-v2.9.6) and some in-flight scans only have a
-        /// subset of HighEnergy / LowEnergy / Material in fs6000images. If we
-        /// claim the full 9 modes for those, the toolbar shows buttons that
-        /// all 422 on click (because <c>FS6000ImagePipeline.LoadDecodedScanCachedAsync</c>
-        /// needs all three blobs to call <c>FS6000FormatDecoder.Decode</c>).
-        /// Until partial-channel decode lands, return an empty mode list for
-        /// those scans — the toolbar then hides itself and the viewer falls
-        /// back to the vendor Main JPEG, which is better than offering
-        /// guaranteed-broken buttons.
-        ///
-        /// Returns null for containers with no scan or an unsupported scanner.
-        /// </summary>
+        public async Task<PixelValueResult?> GetPixelValueAsync(
+            string containerNumber, int x, int y,
+            CancellationToken ct = default)
+            => await _pipeline.ProbePixelAsync(containerNumber, x, y, ct);
+
         public async Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
             string containerNumber,
             CancellationToken ct = default)
-        {
-            var scannerType = await DetectScannerTypeAsync(containerNumber);
-            var pipeline = GetImagePipeline(scannerType);
-            if (pipeline is FS6000ImagePipeline)
-            {
-                // v2.10.5 — verify HE + LE + Material raw channels all exist
-                // before claiming any modes. One cheap query over fs6000images
-                // projecting only imagetype, filtered to this container's scan.
-                var channels = await (
-                    from s in _dbContext.FS6000Scans.AsNoTracking()
-                    where s.ContainerNumber == containerNumber
-                    from i in _dbContext.FS6000Images.AsNoTracking()
-                    where i.ScanId == s.Id
-                    select i.ImageType
-                ).ToListAsync(ct);
-
-                if (channels.Count == 0)
-                {
-                    _logger.LogInformation(
-                        "[MODE-CAPS] No FS6000 images for {Container} — returning no scan found", containerNumber);
-                    return null;
-                }
-
-                bool hasHigh = channels.Contains("HighEnergy");
-                bool hasLow  = channels.Contains("LowEnergy");
-                bool hasMat  = channels.Contains("Material");
-
-                if (hasHigh && hasLow && hasMat)
-                {
-                    return new ScanModeCapabilities
-                    {
-                        Scanner = "FS6000",
-                        Variant = "composite16bit",
-                        SupportedModes = new[]
-                        {
-                            "composite", "bw", "inverse", "high-pen", "low-pen",
-                            "organic-strip", "metal-strip", "edge", "diff",
-                        },
-                    };
-                }
-
-                // Partial raw channels. Until the pipeline can decode without
-                // Material (a separate work item), expose zero modes so the
-                // toolbar hides itself and the viewer falls through to the
-                // vendor Main JPEG path. Variant string tells the UI which
-                // channels were missing so it can optionally display a hint.
-                var missing = new System.Collections.Generic.List<string>();
-                if (!hasHigh) missing.Add("HighEnergy");
-                if (!hasLow)  missing.Add("LowEnergy");
-                if (!hasMat)  missing.Add("Material");
-                _logger.LogInformation(
-                    "[MODE-CAPS] FS6000 {Container} missing raw channel(s) [{Missing}] — mode toolbar will hide",
-                    containerNumber, string.Join(",", missing));
-
-                return new ScanModeCapabilities
-                {
-                    Scanner = "FS6000",
-                    Variant = $"vendor-jpeg-only (missing: {string.Join(",", missing)})",
-                    SupportedModes = Array.Empty<string>(),
-                };
-            }
-            if (pipeline is ASEImagePipeline asePipeline)
-            {
-                return await asePipeline.GetModeCapabilitiesAsync(containerNumber, ct);
-            }
-            return null;
-        }
+            => await _pipeline.GetCapabilitiesAsync(containerNumber, ct);
 
         /// <summary>
         /// Ingest FS6000 raw .img channels from a stable folder into

@@ -1056,6 +1056,39 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         /// <summary>
+        /// v2.11.0 — per-pixel probe. Powers the viewer's hover chip. Returns
+        /// HE / LE / Material + vendor-LUT RGB at (x, y). Single-channel scans
+        /// return only HighEnergy; dual-energy-dependent fields stay null.
+        /// Coordinates are image-native; clamped server-side so the client
+        /// doesn't need to guard bounds.
+        /// </summary>
+        [AllowAnonymous]
+        [HttpGet("container/{containerNumber}/pixel")]
+        [ProducesResponseType(200, Type = typeof(PixelValueResult))]
+        [ProducesResponseType(404)]
+        public async Task<ActionResult<PixelValueResult>> GetPixelValue(
+            string containerNumber,
+            [FromQuery] int x = 0,
+            [FromQuery] int y = 0)
+        {
+            try
+            {
+                var result = await _imageProcessingService.GetPixelValueAsync(containerNumber, x, y);
+                if (result == null)
+                {
+                    return NotFound(new { error = "Pixel probe unavailable — no decoded scan for container" });
+                }
+                Response.Headers.CacheControl = "private, max-age=10";
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pixel probe failed for {Container} at ({X},{Y})", containerNumber, x, y);
+                return StatusCode(500, new { error = "Pixel probe failed", message = ex.Message });
+            }
+        }
+
+        /// <summary>
         /// Downscale a JPEG byte buffer to a thumbnail (max 240 px on the long
         /// edge). Shared helper between the mode-render path and the legacy
         /// size=thumbnail branch. Returns null on decode failure so the caller

@@ -105,23 +105,42 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
 
         /// <summary>
         /// Render the vendor-faithful composite as a JPEG byte buffer.
+        /// Legacy entry point — wraps <see cref="RenderJpeg(ushort[], ushort[], byte[], int, int)"/>.
         /// </summary>
         public static byte[] RenderJpeg(FS6000FormatDecoder.DecodedFs6000 d)
+            => RenderJpeg(d.High, d.Low, d.Material, d.Width, d.Height);
+
+        /// <summary>
+        /// v2.11.0 — array-based entry point the kernel calls with
+        /// <see cref="Kernel.EnergyChannel.Pixels"/> directly. Same hot loop
+        /// as the legacy entry point — ~3 M pixels × ~10 ns per lookup ≈
+        /// 30–50 ms on a modern server CPU.
+        /// </summary>
+        public static byte[] RenderJpeg(ushort[] high, ushort[] low, byte[] material, int width, int height)
         {
-            int n = d.Width * d.Height;
+            int n = width * height;
+            var rgb = CompositeRgbBuffer(high, low, material, n);
+            using var img = Image.LoadPixelData<Rgb24>(rgb, width, height);
+            using var ms = new MemoryStream(capacity: n / 4);
+            img.SaveAsJpeg(ms, new JpegEncoder { Quality = JpegQuality });
+            return ms.ToArray();
+        }
+
+        /// <summary>
+        /// v2.11.0 — vendor-LUT RGB composite to a flat byte[] (shape [n, 3]).
+        /// Shared by the JPEG encoder + Edge mode (which runs an unsharp mask
+        /// on the composite image before re-encoding).
+        /// </summary>
+        public static byte[] CompositeRgbBuffer(ushort[] high, ushort[] low, byte[] material, int n)
+        {
             var rgb = new byte[n * RgbChannels];
             var lut = _lut;
-
-            // Per-pixel: one class lookup + 2 bucket shifts + one table index.
-            // ~3 M pixels × ~10 ns per lookup ≈ 30–50 ms on a modern server CPU.
-            // No branching in the hot loop.
             for (int i = 0; i < n; i++)
             {
-                int cls = d.Material[i];
-                // Top 5 bits of the u16 = (val * 32) >> 16; clamp to [0, 31].
-                int heBucket = d.High[i] >> 11;
+                int cls = material[i];
+                int heBucket = high[i] >> 11;
                 if (heBucket >= HeBuckets) heBucket = HeBuckets - 1;
-                int leBucket = d.Low[i] >> 11;
+                int leBucket = low[i] >> 11;
                 if (leBucket >= LeBuckets) leBucket = LeBuckets - 1;
 
                 int lutIdx = cls * StrideClass + heBucket * StrideHe + leBucket * StrideLe;
@@ -130,11 +149,19 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 rgb[dst + 1] = lut[lutIdx + 1];
                 rgb[dst + 2] = lut[lutIdx + 2];
             }
+            return rgb;
+        }
 
-            using var img = Image.LoadPixelData<Rgb24>(rgb, d.Width, d.Height);
-            using var ms = new MemoryStream(capacity: n / 4);
-            img.SaveAsJpeg(ms, new JpegEncoder { Quality = JpegQuality });
-            return ms.ToArray();
+        /// <summary>
+        /// v2.11.0 — single-pixel lookup for the kernel's pixel probe. Caller
+        /// must clamp <paramref name="heBucket"/> / <paramref name="leBucket"/>
+        /// to [0, HeBuckets) / [0, LeBuckets); we skip the re-clamp here
+        /// since this is a per-hover hot path.
+        /// </summary>
+        public static (byte R, byte G, byte B) LookupRgb(int materialClass, int heBucket, int leBucket)
+        {
+            int lutIdx = materialClass * StrideClass + heBucket * StrideHe + leBucket * StrideLe;
+            return (_lut[lutIdx + 0], _lut[lutIdx + 1], _lut[lutIdx + 2]);
         }
     }
 }
