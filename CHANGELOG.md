@@ -22,6 +22,72 @@ For each release, this file records:
 
 ---
 
+## [2.15.2] — 2026-04-21 — ASE tri-panel default-render fix (auditor "doubled image" regression)
+
+Fixes the "images appear doubled" report from the 2026-04-21 operator
+session. The report was visually unmistakable: a single ASE scan rendered
+in the audit dialog as two near-identical copies of the cargo stacked
+vertically with a dark strip on top.
+
+### Root cause
+
+ASE scans come in two shapes: `lineDataType == 2` (single-view, width ×
+height is one grayscale frame) and `lineDataType == 3` (tri-panel, where
+the raw blob lays out three panels — LowEnergy, HighEnergy, Material —
+horizontally in a `width/3` × `height` each). ~8% of production ASE scans
+are tri-panel.
+
+The 1.x legacy renderer `AsePercentileRenderer` treats every ASE blob as
+a single flat grayscale at `decoded.Width × decoded.Height`. When that
+flat rendering is then passed through the 2.11.1 90° CCW rotation (so IR
+comes out landscape), the three horizontally-laid panels end up stacked
+vertically: Material on top (sparse, appears black), HighEnergy middle,
+LowEnergy bottom. Because HE and LE look near-identical to the human eye,
+auditors read it as "the same cargo image twice".
+
+The modern `AseTriPanelDecoder` (2.11.0) + `ScanProcessingPipeline` path
+handles this correctly — it splits the three panels and composites only
+the LE panel (or whichever composite the mode renderer picks) as a clean
+single-panel landscape image. But the path was only reachable via the
+explicit `?mode=` query param. The default `GET /api/ImageProcessing/
+container/{c}/complete/image` endpoint that the audit dialog calls still
+went through `_imageProcessingService.GetCompleteContainerDataAsync`,
+which still reaches the legacy `AsePercentileRenderer`.
+
+Verified on container `TGBU6058860` (group `40226148932`, ASE scanner,
+2026-04-21 13:37 assignment): default endpoint returned `1546×1632`
+(aspect 0.947, near-square — the three-panels-stacked shape);
+`?mode=composite` returned `1546×544` (aspect 2.84 — proper landscape
+single panel).
+
+### Fix
+
+[`ImageProcessingController.GetCompleteContainerDataImage`](src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs)
+now inspects scan capabilities when called with `imageType=ASE` and no
+explicit `mode=`. If the scan advertises `composite` support (the
+tri-panel trigger per `RenderModeRequirements.IsAvailable(Composite, …)`),
+the default request is transparently routed through
+`GetRenderedImageBytesAsync(containerNumber, "composite", …)` — the
+same code path `?mode=composite` already takes. Otherwise (single-view
+ASE, FS6000, Heimann, Nuctech) the handler falls through to the
+legacy `GetCompleteContainerDataAsync` path unchanged, so FS6000 and
+single-view ASE flows are not affected.
+
+No DB change, no client change. Clients that already pass `?mode=`
+explicitly continue to hit the explicit-mode block unchanged; this
+new block only intercepts the no-mode default.
+
+### Takes effect on
+
+NSCIM_API restart. The fix is in-process in the API service; UI and
+other services don't need a rebuild.
+
+### Commits in this release
+
+- `<TBD>` fix(image-processing/ase): auto-route ASE tri-panel default through composite renderer
+
+---
+
 ## [2.15.1] — 2026-04-21 — Audit-assignment pipeline hardening (zombie sweeper + throughput tuning)
 
 Follow-up to the 2026-04-21 operations session where audit assignments

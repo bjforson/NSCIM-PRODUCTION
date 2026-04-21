@@ -882,6 +882,60 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     });
                 }
 
+                // v2.15.2 — ASE tri-panel default-render fix.
+                //
+                // The legacy AsePercentileRenderer path (which GetCompleteContainerDataAsync
+                // eventually reaches for ASE) flattens `lineDataType == 3` tri-panel scans
+                // into a single wide grayscale: three panels (LE | HE | Material) laid out
+                // horizontally. After the 2.11.1 90° CCW rotation those three panels end
+                // up stacked vertically, with LE and HE near-identical to the human eye —
+                // so auditors see what looks like "the same cargo image twice", with a
+                // black (Material) strip on top. Verified in production 2026-04-21 on
+                // TGBU6058860 (1632×1546 tri-panel → 1546×1632 after rotation), which
+                // became a 1546×544 clean landscape when explicitly routed through
+                // `?mode=composite`.
+                //
+                // Fix: if no `mode` was specified and the scan exposes `composite` in its
+                // capabilities (which is exactly the tri-panel trigger — see
+                // `RenderModeRequirements.IsAvailable(Composite, …)`), route the default
+                // request through the modern AseTriPanelDecoder path transparently. This
+                // leaves single-view ASE (ldt=2, no composite capability), FS6000, and
+                // every other scanner untouched — they keep falling through to
+                // GetCompleteContainerDataAsync as before.
+                if (string.Equals(imageType, "ASE", StringComparison.OrdinalIgnoreCase))
+                {
+                    var aseCaps = await _imageProcessingService.GetScanModeCapabilitiesAsync(containerNumber);
+                    bool compositeAvailable = aseCaps?.SupportedModes != null
+                        && Array.Exists(aseCaps.SupportedModes,
+                            m => string.Equals(m, "composite", StringComparison.OrdinalIgnoreCase));
+                    if (compositeAvailable)
+                    {
+                        var autoBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
+                            containerNumber,
+                            "composite",
+                            loPct ?? 1.0f,
+                            hiPct ?? 99.5f,
+                            gamma ?? 1.0f);
+                        if (autoBytes != null)
+                        {
+                            if (string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase))
+                            {
+                                autoBytes = await ResizeToThumbnailAsync(autoBytes) ?? autoBytes;
+                            }
+                            Response.Headers.CacheControl = "private, max-age=3600";
+                            _logger.LogInformation(
+                                "[MODE-AUTO-ASE] {Container} default-rendered via composite (tri-panel) size={Bytes} bytes",
+                                containerNumber, autoBytes.Length);
+                            return File(autoBytes, "image/jpeg");
+                        }
+                        // Composite unexpectedly failed even though capabilities claimed
+                        // support — fall through to legacy path rather than erroring out.
+                        _logger.LogWarning(
+                            "[MODE-AUTO-ASE] {Container} claimed composite support but renderer returned null; falling back to legacy path",
+                            containerNumber);
+                    }
+                }
+
                 var completeData = await _imageProcessingService.GetCompleteContainerDataAsync(containerNumber, imageType);
 
                 // ✅ FIX: When imageType-specific request fails (e.g. ASE has ImageDisplayName but no ScanImage),
