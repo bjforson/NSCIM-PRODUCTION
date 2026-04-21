@@ -16,6 +16,9 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
     <PackageReference Include="MudBlazor" Version="8.13.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.14.0" />
+    <!-- v2.15.0 in-app user manual: Markdig parses the markdown files under
+         wwwroot/user-manual/ to safe HTML (tables, code fences, task lists). -->
+    <PackageReference Include="Markdig" Version="0.37.0" />
   </ItemGroup>
 
   <ItemGroup>

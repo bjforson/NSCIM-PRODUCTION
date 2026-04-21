@@ -213,6 +213,11 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.Permissions.PermissionCat
 builder.Services.AddScoped<NickScanWebApp.New.Services.Permissions.PermissionGuard>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.Permissions.AuthBootstrapper>();
 
+// v2.15.0 — in-app user manual. Singleton: corpus loaded once at startup
+// (lazy, thread-safe); per-user filtering happens at render time through
+// the scoped PermissionGuard.
+builder.Services.AddSingleton<NickScanWebApp.New.Services.UserManual.UserManualService>();
+
 // Demo services (temporarily disabled)
 // builder.Services.AddSingleton<WeatherForecastService>();
 

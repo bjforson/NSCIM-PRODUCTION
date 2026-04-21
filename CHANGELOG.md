@@ -22,6 +22,65 @@ For each release, this file records:
 
 ---
 
+## [2.15.0] — 2026-04-21 — In-app user manual (role-scoped help surface)
+
+Every page gained a `/help` entry point showing the matching topic for the
+caller's role. The manual is file-system-backed markdown under
+`wwwroot/user-manual/`, parsed with a YAML-lite frontmatter reader at startup,
+and filtered at render time against the caller's PermissionGuard so analysts
+only see analyst-relevant topics, auditors see audit topics, admins see
+everything.
+
+### What's new
+
+- **`Pages/Help/Help.razor`** — the sidebar-ToC / right-content-pane reading
+  surface, with an admin-only Role Preview toggle that re-renders the ToC as
+  a specific role would see it. Useful for training + compliance audits.
+- **`Services/UserManual/UserManualService.cs`** — singleton service that
+  loads the markdown corpus once at startup. Understands:
+  - YAML-lite frontmatter (five keys: title / category / order / requires /
+    updated / version) — no need for the YamlDotNet dependency.
+  - Permission filtering at doc + section level. Section gates use HTML
+    comments `<!-- requires: X,Y -->` so one doc can serve multiple roles
+    without duplicating content.
+  - Pretty permission aliases (`Pages.ImageAnalysisView`) resolved to real
+    strings (`pages.imageanalysis.view`) via reflection over `PermissionIds`,
+    so the markdown stays readable.
+- **33 markdown docs** covering:
+  - **Overview + viewer arc** — getting-started, viewer-basics, mode-toolbar,
+    window-level, pixel-probe, raw-16bit, roi-inspector, variant-labels
+    (8 docs from the v2.10.3–v2.14.1 arc).
+  - **Workflow** — decisions, workbench, audit-workflow, bl-review,
+    normalization-flow, split-review, cross-record-scans, container-details,
+    completeness, container-processing (10 docs).
+  - **ICUMS** — overview, download-queue, submission-queue, boe-request
+    (4 docs).
+  - **Administration** — users, roles, settings, logs, audit (5 docs).
+  - **Monitoring** — services, scanners, performance (3 docs).
+  - **Role guides** — analyst-first-hour, auditor-workflow, admin-onboarding
+    (3 docs).
+- **`Components/Layout/NavMenu.razor`** — "Help & Guides" entry visible to
+  every authenticated user.
+- **Markdig 0.37.0** — new package reference for Markdown-to-HTML.
+
+### Dependencies
+
+- Added `Markdig` (MIT licensed, ~200 KB). Standard .NET Markdown lib.
+
+### Notes for operators
+
+- Editing docs is a git-commit + redeploy cycle. The markdown files are copied
+  into `publish/WebApp/wwwroot/user-manual/` at publish time; UserManualService
+  reads them once at service start.
+- Adding a new doc: drop a `.md` file into `wwwroot/user-manual/` with the
+  five-key frontmatter block; it auto-appears in the ToC at next service start.
+- Permission-gate a doc by listing the Pascal-cased aliases under `requires:`
+  (e.g. `requires: [Pages.AdminUsers]`).
+- The admin Role Preview toggle doesn't change your real permissions — it
+  only filters the ToC/body as if you had the listed permissions.
+
+---
+
 ## [2.14.1] — 2026-04-21 — Ingest header validation + FS6000 data-integrity runbook
 
 Prevents truncated `.img` files from reaching `fs6000images` when the scanner

@@ -1,0 +1,308 @@
+@page "/help"
+@page "/help/{Slug}"
+@using System.Linq
+@using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.New.Services.Permissions
+@using NickScanWebApp.New.Services.UserManual
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+
+@inject UserManualService Manual
+@inject PermissionGuard Guard
+@inject NavigationManager Nav
+
+<PageTitle>Help &amp; Guides — NSCIS</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="mt-4 mb-8">
+
+    @* ── Page header + admin role-preview toggle ─────────────────── *@
+    <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4" Spacing="2">
+        <MudIcon Icon="@Icons.Material.Outlined.MenuBook" Size="Size.Large" Color="Color.Primary" />
+        <div style="flex:1">
+            <MudText Typo="Typo.h4">User Manual</MudText>
+            <MudText Typo="Typo.caption" Style="color:#777;">
+                In-app help, scoped to your role. Last updated with the
+                v@_appVersion release.
+            </MudText>
+        </div>
+
+        @* Role-preview toggle: only available to users who themselves can manage access/roles.
+           Lets admins preview what each role sees without switching logins. Genuinely useful
+           for training docs + compliance audits. *@
+        @if (Guard.CanAny("Help", PermissionIds.Pages.AdminRoles, PermissionIds.Pages.AdminUsers))
+        {
+            <MudTooltip Text="Preview what a specific role sees. Does not change your own access."
+                        Placement="Placement.Bottom">
+                <MudMenu Icon="@Icons.Material.Outlined.SwitchAccount"
+                         Label="@(_previewRole ?? "All my permissions")"
+                         Color="@(_previewRole != null ? Color.Warning : Color.Default)"
+                         Variant="Variant.Outlined">
+                    <MudMenuItem OnClick="@(() => SetPreview(null))">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudIcon Icon="@Icons.Material.Outlined.Person" Size="Size.Small" />
+                            <span>All my permissions (default)</span>
+                        </MudStack>
+                    </MudMenuItem>
+                    <MudDivider />
+                    @foreach (var preset in RolePresets)
+                    {
+                        <MudMenuItem OnClick="@(() => SetPreview(preset.Name))">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudIcon Icon="@preset.Icon" Size="Size.Small" Color="@preset.Color" />
+                                <span>@preset.Name</span>
+                            </MudStack>
+                        </MudMenuItem>
+                    }
+                </MudMenu>
+            </MudTooltip>
+            @if (_previewRole != null)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Icon="@Icons.Material.Outlined.Visibility">
+                    Preview mode: @_previewRole
+                </MudChip>
+            }
+        }
+    </MudStack>
+
+    <MudGrid>
+        @* ── Left: table of contents (category-grouped) ─────────── *@
+        <MudItem xs="12" md="4" lg="3">
+            <MudPaper Class="pa-3" Elevation="1" Style="position:sticky; top:12px; max-height:calc(100vh - 120px); overflow-y:auto;">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2" Spacing="1">
+                    <MudIcon Icon="@Icons.Material.Outlined.Toc" Size="Size.Small" Color="Color.Primary" />
+                    <MudText Typo="Typo.overline" Style="font-weight:700; letter-spacing:2px; color:#546e7a;">Topics</MudText>
+                </MudStack>
+                @if (_visibleDocs.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Variant="Variant.Text">
+                        No help topics are available for your role. If you think this is wrong, contact your administrator.
+                    </MudAlert>
+                }
+                else
+                {
+                    @foreach (var group in _visibleDocs.GroupBy(d => d.Category))
+                    {
+                        <MudText Typo="Typo.caption" Style="font-weight:700; color:#455a64; margin-top:10px;">@group.Key.ToUpperInvariant()</MudText>
+                        @foreach (var doc in group)
+                        {
+                            var active = string.Equals(doc.Slug, _currentSlug, StringComparison.OrdinalIgnoreCase);
+                            var bg     = active ? "background:#e3f2fd;" : "";
+                            var weight = active ? "font-weight:600;"    : "";
+                            <MudLink Href="@($"/help/{doc.Slug}")"
+                                     Class="d-block px-2 py-1"
+                                     Style="@($"border-radius:4px; text-decoration:none; color:#263238; {bg} {weight}")"
+                                     Underline="Underline.None">
+                                @doc.Title
+                            </MudLink>
+                        }
+                    }
+                }
+            </MudPaper>
+        </MudItem>
+
+        @* ── Right: topic content pane ────────────────────────────── *@
+        <MudItem xs="12" md="8" lg="9">
+            <MudPaper Class="pa-6" Elevation="1" Style="min-height: 60vh;">
+                @if (_currentDoc != null)
+                {
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2" Spacing="1">
+                        <MudText Typo="Typo.overline" Style="color:#78909c; letter-spacing:2px;">@_currentDoc.Category</MudText>
+                        @if (!string.IsNullOrEmpty(_currentDoc.Version))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">@_currentDoc.Version</MudChip>
+                        }
+                        <div style="flex:1"></div>
+                        @if (!string.IsNullOrEmpty(_currentDoc.UpdatedIso))
+                        {
+                            <MudText Typo="Typo.caption" Style="color:#999;">Updated @_currentDoc.UpdatedIso</MudText>
+                        }
+                    </MudStack>
+                    <MudText Typo="Typo.h5" Class="mb-4">@_currentDoc.Title</MudText>
+                    <MudDivider Class="mb-4" />
+                    <div class="user-manual-body">
+                        @((MarkupString)_currentHtml)
+                    </div>
+                }
+                else if (_currentSlug != null)
+                {
+                    <MudAlert Severity="Severity.Warning">
+                        <strong>Topic not available.</strong> Either this topic doesn't exist, or your role doesn't have access to it.
+                        <MudLink Href="/help" Class="ml-2">Back to index</MudLink>
+                    </MudAlert>
+                }
+                else
+                {
+                    @* Landing page — no slug provided *@
+                    <MudText Typo="Typo.h5" Class="mb-2">Welcome</MudText>
+                    <MudText Typo="Typo.body1" Class="mb-4" Style="color:#555;">
+                        The NSCIS user manual is scoped to your role. Use the topics list on the left to navigate.
+                        Start with <MudLink Href="/help/getting-started">Getting Started</MudLink> if you're new.
+                    </MudText>
+
+                    @if (_visibleDocs.Count > 0)
+                    {
+                        <MudGrid>
+                            @foreach (var group in _visibleDocs.GroupBy(d => d.Category).Take(6))
+                            {
+                                <MudItem xs="12" md="6">
+                                    <MudPaper Class="pa-3" Elevation="0" Style="background:#f5f7fa; border-radius:6px; height:100%;">
+                                        <MudText Typo="Typo.subtitle1" Style="font-weight:600;">@group.Key</MudText>
+                                        <MudStack Spacing="0" Class="mt-1">
+                                            @foreach (var doc in group.Take(5))
+                                            {
+                                                <MudLink Href="@($"/help/{doc.Slug}")" Underline="Underline.Hover" Style="color:#37474f;">
+                                                    → @doc.Title
+                                                </MudLink>
+                                            }
+                                            @if (group.Count() > 5)
+                                            {
+                                                <MudText Typo="Typo.caption" Style="color:#888; margin-top:4px;">
+                                                    +@(group.Count() - 5) more…
+                                                </MudText>
+                                            }
+                                        </MudStack>
+                                    </MudPaper>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    }
+                }
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+</MudContainer>
+
+@* Light styling for the rendered Markdown body so it doesn't look raw. *@
+<style>
+    .user-manual-body h1, .user-manual-body h2, .user-manual-body h3 {
+        margin-top: 1.2em; margin-bottom: 0.4em; color: #263238;
+    }
+    .user-manual-body h1 { font-size: 1.6rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; }
+    .user-manual-body h2 { font-size: 1.3rem; }
+    .user-manual-body h3 { font-size: 1.1rem; color: #37474f; }
+    .user-manual-body p  { line-height: 1.6; margin: 0.6em 0; }
+    .user-manual-body code {
+        background: #eceff1; padding: 2px 5px; border-radius: 3px;
+        font-size: 0.9em; font-family: Consolas, "Courier New", monospace;
+    }
+    .user-manual-body pre {
+        background: #263238; color: #eceff1; padding: 12px; border-radius: 4px;
+        overflow-x: auto; font-size: 0.85em; line-height: 1.45;
+    }
+    .user-manual-body pre code { background: transparent; padding: 0; color: inherit; }
+    .user-manual-body table { border-collapse: collapse; margin: 1em 0; }
+    .user-manual-body th, .user-manual-body td {
+        border: 1px solid #cfd8dc; padding: 6px 10px; text-align: left;
+    }
+    .user-manual-body th { background: #eceff1; font-weight: 600; }
+    .user-manual-body blockquote {
+        border-left: 3px solid #42a5f5; padding: 4px 14px;
+        background: #e3f2fd; margin: 1em 0; color: #37474f;
+    }
+    .user-manual-body ul, .user-manual-body ol { padding-left: 1.5em; line-height: 1.6; }
+    .user-manual-body li { margin: 0.2em 0; }
+    .user-manual-body a { color: #1565c0; }
+</style>
+
+@code {
+    [Parameter] public string? Slug { get; set; }
+
+    private string _appVersion = typeof(Help).Assembly.GetName().Version?.ToString(3) ?? "?";
+    private IReadOnlyList<UserManualDoc> _visibleDocs = Array.Empty<UserManualDoc>();
+    private UserManualDoc? _currentDoc;
+    private string _currentHtml = "";
+    private string? _currentSlug;
+    private string? _previewRole;
+
+    // Role presets the admin preview toggle offers. Each preset is a permission
+    // subset that approximates what that role sees. If new roles are added,
+    // extend this list — or eventually wire up a dynamic role fetcher.
+    private record RolePreset(string Name, string Icon, Color Color, string[] Permissions);
+
+    private static readonly RolePreset[] RolePresets = new[]
+    {
+        new RolePreset("Analyst", Icons.Material.Outlined.ImageSearch, Color.Info, new[]
+        {
+            Permissions.PagesImageAnalysisView,
+            Permissions.PagesContainersView,
+            Permissions.PagesContainersDetails,
+            Permissions.PagesContainerCompleteness,
+            Permissions.PagesIcumsView,
+        }),
+        new RolePreset("Auditor", Icons.Material.Outlined.Gavel, Color.Secondary, new[]
+        {
+            Permissions.PagesImageAnalysisAudit,
+            Permissions.PagesContainersView,
+            Permissions.PagesContainersDetails,
+            Permissions.PagesContainerCompleteness,
+            Permissions.PagesIcumsView,
+        }),
+        new RolePreset("Manager", Icons.Material.Outlined.SupervisorAccount, Color.Success, new[]
+        {
+            Permissions.PagesImageAnalysisManagement,
+            Permissions.PagesImageAnalysisView,
+            Permissions.PagesImageAnalysisAudit,
+            Permissions.PagesContainersView,
+            Permissions.PagesContainersDetails,
+            Permissions.PagesContainerCompleteness,
+            Permissions.PagesContainerProcessing,
+            Permissions.PagesCrossRecordScans,
+            Permissions.PagesIcumsView,
+            Permissions.PagesIcumsDownloadQueue,
+            Permissions.PagesIcumsSubmissionQueue,
+            Permissions.PagesIcumsBoeRequest,
+            Permissions.PagesServicesMonitoring,
+            Permissions.PagesScannersView,
+            Permissions.PagesPerformance,
+        }),
+        new RolePreset("Admin (everything)", Icons.Material.Outlined.AdminPanelSettings, Color.Warning,
+            // Empty means "grants all perms" via the role-preview override below
+            Array.Empty<string>()),
+    };
+
+    protected override void OnParametersSet()
+    {
+        _currentSlug = Slug?.ToLowerInvariant();
+        RecomputeVisibility();
+    }
+
+    private void SetPreview(string? roleName)
+    {
+        _previewRole = roleName;
+        RecomputeVisibility();
+        StateHasChanged();
+    }
+
+    private void RecomputeVisibility()
+    {
+        var overridePerms = ResolvePreviewPermissions();
+        _visibleDocs = Manual.GetVisibleDocs(Guard, overridePerms);
+
+        if (_currentSlug != null)
+        {
+            _currentDoc = Manual.GetDoc(_currentSlug, Guard, overridePerms);
+            _currentHtml = _currentDoc != null
+                ? Manual.RenderBody(_currentDoc, Guard, overridePerms)
+                : "";
+        }
+        else
+        {
+            _currentDoc = null;
+            _currentHtml = "";
+        }
+    }
+
+    /// <summary>Convert the selected role preset into a PermissionId[] for the
+    /// service to evaluate against, or null when not in preview mode.</summary>
+    private PermissionId[]? ResolvePreviewPermissions()
+    {
+        if (_previewRole == null) return null;
+        var preset = RolePresets.FirstOrDefault(r => r.Name == _previewRole);
+        if (preset == null) return null;
+        // Admin preset: empty permission list means "show everything" —
+        // return null so the service falls back to the real PermissionGuard
+        // (which, since the toggle is visible only to admins, yields full view).
+        if (preset.Permissions.Length == 0) return null;
+        return preset.Permissions.Select(p => new PermissionId(p)).ToArray();
+    }
+}
