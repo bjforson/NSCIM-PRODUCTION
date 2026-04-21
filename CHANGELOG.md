@@ -22,6 +22,639 @@ For each release, this file records:
 
 ---
 
+## [2.14.1] — 2026-04-21 — Ingest header validation + FS6000 data-integrity runbook
+
+Prevents truncated `.img` files from reaching `fs6000images` when the scanner
+writes partial payloads. Survey of production found 22 scans (2026-04-13 to
+2026-04-20) with full HE blobs but LE truncated to round-number sizes
+(2 MB, 1 MB, 640 KB, 128 KB — classic interrupted-write signature) plus no
+Material from the same bad ingestion cycle. The archiver faithfully copied
+the partial files into `Archive\`, and ingest loaded the bad bytes into the
+DB where decode later threw "channel truncated" downstream.
+
+### What's new
+
+- **`FS6000RawChannelIngester.IsHeaderConsistent`** — parses the 36-byte FS6000
+  header, computes expected payload from `Width × Height × (BitDepth/8) + header`,
+  and rejects files where the actual byte count is short. Also validates the
+  header's bit-depth matches the channel type (HE/LE = 16, Material = 8).
+  Does NOT reject oversize files — some vendor tools pad with trailing metadata.
+- **Rejected channels don't pollute the DB.** The ingester logs a
+  `[FS6000-RAW] Rejecting truncated/inconsistent {ImageType}` warning and
+  moves on; the backfill worker retries on its next 5-min cycle, so
+  late-completing files are still recoverable.
+- **`docs/ops-fs6000-data-integrity.md`** (new) — ops runbook covering the
+  three tickets surfaced during the v2.10.3–v2.14.0 viewer arc:
+  - Ticket 1: pre-April 4 Archive retention gap (1,036 scans, historical,
+    already fixed by the 2026-04-19 `FileSyncService.cs` replacement)
+  - Ticket 2: scanner not emitting `material.img` for ~15% of recent scans
+    (scanner-side, not code; v2.14.0 partial-channel rendering is the relief;
+    runbook includes a per-day miss-rate SQL query)
+  - Ticket 3: 22 existing truncated-LE scans (can't recover; v2.14.1 above
+    prevents future occurrences; runbook includes a truncation-detector query)
+  - One-shot "coverage dashboard" SQL for the full HE/LE/Material state
+    breakdown
+
+### Current coverage (2026-04-21)
+
+| State | Scans | Behaviour |
+|---|---|---|
+| full (9 modes) | 243 | full mode catalog |
+| partial HE+LE (6 modes via v2.14.0) | 29 | bw / inverse / high-pen / low-pen / diff / edge |
+| degraded (1-2 channels) | 14 | vendor-jpeg-only |
+| empty (vendor-jpeg-only) | 1,036 | permanent historical data loss |
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000RawChannelIngester.cs` (header-consistency validation)
+- `docs/ops-fs6000-data-integrity.md` (new)
+- `src/Directory.Build.props` (2.14.0 → 2.14.1)
+
+Commit: `bd57381`
+
+---
+
+## [2.14.0] — 2026-04-21 — Partial-channel mode rendering for FS6000 (HE + LE without Material)
+
+Unlocks the greyscale mode subset on FS6000 scans that have `high.img` +
+`low.img` but no `material.img` (scanner sometimes doesn't emit it — see
+v2.14.1 ops doc). Pre-v2.14.0 those scans returned `SupportedModes=[]`
+and the toolbar hid entirely; now they return 6 modes and operators can
+analyse them.
+
+Scope: 29 scans in live production today; more expected while the scanner-
+side issue persists.
+
+### What's new
+
+- **`FS6000FormatDecoder.DecodeEnergyOnly(highBytes, lowBytes)`** — new
+  overload. Same dimension / bit-depth validation as `Decode()` minus the
+  material checks. Returns a `(W, H, High, Low, Timestamp)` tuple because
+  the `DecodedFs6000` struct requires non-null Material.
+- **`FS6000FormatAdapter.DecodeAsync`** — relaxed the hard requirement on
+  all three blobs. HE + LE is the new minimum; Material is optional. When
+  Material is absent, the adapter builds a `DecodedScan` with
+  `Material = null` and `SourceFormatTag = "fs6000-v1-no-material"`.
+- **`RenderModeRequirements.IsAvailable`** already gated Composite /
+  OrganicStrip / MetalStrip on `scan.Material != null`, so those modes
+  are auto-dropped from `ScanCapabilities.Derive` for the partial variant
+  without further code changes.
+- Edge / Diff / BlackWhite / Inverse / HighPen / LowPen stay in the catalog
+  because their requirements are satisfied by HE + LE alone. ScanPixelProbe
+  and ScanRoiBuilder already null-checked Material — no kernel changes
+  needed (that was the whole point of the v2.11.0 refactor).
+
+### Validation
+
+```
+curl /api/ImageProcessing/container/TRHU7215036/mode-capabilities
+  → {"Scanner":"FS6000","Variant":"fs6000-v1-no-material",
+     "SupportedModes":["bw","inverse","high-pen","low-pen","edge","diff"]}
+
+mode=bw / inverse / high-pen / low-pen / edge / diff  → 200 with real JPEG bytes
+mode=composite / organic-strip / metal-strip          → 422 (expected)
+```
+
+Full-channel scans (`SUDU7957375`) unaffected: still all 9 modes with
+`Variant = "fs6000-v1"`.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000FormatDecoder.cs`
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/Kernel/Adapters/FS6000FormatAdapter.cs`
+- `src/Directory.Build.props` (2.13.0 → 2.14.0)
+
+Commit: `6ecf58a`
+
+---
+
+## [2.13.0] — 2026-04-20 — Phase 5: ROI inspector side panel UI
+
+Hooks into the existing rectangle-draw tool in `ImageAnalysisViewer.razor`.
+On draw-complete + on rectangle-click, the panel populates with HE / LE
+histograms, material-class distribution, and three small preview
+thumbnails — turning the rectangle annotation feature into a working
+pinpoint analysis surface.
+
+Backend was shipped in v2.10.0 (`/api/ImageProcessing/container/{id}/roi`)
+and refined in v2.11.0 to operate on the `DecodedScan` IR. This release
+is pure UI wiring.
+
+### What's new
+
+- New fields in `ImageAnalysisViewer.razor`: `_roiPanelOpen`, `_roiData`
+  (`RoiInspectorResult`), `_roiLoading`, `_roiError`, `_lastRoiIdx`.
+- `FetchRoiForRectangleAsync(rectIdx)` — converts the rect's 0..1 fractions
+  to native pixel ints (via `<img>`'s `naturalWidth`/`Height` over JS
+  interop), calls `/roi`, short-circuits when called twice for the same
+  rect.
+- Hook points: `HandleMouseUp` fires the fetch on draw-complete;
+  `SelectRectangle` fires it on rect-click. Container change clears
+  `_roiData` + `_lastRoiIdx`.
+- **Side-panel UI** under `MARKED AREAS`:
+  - geometry + elapsed line (monospace)
+  - dominant-material chip with colour-coded dot
+  - 4-bar material distribution (background / noise / organic / metal) with %s
+  - HE stats row (min / median / max / p1 / p99) + 32-bucket CSS histogram
+  - LE stats + purple histogram (auto-hidden for single-view scans where
+    LE mirrors HE)
+  - 3 × 100×80 px preview thumbnails (base64 JPEGs served from backend)
+  - Collapsible via chevron
+
+- New JS helper `Raw16BitViewer.getImageDims(img)` — thin wrapper exposing
+  the `<img>`'s `naturalWidth`/`naturalHeight` for fraction→pixel math.
+
+### Visually verified
+
+`TRHU2950193` — drawn rectangle at (1726, 360) 579×385 px returned
+dominant=metal (7.5%), background 91.4%, organic 0.8%, noise 0.3%;
+HE stats min=842 med=1020 max=47519 p1=948 p99=33907; full histograms
++ 3 preview thumbs rendered in 540 ms.
+
+### Files touched
+
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
+- `src/NickScanWebApp.New/wwwroot/js/raw16bitViewer.js`
+- `src/Directory.Build.props` (2.12.0 → 2.13.0)
+
+Commit: `d288e3a`
+
+---
+
+## [2.12.0] — 2026-04-20 — Phase 4: client-side 16-bit viewer (real dynamic range)
+
+Operators now see the raw 16-bit signal instead of JPEG-lossy 8-bit.
+Window/level runs entirely in the browser on the cached raw buffer —
+zero server round-trips per slider tick.
+
+### Why
+
+The JPEG path compresses a 14- or 16-bit signal into 8-bit before it
+reaches the operator. For dense cargo inspection the top 99% of the
+intensity range is often truncated; subtle density variations that
+matter for contraband detection (e.g. organic hidden inside metal) are
+invisible in the JPEG. Exposing the raw 16-bit lets the operator apply
+window/level at their end with no quality loss.
+
+### What's new
+
+- **`RawPlaneResult` DTO** (`Core.Interfaces`) — bytes + W + H + BitDepth +
+  Plane + SourceFormat.
+- **`IImageProcessingService.GetRawPlaneAsync`** + pipeline
+  (`ScanProcessingPipeline.GetRawPlaneAsync`) — looks up the channel by
+  `EnergyKind` from the cached `DecodedScan` (HE → High or Single
+  fallback; LE → Low; Material → Material.Classes). `ushort[]` → little-
+  endian `byte[]` via `Buffer.BlockCopy` (no per-element work, x64 is
+  already little-endian in memory).
+- **`GET /api/ImageProcessing/container/{id}/raw?plane=he|le|material`**
+  — returns `application/octet-stream` with headers `X-Width`, `X-Height`,
+  `X-BitDepth`, `X-Plane`, `X-Source-Format`, plus
+  `Access-Control-Expose-Headers` so `fetch()` can read them. 404s
+  gracefully when the plane isn't present on this variant (e.g. LE on
+  ASE single-view; any plane on partial-channel FS6000).
+- **`wwwroot/js/raw16bitViewer.js`** — `Raw16BitViewer` module exposing
+  `loadAndRender`, `rerenderFromCache`, `clearCache`. Fetches the buffer
+  once per `(container, plane)`, caches in an in-memory `Map`, and renders
+  to a `<canvas>` with an inline window/level loop. 5 Mpx re-render is
+  20–60 ms on modern browsers.
+- **`ImageAnalysisViewer.razor`** — "Raw 16-bit" chip in the RENDER MODE row
+  (green when active), HE / LE / MAT plane selector (LE / MAT hidden on
+  single-view scans), geometry label like `2091×1378 @ 16-bit · 5.5 MB`,
+  soft-fail error surface. Canvas above `<img>` at z-index 6, shown only
+  in raw mode; `<img>` stays mounted so toggling off is instant.
+- `OnWindowLevelSliderChanged` now branches: raw mode →
+  `Raw16BitViewer.rerenderFromCache` (pure JS, no server); JPEG mode →
+  existing cache-buster refetch path (unchanged).
+
+### Validation
+
+Browser trace on `MSMU2400255`: single `/raw?plane=he` fetch on toggle;
+LEVEL slider drag produced **zero** additional network requests.
+Plane switch HE → LE → MAT → exactly one fetch per plane. MAT at
+half the bytes (8-bit vs 16-bit) as expected.
+
+Curl verification:
+- FS6000 `SUDU7957375` HE = 7.2 MB (2743×1378×2), MAT = 3.6 MB (×1)
+- ASE single-view `PCIU8486481` HE = 1.7 MB (1591×544×2 landscape after v2.11.1); LE/MAT → 404
+- Partial-channel `TCKU1817911` all planes → 404
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Core/Interfaces/IImageProcessingService.cs` (DTO + method)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/Kernel/ScanProcessingPipeline.cs`
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ImageProcessingService.cs` (delegation)
+- `src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs` (`/raw` endpoint)
+- `src/NickScanWebApp.New/wwwroot/js/raw16bitViewer.js` (new)
+- `src/NickScanWebApp.New/Pages/_Host.cshtml` (script tag)
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
+- `src/Directory.Build.props` (2.11.2 → 2.12.0)
+
+Commit: `22c3a42`
+
+---
+
+## [2.11.2] — 2026-04-20 — Phase 3: pixel-probe hover chip
+
+When the Pixel Probe button is active, hovering the image shows a floating
+chip at the cursor with the native pixel coords + HE / LE / Material raw
+values + vendor-LUT RGB at that pixel + category label (organic / metal /
+background / noise).
+
+### What's new
+
+- **`GET /api/ImageProcessing/container/{id}/pixel?x=&y=`** — delegates to
+  `ScanProcessingPipeline.ProbePixelAsync` → `ScanPixelProbe.Probe`
+  (scanner-agnostic, uses the 30 s decode cache). Single-view ASE returns
+  only `HighEnergy`; dual-energy-dependent fields stay null.
+- **`ImageAnalysisViewer.razor`** — new fields `_pixelProbeEnabled`,
+  `_probeData`, debounce timer; `HandleProbeMouseMove` uses
+  `MouseEventArgs.OffsetX/Y` for native-pixel coords and `ClientX/Y` for
+  screen-space chip positioning; 80 ms debounce coalesces drag bursts.
+  Floating chip `position:fixed` at document root (escapes CSS transforms
+  on the image wrapper). Colour-coded fields, RGB swatch with live colour.
+- **Bug found during sign-off**: initial markup used self-closing
+  `<div ... />` without `@ref`, which caused Blazor Server's event-
+  delegation to not attach `_bl_*` descriptor to the element (handler
+  never fired). Added `@ref="_probeOverlay"` + explicit closing `></div>`
+  to match the draw overlay's pattern. Event binding now attaches correctly.
+
+### Validation
+
+ASE single-view `FFAU3540411`: hover produced `(690, 305) HE = 661` chip
+at cursor. LE / Material / RGB correctly hidden (single-view has no
+second energy). Works identically on FS6000 + ASE tri-panel with the
+full field set.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Core/Interfaces/IImageProcessingService.cs`
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/Kernel/ScanPixelProbe.cs`
+  + delegation in `ScanProcessingPipeline`, `ImageProcessingService`,
+  `FS6000VendorLutCompositor.LookupRgb`
+- `src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs`
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
+- `src/Directory.Build.props` (2.11.1 → 2.11.2)
+
+Commit: `baccd4c`
+
+---
+
+## [2.11.1] — 2026-04-20 — ASE adapter rotates 90° CCW so IR is landscape
+
+Regression surfaced after v2.11.0 visual sign-off: mode-rendered ASE images
+came out 544×1603 (portrait) while the default path via
+`AsePercentileRenderer` rendered 1603×544 (landscape). Same pixel count,
+orientation transposed.
+
+Root cause: the ASE wire format stores pixels in portrait (scanner captures
+one column per truck-motion tick). The vendor DLL always rotated 90° CCW
+internally so the entire frontend — canvas tools, pan/zoom, ROI drawing,
+ruler, fullscreen viewer — was built around landscape dimensions. The
+existing `AsePercentileRenderer` preserves that via GDI `RotateFlip`.
+
+The v2.11.0 `ASEFormatAdapter` handed raw portrait pixels to the unified
+kernel, so mode-rendered images came out rotated.
+
+### What's new
+
+- `ASEFormatAdapter` applies 90° CCW rotation in the adapter so the IR
+  carries landscape-oriented pixels from the start. Every downstream
+  kernel operation (render, probe, ROI) inherits the correct orientation
+  naturally.
+- Handles both variants: single-view (one channel rotated) and tri-panel
+  (HE + LE + Material rotated together so they stay co-registered).
+
+### Validation
+
+- `PCIU8486481` bw (single-view): now 1591×544 landscape (was 544×1591)
+- `CSNU8761433` bw (single-view): now 1603×544 landscape (was 544×1603)
+- Visual sign-off: ASE CSNU8761433 Edge mode now renders the container
+  horizontally, matching what operators have always seen from the default path.
+
+### Byte-parity note
+
+This BREAKS byte parity with v2.10.5 for ASE mode renders (those were
+portrait too — a latent bug that went unnoticed because the pre-v2.10.5
+mode toolbar couldn't be used reliably on partial-channel scans). The
+new output is CORRECT; v2.10.5's mode-path ASE output was the bug.
+FS6000 modes remain byte-identical to v2.10.5.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/Kernel/Adapters/ASEFormatAdapter.cs`
+- `src/Directory.Build.props` (2.11.0 → 2.11.1)
+
+Commit: `0f85907`
+
+---
+
+## [2.11.0] — 2026-04-20 — Unified scan processing pipeline (structural refactor)
+
+Replaces the parallel `FS6000ImagePipeline` / `ASEImagePipeline` classes
+(which each carried duplicated implementations of every v2.10.x capability)
+with a single scanner-agnostic pipeline driven by a variadic-channel IR
+and declared material taxonomies. Byte-for-byte output parity vs v2.10.5
+verified across 12 test cases.
+
+### Why
+
+Every new capability in v2.10.x was paying rent in duplication: v2.10.0
+added 3 methods × 2 pipelines. v2.10.x's about-to-be-added Phase 3 would
+have added a 4th × 2. Phase 4 would have added a 5th × 2. Every new
+scanner (Heimann is already commented-in, Nuctech MX-series is plausible
+medium-term) would have tripled the duplication tax. The `IImagePipeline`
+interface was a liar — it suggested polymorphism that the service never
+used (every caller in `ImageProcessingService` had to
+`is FS6000ImagePipeline` / `is ASEImagePipeline` to reach the real methods).
+
+### The 5-layer model
+
+```
+Layer 5  Pipeline      ScanProcessingPipeline (one)
+Layer 4  Kernel        ScanRenderer / ScanPixelProbe / ScanRoiBuilder /
+                       ScanCapabilities / RenderModeRequirements
+                       (pure functions over DecodedScan; dispatch on
+                       scan *structure*, not scanner *identity*)
+Layer 3  Router        ScanRouter (one, container → IR with 30s cache)
+Layer 2  Retrievers    IScanSourceRetriever (one per data source — DB reads)
+Layer 1  Adapters      IScanFormatAdapter (one per wire format — byte parse)
+```
+
+The IR (`DecodedScan`):
+- Variadic `IReadOnlyList<EnergyChannel>` — single-view = 1 entry,
+  dual-energy = 2, future multi-energy = 3+
+- Optional `MaterialClassification` with a **declared `MaterialTaxonomy`**
+  — FS6000 declares `{bg 0-0, noise 1-40, organic 41-120, metal 121-255}`;
+  a new scanner declares its own scheme; the kernel reads the taxonomy,
+  never hardcodes band boundaries
+- Per-channel `BitDepth`, geometric `PixelPitchMm`, `Orientation`,
+  optional `VendorReferenceJpeg`, opaque `SourceMetadata`
+
+### Adding a new scanner after this refactor
+
+1. Write `VendorXFormatAdapter : IScanFormatAdapter` — parses bytes, builds
+   a `DecodedScan` with the right channel count + taxonomy.
+2. Write `VendorXSourceRetriever : IScanSourceRetriever` — loads the blobs.
+3. Add a `ScannerType` enum value; register both in DI; add one branch to
+   `ScannerTypeDetector`.
+
+~250 lines total. The kernel, pipeline, capabilities, mode catalog,
+window/level, pixel probe, ROI inspector, and every future operation
+(Phase 4 raw 16-bit, Phase 5 ROI UI, future AI) pick up the new scanner
+automatically based on what its `DecodedScan.Variant` declares it supports.
+
+### Verified byte-parity vs v2.10.5 (12 cases)
+
+| Scan | Modes tested | Result |
+|---|---|---|
+| FS6000 `SUDU7957375` | all 9 | byte-identical |
+| ASE single-view `PCIU8486481` | bw / inverse / edge | byte-identical |
+| Partial-channel `TCKU1817911` | capabilities endpoint | same `vendor-jpeg-only (missing: Material)` response |
+
+### Files touched
+
+New subtree `src/NickScanCentralImagingPortal.Services.ImageProcessing/Kernel/`:
+- `DecodedScan.cs`, `ScanModes.cs`, `ScanCapabilities.cs`, `ScanRenderer.cs`,
+  `ScanPixelProbe.cs`, `ScanRoiBuilder.cs`, `ScanProcessingPipeline.cs`,
+  `ScanRouter.cs`, `ScannerTypeDetector.cs`
+- `Abstractions/IScanFormatAdapter.cs`, `Abstractions/IScanSourceRetriever.cs`
+- `Adapters/FS6000FormatAdapter.cs`, `Adapters/ASEFormatAdapter.cs`
+- `Retrievers/FS6000SourceRetriever.cs`, `Retrievers/ASESourceRetriever.cs`
+
+Trimmed + rewired:
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000ImagePipeline.cs` (829 → 489 lines — v2.10.x methods moved to kernel)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ASEImagePipeline.cs` (817 → 487 lines — same)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ImageProcessingService.cs` (delegation; dropped all `is FS6000ImagePipeline` branches)
+- `src/NickScanCentralImagingPortal.Services/ServiceConfiguration.cs` (DI for adapters + retrievers + router + pipeline)
+- `src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs` (controller contract unchanged — only internal dispatch changed)
+
+Architecture doc: `docs/architecture-image-pipeline.md` (new; canonical
+reference for the 5 layers + add-a-new-scanner runbook).
+
+### Intentionally NOT unified
+
+Ingest (`Services.FS6000/IngestionService.cs` + `Services/ImageProcessingOrchestrator.cs`,
+1,353 lines total). Evaluated during this arc; **zero decoder calls**
+in ingest today (pure byte-shuttling). The "scanners declare format once"
+goal is already satisfied — format decoders are declared once per scanner
+and used once per scanner on the render side. Forcing ingest to also use
+the adapter layer would add a rejection-risk path for edge-case blobs
+with no offsetting benefit. Documented in
+`docs/viewer-phase-plan.md#open-questions--parked-items`.
+
+Commit: `1e1835a`
+
+---
+
+## [2.10.5] — 2026-04-20 — Mode-capabilities hotfix (check raw-channel presence)
+
+Before this fix, `GetScanModeCapabilitiesAsync` blindly returned the full
+9-mode catalog for every FS6000 scan. Production data showed only **239 of
+1,318 FS6000 scans (~18%)** actually had HE + LE + Material raw channels in
+`fs6000images`. The other 1,079 (~82%) had partial or empty sets: 29
+missing just Material, 14 missing HE or LE, 1,036 with no raw channels at
+all (legacy pre-ingest).
+
+Net effect: the viewer showed a full mode toolbar on 82% of scans where
+clicking any chip produced a broken image (`FS6000FormatDecoder.Decode`
+requires all three blobs, returns null without them → controller 422).
+
+### What's new
+
+- `GetScanModeCapabilitiesAsync` joins `fs6000images`, inspects the set of
+  `imagetype` values, and returns `SupportedModes=[]` with variant
+  `vendor-jpeg-only (missing: X,Y)` when any of HE/LE/Material is absent.
+  The toolbar in `ImageAnalysisViewer.razor` hides itself when
+  `_supportedModes.Count == 0`, so the viewer falls through to the
+  existing vendor Main JPEG — the behaviour operators had on these scans
+  pre-v2.10.0.
+- `ImageProcessingController` now distinguishes two 4xx sub-cases on the
+  mode path:
+  - "mode literally not in SupportedModes" → 422 (client shouldn't have sent it)
+  - "mode IS in SupportedModes but pipeline returned null anyway" → 500
+    (server bug, capability claim lied). Makes future capability
+    regressions louder.
+
+Partial-channel rendering (letting the 29 Material-less scans render
+bw / inverse / high-pen / low-pen / diff) shipped in v2.14.0.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ImageProcessingService.cs`
+- `src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs`
+- `src/Directory.Build.props` (2.10.4 → 2.10.5)
+
+Commit: `2162805`
+
+---
+
+## [2.10.4] — 2026-04-20 — Phase 2: server-side Window/Level sliders
+
+Two debounced sliders added inline to the RENDER MODE toolbar row: `LEVEL`
+(0-100%, default 50) and `WINDOW` (2-100%, default 100). Drive the existing
+`?loPct=&hiPct=` query params on the image endpoint that were already
+plumbed end-to-end in v2.10.0 — this release is pure frontend.
+
+### What's new
+
+- Fields: `_serverWindowPct` / `_serverLevelPct`, debounce timer.
+- `OnWindowLevelSliderChanged` coalesces drag bursts into one refetch via a
+  180 ms `System.Threading.Timer`; timer disposed on unmount.
+- `ComputeLoHiPct` maps (level, window) → (loPct, hiPct) using
+  `lo = max(0, level - window/2)`, `hi = min(100, level + window/2)`.
+  Returns null at defaults so URL has no params — server falls back to
+  its own `1%` / `99.5%` percentile clip. Pre-v2.10.4 visual baseline
+  unchanged when sliders untouched.
+- `IsWindowLevelEffective` dims sliders + shows an info tooltip when the
+  active mode is Composite or Default (vendor LUT bakes tone mapping in).
+- Container change + `ResetWindowLevel` both revert to defaults.
+
+### Files touched
+
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
+- `src/Directory.Build.props` (2.10.3 → 2.10.4)
+
+Commit: `ae937c2`
+
+---
+
+## [2.10.3] — 2026-04-20 — Phase 1: mode-catalog toolbar in ImageAnalysisViewer
+
+The operator viewer gains a "RENDER MODE" row above the image with
+Default + per-variant mode chips. FS6000 and ASE tri-panel scans see all
+9 modes; ASE single-view sees 3 (bw / inverse / edge). Clicking a chip
+appends `?mode=X` to the image URL so the backend serves the right render.
+
+Backend mode-catalog endpoints were shipped in v2.10.0; this release is
+pure frontend chassis that Phase 2-5 mount on.
+
+### What's new
+
+- New fields in `ImageAnalysisViewer.razor`: `_activeMode`, `_scanVariant`,
+  `_supportedModes`, `_modeCapabilitiesLoaded`, `ModeLabels` dictionary.
+- New methods: `LoadModeCapabilitiesAsync()` (soft-fails — toolbar hidden
+  if API down), `SelectMode(string)` (bumps cache buster so `<img>`
+  `@key` flips).
+- Toolbar row rendered between Row 1 (existing tool chrome) and Row 2
+  (70/30 content), only when capabilities loaded and
+  `_supportedModes.Count > 0`.
+- `GetCurrentImageUrl()` appends `&mode={url-escaped}` when
+  `_activeMode != ""`.
+- `OnInitializedAsync` + `OnParametersSetAsync` both reset state + reload.
+- Mode applies only on the default render path; the `_useEnhancedImage`
+  path is intentionally left alone (separate pipeline).
+
+### Files touched
+
+- `src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor`
+- `src/Directory.Build.props` (2.10.2 → 2.10.3)
+- `docs/viewer-phase-plan.md` (new — cross-session tracking doc)
+
+Commit: `52faebf`
+
+---
+
+## [2.10.2] — 2026-04-19 — FS6000 default composite now uses the vendor-faithful LUT
+
+`TryRenderCompositeNative` in `FS6000ImagePipeline` now calls
+`FS6000VendorLutCompositor.RenderJpeg` for the default `/complete/image`
+path. Previously defaulted to the Python-ported `FS6000Compositor` which
+diverged from vendor output (~15 RGB/channel off). The vendor LUT fitted
+in v2.10.1 hits mean 3.91 RGB/channel error — visually indistinguishable
+from vendor JPEG. Also drops the PNG→JPEG re-encode round-trip in the
+default path.
+
+Legacy compositor stays accessible via `?mode=composite-legacy` for A/B
+debugging.
+
+Commit: `bba4b73`
+
+---
+
+## [2.10.1] — 2026-04-19 — Empirical vendor-faithful FS6000 composite via learned 3D LUT
+
+Reverse-engineers the FS6000 vendor DLL's internal color composite by fitting
+a 3D lookup table from 240 M production training pairs
+`(material_class, HE_bucket, LE_bucket) → (R, G, B)` extracted from 64
+scans paired with each scan's own vendor Main JPEG.
+
+### Why
+
+The v2.10.0 Python-ported compositor was "close to vendor" by eye but
+diverged materially (max per-pixel Δ up to 207 on metal-heavy regions,
+mean ~15 RGB/channel). The user rightly pushed that we couldn't use our
+own Python as the reference — we wrote it. Switched to fitting from real
+paired data.
+
+### What's new
+
+- **`FS6000VendorLutCompositor`** — 3D LUT lookup in a hot loop. ~10 ns
+  per pixel × 3 M pixels ≈ 30-50 ms on a modern server CPU.
+- **`FS6000/vendor_lut_v1.bin`** — 768 KB embedded resource. 256 classes
+  × 32 HE buckets × 32 LE buckets × 3 RGB bytes. Sparse cells filled by
+  nearest-neighbour in HE × LE within the same class; classes with <100
+  samples default to grey.
+- **`tools/vendor-lut-research/`** (new) — Python harness that built the
+  LUT: `01_le_diagnostic.py` (confirmed LE matters — 47% of
+  `(class, HE)` cells produce materially different RGB when LE varies;
+  max |dRGB| = 207), `02_build_3d_lut.py` (trainer), `03_validate.py`
+  (held-out reconstruction, mean 3.91 RGB/channel across 16 scans).
+- **`ServiceConfiguration.csproj`** — embeds `vendor_lut_v1.bin` as
+  `<EmbeddedResource>` so the deploy pipeline doesn't ship a sidecar file.
+
+### Bit math (must stay bit-for-bit consistent with trainer)
+
+- `he_bucket = (he_u16 * 32) >> 16` = top 5 bits of the 16-bit value
+- Same for LE
+- Matches Python trainer literal-for-literal
+
+Commit: `5d562d9`
+
+---
+
+## [2.10.0] — 2026-04-19 — Mode-catalog backend + ROI inspector + ASE tri-panel support
+
+Extends the FS6000 pipeline with vendor-standard operator image modes
+(Smiths Heimann / Rapiscan / Nuctech vocabulary) and adds ASE tri-panel
+(`lineDataType=3`) support. Single-view ASE (92% of production) gains
+capability-gated 3-mode catalog.
+
+### What's new
+
+- **`Fs6000RenderMode` enum + `FS6000ModeRenderer.RenderJpeg`** — 9 named
+  modes: Composite / BlackWhite / Inverse / HighPen / LowPen / OrganicStrip /
+  MetalStrip / Edge / Diff. Tolerant name parser handles vendor synonyms
+  (e.g. `"high-pen"` == `"highpen"` == `"high-penetration"`).
+- **ASE tri-panel support** (`AseTriPanelDecoder.SplitToDualEnergyShape`) —
+  splits a single ASE blob (low|high|material panels concatenated horizontally)
+  into three `ushort[]` buffers matching the `DecodedFs6000` shape,
+  re-scales the 16-bit sparse material to 0..255 class indices, and
+  feeds it into the same renderer. Fixes a latent render bug in the
+  pre-v2.10.0 tri-panel path (221 of 2,770 ASE scans).
+- **Capability gating** — FS6000 returns all 9 modes; ASE tri-panel
+  returns all 9; ASE single-view returns 3 (bw / inverse / edge).
+  Endpoint: `/mode-capabilities`.
+- **ROI Inspector backend** — `GET /roi?xPct=&yPct=&wPct=&hPct=`.
+  Per-channel stats (histogram-based, O(N + 65536)) + material-class
+  distribution + preview JPEGs. Coordinates normalised 0..1 so the
+  frontend doesn't need to know native dims.
+- **In-memory decode cache** (30 s TTL, per-container) so repeated mode
+  swaps and window/level drags don't re-decode the 18 MB blob set.
+
+### Files touched
+
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000/FS6000ModeRenderer.cs` (new)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ASE/AseTriPanelDecoder.cs` (new)
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/ASEImagePipeline.cs`
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/FS6000ImagePipeline.cs`
+- `src/NickScanCentralImagingPortal.Services.ImageProcessing/RoiInspectorShared.cs` (new)
+- `src/NickScanCentralImagingPortal.API/Controllers/ImageProcessingController.cs` (endpoints)
+- `src/NickScanCentralImagingPortal.Core/Interfaces/IImageProcessingService.cs` (DTOs + methods)
+
+Commit: `1da4730`
+
+---
+
 ## [2.9.7] — 2026-04-19 — FS6000 16-bit composite: native C# decoder + compositor (Python proxy retired to fallback)
 
 Drops the HTTP hop to the Python inspector for the FS6000 "Main" serving path.

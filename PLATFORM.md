@@ -90,6 +90,9 @@ NSCIM_PRODUCTION/
 │   └── synthetic-monitor/
 │
 ├── docs/                                  ← architecture docs, runbooks
+│   ├── architecture-image-pipeline.md     ← NSCIS image-pipeline spec
+│   ├── viewer-phase-plan.md               ← NSCIS operator-viewer arc
+│   ├── ops-fs6000-data-integrity.md       ← FS6000 ops runbook
 │   └── plans/                             ← archived phase plans
 │
 ├── PLATFORM.md                            ← this file

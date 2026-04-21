@@ -1,8 +1,29 @@
 # NickScan WebApp - Complete Page Functional Audit Report
 
-**Generated:** March 23, 2026  
-**Total Pages:** 61  
+**Generated:** March 23, 2026
+**Total Pages:** 61
 **Source:** `src\NickScanWebApp.New\Pages\`
+
+> **Note — partial staleness (2026-04-21):** this audit is a March 23 snapshot.
+> It still reflects the real page structure, but the shared
+> **`Components/Operations/ImageAnalysisViewer.razor`** dialog — used by the
+> Image Analysis (Analyst / Audit / BL Review) Workbenches and from
+> `Containers\ContainerDetails.razor` — has been substantially enhanced in
+> the 2026-04-19 → 2026-04-21 viewer arc (v2.10.3 through v2.14.1). Pages
+> that open this dialog now inherit:
+>
+> - **RENDER MODE toolbar** (9 vendor-standard modes for FS6000 + ASE
+>   tri-panel; 3-6 for single-view / partial-channel FS6000)
+> - **LEVEL / WINDOW sliders** (server-side tone curve with 180 ms debounce)
+> - **Pixel Probe** eyedropper (HE / LE / Material / vendor-LUT RGB hover chip)
+> - **Raw 16-bit viewer** (binary channel fetch + JS canvas window/level,
+>   zero-latency contrast)
+> - **ROI INSPECTOR side panel** (per-channel histograms + material-class
+>   distribution + preview thumbnails on rectangle-draw)
+>
+> See `docs/viewer-phase-plan.md` for the full per-phase detail and
+> `docs/architecture-image-pipeline.md` for the underlying unified-pipeline
+> architecture (how a new scanner plugs in, what `DecodedScan` is, etc.).
 
 ---
 
