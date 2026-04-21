@@ -22,6 +22,67 @@ For each release, this file records:
 
 ---
 
+## [2.15.1] — 2026-04-21 — Audit-assignment pipeline hardening (zombie sweeper + throughput tuning)
+
+Follow-up to the 2026-04-21 operations session where audit assignments
+were reported as "not coming through" and then "not regular". Root cause
+was a combination of a single stuck AnalystCompleted group polluting the
+queue for 12 days, and a tight `MaxConcurrentPerUser=5` cap producing
+visible 2-6 minute gaps between audit dispatches. No user-facing code
+change beyond the new background service.
+
+### What's new
+
+- **`ZombieAnalysisGroupSweeperService`** — hosted background service in
+  `NickScanCentralImagingPortal.Services.ImageAnalysis`. Every 60 min
+  (configurable) scans for `AnalysisGroup.Status='AnalystCompleted'`
+  rows that have been in that state longer than the grace window (24 h
+  default) AND have zero matching `ContainerCompletenessStatus` rows by
+  `GroupIdentifier`. Flips them to `Archived` with a guarded UPDATE
+  (status predicate in `WHERE` clause prevents racing a legitimate
+  advance) and logs a WARNING per archive with age and identifier. The
+  immediate-audit-assignment code's "all containers must have
+  `WorkflowStage='Audit'`" gate passes vacuously over an empty
+  collection, so zombies used to sit forever inflating the
+  `AnalystCompleted` backlog and the SLA banner — this fixes that.
+
+  Config knobs (all optional, defaults sensible):
+  - `BackgroundServices:ZombieAnalysisGroupSweeper:ProcessIntervalMinutes` (60)
+  - `BackgroundServices:ZombieAnalysisGroupSweeper:GraceHours` (24)
+  - `BackgroundServices:ZombieAnalysisGroupSweeper:Enabled` (true)
+
+### What's tuned (data only, no code)
+
+- **`AnalysisSettings.MaxConcurrentPerUser` 5 → 8.** With one active
+  analyst feeding one active auditor the 5-slot cap was producing
+  visible 2-6 min gaps between audit assignments whenever the auditor
+  momentarily filled all slots. Raising to 8 keeps a backlog queued so
+  the auditor experience is closer to a continuous stream. Reversible
+  with a one-line `UPDATE analysissettings SET maxconcurrentperuser=5`.
+
+### Operational notes
+
+- The zombie sweeper becomes effective on the next NSCIM_API restart.
+  Until then, nothing is sweeping — the 2026-04-19 zombie
+  (`40326195252`) was manually archived during the investigation, so
+  there are currently zero zombies in the DB.
+- The `MaxConcurrentPerUser` change is already live (DB UPDATE applied
+  2026-04-21).
+- Known minor UI inconsistency on `Pages/ImageAnalysis/Workbench.razor`
+  (analyst page): `_isReadyForAssignment` defaults to `false` locally
+  but `OnInitializedAsync` immediately POSTs `IsReady=true` to the
+  API, so the switch shows OFF for a beat while the server already
+  considers the user ready. Cosmetic; no functional impact. Fix
+  deferred — should align the local default with the auto-set
+  behaviour in a future patch.
+
+### Commits in this release
+
+- `421bc84` feat(image-analysis): add `ZombieAnalysisGroupSweeperService`
+- `<TBD>`    chore(release): bump to 2.15.1 + CHANGELOG + `MaxConcurrentPerUser` 5→8
+
+---
+
 ## [2.15.0] — 2026-04-21 — In-app user manual (role-scoped help surface)
 
 Every page gained a `/help` entry point showing the matching topic for the
