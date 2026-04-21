@@ -22,52 +22,58 @@ resolution, with access to the underlying 16-bit data for windowing / measuremen
 
 ## Current version
 
-`2.10.5` — **hotfix**: `GetScanModeCapabilitiesAsync` now checks actual
-raw-channel presence (HighEnergy / LowEnergy / Material) before claiming
-the 9-mode catalog. Before this fix all FS6000 scans were advertised as
-having 9 modes; but **1,079 of 1,318 live FS6000 scans (~82%)** are
-missing at least one raw channel, so clicking any mode chip gave a
-broken image. Those scans now report `SupportedModes=[]` with a
-`vendor-jpeg-only (missing: X,Y)` variant label, which causes the mode
-toolbar to hide itself (keeps Default → vendor Main JPEG serving as
-before). The 239 scans with full raw channels still see the full toolbar.
-Controller also updated to distinguish "mode not claimed" (422) from
-"mode claimed but pipeline failed anyway" (500) so future capability
-regressions are easier to catch. Phase 2 sliders untouched — they live
-on the same toolbar and hide/show together with the mode chips.
-
-`2.10.4` — Phase 2: debounced server-side Window/Level sliders added to
-the RENDER MODE toolbar in `ImageAnalysisViewer.razor`. Maps to existing
-`?loPct=&hiPct=` query params (backend plumbing was already end-to-end
-in v2.10.0). Defaults omit the params so the server uses its natural
-1%/99.5% clip — pre-v2.10.4 behaviour unchanged when sliders untouched.
-Dimmed + info-icon tooltip when the active mode is Composite / Default
-(vendor LUT bakes in tone mapping).
-See `src/Directory.Build.props`.
+**`v2.14.0`** — the five-phase viewer arc is complete plus partial-channel
+rendering. See [Version history](#version-history) for the full trail.
+See `src/Directory.Build.props` for the live version stamp.
 
 ---
 
 ## Phase roadmap
 
-| # | Phase | Status | Backend | Frontend | Notes |
-|---|-------|--------|---------|----------|-------|
-| 0 | Mode catalog + ROI inspector (v2.10.0) | Done | Shipped | — | 9 modes, capability gating, /roi |
-| 0b | Empirical vendor LUT (v2.10.1–2) | Done | Shipped | — | 240M-pixel 3D LUT, ~4 RGB/ch error |
-| 1 | Single-canvas viewer chassis + mode toolbar | Shipped backend + frontend, awaiting visual sign-off | Done (v2.10.0) | Done (v2.10.3) | backbone for 2–5 |
-| 2 | Windowing slider (server tone-curve) | Shipped (v2.10.4) | Already existed (`?loPct=&hiPct=`) | Done (debounced) | frontend-only |
-| 3 | Pixel-value probe | Not started | `/pixel?x=&y=` endpoint | Hover chip | ~½ day |
-| 4 | Client-side 16-bit viewer | Not started | Raw-binary endpoint (HE/LE/Material) | JS canvas W/L | ~1.5 days; real 16-bit parity |
-| 5 | ROI inspector side panel | Not started | Done (v2.10.0) | UI wiring only | ~½ day |
+| # | Phase | Status | Version |
+|---|-------|--------|---------|
+| 0 | Mode catalog + ROI inspector (backend) | Shipped | v2.10.0 |
+| 0b | Empirical vendor LUT (240M-pixel fit, ~4 RGB/ch error) | Shipped | v2.10.1–2 |
+| 1 | Single-canvas viewer chassis + mode toolbar | Shipped | v2.10.3 |
+| 2 | Server-side Window/Level sliders | Shipped | v2.10.4 |
+| — | Capability hotfix (check raw-channel presence) | Shipped | v2.10.5 |
+| — | **Structural refactor: unified scan pipeline** (5-layer Adapter/Retriever/Router/Kernel/Pipeline, variadic-channel IR, declared material taxonomy) | Shipped | **v2.11.0** |
+| — | ASE adapter 90° CCW rotation fix | Shipped | v2.11.1 |
+| 3 | Pixel-value probe hover chip | Shipped | v2.11.2 |
+| 4 | Client-side 16-bit viewer (raw-binary endpoint + JS canvas window/level) | Shipped | v2.12.0 |
+| 5 | ROI inspector side panel UI | Shipped | v2.13.0 |
+| — | Partial-channel mode rendering (HE+LE without Material) | Shipped | v2.14.0 |
 
-**Strict order:** Phase 1 must ship before 2–5 because it's the chassis they all mount on.
-Phases 2, 3, 5 can then go in any order. Phase 4 (raw 16-bit) is the most ambitious and
-should go last so Phases 1–3 stabilise the UX first.
+**Arc complete.** The operator viewer now reaches vendor-grade parity for all
+three scan variants (FS6000 full, FS6000 partial-channel, ASE tri-panel,
+ASE single-view), with real 16-bit dynamic range, region analysis, and per-
+pixel probing — all running through one scanner-agnostic pipeline.
 
 ---
 
 ## Next session entry point
 
-**Currently:** Phases 1 + 2 shipped (v2.10.3 + v2.10.4). Awaiting visual sign-off.
+**Viewer arc is done.** All five phases shipped, verified against real FS6000
+and ASE scans. Next work streams sit outside the viewer itself:
+
+1. **Ops ticket** — see [Open questions / parked items](#open-questions--parked-items)
+   below for three data-integrity items flagged during sign-off (archive
+   retention, scanner material.img misses, one truncated LE blob).
+2. **AI hooks** — the `DecodedScan` IR is ready for ML pipelines (variadic
+   channels + declared material taxonomy + pixel pitch field). Any future
+   inference layer consumes the IR directly; no scanner-specific code on
+   the ML side.
+3. **New scanner onboarding** — see [architecture-image-pipeline.md](architecture-image-pipeline.md)
+   for the "add a new scanner" runbook. ~250 lines of new code (adapter +
+   retriever + DI + enum + detector branch). No changes to the kernel,
+   the pipeline, or the controllers.
+
+---
+
+<details>
+<summary>Historical notes from mid-arc (kept for session continuity)</summary>
+
+**Used to say:** "Phases 1 + 2 shipped (v2.10.3 + v2.10.4). Awaiting visual sign-off."
 
 **To verify Phase 1 (mode toolbar):**
 
@@ -102,6 +108,8 @@ path. Check browser console for `[LoadModeCapabilitiesAsync]` errors.
 params, so the no-touch case is identical to v2.10.3. Look for XHR with
 `loPct=` / `hiPct=` and check backend logs for the `[FS6000-MODE]` /
 `[ASE-MODE]` lines that include the forwarded values.
+
+</details>
 
 ---
 
@@ -305,32 +313,62 @@ params, so the no-touch case is identical to v2.10.3. Look for XHR with
 
 ## Open questions / parked items
 
-- **Partial-channel mode rendering.** ~82% of FS6000 scans are missing at least
-  one raw channel (usually Material). v2.10.5 hides the toolbar entirely for
-  those. A follow-up could teach `FS6000FormatDecoder.Decode` to accept a
-  null Material blob and have `FS6000ModeRenderer.RenderJpeg` gate on
-  Material-requiring modes — that would let B/W, Inverse, High Pen, Low Pen,
-  and Diff render for the 29 scans that have HE+LE but no Material. Low
-  urgency: those 29 scans can still show the vendor Main JPEG.
-- **Raw-channel backfill.** 1,036 FS6000 scans have *zero* raw channels —
-  legacy pre-ingest era. The scanner still produces the raw .img files,
-  we just don't have a backfill job pointing at the Archive folder. That's
-  a separate work-item (reuse `FS6000RawChannelIngester`).
-- **LUT refresh cadence.** The LUT was fitted from scans through ~2026-04-19. If the
-  vendor firmware or phantom calibration changes materially, error will creep. No
-  drift monitor in place yet — worth adding a nightly job that samples N fresh scans
-  and flags if reconstruction error crosses a threshold (say >8 RGB/ch). Parked.
-- **Phase 4 feature flag.** An 8MB-per-view fetch on a slow shared mobile link would be
-  painful. Consider a per-user `allow_raw_16bit` permission + a size warning. Parked
-  until Phase 4 starts.
-- **`CompositeLegacy` retention.** Once Phase 1 ships and operators confirm the new
-  composite visually, we can drop `FS6000Compositor` and remove `composite-legacy` from
-  the mode enum. Don't do it pre-Phase-1.
-- **ASE LUT.** Phase 0b built an FS6000 LUT. ASE tri-panel colour is currently rendered
-  through the *same* FS6000 LUT via the `AseTriPanelDecoder` reshape. This works because
-  the underlying physics (dual-energy) is the same, but has not been separately validated
-  against ASE vendor composite output. Flag for a dedicated ASE validation pass once
-  Phase 1 is live — can then use the Chrome extension to side-by-side.
+### Ops tickets (data-integrity, flagged during v2.14.0 sign-off)
+
+- **Pre-April 4 Archive retention gap.** 1,036 FS6000 scans between
+  2026-03-18 and 2026-04-03 have no raw `.img` files in the Archive
+  folder — only the vendor JPEG + XML. Either the archiver was
+  configured to copy just the JPEG during that window, or the raw files
+  were purged for space. Raw data for those scans is **permanently lost**.
+  Action: none possible for those scans; review archiver config going
+  forward so current retention actually keeps the raw channels.
+- **Scanner not emitting `material.img` for some scans.** 43 recent
+  (2026-04-20) FS6000 scans have `high.img` + `low.img` on disk but no
+  `material.img`. Implies the scanner's material-classification stage
+  isn't running (or not writing output) for a fraction of scans. v2.14.0
+  makes these scans usable (5-mode subset via partial-channel rendering)
+  but it's still worth investigating the scanner config. Frequency:
+  ~43 / 284 recent scans with any raw data = ~15%.
+- **One scan with truncated LE blob.** `TCKU1817911`: `HighEnergy` is
+  11 MB in DB but `LowEnergy` is exactly 2 MB (suspiciously round —
+  likely a partial write during ingest). Decode correctly throws
+  "channel truncated" and the endpoint returns
+  `vendor-jpeg-only (missing: Material)`. One-off data integrity issue;
+  worth a spot-check for similar truncations elsewhere via a query on
+  `length(he_imagedata) != length(le_imagedata)`.
+
+### Parked architectural items
+
+- **Ingest pipeline unification.** Evaluated during the arc and rejected.
+  Ingest is pure byte-shuttling (`Services.FS6000/IngestionService.cs`
+  1,147 lines + `Services/ImageProcessingOrchestrator.cs` 206 lines,
+  **zero decoder calls**). The "scanners declare format once" goal is
+  already met — format decoders are declared once per scanner and used
+  once per scanner (on the render side). Forcing ingest to use the
+  adapter layer would add a rejection path for edge-case blobs with no
+  offsetting benefit.
+- **LUT refresh cadence.** The LUT was fitted from scans through ~2026-04-19.
+  If the vendor firmware or phantom calibration changes materially, error
+  will creep. No drift monitor in place yet — worth adding a nightly job
+  that samples N fresh scans and flags if reconstruction error crosses a
+  threshold (say >8 RGB/ch). Parked.
+- **Phase 4 feature flag.** An 8 MB-per-view fetch on a slow shared mobile
+  link would be painful. Consider a per-user `allow_raw_16bit` permission
+  + a size warning. Current impl doesn't gate.
+- **`CompositeLegacy` retention.** The Python-ported composite is kept as
+  a mode-name alias (`composite-legacy` → `RenderMode.CompositeLegacy`)
+  for A/B debugging. Can be dropped once the vendor-LUT composite has
+  operator confidence — not urgent.
+- **ASE LUT validation.** Phase 0b built an FS6000 LUT. ASE tri-panel
+  colour is currently rendered through the *same* FS6000 LUT via the
+  `AseTriPanelDecoder` reshape. This works because the underlying physics
+  (dual-energy) is the same, but has not been separately validated
+  against ASE vendor composite output. Flag for a dedicated ASE
+  validation pass; can use the Chrome extension to side-by-side.
+- **Capability-aware frontend.** Today the frontend re-fetches mode
+  capabilities on every viewer open. Could short-circuit with a lookup
+  cache keyed on containerNumber (TTL 5 min) if we start seeing the
+  capability endpoint trending load.
 
 ---
 
@@ -342,3 +380,22 @@ params, so the no-touch case is identical to v2.10.3. Look for XHR with
 - **Version bump:** `src/Directory.Build.props` before each deploy.
 - **Do not edit** `C:\NICK ERP\` — it's a stale ghost from the 2026-04-19 hot-patch window.
 - **API auth is strict** — 401s mean expired sessions, not anonymous-caller degrade.
+
+---
+
+## Version history
+
+| Version | What shipped |
+|---|---|
+| v2.10.0 | Mode-catalog backend (9 modes, capability endpoint, ROI endpoint) |
+| v2.10.1 | Empirical vendor LUT (240M-pixel fit, validated against held-out scans) |
+| v2.10.2 | Default composite path uses the new LUT |
+| v2.10.3 | **Phase 1** — mode toolbar in `ImageAnalysisViewer.razor` |
+| v2.10.4 | **Phase 2** — debounced server-side Window/Level sliders |
+| v2.10.5 | Hotfix: capability endpoint checks actual raw-channel presence |
+| **v2.11.0** | **Structural refactor** — unified scan pipeline (Adapter / Retriever / Router / Kernel / Pipeline), variadic-channel IR, declared material taxonomy. Byte-for-byte output parity vs v2.10.5 verified across 12 test cases |
+| v2.11.1 | ASE adapter 90° CCW rotation (mode renders now landscape, matching vendor convention) |
+| v2.11.2 | **Phase 3** — pixel-probe hover chip + `/pixel` endpoint |
+| v2.12.0 | **Phase 4** — client-side 16-bit viewer (raw-binary endpoint + JS canvas window/level) |
+| v2.13.0 | **Phase 5** — ROI inspector side panel UI (histograms + material bars + preview thumbs) |
+| v2.14.0 | Partial-channel mode rendering (FS6000 scans with HE+LE but no Material now render 6 modes instead of hiding the toolbar) |
