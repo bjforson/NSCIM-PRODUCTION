@@ -224,8 +224,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error performing global search");
-                return StatusCode(500, new { Error = "Search failed" });
+                _logger.LogError(ex, "Error performing global search for '{Query}'", request?.Query);
+                return StatusCode(500, new
+                {
+                    Error = "Search failed",
+                    Detail = ex.Message,
+                    Type = ex.GetType().Name,
+                    Inner = ex.InnerException?.Message
+                });
             }
         }
 
