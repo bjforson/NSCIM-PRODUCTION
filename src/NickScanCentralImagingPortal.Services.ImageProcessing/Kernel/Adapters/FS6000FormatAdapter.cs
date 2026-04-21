@@ -37,19 +37,49 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters
 
         public Task<DecodedScan?> DecodeAsync(ScanSourceBytes bytes, CancellationToken ct = default)
         {
+            // HE + LE are the absolute minimum. Without both energies there's
+            // no meaningful pixel operation we can do (composite, grayscale,
+            // probe, ROI all need at least one of them).
             if (!bytes.Blobs.TryGetValue("HighEnergy", out var highBlob) ||
-                !bytes.Blobs.TryGetValue("LowEnergy",  out var lowBlob)  ||
-                !bytes.Blobs.TryGetValue("Material",   out var matBlob))
+                !bytes.Blobs.TryGetValue("LowEnergy",  out var lowBlob))
             {
-                _logger.LogDebug("[FS6000Adapter] {Container} missing one or more raw channels — partial-channel decode not yet supported",
+                _logger.LogDebug("[FS6000Adapter] {Container} missing HE or LE raw channel — unrenderable",
                     bytes.ContainerNumber);
                 return Task.FromResult<DecodedScan?>(null);
             }
 
-            FS6000FormatDecoder.DecodedFs6000 d;
+            // Material is optional: v2.14.0 supports partial-channel scans for
+            // the ~40 scans/week where the FS6000 scanner doesn't emit
+            // material.img. Those scans get the greyscale mode subset (bw,
+            // inverse, high-pen, low-pen, diff) driven by RenderModeRequirements
+            // which already gates Composite / Organic / Metal / Edge on
+            // scan.Material != null.
+            bool hasMaterial = bytes.Blobs.TryGetValue("Material", out var matBlob);
+
+            int width, height;
+            ushort[] highPixels, lowPixels;
+            byte[]?  matPixels = null;
+            DateTime? decodedTimestamp;
+
             try
             {
-                d = FS6000FormatDecoder.Decode(highBlob, lowBlob, matBlob);
+                if (hasMaterial)
+                {
+                    var d = FS6000FormatDecoder.Decode(highBlob, lowBlob, matBlob!);
+                    width = d.Width; height = d.Height;
+                    highPixels = d.High; lowPixels = d.Low; matPixels = d.Material;
+                    decodedTimestamp = d.Timestamp;
+                }
+                else
+                {
+                    var (w, h, he, le, ts) = FS6000FormatDecoder.DecodeEnergyOnly(highBlob, lowBlob);
+                    width = w; height = h;
+                    highPixels = he; lowPixels = le;
+                    decodedTimestamp = ts;
+                    _logger.LogInformation(
+                        "[FS6000Adapter] {Container} decoded as energy-only (no material.img); greyscale + diff modes only",
+                        bytes.ContainerNumber);
+                }
             }
             catch (Exception ex)
             {
@@ -60,34 +90,45 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters
 
             var channels = new List<EnergyChannel>
             {
-                new EnergyChannel { Kind = EnergyKind.High, BitDepth = 16, Pixels = d.High },
-                new EnergyChannel { Kind = EnergyKind.Low,  BitDepth = 16, Pixels = d.Low  },
+                new EnergyChannel { Kind = EnergyKind.High, BitDepth = 16, Pixels = highPixels },
+                new EnergyChannel { Kind = EnergyKind.Low,  BitDepth = 16, Pixels = lowPixels  },
             };
 
-            var material = new MaterialClassification
+            MaterialClassification? material = null;
+            if (matPixels != null)
             {
-                Classes = d.Material,
-                Taxonomy = Fs6000Taxonomy,
-            };
+                material = new MaterialClassification
+                {
+                    Classes  = matPixels,
+                    Taxonomy = Fs6000Taxonomy,
+                };
+            }
 
             bytes.Blobs.TryGetValue("Main", out var vendorJpeg);
 
-            DateTime? scanTime = null;
-            if (bytes.Metadata.TryGetValue("ScanTime", out var ts) &&
-                DateTime.TryParse(ts, System.Globalization.CultureInfo.InvariantCulture,
+            DateTime? scanTime = decodedTimestamp;
+            if (scanTime == null && bytes.Metadata.TryGetValue("ScanTime", out var ts2) &&
+                DateTime.TryParse(ts2, System.Globalization.CultureInfo.InvariantCulture,
                                   System.Globalization.DateTimeStyles.RoundtripKind, out var parsedTs))
             {
                 scanTime = parsedTs;
             }
 
+            // Use a distinct format tag for partial scans so the UI can hint
+            // via the variant label. Behaviour is otherwise identical to the
+            // full fs6000-v1 path — capabilities just come back as the 5-mode
+            // subset because RenderModeRequirements drops Composite/Organic/
+            // Metal/Edge when Material is null.
+            string formatTag = material != null ? FormatTag : "fs6000-v1-no-material";
+
             var result = new DecodedScan
             {
                 ScanId          = bytes.ScanId,
                 ContainerNumber = bytes.ContainerNumber,
-                SourceFormatTag = FormatTag,
+                SourceFormatTag = formatTag,
                 ScanTime        = scanTime,
-                Width           = d.Width,
-                Height          = d.Height,
+                Width           = width,
+                Height          = height,
                 PixelPitchMm    = 0.0, // FS6000 header doesn't carry pitch today; wire up when we extract it
                 Orientation     = ScanOrientation.LeftToRight,
                 Channels        = channels,

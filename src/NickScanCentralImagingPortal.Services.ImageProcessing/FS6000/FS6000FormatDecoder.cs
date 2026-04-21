@@ -204,6 +204,35 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         }
 
         /// <summary>
+        /// v2.14.0 — partial-channel variant. Decodes only HE + LE when the
+        /// scanner didn't produce a material.img for this scan. Powers the
+        /// partial-channel mode catalog (bw / inverse / high-pen / low-pen /
+        /// diff — everything that doesn't need material classification).
+        /// Same validation as the full <see cref="Decode"/> minus the material
+        /// checks; returns a tuple instead of DecodedFs6000 because that
+        /// struct requires non-null Material.
+        /// </summary>
+        public static (int Width, int Height, ushort[] High, ushort[] Low, DateTime? Timestamp)
+            DecodeEnergyOnly(byte[] highBytes, byte[] lowBytes)
+        {
+            var hHdr = Fs6000Header.Parse(highBytes);
+            var lHdr = Fs6000Header.Parse(lowBytes);
+
+            if (hHdr.Width != lHdr.Width || hHdr.Height != lHdr.Height)
+                throw new InvalidDataException(
+                    $"FS6000 high/low dimension mismatch: {hHdr.Width}x{hHdr.Height} vs {lHdr.Width}x{lHdr.Height}");
+            if (hHdr.BitDepth != 16 || lHdr.BitDepth != 16)
+                throw new InvalidDataException(
+                    $"FS6000 expected 16-bit for high/low, got {hHdr.BitDepth}/{lHdr.BitDepth}");
+
+            int w = hHdr.Width;
+            int h = hHdr.Height;
+            ushort[] high = DecodeChannel16BitFlipped(highBytes, w, h);
+            ushort[] low = DecodeChannel16BitFlipped(lowBytes, w, h);
+            return (w, h, high, low, hHdr.Timestamp);
+        }
+
+        /// <summary>
         /// Decode a single 16-bit channel (big-endian payload, vertically flipped).
         /// Returns a native-endian <see cref="ushort"/>[] of length <c>width*height</c>.
         /// </summary>
