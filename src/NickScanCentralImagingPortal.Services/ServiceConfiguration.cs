@@ -493,6 +493,12 @@ namespace NickScanCentralImagingPortal.Services
             // Image Analysis Orchestrator (consolidates intake, assignment, submission, decision agent, housekeeping workers)
             services.AddHostedService<NickScanCentralImagingPortal.Services.ImageAnalysis.ImageAnalysisOrchestratorService>();
 
+            // Zombie AnalysisGroup sweeper — archives AnalystCompleted groups with zero CCS rows
+            // after a grace window. Prevents the SLA banner and audit-assignment queue from being
+            // poisoned by groups that the audit pipeline's "all containers in Audit stage" gate
+            // passes vacuously. See the service's class-level doc for context.
+            services.AddHostedService<NickScanCentralImagingPortal.Services.ImageAnalysis.ZombieAnalysisGroupSweeperService>();
+
             // ✅ DEFENSIVE MONITORING SERVICES (6-Layer Defense System)
             // These services provide active monitoring and reconciliation to prevent data issues
             services.AddHostedService<NickScanCentralImagingPortal.Services.Monitoring.DuplicateDownloadMonitoringService>();
