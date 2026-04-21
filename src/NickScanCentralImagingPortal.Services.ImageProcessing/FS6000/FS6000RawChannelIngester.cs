@@ -116,6 +116,27 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     // channel" next time round.
                     byte[] bytes = await CopyThenReadAsync(file, ct);
 
+                    // v2.14.1 — reject truncated .img files at ingest time.
+                    // The FS6000 header declares (Width, Height, BitDepth);
+                    // if the file has fewer bytes than Width*Height*(BitDepth/8)
+                    // + header, it was written partially (scanner interrupt or
+                    // similar). Surveying production found 22 such files
+                    // where the scanner wrote a fraction of the LE buffer;
+                    // downstream decode throws "channel truncated" when these
+                    // reach the viewer. Reject at ingest so bad bytes never
+                    // hit the DB — the scan falls through to partial-channel
+                    // handling (v2.14.0) instead of looking renderable.
+                    if (!IsHeaderConsistent(bytes, imageType, out var reason))
+                    {
+                        result.FailedChannels++;
+                        result.LastError = $"header-inconsistent: {reason}";
+                        _logger.LogWarning(
+                            "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} will be retried on next cycle (scanner may still be writing)",
+                            imageType, scanId, reason, Path.GetFileName(file));
+                        _db.ChangeTracker.Clear();
+                        continue; // skip to next channel; don't pollute DB
+                    }
+
                     var entity = new FS6000Image
                     {
                         Id = Guid.NewGuid(),
@@ -160,6 +181,62 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// v2.14.1 — verify a .img blob is self-consistent before we let it
+        /// into the DB. Parses the 36-byte FS6000 header, computes the
+        /// expected payload size from declared (Width, Height, BitDepth),
+        /// and rejects if the actual byte count is short.
+        ///
+        /// We deliberately do NOT reject "too many bytes" — some vendor
+        /// tools pad with extra metadata after the pixel payload, and
+        /// accepting over-sized but valid files is benign (the decoder
+        /// only reads Width*Height*bpp + header anyway).
+        ///
+        /// Returns true when the blob looks complete. Returns false +
+        /// fills <paramref name="reason"/> otherwise.
+        /// </summary>
+        private static bool IsHeaderConsistent(byte[] bytes, string imageType, out string reason)
+        {
+            if (bytes == null || bytes.Length < FS6000FormatDecoder.HeaderSize)
+            {
+                reason = $"too small ({bytes?.Length ?? 0} bytes) — header needs at least {FS6000FormatDecoder.HeaderSize}";
+                return false;
+            }
+
+            FS6000FormatDecoder.Fs6000Header hdr;
+            try
+            {
+                hdr = FS6000FormatDecoder.Fs6000Header.Parse(bytes);
+            }
+            catch (Exception ex)
+            {
+                reason = $"header parse failed: {ex.Message}";
+                return false;
+            }
+
+            // Validate bit depth per channel type. HE / LE are 16-bit;
+            // Material is 8-bit. Header bit-depth mismatch is a strong
+            // indicator of either a truncated file or a wrong-suffix match.
+            int expectedBitDepth = imageType == "Material" ? 8 : 16;
+            if (hdr.BitDepth != expectedBitDepth)
+            {
+                reason = $"bit-depth mismatch (header says {hdr.BitDepth}, expected {expectedBitDepth} for {imageType})";
+                return false;
+            }
+
+            long pixelCount = (long)hdr.Width * hdr.Height;
+            long pixelBytes = pixelCount * (hdr.BitDepth / 8);
+            long expected   = FS6000FormatDecoder.HeaderSize + pixelBytes;
+            if (bytes.Length < expected)
+            {
+                reason = $"truncated: {bytes.Length} bytes on disk, header declares {hdr.Width}x{hdr.Height}@{hdr.BitDepth}-bit needing {expected} bytes";
+                return false;
+            }
+
+            reason = "";
+            return true;
         }
 
         /// <summary>
