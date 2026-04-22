@@ -109,3 +109,9 @@ Certificates/
 # Generated secrets export for target migration - never commit plaintext secrets
 set-secrets-on-target.ps1
 docs/migration/set-secrets-on-target.ps1
+
+# Local-only outputs (not for git):
+# - _archive/ moved to C:\Shared\_archive\  (retirement snapshots 2026-04-22+)
+# - operational_outputs/ contains one-off reports + draft emails with live BOE data
+_archive/
+operational_outputs/
