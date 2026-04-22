@@ -1,5 +1,7 @@
 # NSCIM Server Migration Runbook
 
+> **Retirement notice (2026-04-22):** `NSCIM_Mobile` service and `NickScanWebApp.Mobile` project are **retired**. `NSCIM_WebApp` (NickScanWebApp.New) now serves mobile viewports responsively. Any snippet below that lists `NSCIM_Mobile` or `publish\Mobile\` is historical — drop `NSCIM_Mobile` from service arrays and skip Mobile publish steps when actually running these commands.
+
 **Source:** `NSPORTAL` (Dell R320, 4 threads, 64 GB) — `C:\Shared\NSCIM_PRODUCTION\`
 **Target:** `TEST-SERVER` @ `10.0.1.254` (Dell R630, 48 threads, 128 GB) — `C:\Shared\NSCIM_PRODUCTION\` (accessed from here via `Y:\` = `\\10.0.1.254\nick erp`)
 **Target .NET:** 10.0 LTS (currently running 8.0)

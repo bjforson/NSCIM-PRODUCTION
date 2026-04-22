@@ -296,8 +296,8 @@ app.Use(async (context, next) =>
 
 app.UseStaticFiles();
 
-// ✅ Mobile Detection Middleware - Redirect mobile devices to mobile app
-app.UseMiddleware<NickScanWebApp.New.Middleware.MobileDetectionMiddleware>();
+// Mobile app retired 2026-04-22 — .New is responsive and serves all devices.
+// (Formerly: app.UseMiddleware<MobileDetectionMiddleware>() redirected mobile user-agents.)
 
 app.UseRouting();
 

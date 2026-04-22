@@ -568,20 +568,8 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                             ClearanceType = g.First().ClearanceType ?? "",
                             BOEIds = g.Select(b => b.Id).ToList(),
                             ContainerNumbers = g.Select(b => b.ContainerNumber ?? "").Where(c => !string.IsNullOrWhiteSpace(c)).Distinct().ToList(),
-                            BOEDetails = g.Select(b => new BOEDetailDto
-                            {
-                                BOEId = b.Id,
-                                DeclarationNumber = b.DeclarationNumber ?? "",
-                                HouseBL = b.HouseBl ?? "",
-                                MasterBL = masterBL,
-                                ConsigneeName = b.ConsigneeName ?? "",
-                                ClearanceType = b.ClearanceType ?? "",
-                                ContainerNumber = b.ContainerNumber ?? "",
-                                RotationNumber = b.RotationNumber ?? "",
-                                GoodsDescription = b.GoodsDescription ?? "",
-                                TotalDutyPaid = b.TotalDutyPaid,
-                                DeclarationDate = b.DeclarationDate
-                            }).ToList()
+                            // Full-field visibility: use CreateBOEDetail (without items — fallback path)
+                            BOEDetails = g.Select(b => CreateBOEDetail(b)).ToList()
                         })
                         .ToList();
 
@@ -616,6 +604,19 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             _logger.LogInformation("Found consolidated cargo group for Master BL {MasterBL} with {ContainerCount} container(s) and {HouseBLCount} House BL(s)",
                 masterBL, group.ContainerNumbers.Count, group.HouseBLDetails.Count);
 
+            // Full-field visibility: fetch full BOE entities + manifest items once so each
+            // BOEDetailDto carries DeliveryPlace, Party addresses, Container fields, warnings, etc.
+            // Previously this path used HouseBLDetail (only 10 projected fields).
+            var allBoeIds = group.HouseBLDetails.Select(h => h.BOEId).Distinct().ToList();
+            var boeLookup = await _icumDbContext.BOEDocuments
+                .AsNoTracking()
+                .Where(b => allBoeIds.Contains(b.Id))
+                .ToDictionaryAsync(b => b.Id);
+            var allItems = await _icumDbContext.ManifestItems
+                .AsNoTracking()
+                .Where(i => allBoeIds.Contains(i.BOEDocumentId))
+                .ToListAsync();
+
             // Group House BLs by House BL number
             var houseBLGroups = group.HouseBLDetails
                 .GroupBy(h => h.HouseBL)
@@ -628,20 +629,11 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     ClearanceType = g.First().ClearanceType,
                     BOEIds = g.Select(h => h.BOEId).ToList(),
                     ContainerNumbers = g.Select(h => h.ContainerNumber).Distinct().ToList(),
-                    BOEDetails = g.Select(h => new BOEDetailDto
-                    {
-                        BOEId = h.BOEId,
-                        DeclarationNumber = h.DeclarationNumber,
-                        HouseBL = h.HouseBL,
-                        MasterBL = h.MasterBL,
-                        ConsigneeName = h.ConsigneeName,
-                        ClearanceType = h.ClearanceType,
-                        ContainerNumber = h.ContainerNumber,
-                        RotationNumber = h.RotationNumber,
-                        GoodsDescription = h.GoodsDescription,
-                        TotalDutyPaid = h.TotalDutyPaid,
-                        DeclarationDate = h.DeclarationDate
-                    }).ToList()
+                    BOEDetails = g
+                        .Select(h => boeLookup.TryGetValue(h.BOEId, out var boe) ? CreateBOEDetail(boe, allItems) : null)
+                        .Where(d => d != null)
+                        .Cast<BOEDetailDto>()
+                        .ToList()
                 }).ToList();
 
             return new CargoGroupDto
@@ -813,6 +805,13 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     _logger.LogInformation("⏱️ [GetICUMSDataForGroupAsync] Total BOE query time: {Time}ms, Total documents: {Count}",
                         boeQueryStopwatch.ElapsedMilliseconds, allBOEDocuments.Count);
 
+                    // Batch-load manifest items across all BOEs so BOEDetailDto can carry line items
+                    var consolidatedBoeIds = allBOEDocuments.Select(b => b.Id).ToList();
+                    var consolidatedItems = await _icumDbContext.ManifestItems
+                        .AsNoTracking()
+                        .Where(i => consolidatedBoeIds.Contains(i.BOEDocumentId))
+                        .ToListAsync(cancellationToken);
+
                     extractionStopwatch.Restart();
                     foreach (var houseBL in houseBLs.GroupBy(h => h.HouseBL))
                     {
@@ -829,7 +828,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                         {
                             // Extract fields from BOE document
                             records.AddRange(await ExtractICUMSRecords(boe));
-                            boeDetails.Add(CreateBOEDetail(boe));
+                            boeDetails.Add(CreateBOEDetail(boe, consolidatedItems));
                         }
                         houseBLExtractionStopwatch.Stop();
                         _logger.LogInformation("⏱️ [GetICUMSDataForGroupAsync] House BL {HouseBL} extraction took: {Time}ms, Records: {RecordCount}, BOEs: {BOECount}",
@@ -861,6 +860,13 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
 
                     if (allBOEDocuments.Any())
                     {
+                        // Batch-load manifest items across all BOEs for this non-consolidated declaration
+                        var nonConsolidatedBoeIds = allBOEDocuments.Select(b => b.Id).ToList();
+                        var nonConsolidatedItems = await _icumDbContext.ManifestItems
+                            .AsNoTracking()
+                            .Where(i => nonConsolidatedBoeIds.Contains(i.BOEDocumentId))
+                            .ToListAsync(cancellationToken);
+
                         extractionStopwatch.Restart();
                         // ✅ Extract shared records from ALL BOE documents (deduplicated by field name)
                         var sharedRecords = new Dictionary<string, ICUMSDataRecordDto>(); // Key: Field name
@@ -894,7 +900,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                             // Add BOE details (deduplicated by BOEId)
                             if (!sharedBOEDetails.Any(b => b.BOEId == boe.Id))
                             {
-                                sharedBOEDetails.Add(CreateBOEDetail(boe));
+                                sharedBOEDetails.Add(CreateBOEDetail(boe, nonConsolidatedItems));
                             }
                         }
 
@@ -1280,6 +1286,118 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     Category = "Data Info",
                     IsRequired = false,
                     HouseBL = boe.HouseBl
+                },
+
+                // ── Part B: full-field visibility additions ──
+                new ICUMSDataRecordDto
+                {
+                    Field = "Master BL Number",
+                    Value = GetValueWithJsonFallback(boe.MasterBlNumber, manifestDetailsElement, rootElement, "MasterBlNumber", "MasterBLNumber", "MASTERBLNUMBER") ?? "Not available",
+                    Category = "Manifest Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Original Clearance Type",
+                    Value = boe.OriginalClearanceType ?? "Not available",
+                    Category = "Declaration Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "CMR Upgraded At",
+                    Value = boe.CmrUpgradedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Not available",
+                    Category = "Declaration Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Container Size",
+                    Value = GetValueWithJsonFallback(boe.ContainerSize, containerDetailsElement, rootElement, "ContainerSize") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Container Quantity",
+                    Value = boe.ContainerQuantity?.ToString() ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Container Status",
+                    Value = GetValueWithJsonFallback(boe.ContainerStatus, containerDetailsElement, rootElement, "Status", "ContainerStatus") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Container Remarks",
+                    Value = GetValueWithJsonFallback(boe.ContainerRemarks, containerDetailsElement, rootElement, "Remarks", "ContainerRemarks") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Container Description",
+                    Value = GetValueWithJsonFallback(boe.ContainerDescription, containerDetailsElement, rootElement, "Description", "ContainerDescription") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Seal Number",
+                    Value = GetValueWithJsonFallback(boe.SealNumber, containerDetailsElement, rootElement, "SealNumber") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Truck Plate Number",
+                    Value = GetValueWithJsonFallback(boe.TruckPlateNumber, containerDetailsElement, rootElement, "TruckPlateNumber") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Driver Name",
+                    Value = GetValueWithJsonFallback(boe.DriverName, containerDetailsElement, rootElement, "DriverName") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Driver License",
+                    Value = GetValueWithJsonFallback(boe.DriverLicense, containerDetailsElement, rootElement, "DriverLicense") ?? "Not available",
+                    Category = "Container Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Consolidated",
+                    Value = boe.IsConsolidated ? "Yes" : "No",
+                    Category = "Manifest Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Ingestion Warnings",
+                    Value = boe.HasIngestionWarnings
+                        ? (string.IsNullOrWhiteSpace(boe.IngestionWarnings) ? "(flagged — no detail)" : boe.IngestionWarnings!.Replace('\n', ';'))
+                        : "None",
+                    Category = "Integrity", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Has Warnings",
+                    Value = boe.HasIngestionWarnings ? "Yes" : "No",
+                    Category = "Integrity", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Processed At",
+                    Value = boe.ProcessedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Not yet processed",
+                    Category = "Status", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Updated At",
+                    Value = boe.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                    Category = "Data Info", IsRequired = false, HouseBL = boe.HouseBl
+                },
+                new ICUMSDataRecordDto
+                {
+                    Field = "Error Message",
+                    Value = string.IsNullOrWhiteSpace(boe.ErrorMessage) ? "None" : boe.ErrorMessage,
+                    Category = "Status", IsRequired = false, HouseBL = boe.HouseBl
                 }
             };
 
@@ -1618,25 +1736,116 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             return icumsRecords;
         }
 
-        private BOEDetailDto CreateBOEDetail(BOEDocument boe)
+        private BOEDetailDto CreateBOEDetail(BOEDocument boe, IReadOnlyList<DownloadedManifestItem>? items = null)
         {
             var detail = new BOEDetailDto
             {
                 BOEId = boe.Id,
-                DeclarationNumber = boe.DeclarationNumber,
-                HouseBL = boe.HouseBl,
-                MasterBL = boe.BlNumber,
-                ConsigneeName = boe.ConsigneeName,
-                ClearanceType = boe.ClearanceType,
-                ContainerNumber = boe.ContainerNumber,
-                RotationNumber = boe.RotationNumber,
+
+                // Container Details
+                ContainerNumber       = boe.ContainerNumber,
+                ContainerDescription  = boe.ContainerDescription,
+                ContainerISO          = boe.ContainerISO,
+                ContainerQuantity     = boe.ContainerQuantity,
+                ContainerWeight       = boe.ContainerWeight,
+                ContainerSize         = boe.ContainerSize,
+                ContainerStatus       = boe.ContainerStatus,
+                ContainerRemarks      = boe.ContainerRemarks,
+                SealNumber            = boe.SealNumber,
+                TruckPlateNumber      = boe.TruckPlateNumber,
+                DriverName            = boe.DriverName,
+                DriverLicense         = boe.DriverLicense,
+
+                // Header / Declaration
+                DeclarationNumber     = boe.DeclarationNumber,
+                DeclarationDate       = boe.DeclarationDate,
+                DeclarationVersion    = boe.DeclarationVersion,
+                RegimeCode            = boe.RegimeCode,
+                ClearanceType         = boe.ClearanceType,
+                OriginalClearanceType = boe.OriginalClearanceType,
+                CmrUpgradedAt         = boe.CmrUpgradedAt,
+                NoOfContainers        = boe.NoOfContainers,
+                TotalDutyPaid         = boe.TotalDutyPaid,
+                CrmsLevel             = boe.CrmsLevel,
+                CompOffRemarks        = boe.CompOffRemarks,
+                CcvrIntelRemarks      = boe.CcvrIntelRemarks,
+
+                // Parties
+                ImpName          = boe.ImpName,
+                ImpAddress       = boe.ImpAddress,
+                ExpName          = boe.ExpName,
+                ExpAddress       = boe.ExpAddress,
+                ImpExpName       = boe.ImpExpName,
+                ImpExpAddress    = boe.ImpExpAddress,
+                DeclarantName    = boe.DeclarantName,
+                DeclarantAddress = boe.DeclarantAddress,
+
+                // Manifest / BL / Shipping
+                BlNumber         = boe.BlNumber,
+                HouseBL          = boe.HouseBl,
+                MasterBL         = boe.BlNumber,          // legacy alias
+                MasterBlNumber   = boe.MasterBlNumber,
+                RotationNumber   = boe.RotationNumber,
+                DeliveryPlace    = boe.DeliveryPlace,
                 GoodsDescription = boe.GoodsDescription,
-                TotalDutyPaid = boe.TotalDutyPaid,
-                DeclarationDate = boe.DeclarationDate,
-                RawJsonData = boe.RawJsonData
+                CountryOfOrigin  = boe.CountryOfOrigin,
+                MarksNumbers     = boe.MarksNumbers,
+                ConsigneeName    = boe.ConsigneeName,
+                ConsigneeAddress = boe.ConsigneeAddress,
+                ShipperName      = boe.ShipperName,
+                ShipperAddress   = boe.ShipperAddress,
+
+                IsConsolidated   = boe.IsConsolidated,
+
+                // Legacy RawJsonData (admin code should prefer IngestionMetadata.RawJsonData)
+                RawJsonData = boe.RawJsonData,
+
+                // Admin-only ingestion metadata — UI tier decides whether to render it.
+                IngestionMetadata = new BOEIngestionMetadataDto
+                {
+                    ProcessingStatus       = boe.ProcessingStatus,
+                    ProcessedAt            = boe.ProcessedAt,
+                    ErrorMessage           = boe.ErrorMessage,
+                    CreatedAt              = boe.CreatedAt,
+                    UpdatedAt              = boe.UpdatedAt,
+                    HasIngestionWarnings   = boe.HasIngestionWarnings,
+                    IngestionWarnings      = string.IsNullOrWhiteSpace(boe.IngestionWarnings)
+                        ? new List<string>()
+                        : boe.IngestionWarnings.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList(),
+                    UnmappedFieldsCount    = boe.UnmappedFieldsCount,
+                    UnmappedFieldsOverflow = boe.UnmappedFieldsOverflow,
+                    UnmappedFields         = CollectUnmappedFields(boe),
+                    RawJsonData            = boe.RawJsonData,
+                    DownloadedFileId       = boe.DownloadedFileId,
+                    DocumentIndex          = boe.DocumentIndex
+                }
             };
 
-            // Extract all fields into dictionary
+            // Attach pre-loaded manifest items (caller batch-loads to avoid N+1).
+            if (items != null && items.Count > 0)
+            {
+                detail.ManifestItems = items
+                    .Where(i => i.BOEDocumentId == boe.Id)
+                    .OrderBy(i => i.ItemIndex)
+                    .Select(i => new ManifestItemDto
+                    {
+                        Id              = i.Id,
+                        ItemIndex       = i.ItemIndex,
+                        ItemNo          = i.ItemNo,
+                        HsCode          = i.HsCode,
+                        Description     = i.Description,
+                        Quantity        = i.Quantity,
+                        Unit            = i.Unit,
+                        Weight          = i.Weight,
+                        ItemFob         = i.ItemFob,
+                        ItemDutyPaid    = i.ItemDutyPaid,
+                        FobCurrency     = i.FobCurrency,
+                        CountryOfOrigin = i.CountryOfOrigin,
+                        Cpc             = i.Cpc
+                    }).ToList();
+            }
+
+            // Legacy: also populate AllFields dict from RawJsonData (existing consumers may rely on it)
             if (!string.IsNullOrEmpty(boe.RawJsonData))
             {
                 try
@@ -1651,6 +1860,40 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             }
 
             return detail;
+        }
+
+        /// <summary>
+        /// Gathers any populated UnmappedField1..20 Label/Value pairs into a DTO list.
+        /// </summary>
+        private static List<UnmappedFieldDto> CollectUnmappedFields(BOEDocument boe)
+        {
+            var pairs = new[]
+            {
+                (boe.UnmappedField1Label,  boe.UnmappedField1Value),
+                (boe.UnmappedField2Label,  boe.UnmappedField2Value),
+                (boe.UnmappedField3Label,  boe.UnmappedField3Value),
+                (boe.UnmappedField4Label,  boe.UnmappedField4Value),
+                (boe.UnmappedField5Label,  boe.UnmappedField5Value),
+                (boe.UnmappedField6Label,  boe.UnmappedField6Value),
+                (boe.UnmappedField7Label,  boe.UnmappedField7Value),
+                (boe.UnmappedField8Label,  boe.UnmappedField8Value),
+                (boe.UnmappedField9Label,  boe.UnmappedField9Value),
+                (boe.UnmappedField10Label, boe.UnmappedField10Value),
+                (boe.UnmappedField11Label, boe.UnmappedField11Value),
+                (boe.UnmappedField12Label, boe.UnmappedField12Value),
+                (boe.UnmappedField13Label, boe.UnmappedField13Value),
+                (boe.UnmappedField14Label, boe.UnmappedField14Value),
+                (boe.UnmappedField15Label, boe.UnmappedField15Value),
+                (boe.UnmappedField16Label, boe.UnmappedField16Value),
+                (boe.UnmappedField17Label, boe.UnmappedField17Value),
+                (boe.UnmappedField18Label, boe.UnmappedField18Value),
+                (boe.UnmappedField19Label, boe.UnmappedField19Value),
+                (boe.UnmappedField20Label, boe.UnmappedField20Value)
+            };
+            return pairs
+                .Where(p => !string.IsNullOrWhiteSpace(p.Item1))
+                .Select(p => new UnmappedFieldDto { Label = p.Item1 ?? string.Empty, Value = p.Item2 ?? string.Empty })
+                .ToList();
         }
 
         private void ExtractAllFields(JsonElement element, Dictionary<string, string> fields, string prefix = "")

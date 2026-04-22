@@ -92,10 +92,11 @@ try {
 # 6. Services running
 Write-Host "[6/7] NSCIM services..." -NoNewline
 try {
-    $services = Get-Service NSCIM_API, NSCIM_WebApp, NSCIM_Mobile, NSCIM_ImageSplitter -ErrorAction Stop
+    # NSCIM_Mobile retired 2026-04-22 — web frontend (NSCIM_WebApp) now serves mobile too.
+    $services = Get-Service NSCIM_API, NSCIM_WebApp, NSCIM_ImageSplitter -ErrorAction Stop
     $notRunning = $services | Where-Object { $_.Status -ne 'Running' }
     if ($notRunning) { throw "Not running: $($notRunning.Name -join ', ')" }
-    $results['services'] = "OK (all 4 running)"
+    $results['services'] = "OK (all 3 running)"
     Write-Host " OK" -ForegroundColor Green
 } catch {
     $results['services'] = "FAIL: $_"

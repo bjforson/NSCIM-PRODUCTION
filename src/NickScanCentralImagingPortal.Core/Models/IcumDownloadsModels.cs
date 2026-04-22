@@ -155,6 +155,14 @@ namespace NickScanCentralImagingPortal.Core.Models
 
         public DateTime? CmrUpgradedAt { get; set; }
 
+        // Ingestion integrity warnings — set by ValidateCriticalFieldsAsync during ingestion.
+        // When true, IngestionWarnings holds a newline-delimited list of warnings.
+        // Distinct from ProcessingStatus/ErrorMessage (those are for ingestion FAILURE; these are
+        // for "record saved but has business-rule issues worth reviewing"). DB columns added
+        // 2026-04-22 via scripts/add_ingestion_warnings_columns_pg.sql.
+        public bool HasIngestionWarnings { get; set; }
+        public string? IngestionWarnings { get; set; }
+
         // Navigation properties
         public virtual DownloadedFile DownloadedFile { get; set; } = null!;
     }

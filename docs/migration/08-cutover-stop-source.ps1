@@ -8,7 +8,8 @@ Write-Host "=== CUTOVER: Stopping source services ===" -ForegroundColor Red
 Write-Host "Time: $(Get-Date -Format 'HH:mm:ss')"
 Write-Host ""
 
-$services = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_Mobile', 'NSCIM_ImageSplitter')
+# NSCIM_Mobile retired 2026-04-22 — WebApp now serves mobile viewports.
+$services = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_ImageSplitter')
 
 # Disable auto-recovery (otherwise services restart within 5s)
 Write-Host "[1/2] Disabling auto-recovery..."

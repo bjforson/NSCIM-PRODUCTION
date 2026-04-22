@@ -18,6 +18,7 @@ namespace NickScanCentralImagingPortal.Services.Gateway
         private readonly IIcumDownloadsRepository _icumsRepo;
         private readonly IContainerValidationService _validationService;
         private readonly ApplicationDbContext _context;
+        private readonly IcumDownloadsDbContext _icumDownloadsDbContext;
         private readonly ILogger<GatewayOrchestrationService> _logger;
 
         public GatewayOrchestrationService(
@@ -25,12 +26,14 @@ namespace NickScanCentralImagingPortal.Services.Gateway
             IIcumDownloadsRepository icumsRepo,
             IContainerValidationService validationService,
             ApplicationDbContext context,
+            IcumDownloadsDbContext icumDownloadsDbContext,
             ILogger<GatewayOrchestrationService> logger)
         {
             _imageService = imageService;
             _icumsRepo = icumsRepo;
             _validationService = validationService;
             _context = context;
+            _icumDownloadsDbContext = icumDownloadsDbContext;
             _logger = logger;
         }
 
@@ -133,47 +136,108 @@ namespace NickScanCentralImagingPortal.Services.Gateway
             {
                 _logger.LogDebug("Loading ICUMS data for {Container}", containerNumber);
 
-                // Check if container has ICUMS data
                 var hasICUMSData = await _icumsRepo.ContainerHasICUMSDataAsync(containerNumber);
 
-                if (hasICUMSData)
-                {
-                    // Get the most recent download for this container
-                    var downloadFile = await _icumsRepo.GetMostRecentDownloadForContainerAsync(containerNumber);
-
-                    if (downloadFile != null)
-                    {
-                        response.ICUMS = new ICUMSDataSection
-                        {
-                            BOENumber = downloadFile.FileName, // Filename often contains BOE
-                            ManifestNumber = null, // TODO: Extract from manifest items
-                            Consignee = null, // TODO: Get from BOEDocument
-                            ConsigneeAddress = null,
-                            OriginPort = null,
-                            DestinationPort = null,
-                            VesselName = null,
-                            ArrivalDate = null,
-                            CargoDescription = null,
-                            DeclaredValue = null,
-                            CustomsStatus = downloadFile.ProcessingStatus,
-                            DownloadedAt = downloadFile.DownloadDate, // FIXED: Property is DownloadDate not DownloadedAt
-                            LineItemCount = downloadFile.RecordCount ?? 0
-                        };
-
-                        response.Available.HasICUMSData = true;
-
-                        _logger.LogDebug(
-                            "ICUMS data loaded for {Container}: File={File}, Status={Status}",
-                            containerNumber,
-                            downloadFile.FileName,
-                            downloadFile.ProcessingStatus);
-                    }
-                }
-                else
+                if (!hasICUMSData)
                 {
                     response.Warnings.Add("ICUMS data not found");
                     _logger.LogWarning("No ICUMS data found for {Container}", containerNumber);
+                    return;
                 }
+
+                // Get the most recent download file (for DownloadedAt + LineItemCount fallback)
+                var downloadFile = await _icumsRepo.GetMostRecentDownloadForContainerAsync(containerNumber);
+
+                // Get the most recent BOEDocument for this container — full field visibility
+                var boe = await _icumDownloadsDbContext.BOEDocuments
+                    .AsNoTracking()
+                    .Where(b => b.ContainerNumber == containerNumber)
+                    .OrderByDescending(b => b.Id)
+                    .FirstOrDefaultAsync();
+
+                var lineItemCount = boe != null
+                    ? await _icumDownloadsDbContext.ManifestItems.AsNoTracking().CountAsync(i => i.BOEDocumentId == boe.Id)
+                    : (downloadFile?.RecordCount ?? 0);
+
+                response.ICUMS = new ICUMSDataSection
+                {
+                    // Identifiers
+                    BOENumber         = boe?.DeclarationNumber,
+                    DeclarationNumber = boe?.DeclarationNumber,
+                    RotationNumber    = boe?.RotationNumber,
+                    ManifestNumber    = boe?.BlNumber,
+                    BlNumber          = boe?.BlNumber,
+                    HouseBl           = boe?.HouseBl,
+                    MasterBlNumber    = boe?.MasterBlNumber,
+
+                    // Parties
+                    Consignee         = boe?.ConsigneeName,
+                    ConsigneeName     = boe?.ConsigneeName,
+                    ConsigneeAddress  = boe?.ConsigneeAddress,
+                    ShipperName       = boe?.ShipperName,
+                    ShipperAddress    = boe?.ShipperAddress,
+                    ImpName           = boe?.ImpName,
+                    ImpAddress        = boe?.ImpAddress,
+                    ExpName           = boe?.ExpName,
+                    ExpAddress        = boe?.ExpAddress,
+                    DeclarantName     = boe?.DeclarantName,
+                    DeclarantAddress  = boe?.DeclarantAddress,
+
+                    // Location / shipping
+                    CountryOfOrigin   = boe?.CountryOfOrigin,
+                    DeliveryPlace     = boe?.DeliveryPlace,
+                    DestinationPort   = boe?.DeliveryPlace,
+
+                    // Cargo / declaration
+                    CargoDescription      = boe?.GoodsDescription,
+                    GoodsDescription      = boe?.GoodsDescription,
+                    MarksNumbers          = boe?.MarksNumbers,
+                    ClearanceType         = boe?.ClearanceType,
+                    OriginalClearanceType = boe?.OriginalClearanceType,
+                    CmrUpgradedAt         = boe?.CmrUpgradedAt,
+                    RegimeCode            = boe?.RegimeCode,
+                    DeclarationDate       = boe?.DeclarationDate,
+                    DeclarationVersion    = boe?.DeclarationVersion,
+                    NoOfContainers        = boe?.NoOfContainers,
+
+                    // Container details
+                    ContainerDescription = boe?.ContainerDescription,
+                    ContainerISO         = boe?.ContainerISO,
+                    ContainerSize        = boe?.ContainerSize,
+                    ContainerQuantity    = boe?.ContainerQuantity,
+                    ContainerWeight      = boe?.ContainerWeight,
+                    ContainerStatus      = boe?.ContainerStatus,
+                    ContainerRemarks     = boe?.ContainerRemarks,
+                    SealNumber           = boe?.SealNumber,
+                    TruckPlateNumber     = boe?.TruckPlateNumber,
+                    DriverName           = boe?.DriverName,
+                    DriverLicense        = boe?.DriverLicense,
+
+                    // Financial & risk
+                    DeclaredValue    = boe?.TotalDutyPaid,
+                    TotalDutyPaid    = boe?.TotalDutyPaid,
+                    CrmsLevel        = boe?.CrmsLevel,
+                    CompOffRemarks   = boe?.CompOffRemarks,
+                    CcvrIntelRemarks = boe?.CcvrIntelRemarks,
+
+                    // State
+                    CustomsStatus         = boe?.ProcessingStatus ?? downloadFile?.ProcessingStatus,
+                    ProcessingStatus      = boe?.ProcessingStatus ?? downloadFile?.ProcessingStatus,
+                    ErrorMessage          = boe?.ErrorMessage,
+                    IsConsolidated        = boe?.IsConsolidated ?? false,
+                    HasIngestionWarnings  = boe?.HasIngestionWarnings ?? false,
+                    IngestionWarnings     = boe?.IngestionWarnings,
+                    ProcessedAt           = boe?.ProcessedAt,
+                    UpdatedAt             = boe?.UpdatedAt,
+                    DownloadedAt          = downloadFile?.DownloadDate,
+                    LineItemCount         = lineItemCount
+                };
+
+                response.Available.HasICUMSData = true;
+
+                _logger.LogDebug(
+                    "ICUMS data loaded for {Container}: BOE={BOE}, Status={Status}, Items={Items}",
+                    containerNumber, boe?.DeclarationNumber, boe?.ProcessingStatus, lineItemCount);
             }
             catch (Exception ex)
             {

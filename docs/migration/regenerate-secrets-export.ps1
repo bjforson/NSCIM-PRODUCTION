@@ -38,7 +38,8 @@ foreach ($v in $vars) {
 $lines += ''
 $lines += "Write-Host ''"
 $lines += 'Write-Host ''Restart services:'' -ForegroundColor Yellow'
-$lines += 'Write-Host ''  Restart-Service NSCIM_API, NSCIM_WebApp, NSCIM_Mobile, NSCIM_NickComms, NickHR_API, NickHR_WebApp, NSCIM_ImageSplitter -Force'' -ForegroundColor Cyan'
+# NSCIM_Mobile retired 2026-04-22 — NSCIM_WebApp serves mobile viewports.
+$lines += 'Write-Host ''  Restart-Service NSCIM_API, NSCIM_WebApp, NSCIM_NickComms, NickHR_API, NickHR_WebApp, NSCIM_ImageSplitter -Force'' -ForegroundColor Cyan'
 
 $outPath = 'Y:\set-secrets-on-target.ps1'
 $lines | Set-Content -Path $outPath -Encoding UTF8

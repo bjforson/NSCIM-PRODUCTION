@@ -22,11 +22,6 @@
                      },
                      {
                          "Status":  "Running",
-                         "Name":  "NSCIM_Mobile",
-                         "StartType":  "Automatic"
-                     },
-                     {
-                         "Status":  "Running",
                          "Name":  "NSCIM_NickComms",
                          "StartType":  "Automatic"
                      },
@@ -95,14 +90,6 @@
                            {
                                "Proc":  "NickComms.Gateway",
                                "Port":  5220
-                           },
-                           {
-                               "Proc":  "NickScanWebApp.Mobile",
-                               "Port":  5280
-                           },
-                           {
-                               "Proc":  "NickScanWebApp.Mobile",
-                               "Port":  5281
                            },
                            {
                                "Proc":  "NickScanWebApp.New",

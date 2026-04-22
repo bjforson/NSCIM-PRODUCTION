@@ -1,5 +1,7 @@
 # Shadow Validation Checklist — Target 10.0.1.254
 
+> **Retirement notice (2026-04-22):** `NSCIM_Mobile` retired. Drop `NSCIM_Mobile` from any service array below when running commands; `NSCIM_WebApp` now handles mobile viewports.
+
 **Goal:** Validate the full ERP is healthy on the new server before cutting over DNS.
 **Duration:** 24h minimum. Longer is better.
 **Source prod keeps running throughout.** Users see no change until DNS flip.

@@ -96,21 +96,84 @@ namespace NickScanCentralImagingPortal.Core.Models.Gateway
     }
 
     /// <summary>
-    /// ICUMS/BOE data section
+    /// ICUMS/BOE data section — full BOE column inventory exposed via Gateway.
+    /// Legacy aliases (BOENumber, ManifestNumber, Consignee, OriginPort, DestinationPort,
+    /// CargoDescription, DeclaredValue, CustomsStatus) retained for backward compatibility
+    /// with existing consumers; prefer the explicit columns.
     /// </summary>
     public class ICUMSDataSection
     {
-        public string? BOENumber { get; set; }
-        public string? ManifestNumber { get; set; }
-        public string? Consignee { get; set; }
+        // Identifiers
+        public string? BOENumber { get; set; }           // alias: DeclarationNumber
+        public string? DeclarationNumber { get; set; }
+        public string? RotationNumber { get; set; }
+        public string? ManifestNumber { get; set; }      // alias: BlNumber
+        public string? BlNumber { get; set; }
+        public string? HouseBl { get; set; }
+        public string? MasterBlNumber { get; set; }
+
+        // Parties
+        public string? Consignee { get; set; }           // alias: ConsigneeName
+        public string? ConsigneeName { get; set; }
         public string? ConsigneeAddress { get; set; }
+        public string? ShipperName { get; set; }
+        public string? ShipperAddress { get; set; }
+        public string? ImpName { get; set; }
+        public string? ImpAddress { get; set; }
+        public string? ExpName { get; set; }
+        public string? ExpAddress { get; set; }
+        public string? DeclarantName { get; set; }
+        public string? DeclarantAddress { get; set; }
+
+        // Location / shipping
         public string? OriginPort { get; set; }
-        public string? DestinationPort { get; set; }
+        public string? DestinationPort { get; set; }     // alias: DeliveryPlace
+        public string? DeliveryPlace { get; set; }
+        public string? CountryOfOrigin { get; set; }
         public string? VesselName { get; set; }
         public DateTime? ArrivalDate { get; set; }
-        public string? CargoDescription { get; set; }
-        public decimal? DeclaredValue { get; set; }
-        public string? CustomsStatus { get; set; }
+
+        // Cargo / declaration
+        public string? CargoDescription { get; set; }    // alias: GoodsDescription
+        public string? GoodsDescription { get; set; }
+        public string? MarksNumbers { get; set; }
+        public string? ClearanceType { get; set; }
+        public string? OriginalClearanceType { get; set; }
+        public DateTime? CmrUpgradedAt { get; set; }
+        public string? RegimeCode { get; set; }
+        public string? DeclarationDate { get; set; }
+        public int? DeclarationVersion { get; set; }
+        public int? NoOfContainers { get; set; }
+
+        // Container details
+        public string? ContainerDescription { get; set; }
+        public string? ContainerISO { get; set; }
+        public string? ContainerSize { get; set; }
+        public int? ContainerQuantity { get; set; }
+        public decimal? ContainerWeight { get; set; }
+        public string? ContainerStatus { get; set; }
+        public string? ContainerRemarks { get; set; }
+        public string? SealNumber { get; set; }
+        public string? TruckPlateNumber { get; set; }
+        public string? DriverName { get; set; }
+        public string? DriverLicense { get; set; }
+
+        // Financial & risk
+        public decimal? DeclaredValue { get; set; }      // alias: TotalDutyPaid
+        public decimal? TotalDutyPaid { get; set; }
+        public string? CrmsLevel { get; set; }
+        public string? CompOffRemarks { get; set; }
+        public string? CcvrIntelRemarks { get; set; }
+
+        // State
+        public string? CustomsStatus { get; set; }       // alias: ProcessingStatus
+        public string? ProcessingStatus { get; set; }
+        public string? ErrorMessage { get; set; }
+        public bool IsConsolidated { get; set; }
+        public bool HasIngestionWarnings { get; set; }
+        public string? IngestionWarnings { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public DateTime? UpdatedAt { get; set; }
         public DateTime? DownloadedAt { get; set; }
         public int LineItemCount { get; set; }
     }

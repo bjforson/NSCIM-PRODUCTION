@@ -32,32 +32,33 @@ if (-not (Select-String -Path "src\NickScanCentralImagingPortal.API\*.csproj" -P
 Pop-Location
 
 # Target paths (via Y:\)
+# NSCIM_Mobile retired 2026-04-22 — WebApp now serves mobile viewports responsively.
 $apiOut = "Y:\publish\API"
 $webOut = "Y:\publish\WebApp"
-$mobileOut = "Y:\publish\Mobile"
 
 # Clean first (remove old files to catch orphaned DLLs)
-Write-Host "[1/4] Cleaning target publish dirs..."
-@($apiOut, $webOut, $mobileOut) | ForEach-Object {
+Write-Host "[1/3] Cleaning target publish dirs..."
+@($apiOut, $webOut) | ForEach-Object {
     if (Test-Path $_) { Remove-Item "$_\*" -Recurse -Force -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force -Path $_ | Out-Null
 }
 
+# Sweep retired Mobile publish dir if it still exists on target (safe no-op otherwise)
+if (Test-Path "Y:\publish\Mobile") {
+    Write-Host "[cleanup] Removing retired Y:\publish\Mobile..." -ForegroundColor Yellow
+    Remove-Item "Y:\publish\Mobile" -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Publish API
-Write-Host "[2/4] Publishing API to $apiOut..." -ForegroundColor Yellow
+Write-Host "[2/3] Publishing API to $apiOut..." -ForegroundColor Yellow
 Push-Location C:\Shared\NSCIM_PRODUCTION
 dotnet publish src/NickScanCentralImagingPortal.API/NickScanCentralImagingPortal.API.csproj -c Release -o $apiOut --no-self-contained 2>&1 | Tee-Object -FilePath (Join-Path $apiOut 'publish.log')
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "API publish failed" }
 
-# Publish WebApp
-Write-Host "[3/4] Publishing WebApp to $webOut..." -ForegroundColor Yellow
+# Publish WebApp (serves desktop + mobile)
+Write-Host "[3/3] Publishing WebApp to $webOut..." -ForegroundColor Yellow
 dotnet publish src/NickScanWebApp.New/NickScanWebApp.New.csproj -c Release -o $webOut --no-self-contained 2>&1 | Tee-Object -FilePath (Join-Path $webOut 'publish.log')
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "WebApp publish failed" }
-
-# Publish Mobile
-Write-Host "[4/4] Publishing Mobile to $mobileOut..." -ForegroundColor Yellow
-dotnet publish src/NickScanWebApp.Mobile/NickScanWebApp.Mobile.csproj -c Release -o $mobileOut --no-self-contained 2>&1 | Tee-Object -FilePath (Join-Path $mobileOut 'publish.log')
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Mobile publish failed" }
 
 Pop-Location
 
@@ -66,7 +67,7 @@ Write-Host ""
 Write-Host "=== Publish complete in $elapsed min ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Verify .exe present in each:"
-@($apiOut, $webOut, $mobileOut) | ForEach-Object {
+@($apiOut, $webOut) | ForEach-Object {
     $exe = Get-ChildItem $_ -Filter *.exe -File | Select-Object -First 1
     if ($exe) {
         $v = $exe.VersionInfo.FileVersion
@@ -80,5 +81,5 @@ Write-Host ""
 Write-Host "Next steps on target server:"
 Write-Host "  1. Create Python venv: cd C:\Shared\NSCIM_PRODUCTION\services\image-splitter; python -m venv venv; .\venv\Scripts\activate; pip install -r requirements.txt"
 Write-Host "  2. Register services: run 07-register-services.ps1 on target"
-Write-Host "  3. Start services: Start-Service NSCIM_API, NSCIM_WebApp, NSCIM_Mobile, NSCIM_ImageSplitter"
+Write-Host "  3. Start services: Start-Service NSCIM_API, NSCIM_WebApp, NSCIM_ImageSplitter"
 Write-Host "  4. Verify version: [Net.ServicePointManager]::ServerCertificateValidationCallback={`$true}; Invoke-RestMethod https://localhost:5300/api/server/version"

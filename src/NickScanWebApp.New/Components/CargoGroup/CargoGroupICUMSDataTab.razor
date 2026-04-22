@@ -1,5 +1,7 @@
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanWebApp.New.Services
+@using NickScanWebApp.New.Components.ICUMS
+@using Microsoft.AspNetCore.Components.Authorization
 @using MudBlazor
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
@@ -65,7 +67,20 @@
                                             <MudText Typo="Typo.body2">
                                                 <strong>Container:</strong> @boe.ContainerNumber
                                             </MudText>
+                                            @if (boe.IngestionMetadata?.HasIngestionWarnings == true)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Error"
+                                                         Icon="@Icons.Material.Outlined.ReportProblem"
+                                                         Variant="Variant.Outlined">
+                                                    @(boe.IngestionMetadata.IngestionWarnings.Count) ingestion warning(s)
+                                                </MudChip>
+                                            }
                                         </MudStack>
+
+                                        @if (_isAdmin && boe.IngestionMetadata != null)
+                                        {
+                                            <BOEIngestionMetadataPanel Metadata="@boe.IngestionMetadata" />
+                                        }
                                     }
                                 </MudPaper>
                             }
@@ -342,15 +357,46 @@
 
 @code {
     [Parameter] public CargoGroupDto? CargoGroup { get; set; }
-    
+
     [Inject] private CargoSummaryService CargoSummaryService { get; set; } = null!;
-    
+    [Inject] private AuthenticationStateProvider AuthStateProvider { get; set; } = null!;
+
     private CargoSummaryDto? _cargoSummary;
     private bool _isLoadingSummary = false;
-    
+    private bool _isAdmin = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await DetectAdminRole();
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         await LoadCargoSummary();
+    }
+
+    /// <summary>
+    /// Admin-only features (raw JSON, unmapped fields, ingestion warnings) appear when the user
+    /// is in the Admin role. Fails closed — panel hidden on auth error.
+    /// </summary>
+    private async Task DetectAdminRole()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            if (user.Identity?.IsAuthenticated != true) { _isAdmin = false; return; }
+
+            _isAdmin = user.IsInRole("Admin")
+                || user.IsInRole("SuperAdmin")
+                || user.Claims.Any(c =>
+                    (c.Type == "role" || c.Type.EndsWith("/role")) &&
+                    (c.Value.Contains("Admin", StringComparison.OrdinalIgnoreCase)));
+        }
+        catch
+        {
+            _isAdmin = false;
+        }
     }
     
     private async Task LoadCargoSummary()

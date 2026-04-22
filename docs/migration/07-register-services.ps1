@@ -1,6 +1,10 @@
 # Phase 4.3 — Register NSCIM Windows services on target
 # Run ON TARGET SERVER via RDP, as admin
-# Creates same 4 services as current box, with matching names + auto-restart config
+# Creates the NSCIM services with matching names + auto-restart config.
+#
+# Note: NSCIM_Mobile retired on 2026-04-22. The Web frontend (NSCIM_WebApp) is now
+# responsive and serves both desktop and mobile viewports. Do not re-add NSCIM_Mobile
+# here without first restoring the NickScanWebApp.Mobile project.
 
 $ErrorActionPreference = 'Stop'
 
@@ -10,9 +14,18 @@ $root = "C:\Shared\NSCIM_PRODUCTION"
 $services = @(
     @{ Name = 'NSCIM_API';           Display = 'NSCIM Production API';            Exe = "$root\publish\API\NickScanCentralImagingPortal.API.exe";     Depends = $null }
     @{ Name = 'NSCIM_WebApp';        Display = 'NSCIM Production WebApp';         Exe = "$root\publish\WebApp\NickScanWebApp.New.exe";                Depends = 'NSCIM_API' }
-    @{ Name = 'NSCIM_Mobile';        Display = 'NSCIM Production Mobile';         Exe = "$root\publish\Mobile\NickScanWebApp.Mobile.exe";             Depends = 'NSCIM_API' }
     @{ Name = 'NSCIM_ImageSplitter'; Display = 'NSCIM Image Splitting Service';   Exe = "$root\services\image-splitter\run-service.bat";              Depends = 'NSCIM_API' }
 )
+
+# Defensive cleanup: if an old NSCIM_Mobile service still exists from a prior
+# registration, remove it so it doesn't linger as a disabled/ghost entry.
+$legacyMobile = Get-Service -Name 'NSCIM_Mobile' -ErrorAction SilentlyContinue
+if ($legacyMobile) {
+    Write-Host "[cleanup] Removing retired NSCIM_Mobile service..." -ForegroundColor Yellow
+    Stop-Service 'NSCIM_Mobile' -Force -ErrorAction SilentlyContinue
+    sc.exe delete 'NSCIM_Mobile' | Out-Null
+    Start-Sleep -Seconds 2
+}
 
 # Verify binaries exist before registering
 Write-Host "[1/3] Verifying binaries..."
@@ -65,7 +78,7 @@ Write-Host ""
 Write-Host "To start:" -ForegroundColor Yellow
 Write-Host "  Start-Service NSCIM_API"
 Write-Host "  Start-Sleep -Seconds 10"
-Write-Host "  Start-Service NSCIM_WebApp, NSCIM_Mobile, NSCIM_ImageSplitter"
+Write-Host "  Start-Service NSCIM_WebApp, NSCIM_ImageSplitter"
 Write-Host ""
 Write-Host "To verify:" -ForegroundColor Yellow
 Write-Host "  [Net.ServicePointManager]::ServerCertificateValidationCallback={`$true}; Invoke-RestMethod -Uri 'https://localhost:5300/api/server/version'"

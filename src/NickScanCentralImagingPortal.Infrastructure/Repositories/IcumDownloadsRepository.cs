@@ -857,6 +857,41 @@ WHERE Id IN ({whereClause})";
             return log.Id;
         }
 
+        public async Task UpdateIngestionLogAsync(int logId, string status, DateTime endTime, int? recordsProcessed = null, string? errorMessage = null, string? details = null)
+        {
+            var log = await _context.IngestionLogs.FindAsync(logId);
+            if (log == null) return;
+            log.Status = status;
+            log.EndTime = endTime;
+            if (recordsProcessed.HasValue) log.RecordsProcessed = recordsProcessed;
+            if (errorMessage != null) log.ErrorMessage = errorMessage;
+            if (details != null) log.Details = details;
+            await _context.SaveChangesAsync();
+            _context.ChangeTracker.Clear();
+        }
+
+        public async Task AddIngestionWarningsAsync(int boeDocumentId, IEnumerable<string> warnings)
+        {
+            var list = warnings?.Where(w => !string.IsNullOrWhiteSpace(w)).ToList() ?? new List<string>();
+            if (list.Count == 0) return;
+
+            var boe = await _context.BOEDocuments.FindAsync(boeDocumentId);
+            if (boe == null) return;
+
+            // Merge with any existing warnings, dedupe, cap at column max (4000).
+            var existing = string.IsNullOrWhiteSpace(boe.IngestionWarnings)
+                ? new List<string>()
+                : boe.IngestionWarnings.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
+            var merged = existing.Concat(list).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var joined = string.Join("\n", merged);
+            if (joined.Length > 4000) joined = joined.Substring(0, 4000);
+
+            boe.IngestionWarnings = joined;
+            boe.HasIngestionWarnings = true;
+            await _context.SaveChangesAsync();
+            _context.ChangeTracker.Clear();
+        }
+
         public async Task<List<IngestionLog>> GetIngestionLogsAsync(int? fileId = null)
         {
             var query = _context.IngestionLogs.AsQueryable();

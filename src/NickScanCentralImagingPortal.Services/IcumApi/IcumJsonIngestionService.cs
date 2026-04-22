@@ -441,6 +441,24 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             // Update status to Processing
             await repository.UpdateFileProcessingStatusAsync(file.Id, "Processing", null);
 
+            // Ingestion observability: emit a 'Started' row; updated on success/failure below.
+            int? ingestionLogId = null;
+            try
+            {
+                ingestionLogId = await repository.SaveIngestionLogAsync(new IngestionLog
+                {
+                    DownloadedFileId = file.Id,
+                    ProcessType = "JsonIngestion",
+                    Status = "Started",
+                    StartTime = fileStartTime,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+            catch (Exception logEx)
+            {
+                _logger.LogWarning("{ServiceId} Failed to create ingestion log for {FileName}: {Error}", SERVICE_ID, file.FileName, logEx.Message);
+            }
+
             try
             {
                 // ✅ PHASE 1.3: Use streaming JSON parser for memory-efficient processing
@@ -893,6 +911,20 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
                 await ArchiveProcessedFileAsync(file.FilePath, file.FileName);
 
+                // Ingestion observability: mark log as Completed with counts.
+                if (ingestionLogId.HasValue)
+                {
+                    try
+                    {
+                        var details = $"docs={processedDocuments}; items={processedItems}; vehicles={processedVehicles}; duplicatesSkipped={duplicatesSkippedInFile}; elapsedSec={fileElapsedSeconds:F1}";
+                        await repository.UpdateIngestionLogAsync(ingestionLogId.Value, "Completed", DateTime.UtcNow, processedDocuments, null, details);
+                    }
+                    catch (Exception logEx)
+                    {
+                        _logger.LogWarning("{ServiceId} Failed to update ingestion log (completed) for {FileName}: {Error}", SERVICE_ID, file.FileName, logEx.Message);
+                    }
+                }
+
                 // Event-driven record building: build/update records for all declarations in this file
                 if (_recordBuildingService != null && processedDeclarationsInThisFile.Count > 0)
                 {
@@ -914,6 +946,22 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to process file {FileName}: {Error}", file.FileName, ex.Message);
+
+                // Ingestion observability: mark log as Failed.
+                if (ingestionLogId.HasValue)
+                {
+                    try
+                    {
+                        var exDetail = ex.ToString();
+                        await repository.UpdateIngestionLogAsync(ingestionLogId.Value, "Failed", DateTime.UtcNow, null, ex.Message,
+                            exDetail.Length > 3900 ? exDetail.Substring(0, 3900) : exDetail);
+                    }
+                    catch (Exception logEx)
+                    {
+                        _logger.LogWarning("{ServiceId} Failed to update ingestion log (failed) for {FileName}: {Error}", SERVICE_ID, file.FileName, logEx.Message);
+                    }
+                }
+
                 throw;
             }
         }
@@ -1751,6 +1799,20 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                         SERVICE_ID, clearanceType, containerNumber, declarationNumber, string.Join("; ", warnings));
                 }
 
+                // Persist warnings to the record so they're queryable.
+                // This runs BEFORE SaveChanges so the flag is written in the same transaction.
+                if (warnings.Any())
+                {
+                    boeDocument.HasIngestionWarnings = true;
+                    var joined = string.Join("\n", warnings);
+                    boeDocument.IngestionWarnings = joined.Length > 4000 ? joined.Substring(0, 4000) : joined;
+                }
+                else
+                {
+                    boeDocument.HasIngestionWarnings = false;
+                    boeDocument.IngestionWarnings = null;
+                }
+
                 // For CMR records with missing critical fields, queue them for re-download and send alert
                 if (clearanceType == "CMR" && warnings.Any(w => w.Contains("Missing critical fields")))
                 {
@@ -1842,9 +1904,10 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
         /// <summary>
         /// ✅ PHASE 1 FIX #3: Post-Ingestion Validation
-        /// Validates that critical data was extracted and stored correctly
+        /// Validates that critical data was extracted and stored correctly.
+        /// Persists any issues to BOEDocument.IngestionWarnings so they're queryable.
         /// </summary>
-        private Task ValidateIngestedDocumentAsync(BOEDocument boeDocument, int boeId, int documentIndex)
+        private async Task ValidateIngestedDocumentAsync(BOEDocument boeDocument, int boeId, int documentIndex)
         {
             try
             {
@@ -1896,6 +1959,19 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 {
                     _logger.LogWarning("{ServiceId} ⚠️ Validation issues for BOEDocument {BoeId} (Container: {Container}, Index: {Index}): {Issues}",
                         SERVICE_ID, boeId, boeDocument.ContainerNumber, documentIndex, string.Join("; ", issues));
+
+                    // Persist post-save warnings to the record (merges with any ValidateCriticalFieldsAsync output).
+                    try
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var repo = scope.ServiceProvider.GetRequiredService<IIcumDownloadsRepository>();
+                        await repo.AddIngestionWarningsAsync(boeId, issues);
+                    }
+                    catch (Exception persistEx)
+                    {
+                        _logger.LogWarning("{ServiceId} Failed to persist post-ingest warnings for BOEDocument {BoeId}: {Error}",
+                            SERVICE_ID, boeId, persistEx.Message);
+                    }
                 }
                 else
                 {
@@ -1907,8 +1983,6 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             {
                 _logger.LogError(ex, "{ServiceId} Error during post-ingestion validation for BOEDocument {BoeId}", boeId);
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>

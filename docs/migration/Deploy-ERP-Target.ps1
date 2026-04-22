@@ -16,8 +16,8 @@
       2. Database:      check each DB's table count, restore only if empty/missing
       3. Windows svc:   check service presence + binary path, fix only mismatches
 
-    Deploys 7 Windows services:
-      NSCIM_API, NSCIM_WebApp, NSCIM_Mobile, NSCIM_NickComms, NSCIM_ImageSplitter,
+    Deploys 6 Windows services (NSCIM_Mobile retired 2026-04-22):
+      NSCIM_API, NSCIM_WebApp, NSCIM_NickComms, NSCIM_ImageSplitter,
       NickHR_API, NickHR_WebApp
 
     Restores 7 databases:
@@ -56,11 +56,25 @@ $Changes = [ordered]@{
 $ServiceDefs = @(
     @{ Name='NSCIM_API';         Exe="$TargetRoot\publish\API\NickScanCentralImagingPortal.API.exe"; Display='NSCIM Production API';     Dep=$null;        Src="$SourceShare\publish\API" }
     @{ Name='NSCIM_WebApp';      Exe="$TargetRoot\publish\WebApp\NickScanWebApp.New.exe";            Display='NSCIM Production WebApp';  Dep='NSCIM_API';  Src="$SourceShare\publish\WebApp" }
-    @{ Name='NSCIM_Mobile';      Exe="$TargetRoot\publish\Mobile\NickScanWebApp.Mobile.exe";         Display='NSCIM Production Mobile';  Dep='NSCIM_API';  Src="$SourceShare\publish\Mobile" }
+    # NSCIM_Mobile retired 2026-04-22 — NSCIM_WebApp now serves mobile viewports responsively.
     @{ Name='NSCIM_NickComms';   Exe="$TargetRoot\publish\NickComms\NickComms.Gateway.exe";          Display='NSCIM NickComms Gateway';  Dep=$null;        Src="$SourceShare\publish\NickComms" }
     @{ Name='NickHR_API';        Exe="$TargetRoot\NickHR\deploy\api\NickHR.API.exe";                 Display='NickHR API';               Dep=$null;        Src="$SourceShare\NickHR\deploy\api" }
     @{ Name='NickHR_WebApp';     Exe="$TargetRoot\NickHR\deploy\webapp\NickHR.WebApp.exe";           Display='NickHR WebApp';            Dep='NickHR_API'; Src="$SourceShare\NickHR\deploy\webapp" }
 )
+
+# Defensive cleanup: if a retired NSCIM_Mobile service lingers on the target, remove it.
+$legacyMobile = Get-Service -Name 'NSCIM_Mobile' -ErrorAction SilentlyContinue
+if ($legacyMobile) {
+    Write-Host "[cleanup] Retired NSCIM_Mobile service detected — removing..." -ForegroundColor Yellow
+    Stop-Service 'NSCIM_Mobile' -Force -ErrorAction SilentlyContinue
+    sc.exe delete 'NSCIM_Mobile' | Out-Null
+    $Changes.Warnings += 'Removed retired NSCIM_Mobile service'
+}
+# Also sweep the retired publish\Mobile\ directory if present.
+if (Test-Path (Join-Path $TargetRoot 'publish\Mobile')) {
+    Write-Host "[cleanup] Removing retired $TargetRoot\publish\Mobile..." -ForegroundColor Yellow
+    Remove-Item (Join-Path $TargetRoot 'publish\Mobile') -Recurse -Force -ErrorAction SilentlyContinue
+}
 # ImageSplitter handled separately via NSSM
 
 # ============================================================================
@@ -545,7 +559,7 @@ if (Test-Path $nssmTarget) {
 # ============================================================================
 Write-Step 9 $totalSteps "Start services + verify"
 
-$startOrder = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_Mobile', 'NSCIM_NickComms',
+$startOrder = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_NickComms',
                 'NickHR_API', 'NickHR_WebApp', 'NSCIM_ImageSplitter')
 
 foreach ($svcName in $startOrder) {

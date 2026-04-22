@@ -794,6 +794,132 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             return unmappedFields;
         }
+
+        // ===================================================================
+        // Ingestion health / integrity endpoints (Part B follow-up)
+        // ===================================================================
+
+        /// <summary>Rolling ingestion health stats for the admin dashboard.</summary>
+        [HttpGet("ingestion-health")]
+        public async Task<ActionResult<IngestionHealthDto>> GetIngestionHealth([FromQuery] int hours = 24)
+        {
+            if (hours < 1 || hours > 24 * 30) hours = 24;
+
+            var since = DateTime.UtcNow.AddHours(-hours);
+
+            var totalBoe          = await _downloadsContext.BOEDocuments.AsNoTracking().CountAsync();
+            var withWarnings      = await _downloadsContext.BOEDocuments.AsNoTracking().CountAsync(b => b.HasIngestionWarnings);
+            var recentTotalBoe    = await _downloadsContext.BOEDocuments.AsNoTracking().CountAsync(b => b.CreatedAt >= since);
+            var recentWithWarn    = await _downloadsContext.BOEDocuments.AsNoTracking().CountAsync(b => b.CreatedAt >= since && b.HasIngestionWarnings);
+            var recentIngestLogs  = await _downloadsContext.IngestionLogs.AsNoTracking().Where(l => l.CreatedAt >= since).ToListAsync();
+            var failedQueueDepth  = await _downloadsContext.FailedProcessingQueue.AsNoTracking().CountAsync(f => f.Status == "Pending" || f.Status == "Retrying");
+
+            return Ok(new IngestionHealthDto
+            {
+                WindowHours                    = hours,
+                GeneratedAt                    = DateTime.UtcNow,
+                TotalBoe                       = totalBoe,
+                BoeWithWarnings                = withWarnings,
+                WarningRatePct                 = totalBoe == 0 ? 0 : Math.Round(100.0 * withWarnings / totalBoe, 2),
+                RecentBoe                      = recentTotalBoe,
+                RecentBoeWithWarnings          = recentWithWarn,
+                RecentWarningRatePct           = recentTotalBoe == 0 ? 0 : Math.Round(100.0 * recentWithWarn / recentTotalBoe, 2),
+                IngestionBatches               = recentIngestLogs.Count,
+                IngestionBatchesCompleted      = recentIngestLogs.Count(l => l.Status == "Completed"),
+                IngestionBatchesFailed         = recentIngestLogs.Count(l => l.Status == "Failed"),
+                IngestionBatchesInFlight       = recentIngestLogs.Count(l => l.Status == "Started" || l.Status == "Processing"),
+                TotalRecordsIngestedInWindow   = recentIngestLogs.Where(l => l.RecordsProcessed.HasValue).Sum(l => l.RecordsProcessed!.Value),
+                FailedQueueDepth               = failedQueueDepth
+            });
+        }
+
+        /// <summary>Paginated list of BOEs currently flagged with ingestion warnings.</summary>
+        [HttpGet("warnings")]
+        public async Task<ActionResult<object>> GetWarnings([FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+        {
+            if (page < 1) page = 1;
+            if (pageSize < 1 || pageSize > 500) pageSize = 50;
+
+            var query = _downloadsContext.BOEDocuments
+                .AsNoTracking()
+                .Where(b => b.HasIngestionWarnings)
+                .OrderByDescending(b => b.UpdatedAt);
+
+            var total = await query.CountAsync();
+            var rows = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(b => new
+                {
+                    BoeId             = b.Id,
+                    ContainerNumber   = b.ContainerNumber,
+                    DeclarationNumber = b.DeclarationNumber,
+                    ClearanceType     = b.ClearanceType,
+                    RegimeCode        = b.RegimeCode,
+                    DeliveryPlace     = b.DeliveryPlace,
+                    Warnings          = b.IngestionWarnings,
+                    ProcessingStatus  = b.ProcessingStatus,
+                    CreatedAt         = b.CreatedAt,
+                    UpdatedAt         = b.UpdatedAt
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                Total     = total,
+                Page      = page,
+                PageSize  = pageSize,
+                TotalPages = (int)Math.Ceiling(total / (double)pageSize),
+                Rows      = rows
+            });
+        }
+
+        /// <summary>Most recent ingestion log entries (N most recent, across all files).</summary>
+        [HttpGet("ingestion-logs")]
+        public async Task<ActionResult<object>> GetRecentIngestionLogs([FromQuery] int limit = 50)
+        {
+            if (limit < 1 || limit > 500) limit = 50;
+
+            var logs = await _downloadsContext.IngestionLogs
+                .AsNoTracking()
+                .OrderByDescending(l => l.CreatedAt)
+                .Take(limit)
+                .Select(l => new
+                {
+                    l.Id,
+                    l.DownloadedFileId,
+                    l.ProcessType,
+                    l.Status,
+                    l.StartTime,
+                    l.EndTime,
+                    DurationSec = l.EndTime.HasValue ? (double?)(l.EndTime.Value - l.StartTime).TotalSeconds : null,
+                    l.RecordsProcessed,
+                    l.ErrorMessage,
+                    l.Details,
+                    l.CreatedAt
+                })
+                .ToListAsync();
+
+            return Ok(logs);
+        }
+    }
+
+    public class IngestionHealthDto
+    {
+        public int WindowHours { get; set; }
+        public DateTime GeneratedAt { get; set; }
+        public int TotalBoe { get; set; }
+        public int BoeWithWarnings { get; set; }
+        public double WarningRatePct { get; set; }
+        public int RecentBoe { get; set; }
+        public int RecentBoeWithWarnings { get; set; }
+        public double RecentWarningRatePct { get; set; }
+        public int IngestionBatches { get; set; }
+        public int IngestionBatchesCompleted { get; set; }
+        public int IngestionBatchesFailed { get; set; }
+        public int IngestionBatchesInFlight { get; set; }
+        public int TotalRecordsIngestedInWindow { get; set; }
+        public int FailedQueueDepth { get; set; }
     }
 
     // DTOs

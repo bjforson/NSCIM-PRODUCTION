@@ -1,0 +1,172 @@
+@using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
+
+@*
+    Admin-only panel for BOE ingestion metadata.
+    Renders fields that should NOT be shown to analysts by default:
+      - Processing/ingestion state (status, errors, timestamps)
+      - Ingestion warnings (human-readable)
+      - ICUMS-source unmapped fields (schema drift signals)
+      - Raw JSON payload (source of truth, can be large)
+      - File / index provenance
+
+    Consumer pages gate on role. Example:
+        @if (UserHasAdminRole) {
+            <BOEIngestionMetadataPanel Metadata="@boeDetail.IngestionMetadata" />
+        }
+*@
+
+@if (Metadata != null)
+{
+    <MudExpansionPanels MultiExpansion="true" Class="pa-2 mt-2">
+
+        <!-- Processing state -->
+        <MudExpansionPanel Text="Processing state"
+                           Icon="@Icons.Material.Filled.Settings"
+                           Color="Color.Info"
+                           IsExpanded="false"
+                           Dense="true">
+            <MudGrid Spacing="2" Class="pa-2">
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Status</strong></MudText>
+                    <MudText Typo="Typo.body2">@(Metadata.ProcessingStatus ?? "—")</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Processed At</strong></MudText>
+                    <MudText Typo="Typo.body2">@(Metadata.ProcessedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Not yet processed")</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Created At</strong></MudText>
+                    <MudText Typo="Typo.body2">@Metadata.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Updated At</strong></MudText>
+                    <MudText Typo="Typo.body2">@Metadata.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Source File Id</strong></MudText>
+                    <MudText Typo="Typo.body2">@Metadata.DownloadedFileId</MudText>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary"><strong>Document Index</strong></MudText>
+                    <MudText Typo="Typo.body2">@Metadata.DocumentIndex</MudText>
+                </MudItem>
+                @if (!string.IsNullOrWhiteSpace(Metadata.ErrorMessage))
+                {
+                    <MudItem xs="12">
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true">
+                            <strong>Error:</strong> @Metadata.ErrorMessage
+                        </MudAlert>
+                    </MudItem>
+                }
+            </MudGrid>
+        </MudExpansionPanel>
+
+        <!-- Ingestion warnings (from ValidateCriticalFieldsAsync + ValidateIngestedDocumentAsync) -->
+        <MudExpansionPanel Text="@($"Ingestion warnings ({Metadata.IngestionWarnings.Count})")"
+                           Icon="@Icons.Material.Filled.ReportProblem"
+                           Color="@(Metadata.HasIngestionWarnings ? Color.Error : Color.Default)"
+                           IsExpanded="Metadata.HasIngestionWarnings"
+                           Dense="true">
+            <MudStack Spacing="1" Class="pa-2">
+                @if (Metadata.IngestionWarnings.Any())
+                {
+                    @foreach (var w in Metadata.IngestionWarnings)
+                    {
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Text" Dense="true">
+                            <MudText Typo="Typo.body2">@w</MudText>
+                        </MudAlert>
+                    }
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">No warnings on this record.</MudText>
+                }
+            </MudStack>
+        </MudExpansionPanel>
+
+        <!-- ICUMS source-flagged unmapped fields -->
+        <MudExpansionPanel Text="@($"Unmapped source fields ({(Metadata.UnmappedFieldsCount ?? 0)}{(Metadata.UnmappedFieldsOverflow ? "+" : "")})")"
+                           Icon="@Icons.Material.Filled.Layers"
+                           Color="@(Metadata.UnmappedFields.Any() ? Color.Warning : Color.Default)"
+                           IsExpanded="false"
+                           Dense="true">
+            <MudStack Spacing="1" Class="pa-2">
+                @if (Metadata.UnmappedFields.Any())
+                {
+                    <MudGrid Spacing="2">
+                        @foreach (var f in Metadata.UnmappedFields)
+                        {
+                            <MudItem xs="12" sm="6" md="4">
+                                <MudText Typo="Typo.caption" Color="Color.Warning"><strong>@f.Label</strong></MudText>
+                                <MudText Typo="Typo.body2">@f.Value</MudText>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                    @if (Metadata.UnmappedFieldsOverflow)
+                    {
+                        <MudAlert Severity="Severity.Info" Variant="Variant.Text" Dense="true">
+                            More than 20 unmapped fields were detected — overflow was truncated.
+                        </MudAlert>
+                    }
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        ICUMS source did not flag any unmapped fields for this record.
+                    </MudText>
+                }
+            </MudStack>
+        </MudExpansionPanel>
+
+        <!-- Raw JSON (full source payload) -->
+        <MudExpansionPanel Text="Raw JSON"
+                           Icon="@Icons.Material.Filled.DataObject"
+                           Color="Color.Default"
+                           IsExpanded="false"
+                           Dense="true">
+            <MudStack Spacing="1" Class="pa-2">
+                @if (!string.IsNullOrWhiteSpace(Metadata.RawJsonData))
+                {
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            @($"{Metadata.RawJsonData.Length:N0} chars")
+                        </MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text"
+                                   StartIcon="@Icons.Material.Filled.ContentCopy"
+                                   OnClick="CopyRaw">Copy</MudButton>
+                    </MudStack>
+                    <MudPaper Class="pa-2" Outlined="true" Style="max-height: 320px; overflow:auto;">
+                        <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:monospace; font-size:0.75rem;">@Metadata.RawJsonData</pre>
+                    </MudPaper>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        RawJsonData not stored for this record (pre-backup era).
+                    </MudText>
+                }
+            </MudStack>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+}
+
+@code {
+    [Parameter] public BOEIngestionMetadataDto? Metadata { get; set; }
+
+    [Inject] public ISnackbar Snackbar { get; set; } = default!;
+    [Inject] public IJSRuntime JS { get; set; } = default!;
+
+    private async Task CopyRaw()
+    {
+        if (string.IsNullOrEmpty(Metadata?.RawJsonData)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", Metadata.RawJsonData);
+            Snackbar.Add("Raw JSON copied to clipboard", Severity.Success);
+        }
+        catch
+        {
+            Snackbar.Add("Could not copy to clipboard", Severity.Warning);
+        }
+    }
+}

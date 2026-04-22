@@ -1,5 +1,7 @@
 # NickERP Migration — Quick Start
 
+> **Update 2026-04-22:** `NSCIM_Mobile` service and `NickScanWebApp.Mobile` project **retired**. The `.New` web frontend (service `NSCIM_WebApp`) now serves both desktop and mobile viewports responsively. Any legacy command blocks below that reference `NSCIM_Mobile` or `publish\Mobile\` are historical — skip those entries when running service lists.
+>
 > **Update 2026-04-17:** migration is now **single-script delta-sync** via [`Deploy-ERP-Target.ps1`](./Deploy-ERP-Target.ps1). The old numbered scripts (01-09) are kept for reference but not needed for the normal flow.
 
 ## Single-command deploy (new flow)

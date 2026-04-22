@@ -8,7 +8,8 @@ Write-Host "=== ROLLBACK: Restarting source services ===" -ForegroundColor Yello
 Write-Host "Time: $(Get-Date -Format 'HH:mm:ss')"
 Write-Host ""
 
-$services = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_Mobile', 'NSCIM_ImageSplitter')
+# NSCIM_Mobile retired 2026-04-22 — WebApp now serves mobile viewports.
+$services = @('NSCIM_API', 'NSCIM_WebApp', 'NSCIM_ImageSplitter')
 
 # Re-enable auto-recovery
 Write-Host "[1/3] Re-enabling auto-recovery..."
@@ -25,7 +26,7 @@ Start-Sleep -Seconds 10
 
 # Start dependent services
 Write-Host "[3/3] Starting dependent services..."
-Start-Service NSCIM_WebApp, NSCIM_Mobile, NSCIM_ImageSplitter
+Start-Service NSCIM_WebApp, NSCIM_ImageSplitter
 Start-Sleep -Seconds 5
 
 Write-Host ""

@@ -744,10 +744,145 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                 result.FailedRules.Add($"Missing required fields for {clearanceType} clearance type: {string.Join(", ", clearanceValidation.MissingFields)}");
             }
 
+            // FS6000↔TKD / ASE↔TMA port-match rule (feature-flagged)
+            // Uses BOE.DeliveryPlace (positions 3-5 = 'TKD' or 'TMA'). Null DP → skip.
+            if (_configuration.GetValue<bool>("IcumIngestion:EnablePortAssignmentRule", false))
+            {
+                await ValidatePortMatchAsync(containerNumber, result);
+            }
+
+            // FycoPresent export/import rule (feature-flagged)
+            // FS6000Scan.FycoPresent indicates export vs import; must agree with BOE.ClearanceType.
+            if (_configuration.GetValue<bool>("IcumIngestion:EnableFycoImportExportRule", false))
+            {
+                await ValidateFycoImportExportAsync(containerNumber, result);
+            }
+
             result.IsValid = result.FailedRules.Count == 0;
             result.Score = result.IsValid ? 100 : (int)((double)result.PassedRules.Count / (result.PassedRules.Count + result.FailedRules.Count) * 100);
 
             return result;
+        }
+
+        /// <summary>
+        /// Port-match rule: FS6000 images come from Takoradi (TKD); ASE images come from Tema (TMA).
+        /// BOE.DeliveryPlace format is 10 chars with port code at positions 3-5 (e.g. WTTMA1MPS3 → TMA).
+        /// We fail if a container was scanned by a scanner that contradicts the BOE's declared port.
+        /// Null DeliveryPlace is permitted (upstream ICUMS gap; ~0.35% of real declarations).
+        /// </summary>
+        private async Task ValidatePortMatchAsync(string containerNumber, BusinessRuleValidationResult result)
+        {
+            try
+            {
+                var boe = await _icumDownloadsDbContext.BOEDocuments
+                    .AsNoTracking()
+                    .Where(b => b.ContainerNumber == containerNumber)
+                    .OrderByDescending(b => b.Id)
+                    .Select(b => new { b.DeliveryPlace })
+                    .FirstOrDefaultAsync();
+
+                if (boe == null || string.IsNullOrWhiteSpace(boe.DeliveryPlace))
+                {
+                    return; // No BOE or no DeliveryPlace → rule not applicable.
+                }
+
+                var dp = boe.DeliveryPlace;
+                string? boePort = null;
+                if (dp.Length >= 5)
+                {
+                    var code = dp.Substring(2, 3).ToUpperInvariant();
+                    if (code == "TKD" || code == "TMA") boePort = code;
+                }
+                if (boePort == null)
+                {
+                    result.PassedRules.Add($"Port-match check skipped (unrecognized DeliveryPlace format '{dp}')");
+                    return;
+                }
+
+                var scannedByFs6000 = await _applicationDbContext.FS6000Scans
+                    .AsNoTracking()
+                    .AnyAsync(s => s.ContainerNumber == containerNumber);
+                var scannedByAse = await _applicationDbContext.AseScans
+                    .AsNoTracking()
+                    .AnyAsync(s => s.ContainerNumber == containerNumber);
+
+                var fs6000Conflict = scannedByFs6000 && boePort != "TKD" && !scannedByAse;
+                var aseConflict    = scannedByAse    && boePort != "TMA" && !scannedByFs6000;
+
+                if (fs6000Conflict)
+                {
+                    result.FailedRules.Add($"Port mismatch: FS6000 scanned at Takoradi but BOE DeliveryPlace is {boePort} ({dp})");
+                }
+                else if (aseConflict)
+                {
+                    result.FailedRules.Add($"Port mismatch: ASE scanned at Tema but BOE DeliveryPlace is {boePort} ({dp})");
+                }
+                else if (scannedByFs6000 && scannedByAse)
+                {
+                    result.PassedRules.Add($"Port-match: container scanned at both ports (transit). BOE port: {boePort}");
+                }
+                else
+                {
+                    result.PassedRules.Add($"Port-match: BOE port {boePort} agrees with scanner");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Port-match check failed for {Container}; skipping rule", containerNumber);
+            }
+        }
+
+        /// <summary>
+        /// FycoPresent export/import rule: FS6000Scan.FycoPresent flag must agree with BOE.ClearanceType
+        /// (raw string 'EX' | 'IM' | 'CMR'). The local enum only distinguishes CMR vs IMEX so we read
+        /// the string directly from BOEDocument.
+        /// </summary>
+        private async Task ValidateFycoImportExportAsync(string containerNumber, BusinessRuleValidationResult result)
+        {
+            try
+            {
+                var fs = await _applicationDbContext.FS6000Scans
+                    .AsNoTracking()
+                    .Where(s => s.ContainerNumber == containerNumber)
+                    .OrderByDescending(s => s.ScanTime)
+                    .Select(s => new { s.FycoPresent })
+                    .FirstOrDefaultAsync();
+
+                if (fs == null || string.IsNullOrWhiteSpace(fs.FycoPresent))
+                {
+                    return; // No FS6000 scan or flag missing → rule not applicable.
+                }
+
+                var boeClearance = await _icumDownloadsDbContext.BOEDocuments
+                    .AsNoTracking()
+                    .Where(b => b.ContainerNumber == containerNumber)
+                    .OrderByDescending(b => b.Id)
+                    .Select(b => b.ClearanceType)
+                    .FirstOrDefaultAsync();
+
+                if (string.IsNullOrWhiteSpace(boeClearance) || boeClearance.Equals("CMR", StringComparison.OrdinalIgnoreCase))
+                {
+                    return; // CMR is pre-BOE; direction not yet defined.
+                }
+
+                var raw = fs.FycoPresent.Trim();
+                var isExportFlag = raw.Equals("1") || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
+                                || raw.Equals("Y", StringComparison.OrdinalIgnoreCase) || raw.Equals("YES", StringComparison.OrdinalIgnoreCase);
+                var isBoeExport = boeClearance.Equals("EX", StringComparison.OrdinalIgnoreCase);
+
+                if (isExportFlag == isBoeExport)
+                {
+                    result.PassedRules.Add($"Fyco export/import flag matches BOE clearance ({boeClearance})");
+                }
+                else
+                {
+                    result.FailedRules.Add($"Fyco export/import mismatch: FS6000 FycoPresent='{raw}' vs BOE ClearanceType='{boeClearance}'");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "FycoPresent check failed for {Container}; skipping rule", containerNumber);
+            }
         }
 
         /// <summary>

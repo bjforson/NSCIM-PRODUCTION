@@ -39,7 +39,11 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
 
         // Ingestion Logs
         Task<int> SaveIngestionLogAsync(IngestionLog log);
+        Task UpdateIngestionLogAsync(int logId, string status, DateTime endTime, int? recordsProcessed = null, string? errorMessage = null, string? details = null);
         Task<List<IngestionLog>> GetIngestionLogsAsync(int? fileId = null);
+
+        // Integrity warnings on a BOE row (set by post-ingest validator). Merges with existing warnings.
+        Task AddIngestionWarningsAsync(int boeDocumentId, IEnumerable<string> warnings);
 
         // Statistics
         Task<DownloadsStatistics> GetStatisticsAsync();

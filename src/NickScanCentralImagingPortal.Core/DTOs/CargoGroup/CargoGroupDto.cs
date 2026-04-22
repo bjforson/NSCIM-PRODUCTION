@@ -103,23 +103,129 @@ namespace NickScanCentralImagingPortal.Core.DTOs.CargoGroup
     }
 
     /// <summary>
-    /// Complete BOE document details
+    /// Complete BOE document details — full field inventory from boedocuments.
+    /// UI layer decides which fields to render (hide if null/empty under "show conditionally" policy).
+    /// Legacy fields (BOEId, DeclarationNumber, HouseBL, MasterBL, ConsigneeName, ClearanceType,
+    /// ContainerNumber, RotationNumber, GoodsDescription, TotalDutyPaid, DeclarationDate, AllFields,
+    /// RawJsonData) retained for backward compatibility.
     /// </summary>
     public class BOEDetailDto
     {
         public int BOEId { get; set; }
-        public string? DeclarationNumber { get; set; }
-        public string? HouseBL { get; set; }
-        public string? MasterBL { get; set; }
-        public string? ConsigneeName { get; set; }
-        public string? ClearanceType { get; set; }
+
+        // Container Details
         public string? ContainerNumber { get; set; }
-        public string? RotationNumber { get; set; }
-        public string? GoodsDescription { get; set; }
-        public decimal? TotalDutyPaid { get; set; }
+        public string? ContainerDescription { get; set; }
+        public string? ContainerISO { get; set; }
+        public int? ContainerQuantity { get; set; }
+        public decimal? ContainerWeight { get; set; }
+        public string? ContainerSize { get; set; }
+        public string? ContainerStatus { get; set; }
+        public string? ContainerRemarks { get; set; }
+        public string? SealNumber { get; set; }
+        public string? TruckPlateNumber { get; set; }
+        public string? DriverName { get; set; }
+        public string? DriverLicense { get; set; }
+
+        // Header / Declaration
+        public string? DeclarationNumber { get; set; }
         public string? DeclarationDate { get; set; }
-        public Dictionary<string, string> AllFields { get; set; } = new(); // All extracted fields
-        public string? RawJsonData { get; set; } // Full JSON backup
+        public int? DeclarationVersion { get; set; }
+        public string? RegimeCode { get; set; }
+        public string? ClearanceType { get; set; }
+        public string? OriginalClearanceType { get; set; }
+        public DateTime? CmrUpgradedAt { get; set; }
+        public int? NoOfContainers { get; set; }
+        public decimal? TotalDutyPaid { get; set; }
+        public string? CrmsLevel { get; set; }
+        public string? CompOffRemarks { get; set; }
+        public string? CcvrIntelRemarks { get; set; }
+
+        // Parties
+        public string? ImpName { get; set; }
+        public string? ImpAddress { get; set; }
+        public string? ExpName { get; set; }
+        public string? ExpAddress { get; set; }
+        public string? ImpExpName { get; set; }
+        public string? ImpExpAddress { get; set; }
+        public string? DeclarantName { get; set; }
+        public string? DeclarantAddress { get; set; }
+
+        // Manifest / BL / Shipping
+        public string? BlNumber { get; set; }
+        public string? HouseBL { get; set; }
+        public string? MasterBL { get; set; }            // legacy alias: populated from BlNumber at mapping time
+        public string? MasterBlNumber { get; set; }      // carrier master BL — matches BOEDocument.MasterBlNumber
+        public string? RotationNumber { get; set; }
+        public string? DeliveryPlace { get; set; }
+        public string? GoodsDescription { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public string? MarksNumbers { get; set; }
+        public string? ConsigneeName { get; set; }
+        public string? ConsigneeAddress { get; set; }
+        public string? ShipperName { get; set; }
+        public string? ShipperAddress { get; set; }
+
+        // Flags
+        public bool IsConsolidated { get; set; }
+
+        // Line items (often needed alongside BOE header)
+        public List<ManifestItemDto> ManifestItems { get; set; } = new();
+
+        // Legacy: dictionary of dynamically extracted fields from RawJsonData (existing consumers may rely on it)
+        public Dictionary<string, string> AllFields { get; set; } = new();
+
+        // Legacy: full JSON backup. For new admin code prefer IngestionMetadata.RawJsonData.
+        public string? RawJsonData { get; set; }
+
+        // Admin-only ingestion metadata — analyst UI should hide by default.
+        public BOEIngestionMetadataDto? IngestionMetadata { get; set; }
+    }
+
+    /// <summary>
+    /// Ingestion-side metadata — for admin/debug views only. Not intended for analyst screens.
+    /// </summary>
+    public class BOEIngestionMetadataDto
+    {
+        public string? ProcessingStatus { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public string? ErrorMessage { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public bool HasIngestionWarnings { get; set; }
+        public List<string> IngestionWarnings { get; set; } = new();
+        public int? UnmappedFieldsCount { get; set; }
+        public bool UnmappedFieldsOverflow { get; set; }
+        public List<UnmappedFieldDto> UnmappedFields { get; set; } = new();
+        public string? RawJsonData { get; set; }
+        public int DownloadedFileId { get; set; }
+        public int DocumentIndex { get; set; }
+    }
+
+    public class UnmappedFieldDto
+    {
+        public string Label { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Line item on a BOE (one row per ManifestItem).
+    /// </summary>
+    public class ManifestItemDto
+    {
+        public int Id { get; set; }
+        public int ItemIndex { get; set; }
+        public int? ItemNo { get; set; }
+        public string? HsCode { get; set; }
+        public string? Description { get; set; }
+        public decimal? Quantity { get; set; }
+        public string? Unit { get; set; }
+        public decimal? Weight { get; set; }
+        public decimal? ItemFob { get; set; }
+        public decimal? ItemDutyPaid { get; set; }
+        public string? FobCurrency { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public string? Cpc { get; set; }
     }
 
     /// <summary>

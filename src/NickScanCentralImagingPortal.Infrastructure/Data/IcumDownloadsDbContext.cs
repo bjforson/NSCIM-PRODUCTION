@@ -145,10 +145,18 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.OriginalClearanceType).HasMaxLength(20);
                 entity.Property(e => e.CmrUpgradedAt);
 
+                // Ingestion integrity warnings (set by ValidateCriticalFieldsAsync)
+                entity.Property(e => e.HasIngestionWarnings).HasDefaultValue(false);
+                entity.Property(e => e.IngestionWarnings).HasMaxLength(4000);
+
                 entity.HasIndex(e => e.ContainerNumber);
                 entity.HasIndex(e => e.DeclarationNumber); // ✅ PERFORMANCE: Index for GetReadyGroups query optimization
                 entity.HasIndex(e => e.ProcessingStatus);
                 entity.HasIndex(e => e.DownloadedFileId);
+                // Filtered index matching the one added directly to PG — speeds up "where warnings=true"
+                entity.HasIndex(e => e.HasIngestionWarnings)
+                      .HasFilter("\"HasIngestionWarnings\" = true")
+                      .HasDatabaseName("IX_BOEDocument_HasIngestionWarnings");
 
                 // Add unique constraint to prevent duplicates based on ContainerNumber + DeclarationNumber
                 entity.HasIndex(e => new { e.ContainerNumber, e.DeclarationNumber })

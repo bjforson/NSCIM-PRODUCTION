@@ -13,6 +13,14 @@
     }
     else if (icumsData?.Data?.Any() == true)
     {
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="px-2 py-1" Justify="Justify.SpaceBetween">
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                @($"Showing {GetGroupedData().SelectMany(g => g.Value).Count()} of {icumsData.Data.Count(d => !IsUnmappedField(d))} fields")
+            </MudText>
+            <MudSwitch T="bool" Value="ShowEmptyFields" ValueChanged="@(async v => { ShowEmptyFields = v; await InvokeAsync(StateHasChanged); })"
+                       Label="Show empty fields" Color="Color.Primary" Size="Size.Small" />
+        </MudStack>
+
         <MudExpansionPanels MultiExpansion="true" Class="pa-2">
             @foreach (var categoryGroup in GetGroupedData())
             {
@@ -211,15 +219,38 @@
     private Dictionary<string, List<NickScanWebApp.Shared.Models.ICUMSDataRecord>> GetGroupedData()
     {
         if (icumsData?.Data == null) return new Dictionary<string, List<NickScanWebApp.Shared.Models.ICUMSDataRecord>>();
-        
+
         // Filter out unmapped fields from standard display (they're shown separately)
         var standardFields = icumsData.Data.Where(d => !IsUnmappedField(d)).ToList();
-        
+
+        // Visibility policy (c): hide records whose value is null/empty/placeholder,
+        // UNLESS the record is required (surfaces warnings) or user opted into "Show empty fields".
+        if (!ShowEmptyFields)
+        {
+            standardFields = standardFields.Where(r => r.IsRequired || HasMeaningfulValue(r.Value)).ToList();
+        }
+
         return standardFields
             .GroupBy(d => d.Category)
             .OrderBy(g => GetCategoryOrder(g.Key))
             .ToDictionary(g => g.Key, g => g.ToList());
     }
+
+    private static bool HasMeaningfulValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var trimmed = value.Trim();
+        // Placeholder tokens produced by the service when an underlying BOE field is null.
+        return !string.Equals(trimmed, "Not available", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "N/A", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "None", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "Not applicable", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "Not yet processed", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "Not assessed", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(trimmed, "Unknown", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Parameter] public bool ShowEmptyFields { get; set; } = false;
 
     private Dictionary<string, List<NickScanWebApp.Shared.Models.ICUMSDataRecord>> GroupRecordsByItem(
         List<NickScanWebApp.Shared.Models.ICUMSDataRecord> records)
@@ -274,9 +305,10 @@
             "Cargo Info" => 7,
             "Financial Info" => 8,
             "Risk Assessment" => 9,
-            "Status" => 10,
-            "Data Info" => 11,
-            "Additional Fields" => 12,  // Unmapped fields appear last
+            "Integrity" => 10, // Part B: ingestion warnings / data quality flags
+            "Status" => 11,
+            "Data Info" => 12,
+            "Additional Fields" => 13,  // Unmapped fields appear last
             _ => 99
         };
     }
@@ -294,6 +326,7 @@
             "Cargo Info" => Icons.Material.Outlined.LocalShipping,
             "Financial Info" => Icons.Material.Outlined.AttachMoney,
             "Risk Assessment" => Icons.Material.Outlined.Security, // ✅ CRMS/Risk info
+            "Integrity" => Icons.Material.Outlined.ReportProblem, // Part B: ingestion warnings
             "Status" => Icons.Material.Outlined.CheckCircle,
             "Data Info" => Icons.Material.Outlined.Info,
             "Additional Fields" => Icons.Material.Outlined.Info,  // ⚠️ Unmapped fields
@@ -314,6 +347,7 @@
             "Cargo Info" => Color.Tertiary,
             "Financial Info" => Color.Error,
             "Risk Assessment" => Color.Warning, // ✅ Yellow for risk/security
+            "Integrity" => Color.Error, // Red for ingestion warnings (stands out)
             "Status" => Color.Success,
             "Data Info" => Color.Default,
             "Additional Fields" => Color.Warning,  // ⚠️ Yellow/warning for unmapped fields
