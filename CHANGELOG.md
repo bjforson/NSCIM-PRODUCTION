@@ -22,6 +22,106 @@ For each release, this file records:
 
 ---
 
+## [2.15.3] — 2026-04-21 — ImageSplitterSupervisorService: fold the Python splitter under NSCIM_API lifecycle
+
+Resolves the "we need a way to manage that service" pain from the 2026-04-21
+session. The Python image-splitter (FastAPI/Uvicorn on port 5320) used to
+run as a separate NSSM-registered Windows service (`NSCIM_ImageSplitter` /
+`NSCIM_RawImageEngine`), so when it died or was stopped for any reason it
+surfaced as a second `Stopped` entry in `Get-Service NSCIM_*` that operators
+had to notice and restart by hand. It also had its own log files to tail,
+its own health-check polling inside NSCIM_API (the now-deleted
+`ImageSplitterHealthMonitorService`), and Deploy.ps1 had to orchestrate
+three services instead of two.
+
+### What's new
+
+- **`ImageSplitterSupervisorService`** at
+  `src/NickScanCentralImagingPortal.Services/ImageSplitter/ImageSplitterSupervisorService.cs`.
+  Hosted BackgroundService inside NSCIM_API that:
+  1. Launches `python.exe -m uvicorn main:app --host 0.0.0.0 --port 5320`
+     from `services/image-splitter/` using the project's venv, ~10 s after
+     NSCIM_API is healthy.
+  2. Streams the child's stdout and stderr into NSCIM_API's Serilog pipeline
+     (prefixed `[SPLITTER]` / `[SPLITTER/err]`) — splitter logs now live in
+     `Data\Logs\nickscan-*.txt` alongside everything else; no more separate
+     `services/image-splitter/logs/engine*.log` to chase.
+  3. Polls `IImageSplitterService.IsHealthyAsync` every 60 s while the child
+     is up. If it's alive but unresponsive for &gt;20 s of runtime, the
+     supervisor kills it (process tree) so the restart loop recovers from
+     hangs, not just crashes.
+  4. On child exit, applies linear-with-cap backoff (3 s → 6 → 12 → 24 →
+     cap 60 s). Resets after a stable 5-minute run. Log line per restart.
+  5. On NSCIM_API shutdown (`IHostApplicationLifetime` stop), kills the
+     Python process tree cleanly. Uvicorn's SQLAlchemy transactions are
+     atomic, so an abrupt termination does not leave jobs half-written.
+
+  Knobs under `ImageSplitter:Supervisor:*` (all optional, sensible defaults):
+  `Enabled` (bool), `PythonExecutable`, `WorkingDirectory`, `Port`,
+  `StartupDelaySeconds`, `HealthCheckIntervalSeconds`, `ShutdownTimeoutSeconds`.
+
+### What's removed
+
+- `ImageSplitterHealthMonitorService` (poll-only, no lifecycle authority) —
+  deleted. Supervisor owns health now.
+- `Deploy.ps1` — dropped `$SERVICE_ENGINE = "NSCIM_ImageSplitter"`, its
+  stop/start phases, and moved the `NICKSCAN_FS6000_SHARE` env var from the
+  NSSM-registered splitter service to NSCIM_API (so the supervisor's child
+  inherits it).
+- Ops step required as part of this release: `nssm remove NSCIM_ImageSplitter
+  confirm` (also: `nssm remove NSCIM_RawImageEngine confirm` if it was ever
+  installed under that name). Documented in the deploy note below.
+
+### What's NOT changed — intentional scope
+
+- Python subsystem source at `services/image-splitter/` is untouched. All
+  eight split strategies (`steel_wall_midpoint`, `inner_casting_pair`,
+  `claude_vision`, `corner_fitting`, `container_gap`, `density_profile`,
+  `edge_detection`, `ocr_geometry`) still run. Per-strategy win-rate from
+  production logs: steel_wall 63%, inner_casting 21%, corner_fitting 8%,
+  claude_vision 7% — informs a future incremental C# port.
+- The `/inspector/*` viewer endpoints on the Python service are still
+  exposed and still proxied by `XrayInspectorController`. Retirement of
+  the viewer surface is out of scope for this release.
+- `ImageSplitterController` and `TryGetSplitCropImageAsync` in
+  `ImageProcessingController` are untouched — the supervisor only changes
+  how the Python process is launched, not how it's called.
+
+### Operational notes for the deploy
+
+1. Pre-deploy, on the host:
+
+   ```
+   Stop-Service NSCIM_ImageSplitter   # idempotent; may already be stopped
+   nssm remove NSCIM_ImageSplitter confirm
+   nssm remove NSCIM_RawImageEngine confirm   # only if it ever got installed
+   ```
+
+2. Run `Deploy.ps1 -ApiOnly`. The supervisor is included in the API build
+   and will spawn the Python child on startup.
+
+3. Verify after deploy:
+   - `Get-Service NSCIM_*` shows only NSCIM_API, NSCIM_WebApp, NSCIM_NickComms
+     (three services; no NSCIM_ImageSplitter).
+   - `Get-Process python | Select Id,Parent*,CommandLine` shows one Python
+     process whose parent is the NSCIM_API host (i.e. it's a real child).
+   - Logs show `[SPLITTER-SUPERVISOR] Spawned Python PID=…` and
+     `[SPLITTER] NSCIM Raw Image Engine ready on port 5320`.
+   - `curl -sk https://10.0.1.254:5206/api/image-splitter/health` returns
+     200.
+
+If anything misbehaves, the supervisor can be disabled via
+`ImageSplitter:Supervisor:Enabled=false` in `appsettings.json` (and
+Deploy.ps1 operator notes in the docs for the rollback path:
+`install-service.bat` under `services/image-splitter/` still works — just
+re-run it elevated to restore the NSSM registration).
+
+### Commits in this release
+
+- `<TBD>` feat(image-splitter): supervise Python subprocess under NSCIM_API
+
+---
+
 ## [2.15.2] — 2026-04-21 — ASE tri-panel default-render fix (auditor "doubled image" regression)
 
 Fixes the "images appear doubled" report from the 2026-04-21 operator

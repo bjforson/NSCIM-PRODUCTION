@@ -40,7 +40,8 @@ $WEBAPP_CSPROJ = Join-Path $ScriptRoot "src\NickScanWebApp.New\NickScanWebApp.Ne
 # --- Windows services (in dependency order) ---
 $SERVICE_API = "NSCIM_API"
 $SERVICE_WEBAPP = "NSCIM_WebApp"
-$SERVICE_ENGINE = "NSCIM_ImageSplitter"
+# 2.15.3: the Python image-splitter is now supervised as a child of NSCIM_API
+# (see ImageSplitterSupervisorService). No separate Windows service to manage.
 
 function Write-Header($text) {
     Write-Host ""
@@ -250,7 +251,8 @@ Write-Header "Phase 1: Stop services"
 if ($WebAppOnly) {
     Stop-SvcIfRunning $SERVICE_WEBAPP
 } else {
-    Stop-SvcIfRunning $SERVICE_ENGINE
+    # Stopping NSCIM_API also terminates the supervised Python splitter child
+    # (2.15.3 ImageSplitterSupervisorService kills its process tree on shutdown).
     Stop-SvcIfRunning $SERVICE_WEBAPP
     Stop-SvcIfRunning $SERVICE_API
 }
@@ -288,7 +290,10 @@ if ($WebAppOnly -or (-not $ApiOnly)) {
     Set-RuntimeConfigRollForward $WEBAPP_PUBLISH
 }
 if (-not $WebAppOnly) {
-    Set-NssmEnvPair $SERVICE_ENGINE "NICKSCAN_FS6000_SHARE" "\\172.16.1.1\Image\23301FS01"
+    # 2.15.3: env var now applies to NSCIM_API (supervisor inherits it to the
+    # Python child). Previously set on the standalone NSCIM_ImageSplitter NSSM
+    # service which has been removed.
+    Set-NssmEnvPair $SERVICE_API "NICKSCAN_FS6000_SHARE" "\\172.16.1.1\Image\23301FS01"
 }
 
 # --- Phase 4: Start services ---
@@ -296,9 +301,10 @@ Write-Header "Phase 4: Start services"
 if ($WebAppOnly) {
     Start-Svc $SERVICE_WEBAPP
 } else {
+    # NSCIM_API's ImageSplitterSupervisorService auto-spawns the Python
+    # image-splitter child ~10s after the API is healthy.
     Start-Svc $SERVICE_API
     Start-Svc $SERVICE_WEBAPP
-    Start-Svc $SERVICE_ENGINE
 }
 
 # --- Phase 5: Verify running process paths ---

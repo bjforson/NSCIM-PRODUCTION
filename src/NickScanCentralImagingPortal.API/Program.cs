@@ -117,7 +117,10 @@ builder.Services.AddHttpClient<NickScanCentralImagingPortal.Services.ImageSplitt
     client.BaseAddress = new Uri(rawImageEngineUrl);
     client.Timeout = TimeSpan.FromSeconds(30);
 });
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.ImageSplitterHealthMonitorService>();
+// 2.15.3: NSCIM_API now supervises the Python image-splitter subprocess directly
+// (see ImageSplitterSupervisorService). The old ImageSplitterHealthMonitorService
+// only logged health — the supervisor does that AND manages the process lifecycle.
+builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.ImageSplitterSupervisorService>();
 
 // NICKSCAN ERP — Phase 1 multi-tenancy: ITenantContext + TenantOwnedEntityInterceptor.
 // The DbContexts (registered later in ServiceConfiguration) consume the
