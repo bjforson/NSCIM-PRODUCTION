@@ -22,6 +22,81 @@ For each release, this file records:
 
 ---
 
+## [2.15.4] — 2026-04-23 — Cross-record scan auto-submits to image splitter on detection
+
+Fixes the broken cross-record → split-job → analyst flow reported in the
+2026-04-23 session. Prior to 2.15.4:
+
+- Detection (`MultiContainerValidationService.CreateCrossRecordTrackingAsync`)
+  inserted a `crossrecordscans` row and then stopped. Nothing in C# called
+  the Python splitter's `POST /api/split/upload` endpoint —
+  `IImageSplitterService.SubmitSplitJobAsync` was defined but had zero
+  callers across the codebase.
+- Split jobs were in practice created by a manual Python script
+  (`services/image-splitter/submit_backlog.py`) that had to be re-run by
+  hand to pick up new detections.
+- Result: of 113 cross-record scans detected since 2026-03-28, only 51
+  (45%) had an associated `image_split_jobs` row — those 51 were the
+  scans an operator had remembered to backlog-submit. The other 62 sat
+  with no candidate splits, so analysts opening the viewer saw the
+  unsplit composite and had no idea two cargoes were being shown.
+
+### Changes
+
+- **`MultiContainerValidationService`** now injects
+  `IImageSplitterService` + `IImageProcessingService`. Immediately after
+  the `crossrecordscans` row is persisted, it fetches the composite
+  image for the scan via `GetCompleteContainerDataAsync(container1,
+  scannerType)` and POSTs it to the splitter via
+  `SubmitSplitJobAsync(container1+","+container2, bytes, sourceImageId:
+  scannerRecordId, scannerType)`. The returned `job_id` is written back
+  to the new `crossrecordscans.splitjobid` column so downstream lookups
+  don't need to hit `/api/split/search`.
+- Failures at any stage (image fetch, splitter down, upload rejected)
+  are logged as warnings and swallowed — the `crossrecordscans` row
+  is still persisted without a `SplitJobId`. A retry sweep or the
+  legacy `submit_backlog.py` script can still backfill.
+
+### Schema
+
+- New nullable column **`crossrecordscans.splitjobid uuid`**, added via
+  migration `20260423180227_AddSplitJobIdToCrossRecordScans`. References
+  `image_split_jobs.id` by value (no FK — the target table is managed by
+  the Python service).
+- EF model snapshot also carries the column. Auto-generated migration
+  diff included two unrelated drift items (`containerannotations.coord*`,
+  `analysisqueueentries`) that were already applied to the DB by hand
+  outside EF; those were stripped from this migration so it applies
+  cleanly on a live schema.
+
+### What's NOT changed — intentional scope
+
+- Python splitter code untouched. All 8 strategies still run unchanged.
+- `submit_backlog.py` kept in-tree as a diagnostic / one-shot fallback
+  tool. Not scheduled for removal until the auto-submit path has a full
+  week with no drops.
+- No broadening beyond cross-records yet: the 1.21.0 rule that the
+  splitter only runs on cross-record scans is preserved. The 62
+  historical unsplit cross-records are NOT auto-backfilled by this
+  release — they remain as-is until a dedicated backfill is added.
+
+### Operational notes for the deploy
+
+1. The DB migration is idempotent; already applied via direct SQL as
+   part of this change. `__EFMigrationsHistory` has the migration id
+   `20260423180227_AddSplitJobIdToCrossRecordScans` stamped.
+2. `Deploy.ps1 -ApiOnly` is sufficient. No WebApp, no supervisor
+   config, no NSSM changes.
+3. After deploy, watch for `[MULTI-CONTAINER-VALIDATION] ✅ Split job …
+   submitted for cross-record …` in `Data\Logs\nickscan-*.txt` the
+   next time an FS6000 multi-container scan arrives.
+
+### Commits in this release
+
+- `<TBD>` feat(cross-record): auto-submit split job on detection
+
+---
+
 ## [2.15.3] — 2026-04-21 — ImageSplitterSupervisorService: fold the Python splitter under NSCIM_API lifecycle
 
 Resolves the "we need a way to manage that service" pain from the 2026-04-21

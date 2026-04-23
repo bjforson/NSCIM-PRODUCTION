@@ -147,6 +147,22 @@ namespace NickScanCentralImagingPortal.Core.Entities
         /// </summary>
         [MaxLength(20)]
         public string ReviewStatus { get; set; } = "Pending";
+
+        /// <summary>
+        /// 2.15.4 — ID of the image_split_jobs row submitted to the Python
+        /// image-splitter for this scan. Populated automatically by
+        /// <c>MultiContainerValidationService.CreateCrossRecordTrackingAsync</c>
+        /// right after detection, so analysts land in the viewer with both
+        /// candidate splits already computed.
+        /// <para>
+        /// Value-only reference — the jobs table lives in the same Postgres
+        /// schema but is managed by the Python service, so no FK.
+        /// Nullable because submission can fail (splitter down, image fetch
+        /// failed, etc.); detection still succeeds in that case and a
+        /// retry sweep can backfill later.
+        /// </para>
+        /// </summary>
+        public Guid? SplitJobId { get; set; }
     }
 }
 

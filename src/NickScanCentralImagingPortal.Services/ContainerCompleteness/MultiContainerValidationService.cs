@@ -1,23 +1,36 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageSplitter;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
     /// <summary>
-    /// Service for validating multi-container scans and detecting cross-record scenarios
+    /// Service for validating multi-container scans and detecting cross-record scenarios.
+    /// 2.15.4 — detection now also submits the scan to the Python image splitter
+    /// automatically, so analysts land in the viewer with both candidate splits
+    /// pre-computed. Prior to 2.15.4 this was a manual out-of-band step run via
+    /// <c>services/image-splitter/submit_backlog.py</c>, which left most
+    /// cross-records unsplit until someone noticed.
     /// </summary>
     public class MultiContainerValidationService
     {
         private readonly ILogger<MultiContainerValidationService> _logger;
+        private readonly IImageSplitterService _imageSplitter;
+        private readonly IImageProcessingService _imageProcessing;
         private const string SERVICE_ID = "[MULTI-CONTAINER-VALIDATION]";
 
         public MultiContainerValidationService(
-            ILogger<MultiContainerValidationService> logger)
+            ILogger<MultiContainerValidationService> logger,
+            IImageSplitterService imageSplitter,
+            IImageProcessingService imageProcessing)
         {
             _logger = logger;
+            _imageSplitter = imageSplitter;
+            _imageProcessing = imageProcessing;
         }
 
         /// <summary>
@@ -248,7 +261,77 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 "{ServiceId} ✅ Created cross-record tracking for {Scan} - Type: {Type}, Severity: {Severity}",
                 SERVICE_ID, multiContainerString, crossRecord.CrossRecordType, crossRecord.Severity);
 
+            // 2.15.4 — auto-submit to the image splitter so analysts see two
+            // candidate splits the instant they open the viewer, instead of
+            // the unsplit composite. Failures are non-fatal: detection still
+            // succeeds, and a future retry sweep (or the manual
+            // services/image-splitter/submit_backlog.py script) can backfill.
+            try
+            {
+                var jobRef = await SubmitSplitJobForCrossRecordAsync(crossRecord);
+                if (jobRef != null)
+                {
+                    crossRecord.SplitJobId = jobRef.JobId;
+                    dbContext.Entry(crossRecord).State = EntityState.Modified;
+                    await dbContext.SaveChangesAsync();
+                    _logger.LogInformation(
+                        "{ServiceId} ✅ Split job {JobId} submitted for cross-record {CrId} ({C1} + {C2}).",
+                        SERVICE_ID, jobRef.JobId, crossRecord.Id, crossRecord.Container1, crossRecord.Container2);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "{ServiceId} ⚠️ Split submission returned no job id for cross-record {CrId} ({C1} + {C2}); will require retry.",
+                        SERVICE_ID, crossRecord.Id, crossRecord.Container1, crossRecord.Container2);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "{ServiceId} ⚠️ Split submission failed for cross-record {CrId} ({C1} + {C2}); row persisted without SplitJobId, will retry on next sweep or via submit_backlog.py.",
+                    SERVICE_ID, crossRecord.Id, crossRecord.Container1, crossRecord.Container2);
+            }
+
             return crossRecord;
+        }
+
+        /// <summary>
+        /// Fetches the scan's composite image bytes and POSTs them to the Python
+        /// image splitter (<c>POST /api/split/upload</c>) via
+        /// <see cref="IImageSplitterService"/>. Returns the new job reference or
+        /// <c>null</c> if the image couldn't be fetched or the splitter rejected
+        /// the submission.
+        ///
+        /// Uses the scan's *primary* container number as the lookup key for
+        /// <see cref="IImageProcessingService.GetCompleteContainerDataAsync(string, string?)"/>
+        /// — for multi-container scans both container numbers resolve to the
+        /// same physical image file, so either works.
+        /// </summary>
+        private async Task<SplitJobReference?> SubmitSplitJobForCrossRecordAsync(CrossRecordScan crossRecord)
+        {
+            if (string.IsNullOrWhiteSpace(crossRecord.Container1) || string.IsNullOrWhiteSpace(crossRecord.Container2))
+            {
+                _logger.LogDebug("{ServiceId} Skip split submission — container numbers missing on cross-record {CrId}.",
+                    SERVICE_ID, crossRecord.Id);
+                return null;
+            }
+
+            var completeData = await _imageProcessing.GetCompleteContainerDataAsync(
+                crossRecord.Container1, crossRecord.ScannerType);
+            if (completeData?.ImageBytes == null || completeData.ImageBytes.Length == 0)
+            {
+                _logger.LogWarning(
+                    "{ServiceId} ⚠️ No image bytes available for cross-record {CrId} container {Container} (scanner={Scanner}); cannot submit split job.",
+                    SERVICE_ID, crossRecord.Id, crossRecord.Container1, crossRecord.ScannerType);
+                return null;
+            }
+
+            var containerCsv = $"{crossRecord.Container1},{crossRecord.Container2}";
+            return await _imageSplitter.SubmitSplitJobAsync(
+                containerCsv,
+                completeData.ImageBytes,
+                sourceImageId: crossRecord.ScannerRecordId,
+                scannerType: crossRecord.ScannerType);
         }
 
         private string DetermineSeverity(CrossRecordType type) => type switch
