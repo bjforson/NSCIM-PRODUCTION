@@ -273,6 +273,14 @@ builder.Services.AddAuthentication(options =>
 // Add authorization policies
 builder.Services.AddAuthorization(options =>
 {
+    // ✅ SECURITY: Deny-by-default. Every endpoint requires an authenticated user unless it
+    // explicitly opts in with [AllowAnonymous] (health, login, public stats).
+    // This closes the class of bugs where a controller forgot its class-level [Authorize]
+    // and anonymous requests fell through — see ImageAnalysisManagementController history.
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+
     static bool HasAnyPermission(System.Security.Claims.ClaimsPrincipal? user, params string[] permissions)
     {
         if (user == null) return false;
@@ -363,7 +371,7 @@ builder.Services.AddScoped<IAuthorizationHandler, NickScanCentralImagingPortal.A
 // ✅ Configure Swagger with JWT support, XML docs, and examples
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
     {
         Title = "NickScan Central Imaging Portal API",
         Version = "v1.0.0",
@@ -395,13 +403,13 @@ and real-time monitoring capabilities.
 - Login: 5 attempts/minute
 - Health checks: No limit
 ",
-        Contact = new Microsoft.OpenApi.Models.OpenApiContact
+        Contact = new Microsoft.OpenApi.OpenApiContact
         {
             Name = "NickScan Support",
             Email = "support@nickscan.com",
             Url = new Uri("https://nickscan.com")
         },
-        License = new Microsoft.OpenApi.Models.OpenApiLicense
+        License = new Microsoft.OpenApi.OpenApiLicense
         {
             Name = "Proprietary",
             Url = new Uri("https://nickscan.com/license")
@@ -440,13 +448,13 @@ and real-time monitoring capabilities.
     options.OrderActionsBy((apiDesc) => $"{apiDesc.ActionDescriptor.RouteValues["controller"]}_{apiDesc.HttpMethod}");
 
     // Add JWT authentication to Swagger UI
-    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
     {
         Name = "Authorization",
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        Type = Microsoft.OpenApi.SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        In = Microsoft.OpenApi.ParameterLocation.Header,
         Description = @"
 JWT Authorization header using the Bearer scheme.
 
@@ -471,18 +479,14 @@ Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 "
     });
 
-    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    // Swashbuckle 10.x + Microsoft.OpenApi 2.x: AddSecurityRequirement now takes a
+     // Func<OpenApiDocument, OpenApiSecurityRequirement> and uses OpenApiSecuritySchemeReference
+     // instead of the old OpenApiSecurityScheme { Reference = ... } pattern.
+    options.AddSecurityRequirement((document) => new Microsoft.OpenApi.OpenApiSecurityRequirement
     {
         {
-            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-            {
-                Reference = new Microsoft.OpenApi.Models.OpenApiReference
-                {
-                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
+            new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer", document),
+            new List<string>()
         }
     });
 });

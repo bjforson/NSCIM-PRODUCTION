@@ -97,7 +97,7 @@
 </MudDialog>
 
 @code {
-    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = null!;
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
 
     [Parameter] public Grade Grade { get; set; } = new();
     [Parameter] public bool IsEdit { get; set; }

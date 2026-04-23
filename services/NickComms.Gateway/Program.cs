@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using NickComms.Gateway.Configuration;
 using NickComms.Gateway.Data;
 using NickComms.Gateway.Endpoints;
@@ -97,14 +97,12 @@ builder.Services.AddSwaggerGen(c =>
         Type = SecuritySchemeType.ApiKey,
         Description = "API key for client app authentication"
     });
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    // Swashbuckle 10.x + Microsoft.OpenApi 2.x: use OpenApiSecuritySchemeReference
+    c.AddSecurityRequirement((document) => new OpenApiSecurityRequirement
     {
         {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKey" }
-            },
-            Array.Empty<string>()
+            new OpenApiSecuritySchemeReference("ApiKey", document),
+            new List<string>()
         }
     });
 });
