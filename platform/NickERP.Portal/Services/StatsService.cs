@@ -24,15 +24,22 @@ public class StatsService
     /// <summary>Snapshot of HR metrics surfaced in the portal.</summary>
     public record HrStats(
         bool IsAvailable,
+        // "Today" row
         int ActiveEmployees,
         int PendingLeave,
         int OnLeaveToday,
         int LoginsToday,
+        // "This month" row
+        int ClockInsToday,
+        int HiresThisMonth,
+        int PayrollRunsThisMonth,
+        decimal PayrollTotalThisMonth,
         string? Error = null);
 
     /// <summary>Snapshot of NSCIM scan-portal metrics surfaced in the portal.</summary>
     public record NscimStats(
         bool IsAvailable,
+        // "Today" row
         long TotalContainers,
         long ScansToday,
         int ScannersOnline,
@@ -40,6 +47,12 @@ public class StatsService
         int ActiveOperators,
         decimal CompletenessPercent,
         bool SystemsOperational,
+        // "By scanner" row
+        long TotalScannerScans,
+        long AseScans,
+        long FS6000Scans,
+        DateTime? LastAseScan,
+        DateTime? LastFS6000Scan,
         string? Error = null);
 
     public async Task<HrStats> GetHrStatsAsync(CancellationToken ct = default)
@@ -47,7 +60,7 @@ public class StatsService
         var conn = _config.GetConnectionString("NickHrDb");
         if (string.IsNullOrWhiteSpace(conn))
         {
-            return new HrStats(false, 0, 0, 0, 0, "NickHrDb connection string not configured.");
+            return Empty("NickHrDb connection string not configured.");
         }
 
         try
@@ -55,7 +68,7 @@ public class StatsService
             await using var db = new NpgsqlConnection(conn);
             await db.OpenAsync(ct);
 
-            // One round-trip, four metrics.
+            // One round-trip, eight metrics via scalar subqueries.
             const string sql = @"
 SELECT
   (SELECT COUNT(*) FROM public.""Employees""
@@ -65,61 +78,89 @@ SELECT
   (SELECT COUNT(DISTINCT ""EmployeeId"") FROM public.""LeaveRequests""
      WHERE ""Status"" = 1
        AND ""StartDate"" <= current_date
-       AND ""EndDate"" >= current_date) AS on_leave_today,
+       AND ""EndDate""   >= current_date) AS on_leave_today,
   (SELECT COUNT(DISTINCT ""Email"") FROM public.""LoginAudits""
      WHERE ""LoginTime"" >= current_date
        AND ""LoginTime"" <  current_date + interval '1 day'
-       AND ""Success"" = true) AS logins_today
+       AND ""Success"" = true) AS logins_today,
+  (SELECT COUNT(*) FROM public.""AttendanceRecords""
+     WHERE ""Date"" = current_date) AS clock_ins_today,
+  (SELECT COUNT(*) FROM public.""Employees""
+     WHERE ""HireDate"" >= date_trunc('month', current_date)
+       AND ""IsDeleted"" = false) AS hires_this_month,
+  (SELECT COUNT(*) FROM public.""PayrollRuns""
+     WHERE ""RunDate"" >= date_trunc('month', current_date)) AS payroll_runs_this_month,
+  (SELECT COALESCE(SUM(""TotalNetPay"")::numeric, 0) FROM public.""PayrollRuns""
+     WHERE ""RunDate"" >= date_trunc('month', current_date)) AS payroll_total_this_month
 ";
 
             await using var cmd = new NpgsqlCommand(sql, db);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))
             {
-                return new HrStats(false, 0, 0, 0, 0, "No rows returned");
+                return Empty("No rows returned");
             }
 
             return new HrStats(
-                IsAvailable:    true,
-                ActiveEmployees: SafeInt(reader, 0),
-                PendingLeave:    SafeInt(reader, 1),
-                OnLeaveToday:    SafeInt(reader, 2),
-                LoginsToday:     SafeInt(reader, 3));
+                IsAvailable:           true,
+                ActiveEmployees:       SafeInt(reader, 0),
+                PendingLeave:          SafeInt(reader, 1),
+                OnLeaveToday:          SafeInt(reader, 2),
+                LoginsToday:           SafeInt(reader, 3),
+                ClockInsToday:         SafeInt(reader, 4),
+                HiresThisMonth:        SafeInt(reader, 5),
+                PayrollRunsThisMonth:  SafeInt(reader, 6),
+                PayrollTotalThisMonth: SafeDecimal(reader, 7));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "GetHrStatsAsync failed");
-            return new HrStats(false, 0, 0, 0, 0, ex.Message);
+            return Empty(ex.Message);
         }
+
+        static HrStats Empty(string err)
+            => new(false, 0, 0, 0, 0, 0, 0, 0, 0m, err);
     }
 
     public async Task<NscimStats> GetNscimStatsAsync(CancellationToken ct = default)
     {
-        var url = _config["Stats:NscimStatsUrl"];
-        if (string.IsNullOrWhiteSpace(url))
+        var summaryUrl = _config["Stats:NscimStatsUrl"];
+        var dashUrl    = _config["Stats:NscimDashboardUrl"];
+        if (string.IsNullOrWhiteSpace(summaryUrl) || string.IsNullOrWhiteSpace(dashUrl))
         {
-            return Empty("NscimStatsUrl not configured.");
+            return Empty("NSCIM stats URLs not configured.");
         }
 
         try
         {
             using var http = _httpFactory.CreateClient();
             http.Timeout = TimeSpan.FromSeconds(6);
-            var payload = await http.GetFromJsonAsync<NscimStatsPayload>(url, ct);
-            if (payload is null)
+
+            // Both feeds in parallel.
+            var summaryTask = http.GetFromJsonAsync<SummaryPayload>(summaryUrl, ct);
+            var dashTask    = http.GetFromJsonAsync<DashboardPayload>(dashUrl, ct);
+            await Task.WhenAll(summaryTask, dashTask);
+            var s = summaryTask.Result;
+            var d = dashTask.Result;
+            if (s is null || d is null)
             {
-                return Empty("NSCIM returned no payload.");
+                return Empty("NSCIM returned empty payload.");
             }
 
             return new NscimStats(
                 IsAvailable:          true,
-                TotalContainers:      payload.TotalContainers,
-                ScansToday:           payload.TodaysScans,
-                ScannersOnline:       payload.ScannersOnline,
-                ScannersTotal:        payload.ScannersTotal,
-                ActiveOperators:      payload.ActiveOperators,
-                CompletenessPercent:  payload.CompletenessPercent,
-                SystemsOperational:   payload.SystemsOperational);
+                TotalContainers:      s.TotalContainers,
+                ScansToday:           s.TodaysScans,
+                ScannersOnline:       s.ScannersOnline,
+                ScannersTotal:        s.ScannersTotal,
+                ActiveOperators:      s.ActiveOperators,
+                CompletenessPercent:  s.CompletenessPercent,
+                SystemsOperational:   s.SystemsOperational,
+                TotalScannerScans:    d.Scanners.TotalScans,
+                AseScans:             d.Scanners.ASEScans,
+                FS6000Scans:          d.Scanners.FS6000Scans,
+                LastAseScan:          d.Scanners.LastASEScan,
+                LastFS6000Scan:       d.Scanners.LastFS6000Scan);
         }
         catch (Exception ex)
         {
@@ -127,14 +168,17 @@ SELECT
             return Empty(ex.Message);
         }
 
-        static NscimStats Empty(string err) => new(false, 0, 0, 0, 0, 0, 0, false, err);
+        static NscimStats Empty(string err) => new(false, 0, 0, 0, 0, 0, 0, false, 0, 0, 0, null, null, err);
     }
 
     private static int SafeInt(System.Data.Common.DbDataReader r, int i)
         => r.IsDBNull(i) ? 0 : Convert.ToInt32(r.GetValue(i));
 
-    // Mirrors the JSON shape of /api/public/system-stats. Only the fields we use are declared.
-    private class NscimStatsPayload
+    private static decimal SafeDecimal(System.Data.Common.DbDataReader r, int i)
+        => r.IsDBNull(i) ? 0m : Convert.ToDecimal(r.GetValue(i));
+
+    // Minimal JSON shape mirrors. Only declare fields we actually consume.
+    private class SummaryPayload
     {
         public long TotalContainers { get; set; }
         public long TodaysScans { get; set; }
@@ -143,5 +187,18 @@ SELECT
         public int ScannersTotal { get; set; }
         public int ActiveOperators { get; set; }
         public bool SystemsOperational { get; set; }
+    }
+
+    private class DashboardPayload
+    {
+        public ScannerBlock Scanners { get; set; } = new();
+    }
+    private class ScannerBlock
+    {
+        public long TotalScans { get; set; }
+        public long ASEScans { get; set; }
+        public long FS6000Scans { get; set; }
+        public DateTime? LastASEScan { get; set; }
+        public DateTime? LastFS6000Scan { get; set; }
     }
 }

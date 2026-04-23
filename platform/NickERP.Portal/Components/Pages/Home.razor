@@ -74,13 +74,14 @@
             </div>
         </div>
 
-        <!-- NickHR row -->
+        <!-- NickHR -->
         <div class="nep-stat-group">
             <div class="nep-stat-group-head">
                 <div class="nep-stat-group-icon" style="background:linear-gradient(135deg,#4F46E5,#7C3AED);">
                     <MudIcon Icon="@Icons.Material.Filled.Groups" Style="font-size:16px;color:white;" />
                 </div>
                 <span class="nep-stat-group-title">NickHR</span>
+                <span class="nep-stat-group-row-label">Today</span>
                 @if (!_hr.IsAvailable)
                 {
                     <span class="nep-stat-group-error" title="@_hr.Error">unavailable</span>
@@ -103,15 +104,38 @@
                           Sublabel="distinct users"
                           Loading="_loading" IsAvailable="_hr.IsAvailable" />
             </div>
+
+            <div class="nep-stat-group-subrow">
+                <span class="nep-stat-group-row-label">This month</span>
+            </div>
+            <div class="nep-stat-grid">
+                <StatCard Label="Clock-ins today"  Value="@N(_hr.ClockInsToday)"
+                          Icon="@Icons.Material.Filled.AccessTime"  Color="#0EA5E9"
+                          Sublabel="attendance records logged"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="New hires"        Value="@N(_hr.HiresThisMonth)"
+                          Icon="@Icons.Material.Filled.PersonAdd"   Color="#10B981"
+                          Sublabel="joined this month"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="Payroll runs"     Value="@N(_hr.PayrollRunsThisMonth)"
+                          Icon="@Icons.Material.Filled.Receipt"     Color="#7C3AED"
+                          Sublabel="@(_hr.PayrollRunsThisMonth == 0 ? "none yet" : "processed this month")"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="Net payroll"      Value="@Money(_hr.PayrollTotalThisMonth)"
+                          Icon="@Icons.Material.Filled.Payments"    Color="#F59E0B"
+                          Sublabel="disbursed this month"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+            </div>
         </div>
 
-        <!-- NSCIM row -->
+        <!-- NSCIM -->
         <div class="nep-stat-group">
             <div class="nep-stat-group-head">
                 <div class="nep-stat-group-icon" style="background:linear-gradient(135deg,#0EA5E9,#0369A1);">
                     <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Style="font-size:16px;color:white;" />
                 </div>
                 <span class="nep-stat-group-title">NSCIM Scan Portal</span>
+                <span class="nep-stat-group-row-label">Today</span>
                 @if (!_nscim.IsAvailable)
                 {
                     <span class="nep-stat-group-error" title="@_nscim.Error">unavailable</span>
@@ -133,6 +157,28 @@
                           Icon="@Icons.Material.Filled.Person"      Color="#7C3AED"
                           Sublabel="working right now"
                           Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+            </div>
+
+            <div class="nep-stat-group-subrow">
+                <span class="nep-stat-group-row-label">By scanner</span>
+            </div>
+            <div class="nep-stat-grid">
+                <StatCard Label="Total scans"  Value="@N(_nscim.TotalScannerScans)"
+                          Icon="@Icons.Material.Filled.Timeline"     Color="#0EA5E9"
+                          Sublabel="all scanners, lifetime"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="ASE scans" Value="@N(_nscim.AseScans)"
+                          Icon="@Icons.Material.Filled.CenterFocusStrong" Color="#4F46E5"
+                          Sublabel="@($"last: {Ago(_nscim.LastAseScan)}")"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="FS6000 scans" Value="@N(_nscim.FS6000Scans)"
+                          Icon="@Icons.Material.Filled.Radar"        Color="#7C3AED"
+                          Sublabel="@($"last: {Ago(_nscim.LastFS6000Scan)}")"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="AI decisions today"  Value="—"
+                          Icon="@Icons.Material.Filled.AutoAwesome"  Color="#10B981"
+                          Sublabel="not wired yet"
+                          Loading="_loading" IsAvailable="false" />
             </div>
         </div>
     </section>
@@ -361,6 +407,24 @@
         color: var(--nep-text);
         letter-spacing: -0.1px;
     }
+    .nep-stat-group-row-label {
+        font-size: 10px; font-weight: 700;
+        color: var(--nep-text-faint);
+        background: var(--nep-bg);
+        border: 1px solid var(--nep-border);
+        padding: 3px 9px;
+        border-radius: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+    }
+    .nep-stat-group-subrow {
+        display: flex; align-items: center; gap: 10px;
+        margin: 16px 0 12px;
+    }
+    .nep-stat-group-subrow::before,
+    .nep-stat-group-subrow::after {
+        content: ''; flex: 1; height: 1px; background: var(--nep-border-soft);
+    }
     .nep-stat-group-error {
         margin-left: auto;
         font-size: 11px; font-weight: 600;
@@ -409,11 +473,24 @@
     private int _activeCount => _cards.Count(c => c.Enabled);
     private int _pendingCount => _cards.Count(c => !c.Enabled);
 
-    private StatsService.HrStats _hr = new(false, 0, 0, 0, 0);
-    private StatsService.NscimStats _nscim = new(false, 0, 0, 0, 0, 0, 0m, false);
+    private StatsService.HrStats _hr = new(false, 0, 0, 0, 0, 0, 0, 0, 0m);
+    private StatsService.NscimStats _nscim = new(false, 0, 0, 0, 0, 0, 0m, false, 0, 0, 0, null, null);
     private bool _loading = true;
 
     private static string N(long n) => n.ToString("N0");
+    private static string Money(decimal v) => v == 0 ? "—" : $"GH₵{v:N0}";
+
+    /// <summary>"2m ago" / "3h ago" / "5d ago" / "—"</summary>
+    private static string Ago(DateTime? t)
+    {
+        if (t is null) return "—";
+        var span = DateTime.UtcNow - t.Value.ToUniversalTime();
+        if (span.TotalSeconds < 60)  return $"{(int)span.TotalSeconds}s ago";
+        if (span.TotalMinutes < 60)  return $"{(int)span.TotalMinutes}m ago";
+        if (span.TotalHours < 24)    return $"{(int)span.TotalHours}h ago";
+        if (span.TotalDays < 30)     return $"{(int)span.TotalDays}d ago";
+        return t.Value.ToLocalTime().ToString("MMM d");
+    }
 
     private string Greeting
     {
