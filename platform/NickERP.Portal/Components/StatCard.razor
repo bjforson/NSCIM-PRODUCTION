@@ -1,0 +1,116 @@
+@* Single metric tile. Big number, label, optional sublabel. *@
+
+<div class="nep-stat @(_extraClass)">
+    <div class="nep-stat-row">
+        <div class="nep-stat-icon" style="color:@Color;background:@Tint(Color);">
+            <MudIcon Icon="@Icon" Style="font-size:18px;" />
+        </div>
+        @if (!string.IsNullOrEmpty(Badge))
+        {
+            <span class="nep-stat-badge">@Badge</span>
+        }
+    </div>
+    <div class="nep-stat-label">@Label</div>
+    <div class="nep-stat-value">
+        @if (Loading)
+        {
+            <span class="nep-stat-skeleton">&nbsp;</span>
+        }
+        else
+        {
+            @Value
+        }
+    </div>
+    @if (!string.IsNullOrEmpty(Sublabel))
+    {
+        <div class="nep-stat-sub">@Sublabel</div>
+    }
+</div>
+
+<style>
+    .nep-stat {
+        background: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 18px 20px;
+        display: flex; flex-direction: column; gap: 4px;
+        min-height: 118px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.03);
+        transition: border-color 0.15s;
+    }
+    .nep-stat:hover { border-color: #CBD5E1; }
+    .nep-stat-unavailable { opacity: 0.55; }
+
+    .nep-stat-row {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 2px;
+    }
+    .nep-stat-icon {
+        width: 32px; height: 32px; border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .nep-stat-badge {
+        font-size: 10px; font-weight: 700;
+        color: #64748B;
+        background: #F1F5F9;
+        padding: 2px 8px;
+        border-radius: 999px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+    }
+
+    .nep-stat-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748B;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 6px;
+    }
+    .nep-stat-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #0F172A;
+        letter-spacing: -0.5px;
+        line-height: 1.1;
+    }
+    .nep-stat-sub {
+        font-size: 12px; color: #64748B;
+        margin-top: 2px;
+    }
+    .nep-stat-skeleton {
+        display: inline-block;
+        width: 48px; height: 22px;
+        background: linear-gradient(90deg, #F1F5F9 0%, #E2E8F0 50%, #F1F5F9 100%);
+        border-radius: 4px;
+        animation: nep-shimmer 1.2s infinite linear;
+        background-size: 200% 100%;
+    }
+    @@keyframes nep-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public string Value { get; set; } = "—";
+    [Parameter] public string Sublabel { get; set; } = "";
+    [Parameter] public string Icon { get; set; } = "";
+    [Parameter] public string Color { get; set; } = "#4F46E5";
+    [Parameter] public string Badge { get; set; } = "";
+    [Parameter] public bool Loading { get; set; } = false;
+    [Parameter] public bool IsAvailable { get; set; } = true;
+
+    private string _extraClass => IsAvailable ? "" : "nep-stat-unavailable";
+
+    // Soft 90%-white tint of the color for the icon background.
+    private string Tint(string hex)
+    {
+        if (string.IsNullOrEmpty(hex) || hex.Length != 7) return "#EEF2FF";
+        var r = Convert.ToInt32(hex.Substring(1, 2), 16);
+        var g = Convert.ToInt32(hex.Substring(3, 2), 16);
+        var b = Convert.ToInt32(hex.Substring(5, 2), 16);
+        r = (int)(r * 0.12 + 255 * 0.88);
+        g = (int)(g * 0.12 + 255 * 0.88);
+        b = (int)(b * 0.12 + 255 * 0.88);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
+}

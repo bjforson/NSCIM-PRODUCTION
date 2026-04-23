@@ -1,0 +1,463 @@
+@page "/"
+@rendermode InteractiveServer
+@using NickERP.Portal.Services
+@inject IConfiguration Configuration
+@inject StatsService Stats
+
+<PageTitle>NickERP — Workspace</PageTitle>
+
+<div class="nep-page">
+    <!-- Top navbar -->
+    <header class="nep-nav">
+        <div class="nep-nav-inner">
+            <div class="nep-nav-brand">
+                <div class="nep-nav-logo">
+                    <MudIcon Icon="@Icons.Material.Filled.Hub" Style="font-size:20px;color:white;" />
+                </div>
+                <div class="nep-nav-brand-text">
+                    <span class="nep-nav-brand-name">NickERP</span>
+                    <span class="nep-nav-brand-tag">WORKSPACE</span>
+                </div>
+            </div>
+
+            <div class="nep-nav-search">
+                <MudIcon Icon="@Icons.Material.Filled.Search" Style="font-size:18px;color:#94A3B8;" />
+                <input type="text" placeholder="Search apps, documents, people..." />
+                <kbd class="nep-kbd">Ctrl K</kbd>
+            </div>
+
+            <div class="nep-nav-actions">
+                <button class="nep-nav-icon-btn" title="Notifications">
+                    <MudIcon Icon="@Icons.Material.Filled.NotificationsNone" Style="font-size:20px;" />
+                    <span class="nep-nav-badge"></span>
+                </button>
+                <button class="nep-nav-icon-btn" title="Help">
+                    <MudIcon Icon="@Icons.Material.Filled.HelpOutline" Style="font-size:20px;" />
+                </button>
+                <div class="nep-nav-user">
+                    <div class="nep-avatar">NT</div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero / greeting -->
+    <section class="nep-hero">
+        <div class="nep-hero-inner">
+            <div class="nep-hero-text">
+                <div class="nep-breadcrumb">
+                    <MudIcon Icon="@Icons.Material.Filled.Home" Style="font-size:14px;" />
+                    <span>Home</span>
+                    <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Style="font-size:14px;color:#CBD5E1;" />
+                    <span class="nep-breadcrumb-current">Workspace</span>
+                </div>
+                <h1 class="nep-hero-title">@Greeting</h1>
+                <p class="nep-hero-sub">Your applications and tools, all in one place. @FormattedDate</p>
+            </div>
+            <div class="nep-hero-health">
+                <div class="nep-health-dot"></div>
+                <div class="nep-health-text">
+                    <span class="nep-health-label">All systems operational</span>
+                    <span class="nep-health-meta">@_activeCount apps available &middot; @_pendingCount coming soon</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Today at a glance — stats from each app -->
+    <section class="nep-section">
+        <div class="nep-section-head">
+            <h2 class="nep-section-title">Today at a glance</h2>
+            <div class="nep-section-meta">
+                <MudIcon Icon="@Icons.Material.Filled.TrendingUp" Style="font-size:16px;color:#64748B;" />
+                <span>Live &middot; refreshes on page load</span>
+            </div>
+        </div>
+
+        <!-- NickHR row -->
+        <div class="nep-stat-group">
+            <div class="nep-stat-group-head">
+                <div class="nep-stat-group-icon" style="background:linear-gradient(135deg,#4F46E5,#7C3AED);">
+                    <MudIcon Icon="@Icons.Material.Filled.Groups" Style="font-size:16px;color:white;" />
+                </div>
+                <span class="nep-stat-group-title">NickHR</span>
+                @if (!_hr.IsAvailable)
+                {
+                    <span class="nep-stat-group-error" title="@_hr.Error">unavailable</span>
+                }
+            </div>
+            <div class="nep-stat-grid">
+                <StatCard Label="Active employees" Value="@N(_hr.ActiveEmployees)"
+                          Icon="@Icons.Material.Filled.Badge"       Color="#4F46E5"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="On leave today"   Value="@N(_hr.OnLeaveToday)"
+                          Icon="@Icons.Material.Filled.BeachAccess" Color="#F59E0B"
+                          Sublabel="approved leave covering today"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="Pending leave"    Value="@N(_hr.PendingLeave)"
+                          Icon="@Icons.Material.Filled.HourglassTop" Color="#0EA5E9"
+                          Sublabel="awaiting approval"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+                <StatCard Label="Logins today"     Value="@N(_hr.LoginsToday)"
+                          Icon="@Icons.Material.Filled.Login"       Color="#10B981"
+                          Sublabel="distinct users"
+                          Loading="_loading" IsAvailable="_hr.IsAvailable" />
+            </div>
+        </div>
+
+        <!-- NSCIM row -->
+        <div class="nep-stat-group">
+            <div class="nep-stat-group-head">
+                <div class="nep-stat-group-icon" style="background:linear-gradient(135deg,#0EA5E9,#0369A1);">
+                    <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Style="font-size:16px;color:white;" />
+                </div>
+                <span class="nep-stat-group-title">NSCIM Scan Portal</span>
+                @if (!_nscim.IsAvailable)
+                {
+                    <span class="nep-stat-group-error" title="@_nscim.Error">unavailable</span>
+                }
+            </div>
+            <div class="nep-stat-grid">
+                <StatCard Label="Containers total" Value="@N(_nscim.TotalContainers)"
+                          Icon="@Icons.Material.Filled.Inventory2"  Color="#0EA5E9"
+                          Sublabel="@($"{_nscim.CompletenessPercent:F1}% with full data")"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="Scanned today"    Value="@N(_nscim.ScansToday)"
+                          Icon="@Icons.Material.Filled.QrCodeScanner" Color="#4F46E5"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="Scanners online"  Value="@($"{_nscim.ScannersOnline}/{_nscim.ScannersTotal}")"
+                          Icon="@Icons.Material.Filled.Sensors"     Color="@(_nscim.ScannersOnline == _nscim.ScannersTotal ? "#10B981" : "#F59E0B")"
+                          Badge="@(_nscim.ScannersOnline == _nscim.ScannersTotal ? "HEALTHY" : "PARTIAL")"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+                <StatCard Label="Active operators" Value="@N(_nscim.ActiveOperators)"
+                          Icon="@Icons.Material.Filled.Person"      Color="#7C3AED"
+                          Sublabel="working right now"
+                          Loading="_loading" IsAvailable="_nscim.IsAvailable" />
+            </div>
+        </div>
+    </section>
+
+    <!-- Your Applications -->
+    <section class="nep-section nep-section-tight">
+        <div class="nep-section-head">
+            <h2 class="nep-section-title">Your applications</h2>
+            <div class="nep-section-meta">
+                <MudIcon Icon="@Icons.Material.Filled.Apps" Style="font-size:16px;color:#64748B;" />
+                <span>@_cards.Count total</span>
+            </div>
+        </div>
+
+        <div class="nep-grid">
+            @foreach (var card in _cards)
+            {
+                <AppCard Card="card" />
+            }
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="nep-footer">
+        <div class="nep-footer-inner">
+            <span class="nep-footer-brand">Nick TC-Scan Ltd</span>
+            <span class="nep-footer-sep">&bull;</span>
+            <span>NickERP v@(AppVersion)</span>
+            <span class="nep-footer-sep">&bull;</span>
+            <a href="#" class="nep-footer-link">Documentation</a>
+            <a href="#" class="nep-footer-link">Support</a>
+            <a href="#" class="nep-footer-link">Status</a>
+        </div>
+    </footer>
+</div>
+
+<style>
+    :root {
+        --nep-bg: #F8FAFC;
+        --nep-surface: #FFFFFF;
+        --nep-border: #E2E8F0;
+        --nep-border-soft: #F1F5F9;
+        --nep-text: #0F172A;
+        --nep-text-muted: #64748B;
+        --nep-text-faint: #94A3B8;
+        --nep-primary: #4F46E5;
+        --nep-primary-soft: #EEF2FF;
+        --nep-success: #10B981;
+        --nep-shadow-sm: 0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.06);
+        --nep-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 4px 12px rgba(15,23,42,0.04);
+        --nep-shadow-lg: 0 4px 6px rgba(15,23,42,0.04), 0 12px 32px rgba(15,23,42,0.08);
+    }
+
+    html, body { margin: 0; padding: 0; background: var(--nep-bg); }
+    .nep-page {
+        min-height: 100vh;
+        background: var(--nep-bg);
+        font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+        color: var(--nep-text);
+        display: flex; flex-direction: column;
+    }
+
+    /* ───── NAVBAR ───── */
+    .nep-nav {
+        background: var(--nep-surface);
+        border-bottom: 1px solid var(--nep-border);
+        position: sticky; top: 0; z-index: 50;
+    }
+    .nep-nav-inner {
+        max-width: 1440px; margin: 0 auto;
+        display: flex; align-items: center; gap: 24px;
+        padding: 14px 32px;
+    }
+    .nep-nav-brand { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .nep-nav-logo {
+        width: 36px; height: 36px;
+        background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+        border-radius: 9px;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 2px 6px rgba(79,70,229,0.25);
+    }
+    .nep-nav-brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+    .nep-nav-brand-name { font-size: 16px; font-weight: 700; color: var(--nep-text); letter-spacing: -0.3px; }
+    .nep-nav-brand-tag {
+        font-size: 9px; font-weight: 700; color: var(--nep-primary);
+        letter-spacing: 1.2px; margin-top: 2px;
+    }
+
+    .nep-nav-search {
+        flex: 1; max-width: 560px;
+        display: flex; align-items: center; gap: 10px;
+        background: var(--nep-bg);
+        border: 1px solid var(--nep-border);
+        border-radius: 10px;
+        padding: 9px 14px;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .nep-nav-search:focus-within {
+        border-color: var(--nep-primary);
+        background: var(--nep-surface);
+        box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+    .nep-nav-search input {
+        flex: 1; background: none; border: none; outline: none;
+        font-size: 14px; color: var(--nep-text);
+        font-family: inherit;
+    }
+    .nep-nav-search input::placeholder { color: var(--nep-text-faint); }
+
+    .nep-kbd {
+        font-family: inherit; font-size: 11px; font-weight: 600;
+        color: var(--nep-text-muted);
+        background: var(--nep-surface);
+        border: 1px solid var(--nep-border);
+        border-radius: 5px; padding: 2px 6px;
+    }
+
+    .nep-nav-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .nep-nav-icon-btn {
+        position: relative;
+        width: 36px; height: 36px;
+        border-radius: 8px; border: none; background: none;
+        display: flex; align-items: center; justify-content: center;
+        color: var(--nep-text-muted); cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+    }
+    .nep-nav-icon-btn:hover { background: var(--nep-bg); color: var(--nep-text); }
+    .nep-nav-badge {
+        position: absolute; top: 8px; right: 8px;
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #EF4444; border: 2px solid white;
+    }
+
+    .nep-avatar {
+        width: 36px; height: 36px; border-radius: 50%;
+        background: linear-gradient(135deg, #4F46E5, #7C3AED);
+        color: white;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 700;
+        box-shadow: 0 2px 4px rgba(79,70,229,0.25);
+        cursor: pointer;
+    }
+
+    /* ───── HERO ───── */
+    .nep-hero {
+        background: var(--nep-surface);
+        border-bottom: 1px solid var(--nep-border);
+    }
+    .nep-hero-inner {
+        max-width: 1440px; margin: 0 auto;
+        padding: 32px;
+        display: flex; justify-content: space-between;
+        align-items: center; gap: 24px; flex-wrap: wrap;
+    }
+    .nep-breadcrumb {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 12px; font-weight: 500; color: var(--nep-text-muted);
+        margin-bottom: 10px;
+    }
+    .nep-breadcrumb-current { color: var(--nep-text); font-weight: 600; }
+    .nep-hero-title {
+        font-size: 28px; font-weight: 700; color: var(--nep-text);
+        margin: 0 0 4px; letter-spacing: -0.5px;
+    }
+    .nep-hero-sub {
+        font-size: 14px; color: var(--nep-text-muted);
+        margin: 0; max-width: 640px;
+    }
+
+    .nep-hero-health {
+        display: flex; align-items: center; gap: 12px;
+        background: #ECFDF5;
+        border: 1px solid #A7F3D0;
+        border-radius: 10px;
+        padding: 12px 16px;
+    }
+    .nep-health-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: var(--nep-success);
+        box-shadow: 0 0 0 3px rgba(16,185,129,0.2);
+        flex-shrink: 0;
+    }
+    .nep-health-text { display: flex; flex-direction: column; line-height: 1.2; }
+    .nep-health-label { font-size: 13px; font-weight: 600; color: #065F46; }
+    .nep-health-meta  { font-size: 11px; color: #047857; margin-top: 2px; }
+
+    /* ───── SECTION ───── */
+    .nep-section {
+        max-width: 1440px; margin: 0 auto; width: 100%;
+        padding: 32px; flex: 1;
+    }
+    .nep-section-head {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 20px;
+    }
+    .nep-section-title {
+        font-size: 18px; font-weight: 700; color: var(--nep-text);
+        margin: 0; letter-spacing: -0.2px;
+    }
+    .nep-section-meta {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 13px; color: var(--nep-text-muted);
+    }
+
+    .nep-section-tight { padding-top: 0; }
+
+    .nep-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 16px;
+    }
+
+    /* Stat groups ----------------------------------------------- */
+    .nep-stat-group { margin-bottom: 28px; }
+    .nep-stat-group-head {
+        display: flex; align-items: center; gap: 10px;
+        margin-bottom: 12px;
+    }
+    .nep-stat-group-icon {
+        width: 28px; height: 28px; border-radius: 7px;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.1);
+    }
+    .nep-stat-group-title {
+        font-size: 13px; font-weight: 700;
+        color: var(--nep-text);
+        letter-spacing: -0.1px;
+    }
+    .nep-stat-group-error {
+        margin-left: auto;
+        font-size: 11px; font-weight: 600;
+        color: #B45309; background: #FEF3C7;
+        padding: 3px 10px; border-radius: 999px;
+        border: 1px solid #FDE68A;
+        text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .nep-stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+        gap: 14px;
+    }
+
+    /* ───── FOOTER ───── */
+    .nep-footer {
+        background: var(--nep-surface);
+        border-top: 1px solid var(--nep-border);
+        margin-top: auto;
+    }
+    .nep-footer-inner {
+        max-width: 1440px; margin: 0 auto;
+        padding: 20px 32px;
+        display: flex; align-items: center; gap: 14px;
+        font-size: 12px; color: var(--nep-text-muted);
+        flex-wrap: wrap;
+    }
+    .nep-footer-brand { font-weight: 600; color: var(--nep-text); }
+    .nep-footer-sep { color: var(--nep-border); }
+    .nep-footer-link { color: var(--nep-text-muted); text-decoration: none; }
+    .nep-footer-link:hover { color: var(--nep-primary); }
+
+    @@media (max-width: 768px) {
+        .nep-nav-inner { padding: 12px 16px; gap: 12px; }
+        .nep-nav-search { display: none; }
+        .nep-hero-inner { padding: 24px 16px; }
+        .nep-hero-title { font-size: 22px; }
+        .nep-section { padding: 20px 16px; }
+    }
+</style>
+
+@code {
+    private string AppVersion => typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+
+    private List<AppCardConfig> _cards = new();
+    private int _activeCount => _cards.Count(c => c.Enabled);
+    private int _pendingCount => _cards.Count(c => !c.Enabled);
+
+    private StatsService.HrStats _hr = new(false, 0, 0, 0, 0);
+    private StatsService.NscimStats _nscim = new(false, 0, 0, 0, 0, 0, 0m, false);
+    private bool _loading = true;
+
+    private static string N(long n) => n.ToString("N0");
+
+    private string Greeting
+    {
+        get
+        {
+            var hour = DateTime.Now.Hour;
+            var period = hour switch
+            {
+                < 12 => "morning",
+                < 17 => "afternoon",
+                _    => "evening"
+            };
+            return $"Good {period}";
+        }
+    }
+
+    private string FormattedDate => DateTime.Now.ToString("dddd, MMMM d, yyyy");
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cards = Configuration.GetSection("Apps:Cards")
+            .Get<List<AppCardConfig>>() ?? new List<AppCardConfig>();
+
+        // Kick off both fetches in parallel during server-side prerender so the first render
+        // already has real numbers (no flash of empty state). Failures surface per-source via
+        // IsAvailable=false rather than throwing — one broken feed never blocks the other.
+        var hrTask    = Stats.GetHrStatsAsync();
+        var nscimTask = Stats.GetNscimStatsAsync();
+        await Task.WhenAll(hrTask, nscimTask);
+
+        _hr    = hrTask.Result;
+        _nscim = nscimTask.Result;
+        _loading = false;
+    }
+
+    public class AppCardConfig
+    {
+        public string Key { get; set; } = "";
+        public string Title { get; set; } = "";
+        public string Tagline { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Icon { get; set; } = "";
+        public string Url { get; set; } = "";
+        public string Gradient { get; set; } = "linear-gradient(135deg,#4F46E5,#7C3AED)";
+        public bool Enabled { get; set; } = true;
+    }
+}

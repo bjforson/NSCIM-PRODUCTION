@@ -1,0 +1,172 @@
+@using System.Reflection
+@using NickERP.Portal.Components.Pages
+
+@if (Card.Enabled && !string.IsNullOrWhiteSpace(Card.Url))
+{
+    <a class="nep-card nep-card-active" href="@Card.Url" target="_self">
+        <div class="nep-card-head">
+            <div class="nep-card-icon" style="background: @LightTint(Card.Gradient);">
+                <MudIcon Icon="@IconFor(Card.Icon)" Style="@($"font-size:22px;color:{PrimaryColor(Card.Gradient)};")" />
+            </div>
+            <span class="nep-chip nep-chip-active">
+                <span class="nep-chip-dot"></span>
+                Operational
+            </span>
+        </div>
+
+        <div class="nep-card-body">
+            <h3 class="nep-card-title">@Card.Title</h3>
+            <div class="nep-card-tagline">@Card.Tagline</div>
+            <p class="nep-card-desc">@Card.Description</p>
+        </div>
+
+        <div class="nep-card-foot">
+            <span class="nep-card-open">
+                Open application
+                <MudIcon Icon="@Icons.Material.Filled.ArrowForward" Style="font-size:14px;" />
+            </span>
+        </div>
+    </a>
+}
+else
+{
+    <div class="nep-card nep-card-disabled">
+        <div class="nep-card-head">
+            <div class="nep-card-icon" style="background:#F1F5F9;">
+                <MudIcon Icon="@IconFor(Card.Icon)" Style="font-size:22px;color:#94A3B8;" />
+            </div>
+            <span class="nep-chip nep-chip-pending">
+                <MudIcon Icon="@Icons.Material.Filled.Schedule" Style="font-size:11px;" />
+                Coming soon
+            </span>
+        </div>
+
+        <div class="nep-card-body">
+            <h3 class="nep-card-title">@Card.Title</h3>
+            <div class="nep-card-tagline">@Card.Tagline</div>
+            <p class="nep-card-desc">@Card.Description</p>
+        </div>
+
+        <div class="nep-card-foot">
+            <span class="nep-card-open nep-card-open-disabled">
+                Not yet available
+            </span>
+        </div>
+    </div>
+}
+
+<style>
+    .nep-card {
+        background: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        padding: 20px;
+        display: flex; flex-direction: column;
+        min-height: 220px;
+        text-decoration: none;
+        color: inherit;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.03);
+    }
+    .nep-card-active:hover {
+        transform: translateY(-2px);
+        border-color: #CBD5E1;
+        box-shadow: 0 4px 6px rgba(15,23,42,0.04), 0 12px 24px rgba(15,23,42,0.06);
+    }
+    .nep-card-disabled { cursor: not-allowed; }
+
+    .nep-card-head {
+        display: flex; justify-content: space-between;
+        align-items: flex-start; margin-bottom: 16px;
+    }
+    .nep-card-icon {
+        width: 44px; height: 44px;
+        border-radius: 10px;
+        display: flex; align-items: center; justify-content: center;
+    }
+
+    .nep-chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 11px; font-weight: 600;
+        letter-spacing: 0.1px;
+    }
+    .nep-chip-active {
+        color: #065F46; background: #ECFDF5; border: 1px solid #A7F3D0;
+    }
+    .nep-chip-dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: #10B981;
+        box-shadow: 0 0 0 2px rgba(16,185,129,0.2);
+    }
+    .nep-chip-pending {
+        color: #78350F; background: #FFFBEB; border: 1px solid #FDE68A;
+    }
+
+    .nep-card-body { flex: 1; }
+    .nep-card-title {
+        font-size: 16px; font-weight: 700;
+        color: #0F172A;
+        margin: 0 0 2px; letter-spacing: -0.2px;
+    }
+    .nep-card-tagline {
+        font-size: 11px; font-weight: 600;
+        color: #4F46E5;
+        text-transform: uppercase; letter-spacing: 0.6px;
+        margin-bottom: 10px;
+    }
+    .nep-card-disabled .nep-card-tagline { color: #94A3B8; }
+    .nep-card-desc {
+        font-size: 13px; line-height: 1.5;
+        color: #475569;
+        margin: 0 0 16px;
+    }
+    .nep-card-disabled .nep-card-desc { color: #94A3B8; }
+
+    .nep-card-foot {
+        border-top: 1px solid #F1F5F9;
+        padding-top: 12px;
+    }
+    .nep-card-open {
+        display: inline-flex; align-items: center; gap: 6px;
+        color: #4F46E5; font-size: 13px; font-weight: 600;
+    }
+    .nep-card-active:hover .nep-card-open { gap: 8px; }
+    .nep-card-open-disabled { color: #94A3B8; font-weight: 500; }
+</style>
+
+@code {
+    [Parameter, EditorRequired]
+    public Home.AppCardConfig Card { get; set; } = default!;
+
+    private string IconFor(string name)
+    {
+        var field = typeof(Icons.Material.Filled).GetField(name ?? "", BindingFlags.Public | BindingFlags.Static);
+        return field?.GetValue(null) as string ?? Icons.Material.Filled.Apps;
+    }
+
+    /// <summary>Pull the first color out of a CSS gradient like "linear-gradient(135deg,#4F46E5,#7C3AED)"
+    /// so the icon picks up a matching tone without us carrying extra config.</summary>
+    private string PrimaryColor(string gradient)
+    {
+        if (string.IsNullOrWhiteSpace(gradient)) return "#4F46E5";
+        var firstHex = System.Text.RegularExpressions.Regex.Match(gradient, @"#[0-9A-Fa-f]{6}");
+        return firstHex.Success ? firstHex.Value : "#4F46E5";
+    }
+
+    /// <summary>Light tint variant of the gradient primary color for icon backgrounds.</summary>
+    private string LightTint(string gradient)
+    {
+        var hex = PrimaryColor(gradient);
+        // Mix hex with 90% white: tints to a soft pastel.
+        if (hex.Length != 7) return "#EEF2FF";
+        var r = Convert.ToInt32(hex.Substring(1, 2), 16);
+        var g = Convert.ToInt32(hex.Substring(3, 2), 16);
+        var b = Convert.ToInt32(hex.Substring(5, 2), 16);
+        r = (int)(r * 0.1 + 255 * 0.9);
+        g = (int)(g * 0.1 + 255 * 0.9);
+        b = (int)(b * 0.1 + 255 * 0.9);
+        return $"#{r:X2}{g:X2}{b:X2}";
+    }
+}
