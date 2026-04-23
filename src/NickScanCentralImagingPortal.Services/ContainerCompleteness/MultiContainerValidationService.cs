@@ -342,6 +342,107 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             CrossRecordType.DifferentBOEs => "Low",
             _ => "Low"
         };
+
+        /// <summary>
+        /// 2.15.5 — back-populate <c>crossrecordscans.splitjobid</c> for rows that
+        /// slipped through the auto-submit path (either because they pre-date
+        /// 2.15.4 or the splitter was unreachable at detection time). Walks the
+        /// oldest unsubmitted rows first so the backlog drains FIFO, caps each
+        /// invocation at <paramref name="limit"/> rows to avoid hammering the
+        /// splitter, and reuses the same <see cref="SubmitSplitJobForCrossRecordAsync"/>
+        /// helper the live detection path uses — so the behaviour is identical.
+        ///
+        /// Returns <see cref="BackfillResult"/> with per-category counts.
+        /// Safe to re-run: each successful call trims the backlog by at most
+        /// <paramref name="limit"/>; failed submissions leave <c>SplitJobId</c>
+        /// null and will be retried on the next call.
+        /// </summary>
+        public async Task<BackfillResult> BackfillMissingSplitJobsAsync(
+            ApplicationDbContext dbContext,
+            int limit = 50,
+            CancellationToken cancellationToken = default)
+        {
+            // Clamp: keep the splitter off its knees even if a caller passes
+            // something absurd. 500 ≈ 8-10 min of splitter work at current rates.
+            limit = Math.Clamp(limit, 1, 500);
+
+            var pending = await dbContext.CrossRecordScans
+                .Where(c => c.SplitJobId == null)
+                .OrderBy(c => c.CreatedAt)  // FIFO: clear the oldest backlog first
+                .Take(limit)
+                .ToListAsync(cancellationToken);
+
+            var result = new BackfillResult { Attempted = pending.Count };
+            if (pending.Count == 0)
+            {
+                result.Remaining = 0;
+                _logger.LogInformation("{ServiceId} 🧹 Backfill: no cross-records missing a split job. Nothing to do.", SERVICE_ID);
+                return result;
+            }
+
+            _logger.LogInformation(
+                "{ServiceId} 🧹 Backfill starting: {Attempted} cross-records with SplitJobId=NULL (limit={Limit}).",
+                SERVICE_ID, pending.Count, limit);
+
+            foreach (var cr in pending)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var jobRef = await SubmitSplitJobForCrossRecordAsync(cr);
+                    if (jobRef != null)
+                    {
+                        cr.SplitJobId = jobRef.JobId;
+                        dbContext.Entry(cr).State = EntityState.Modified;
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                        result.Submitted++;
+                        _logger.LogInformation(
+                            "{ServiceId} 🧹 Backfill: submitted split job {JobId} for cross-record {CrId} ({C1} + {C2}).",
+                            SERVICE_ID, jobRef.JobId, cr.Id, cr.Container1, cr.Container2);
+                    }
+                    else
+                    {
+                        result.Skipped++;
+                        _logger.LogWarning(
+                            "{ServiceId} 🧹 Backfill: splitter returned null for cross-record {CrId} ({C1} + {C2}) — will retry on next run.",
+                            SERVICE_ID, cr.Id, cr.Container1, cr.Container2);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result.Failed++;
+                    _logger.LogWarning(ex,
+                        "{ServiceId} 🧹 Backfill: submission errored for cross-record {CrId} ({C1} + {C2}).",
+                        SERVICE_ID, cr.Id, cr.Container1, cr.Container2);
+                }
+            }
+
+            // Remaining = whatever's still null after this sweep (not just pending.Count - submitted).
+            result.Remaining = await dbContext.CrossRecordScans
+                .CountAsync(c => c.SplitJobId == null, cancellationToken);
+
+            _logger.LogInformation(
+                "{ServiceId} 🧹 Backfill complete: submitted={Submitted} skipped={Skipped} failed={Failed} remaining={Remaining}.",
+                SERVICE_ID, result.Submitted, result.Skipped, result.Failed, result.Remaining);
+
+            return result;
+        }
+
+        /// <summary>Per-run summary for <see cref="BackfillMissingSplitJobsAsync"/>.</summary>
+        public class BackfillResult
+        {
+            /// <summary>Rows selected for this run.</summary>
+            public int Attempted { get; set; }
+            /// <summary>Successful submissions — SplitJobId now populated.</summary>
+            public int Submitted { get; set; }
+            /// <summary>Splitter returned null (image unavailable, etc.). Eligible for retry.</summary>
+            public int Skipped { get; set; }
+            /// <summary>Exception during submission. Eligible for retry.</summary>
+            public int Failed { get; set; }
+            /// <summary>Total cross-records still missing a SplitJobId after this run.</summary>
+            public int Remaining { get; set; }
+        }
     }
 }
 

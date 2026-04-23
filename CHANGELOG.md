@@ -22,6 +22,72 @@ For each release, this file records:
 
 ---
 
+## [2.15.5] — 2026-04-23 — Cross-record split backfill endpoint
+
+Follow-up to 2.15.4. The auto-submit path now covers all new cross-record
+detections, but the 62 historical rows (from 2026-03-28 through the morning
+of 2026-04-23) still had `splitjobid IS NULL` and were invisible to the
+analyst viewer. This release adds a one-shot admin endpoint that walks that
+backlog oldest-first and submits each to the Python splitter using the same
+`SubmitSplitJobForCrossRecordAsync` helper the live detection path calls.
+
+### What's new
+
+- **`MultiContainerValidationService.BackfillMissingSplitJobsAsync(dbContext, limit, ct)`** —
+  selects oldest `crossrecordscans` rows with `SplitJobId IS NULL`, capped
+  at `limit` (default 50, clamped [1, 500]). For each, fetches the composite
+  via `GetCompleteContainerDataAsync` and POSTs via
+  `IImageSplitterService.SubmitSplitJobAsync`. Successes stamp `SplitJobId`;
+  failures leave it null and are eligible for retry on the next call.
+  Returns per-category counts: `{Attempted, Submitted, Skipped, Failed, Remaining}`.
+
+- **`POST /api/CrossRecordScans/backfill-splits?limit=N`** — admin-only
+  wrapper that calls the service method and returns the counts plus a
+  duration. Restricted to `Admin` / `SuperAdmin` roles.
+
+  ```
+  curl -k -X POST "https://localhost:5300/api/CrossRecordScans/backfill-splits?limit=100" \
+       -H "Authorization: Bearer <admin-token>"
+  ```
+
+  Response example:
+  ```json
+  {"attempted": 62, "submitted": 58, "skipped": 3, "failed": 1, "remaining": 4, "durationMs": 47213}
+  ```
+
+### Guardrails
+
+- `limit` is clamped to [1, 500] to protect the splitter from a single huge
+  sweep.
+- Uses FIFO ordering (oldest first) so a partial run drains the most
+  stale rows.
+- Safe to re-run — each call only touches rows still `SplitJobId IS NULL`,
+  so successful submissions aren't retried.
+- Failures are logged per row (`[MULTI-CONTAINER-VALIDATION] 🧹 Backfill:
+  …`) and swallowed — the loop continues to the next row.
+
+### What's NOT changed
+
+- No background scheduler: this is a one-shot operator action. If
+  operational experience shows drops from the auto-submit path, a
+  periodic sweeper can be added later (same pattern as
+  `ZombieAnalysisGroupSweeperService` from 2.15.1).
+- `services/image-splitter/submit_backlog.py` still works and is kept as
+  an emergency fallback.
+
+### Ops
+
+Deploy with `Deploy.ps1 -ApiOnly`. Once the API is up, trigger the
+backfill once against the 62-row backlog and watch the response. Expected
+near-complete drain given the Python splitter is healthy (PID currently
+supervised by `ImageSplitterSupervisorService`).
+
+### Commits in this release
+
+- `<TBD>` feat(cross-record): admin backfill endpoint for missing split jobs
+
+---
+
 ## [2.15.4] — 2026-04-23 — Cross-record scan auto-submits to image splitter on detection
 
 Fixes the broken cross-record → split-job → analyst flow reported in the

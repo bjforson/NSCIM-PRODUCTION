@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ContainerCompleteness;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
@@ -13,15 +15,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ICrossRecordScanRepository _crossRecordRepo;
         private readonly IIcumDownloadsRepository _icumDownloadsRepo;
         private readonly ILogger<CrossRecordScansController> _logger;
+        private readonly MultiContainerValidationService _multiValidation;
+        private readonly ApplicationDbContext _dbContext;
 
         public CrossRecordScansController(
             ICrossRecordScanRepository crossRecordRepo,
             IIcumDownloadsRepository icumDownloadsRepo,
-            ILogger<CrossRecordScansController> logger)
+            ILogger<CrossRecordScansController> logger,
+            MultiContainerValidationService multiValidation,
+            ApplicationDbContext dbContext)
         {
             _crossRecordRepo = crossRecordRepo;
             _icumDownloadsRepo = icumDownloadsRepo;
             _logger = logger;
+            _multiValidation = multiValidation;
+            _dbContext = dbContext;
         }
 
         /// <summary>
@@ -217,6 +225,40 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogError(ex, "Error marking scan {Id} as reviewed", id);
                 return StatusCode(500, "Internal server error");
+            }
+        }
+
+        /// <summary>
+        /// 2.15.5 — back-populate <c>crossrecordscans.splitjobid</c> for rows
+        /// that pre-date the 2.15.4 auto-submit path or where submission
+        /// failed. Oldest-first, capped per call. Safe to re-run — any row
+        /// that comes back null is eligible next time. Admin-only.
+        /// </summary>
+        [HttpPost("backfill-splits")]
+        [Authorize(Roles = "Admin,SuperAdmin")]
+        public async Task<ActionResult> BackfillSplits(
+            [FromQuery] int limit = 50,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var started = DateTime.UtcNow;
+                var result = await _multiValidation.BackfillMissingSplitJobsAsync(
+                    _dbContext, limit, cancellationToken);
+                return Ok(new
+                {
+                    attempted = result.Attempted,
+                    submitted = result.Submitted,
+                    skipped = result.Skipped,
+                    failed = result.Failed,
+                    remaining = result.Remaining,
+                    durationMs = (int)(DateTime.UtcNow - started).TotalMilliseconds
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error running cross-record split backfill");
+                return StatusCode(500, new { error = "backfill failed", message = ex.Message });
             }
         }
 
