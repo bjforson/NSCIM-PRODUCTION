@@ -28,7 +28,9 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="MailKit" Version="4.7.1.1" />
+    <!-- SECURITY: 4.9.0 still has GHSA-9j88-vvj5-vhgr (MailKit) + GHSA-g7hc-96xr-gvvx
+         (MimeKit transitive). 4.16.0 is the first version clean of both advisories. -->
+    <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.PostgreSQL.Alternative" Version="4.2.0" />
     <PackageReference Include="Polly" Version="8.6.4" />

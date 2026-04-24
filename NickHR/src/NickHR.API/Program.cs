@@ -49,6 +49,25 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplicationServices(builder.Configuration);
 
 // JWT Authentication
+// SECURITY: JWT signing key MUST come from the NICKHR_JWT_KEY environment variable
+// in production. Leaving it in appsettings.json is the "secrets-in-git" anti-pattern.
+// If the env var is missing OR the appsettings placeholder is still in place, fail
+// fast at startup rather than silently falling back to a committed-in-history key.
+var jwtKey = Environment.GetEnvironmentVariable("NICKHR_JWT_KEY")
+             ?? builder.Configuration["Jwt:Key"];
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Contains("***USE_ENV_VAR"))
+{
+    throw new InvalidOperationException(
+        "JWT signing key not configured. Set the NICKHR_JWT_KEY environment variable " +
+        "to a strong random value (>= 32 chars). Example (PowerShell, machine-scoped): " +
+        "[Environment]::SetEnvironmentVariable('NICKHR_JWT_KEY', <value>, 'Machine')");
+}
+if (jwtKey.Length < 32)
+{
+    throw new InvalidOperationException(
+        $"JWT signing key is {jwtKey.Length} chars; HS256 requires >= 32. Regenerate NICKHR_JWT_KEY.");
+}
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -64,8 +83,7 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         ValidIssuer = builder.Configuration["Jwt:Issuer"],
         ValidAudience = builder.Configuration["Jwt:Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
         ClockSkew = TimeSpan.Zero
     };
 });
