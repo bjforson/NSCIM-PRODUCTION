@@ -740,17 +740,17 @@
     
     private string GetImageUrl()
     {
-        // image-analysis/{id}/enhanced is a separate pipeline and currently stays
-        // ApiService-auth-gated (not used in <img src>); leave it as-is.
+        // Both branches use HMAC-signed short-lived URLs — the browser <img src>
+        // tag that consumes GetImageUrl() cannot carry a JWT header, and the
+        // cross-origin SameSite=Strict cookie does not flow. The API's
+        // SignedImageUrlMiddleware validates on receipt.
         if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
         {
-            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            return $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/enhanced";
+            return UrlBuilder.Build(
+                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/enhanced",
+                _currentUsername);
         }
 
-        // HMAC-signed short-lived URL so the browser <img src> fetch (no JWT header
-        // possible, cross-origin SameSite=Strict cookie doesn't flow) is still
-        // authenticated. The API's SignedImageUrlMiddleware validates it.
         return UrlBuilder.Build(
             $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
             _currentUsername);

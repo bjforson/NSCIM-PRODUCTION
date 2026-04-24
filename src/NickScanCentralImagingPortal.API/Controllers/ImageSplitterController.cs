@@ -15,15 +15,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ImageSplitterController> _logger;
         private readonly ApplicationDbContext _db;
+        private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
 
         public ImageSplitterController(
             IHttpClientFactory httpClientFactory,
             ILogger<ImageSplitterController> logger,
-            ApplicationDbContext db)
+            ApplicationDbContext db,
+            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
         {
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _db = db;
+            _urlSigner = urlSigner;
         }
 
         [HttpGet("health")]
@@ -217,7 +220,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         strategy = result.TryGetProperty("strategy_name", out var sn) ? sn.GetString() : null,
                                         splitX = result.TryGetProperty("split_x", out var sx) ? sx.GetInt32() : 0,
                                         confidence = result.TryGetProperty("confidence", out var conf) ? conf.GetDouble() : 0.0,
-                                        cropImageUrl = $"/api/image-splitter/jobs/{record.SplitJobId}/results/{resultId}/image/{side}",
+                                        // Signed URL — browser <img src> consumer, no JWT header possible.
+                                    cropImageUrl = _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/results/{resultId}/image/{side}"),
                                         reasoning = result.TryGetProperty("reasoning", out var rs) ? rs.GetString() : null
                                     });
                                 }
@@ -235,7 +239,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     jobId = record.SplitJobId,
                     chosenResultId = record.SplitResultId,
                     options,
-                    originalImageUrl = $"/api/ImageProcessing/container/{containerNumber}/complete/image"
+                    originalImageUrl = _urlSigner.SignRelative($"/api/ImageProcessing/container/{containerNumber}/complete/image")
                 });
             }
             catch (Exception ex)

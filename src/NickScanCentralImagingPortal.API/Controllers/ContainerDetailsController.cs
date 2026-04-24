@@ -200,6 +200,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private const string SERVICE_ID = "CONTAINER-DETAILS-API";
 
         private readonly IConfiguration _configuration;
+        private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
 
         public ContainerDetailsController(
             ILogger<ContainerDetailsController> logger,
@@ -208,7 +209,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             ApplicationDbContext context,
             IImageProcessingService imageProcessingService,
             NickScanCentralImagingPortal.Services.ImageProcessing.ASE.IASEImageConverterService aseConverter,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
         {
             _logger = new ThrottledLogger(logger, SERVICE_ID);
             _containerDataMapperService = containerDataMapperService;
@@ -217,6 +219,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _imageProcessingService = imageProcessingService;
             _aseConverter = aseConverter;
             _configuration = configuration;
+            _urlSigner = urlSigner;
         }
 
         /// <summary>
@@ -2058,9 +2061,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     // ✅ FIX: Use calculated FileSizeBytes (already computed in query above)
                                     FileSizeBytes = image.FileSizeBytes,
                                     CreatedAt = scan.ScanTime,
-                                    // ✅ Use unified image processing pipeline endpoint - handles all heavy lifting
-                                    ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=thumbnail{imageCacheBuster}",
-                                    FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=full{imageCacheBuster}"
+                                    // ✅ Signed URL — the WebApp renders this via <img src> directly, so it
+                                    // can't carry a JWT header. See SignedImageUrlMiddleware + signer.
+                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=thumbnail{imageCacheBuster}"),
+                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=full{imageCacheBuster}")
                                 });
                             }
                         }
@@ -2083,8 +2087,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         FileName = imageMetadata.ScannerId ?? $"FS6000_Scan_{containerNumber}.jpg",
                                         FileSizeBytes = imageMetadata.FileSizeBytes,
                                         CreatedAt = scan.ScanTime,
-                                        ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}",
-                                        FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}"
+                                        // Signed URL (see earlier comment).
+                                        ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}"),
+                                        FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}")
                                     });
                                 }
                             }
@@ -2136,8 +2141,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     FileName = scan.ImageDisplayName ?? $"ASE_Scan_{containerNumber}.jpg",
                                     FileSizeBytes = 0, // ✅ Size not available without loading BLOB - not needed for metadata
                                     CreatedAt = scan.ScanTime,
-                                    ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}",
-                                    FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}"
+                                    // Signed URL (see earlier comment).
+                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}"),
+                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}")
                                 });
                             }
                         }

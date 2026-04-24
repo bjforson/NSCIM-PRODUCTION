@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using NickScanCentralImagingPortal.Core.Security;
 
 namespace NickScanCentralImagingPortal.API.Middleware;
 
@@ -140,8 +141,15 @@ public static class SignedImageUrl
     public const string AuthType = "SignedImageUrl";
 
     /// <summary>
-    /// Only these 8 paths participate in signed-URL auth. Everything else goes
-    /// through Cookie/JWT as normal; the middleware is a no-op.
+    /// Paths that participate in signed-URL auth. Every endpoint here is
+    /// consumed by browser <c>&lt;img src&gt;</c> tags or cross-origin JS fetch
+    /// with <c>credentials:"include"</c>, neither of which can carry a Bearer
+    /// header; everything else on the API continues to use Cookie/JWT and is
+    /// a no-op for this middleware.
+    ///
+    /// Keep in sync with the server-side <c>SignedImageUrlSigner</c> and the
+    /// WebApp's <c>SignedImageUrlBuilder</c> — an endpoint added here but
+    /// not signed at one of the emission sites will 401 for the browser.
     /// </summary>
     public static bool IsSignedImagePath(PathString path)
     {
@@ -170,18 +178,41 @@ public static class SignedImageUrl
         // IcumsPayloadController image byte extraction
         if (p == "/api/icumspayload/image") return true;
 
+        // ImageSplitterController: /api/image-splitter/jobs/{id}/results/{rid}/image[/side]
+        //
+        // Note on the search: the literal string "/image" also appears inside the
+        // "/image-splitter" path segment right at the top of this URL, so IndexOf
+        // would match the wrong occurrence. Use LastIndexOf to find the trailing
+        // /image (or /image/{side}) segment at the end of the path.
+        if (p.StartsWith("/api/image-splitter/jobs/") && p.Contains("/results/"))
+        {
+            var imageIdx = p.LastIndexOf("/image", StringComparison.Ordinal);
+            if (imageIdx > 0)
+            {
+                var tail = p.Substring(imageIdx);
+                // "/image", "/image/left", "/image/right", "/image/{side}" all match.
+                if (tail == "/image" || tail.StartsWith("/image/")) return true;
+            }
+        }
+
+        // ImageAnalysisController: /api/image-analysis/{container}/enhanced
+        // and /api/image-analysis/{container}/annotations/enhance
+        if (p.StartsWith("/api/image-analysis/"))
+        {
+            if (p.EndsWith("/enhanced")) return true;
+            if (p.EndsWith("/annotations/enhance")) return true;
+        }
+
         return false;
     }
 
     /// <summary>
     /// HMAC-SHA256 of "{path}|{exp}|{uid}" → uppercase hex. Path must be the
     /// lowercased <see cref="HttpRequest.Path"/> to match the minter.
+    /// Delegates to <see cref="SignedImageUrlCanonical.ComputeSignature"/> in
+    /// Core so the API middleware, the Services-project signer, and the
+    /// WebApp builder all share one algorithm.
     /// </summary>
     public static string ComputeSignature(byte[] key, string path, string exp, string uid)
-    {
-        var payload = $"{path.ToLowerInvariant()}|{exp}|{uid}";
-        using var hmac = new HMACSHA256(key);
-        var bytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
-        return Convert.ToHexString(bytes);
-    }
+        => SignedImageUrlCanonical.ComputeSignature(key, path, exp, uid);
 }

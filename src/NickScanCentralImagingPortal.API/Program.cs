@@ -99,6 +99,16 @@ builder.Host.UseSerilog();
 // Add standardized services
 builder.Services.AddStandardizedServices(builder.Configuration);
 
+// ✅ SECURITY: Server-side HMAC signer for image URLs. Mirror of the WebApp's
+// SignedImageUrlBuilder. Controllers and services that emit image URLs into
+// response DTOs inject this and call Sign* to produce a short-lived signed
+// URL the browser can use in <img src> without a JWT header. Lives in
+// .Services so .Services-project classes (e.g. CargoGroupService) can
+// inject it without .Services depending on .API. See the Core interface
+// + SignedImageUrlMiddleware for the full protocol.
+builder.Services.AddSingleton<NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner,
+    NickScanCentralImagingPortal.Services.Security.SignedImageUrlSigner>();
+
 builder.Services.AddHttpClient();
 
 // Raw Image Engine (Python service on port 5320)

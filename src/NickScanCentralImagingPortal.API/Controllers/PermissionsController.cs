@@ -69,14 +69,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     if (string.Equals(normalized, catalog.Version, StringComparison.Ordinal))
                     {
                         Response.Headers.ETag = $"\"{catalog.Version}\"";
-                        Response.Headers["Cache-Control"] = "public, max-age=300";
+                        // SECURITY: private not public. Endpoint is [Authorize]; if the API's
+// UseResponseCaching middleware cached it under "public", a single
+// authenticated request would make the catalog available to anon
+// callers for 5 min. Browser caches for the user; shared cache does not.
+Response.Headers["Cache-Control"] = "private, max-age=300";
                         return StatusCode(StatusCodes.Status304NotModified);
                     }
                 }
             }
 
             Response.Headers.ETag = $"\"{catalog.Version}\"";
-            Response.Headers["Cache-Control"] = "public, max-age=300";
+            // SECURITY: private not public. Endpoint is [Authorize]; if the API's
+// UseResponseCaching middleware cached it under "public", a single
+// authenticated request would make the catalog available to anon
+// callers for 5 min. Browser caches for the user; shared cache does not.
+Response.Headers["Cache-Control"] = "private, max-age=300";
             return Ok(catalog);
         }
 
@@ -89,7 +97,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             var catalog = await GetOrBuildCatalogAsync(cancellationToken);
             Response.Headers.ETag = $"\"{catalog.Version}\"";
-            Response.Headers["Cache-Control"] = "public, max-age=300";
+            // SECURITY: private not public. Endpoint is [Authorize]; if the API's
+// UseResponseCaching middleware cached it under "public", a single
+// authenticated request would make the catalog available to anon
+// callers for 5 min. Browser caches for the user; shared cache does not.
+Response.Headers["Cache-Control"] = "private, max-age=300";
 
             return Ok(new
             {

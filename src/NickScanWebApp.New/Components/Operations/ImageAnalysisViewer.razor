@@ -1687,8 +1687,10 @@
         
         if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
         {
-            // Use enhanced image endpoint (Phase 1) - return full URL with cache buster
-            baseUrl = $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/enhanced";
+            // Use enhanced image endpoint (Phase 1). Signed URL — browser <img src>.
+            baseUrl = UrlBuilder.Build(
+                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/enhanced",
+                _currentUsername);
         }
         else
         {
@@ -3010,10 +3012,11 @@
         try
         {
             var rect = _rectangles[_selectedRectIndex];
-            
-            // Build API URL for enhanced region
-            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            var enhancedImageUrl = $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/annotations/enhance?x={(int)rect.X}&y={(int)rect.Y}&width={(int)rect.Width}&height={(int)rect.Height}";
+
+            // Build signed API URL for enhanced region (browser <img src> consumer).
+            var enhancedImageUrl = UrlBuilder.Build(
+                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/annotations/enhance?x={(int)rect.X}&y={(int)rect.Y}&width={(int)rect.Width}&height={(int)rect.Height}",
+                _currentUsername);
             
             // Store enhanced region URL and rectangle for dialog display
             _enhancedRegionUrl = enhancedImageUrl;
