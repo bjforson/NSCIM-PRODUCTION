@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Npgsql" Version="10.0.0" />
+    <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
   </ItemGroup>
 

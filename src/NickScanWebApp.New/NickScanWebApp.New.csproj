@@ -15,9 +15,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.7" />
     <PackageReference Include="MudBlazor" Version="8.13.0" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.14.0" />
     <!-- v2.15.0 in-app user manual: Markdig parses the markdown files under

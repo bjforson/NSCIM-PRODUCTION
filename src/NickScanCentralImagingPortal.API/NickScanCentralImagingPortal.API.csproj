@@ -14,18 +14,22 @@
 
   <ItemGroup>
     <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-    <PackageReference Include="Npgsql" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.7" />
+    <PackageReference Include="Npgsql" Version="10.0.2" />
     <PackageReference Include="AspNetCore.HealthChecks.UI" Version="8.0.1" />
     <PackageReference Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="8.0.1" />
+    <!-- AspNetCore.HealthChecks.UI.InMemory.Storage 8.0.1 pulls EF Core InMemory 8.0.x
+         transitively, which calls methods that moved in EF Core 10's AbstractionsStrings
+         (MissingMethodException at startup). Pin the transitive directly to align. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
     <PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="8.0.1" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.0">
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.7">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.7" />
     <PackageReference Include="NLog" Version="5.3.4" />
     <PackageReference Include="Polly" Version="8.6.4" />
     <PackageReference Include="Polly.Extensions.Http" Version="3.0.0" />
@@ -33,10 +37,10 @@
     <PackageReference Include="Serilog.Sinks.PostgreSQL.Alternative" Version="4.2.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.7.33" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
     <PackageReference Include="Swashbuckle.AspNetCore.Annotations" Version="10.1.7" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
-    <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="9.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="10.0.1" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.14.0" />
     <PackageReference Include="System.Management" Version="10.0.0" />
   </ItemGroup>
