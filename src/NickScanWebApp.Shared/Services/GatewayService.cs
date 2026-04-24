@@ -90,8 +90,16 @@ namespace NickScanWebApp.Shared.Services
         }
 
         /// <summary>
-        /// Get image URL for use in img tags
+        /// Get image URL for use in img tags.
         /// </summary>
+        /// <remarks>
+        /// DEPRECATED since 2026-04-24 Week-1 security rollout. This returns an
+        /// UNSIGNED URL that will 401 from a browser &lt;img src&gt; or cross-origin
+        /// fetch because the Gateway image endpoint now requires auth. No caller
+        /// currently exists. If you need an image URL for an &lt;img src&gt; tag, use
+        /// NickScanWebApp.New.Services.SignedImageUrlBuilder.Build(...) instead.
+        /// </remarks>
+        [Obsolete("Use SignedImageUrlBuilder.Build(\"/api/Gateway/container/{n}/image\", userId) — unsigned URLs 401 after the Week-1 security rollout.", false)]
         public string GetContainerImageUrl(string containerNumber)
         {
             var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";

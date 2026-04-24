@@ -9,6 +9,8 @@
 @inject IDialogService DialogService
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
+@inject AuthenticationStateProvider AuthStateProvider
 
 <MudDialog>
     <TitleContent>
@@ -481,8 +483,11 @@
     {
         if (_scan == null) return;
 
-        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-        var imageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(_scan.Container1)}/complete/image?size=full";
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var uid = authState.User.Identity?.Name ?? "anon";
+        var imageUrl = UrlBuilder.Build(
+            $"/api/ImageProcessing/container/{Uri.EscapeDataString(_scan.Container1)}/complete/image?size=full",
+            uid);
 
         var parameters = new DialogParameters
         {

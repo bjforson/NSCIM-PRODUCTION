@@ -175,6 +175,14 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.InactivityTimerService>()
 // Add SignalR service for real-time updates
 builder.Services.AddSingleton<NickScanWebApp.New.Services.SignalRService>();
 
+// ✅ SECURITY: Server-side signer for image-serving URLs. The WebApp's Blazor
+// <img src> tags cannot carry a Bearer header, so we mint short-lived HMAC-
+// signed URLs and the API validates them via SignedImageUrlMiddleware. Both
+// services must have the same NICKSCAN_IMAGE_SIGNING_KEY env var set.
+// Singleton because the key is immutable for the process lifetime and the
+// signer holds no per-user state.
+builder.Services.AddSingleton<NickScanWebApp.New.Services.SignedImageUrlBuilder>();
+
 // Add application services
 builder.Services.AddMemoryCache();
 

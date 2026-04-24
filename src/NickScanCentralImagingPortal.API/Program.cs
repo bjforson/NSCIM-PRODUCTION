@@ -1186,6 +1186,15 @@ Log.Information("✅ Routing middleware enabled");
 // ✅ CRITICAL: Add authentication BEFORE authorization
 app.UseAuthentication(); // Authenticates the user (validates JWT token)
 Log.Information("✅ Authentication middleware enabled");
+
+// ✅ SECURITY: HMAC-signed short-lived URL auth for image-serving endpoints that
+// browser <img src>/cross-origin fetch cannot carry a Bearer or SameSite=Strict
+// cookie on. MUST run AFTER UseAuthentication (so we only act on requests the
+// normal schemes didn't claim) and BEFORE UseAuthorization (so the [Authorize]
+// filter sees a populated User principal). See SignedImageUrlMiddleware.
+app.UseMiddleware<NickScanCentralImagingPortal.API.Middleware.SignedImageUrlMiddleware>();
+Log.Information("✅ Signed-image-URL middleware enabled");
+
 app.UseAuthorization();  // Authorizes the user (checks permissions)
 Log.Information("✅ Authorization middleware enabled");
 

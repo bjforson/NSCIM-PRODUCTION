@@ -946,7 +946,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 {
                     _logger.LogWarning("No image found for container {ContainerNumber}, imageType: {ImageType} — returning placeholder", containerNumber, imageType ?? "default");
                     var placeholder = GenerateNoImagePlaceholder(containerNumber);
-                    Response.Headers.CacheControl = "public, max-age=60";
+                    // SECURITY: private NOT public. "public" lets the server's
+                    // ResponseCachingMiddleware + any intermediate proxy serve this
+                    // body to any subsequent requester for 60s — so a single signed
+                    // request would "unlock" the placeholder for every anon caller.
+                    // private + 60s means only the specific user agent caches.
+                    Response.Headers.CacheControl = "private, max-age=60";
                     return File(placeholder, "image/jpeg");
                 }
 

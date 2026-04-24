@@ -14,6 +14,7 @@
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
+@inject SignedImageUrlBuilder UrlBuilder
 
 <PageTitle>Image Viewer - @ContainerNumber</PageTitle>
 
@@ -739,15 +740,20 @@
     
     private string GetImageUrl()
     {
-        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-        
+        // image-analysis/{id}/enhanced is a separate pipeline and currently stays
+        // ApiService-auth-gated (not used in <img src>); leave it as-is.
         if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
         {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
             return $"{apiBaseUrl}/api/image-analysis/{ContainerNumber}/enhanced";
         }
-        
-        // Use unified endpoint instead of legacy /api/image/serve/
-        return $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full";
+
+        // HMAC-signed short-lived URL so the browser <img src> fetch (no JWT header
+        // possible, cross-origin SameSite=Strict cookie doesn't flow) is still
+        // authenticated. The API's SignedImageUrlMiddleware validates it.
+        return UrlBuilder.Build(
+            $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
+            _currentUsername);
     }
     
     private void HandleWheel(WheelEventArgs e)

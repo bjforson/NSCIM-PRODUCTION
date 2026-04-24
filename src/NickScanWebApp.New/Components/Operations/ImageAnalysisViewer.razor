@@ -11,6 +11,7 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 @implements IAsyncDisposable
 
 <MudDialog>
@@ -1716,10 +1717,12 @@
                     baseUrl = baseUrl.Replace("size=thumbnail", "size=full", StringComparison.OrdinalIgnoreCase);
                 }
             }
-            // Final fallback - use unified endpoint
+            // Final fallback - use unified endpoint (signed URL; browser <img src>).
             else if (!string.IsNullOrEmpty(ContainerNumber))
             {
-                baseUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full";
+                baseUrl = UrlBuilder.Build(
+                    $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
+                    _currentUsername);
             }
             else
             {
@@ -1859,7 +1862,10 @@
         }
         else if (!string.IsNullOrEmpty(ContainerNumber))
         {
-            ImageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full";
+            // Signed URL for browser <img src>; middleware validates before Authorize.
+            ImageUrl = UrlBuilder.Build(
+                $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
+                _currentUsername);
         }
         
         // Load the controlled finding-category lookups once before LoadExistingTags
@@ -2138,14 +2144,16 @@
         StateHasChanged();
         try
         {
-            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            // Derive the percentile-style (level, window) from the server-
-            // side slider positions. Same UX as the JPEG path but now the
-            // tone mapping runs in the browser instead of re-rendering on
-            // the server.
+            // Build a signed short-lived URL for the raw plane fetch. The JS
+            // viewer no longer builds the URL itself because it has no access
+            // to the signing key. Same UX as the JPEG path but now the tone
+            // mapping runs in the browser instead of re-rendering on the server.
+            var rawUrl = UrlBuilder.Build(
+                $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/raw?plane={Uri.EscapeDataString(_rawPlane)}",
+                _currentUsername);
             var meta = await JS.InvokeAsync<RawPlaneMeta>(
                 "Raw16BitViewer.loadAndRender",
-                _rawCanvas, apiBaseUrl, ContainerNumber, _rawPlane,
+                _rawCanvas, rawUrl, ContainerNumber, _rawPlane,
                 _serverLevelPct, _serverWindowPct, /*invert*/ true);
             if (meta != null)
             {

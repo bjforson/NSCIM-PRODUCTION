@@ -3,7 +3,10 @@
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.New.Services.ApiService ApiService
 @inject IConfiguration Configuration
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
+@inject AuthenticationStateProvider AuthStateProvider
 @using System.Text.Json
+@using Microsoft.AspNetCore.Components.Authorization
 
 <PageTitle>NICKSCAN ERP — NSCIS — ICUMS Payload Viewer</PageTitle>
 
@@ -446,9 +449,13 @@
                     var containerNumber = ExtractContainerNumber(content);
                     if (!string.IsNullOrEmpty(containerNumber))
                     {
-                        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+                        var uid = authState.User.Identity?.Name ?? "anon";
                         hasImage = true;
-                        imageUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full";
+                        // HMAC-signed URL; browser <img src> can't carry JWT.
+                        imageUrl = UrlBuilder.Build(
+                            $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full",
+                            uid);
                     }
                 }
 

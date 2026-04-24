@@ -9,6 +9,7 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
 @inject IJSRuntime JSRuntime
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
     @* Header with proper name *@
@@ -820,15 +821,16 @@
             Console.WriteLine($"🔍 [ImageDecisionView] Checking if image exists in database for container {ContainerNumber}, imageType: {image.ImageType}");
             
             // ✅ Use existing image processing endpoint to check if image exists
-            // This calls the same pipeline that serves the image (reuses existing functionality)
-            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            var checkUrl = $"{apiBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
-            
-            // Add imageType parameter if it's not ASE (ASE doesn't need it, but FS6000 does)
+            // This calls the same pipeline that serves the image (reuses existing functionality).
+            // Build a signed URL so the raw HttpClient below is authenticated without a JWT header.
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var uid = authState.User.Identity?.Name ?? "anon";
+            var urlPath = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
             if (image.ImageType != "ASE")
             {
-                checkUrl += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
+                urlPath += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
             }
+            var checkUrl = UrlBuilder.Build(urlPath, uid);
             
             // Make GET request to check existence (API doesn't support HEAD)
             // We'll check the status code to determine if image exists
