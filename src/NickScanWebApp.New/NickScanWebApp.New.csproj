@@ -2,6 +2,10 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Roll forward to any newer .NET major that's installed. Matches API and
+         NickComms.Gateway. Without this the service pins to 10.0.x and won't
+         pick up an 11.0+ runtime if one is installed alongside. -->
+    <RollForward>LatestMajor</RollForward>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- CANONICAL publish dir — this is where the NSCIM_WebApp Windows service runs from.
