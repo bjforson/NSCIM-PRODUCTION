@@ -26,7 +26,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get notifications for the current user
         /// </summary>
         [HttpGet("user/{username}", Name = "GetUserNotifications")]
-        [AllowAnonymous] // ✅ FIX: Allow anonymous access to prevent authentication redirects
         public async Task<ActionResult<List<NotificationDto>>> GetUserNotifications(
             string username,
             [FromQuery] bool includeRead = false,
@@ -87,7 +86,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get unread notification count for a user
         /// </summary>
         [HttpGet("user/{username}/count")]
-        [AllowAnonymous]
         [ResponseCache(Duration = 15)] // 15s server cache acceptable for badge
         public async Task<ActionResult<int>> GetUnreadCount(string username)
         {

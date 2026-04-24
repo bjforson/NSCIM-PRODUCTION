@@ -143,7 +143,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("image")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetPayloadImage([FromQuery] string fileName, [FromQuery] string? subfolder = null)
         {
             try

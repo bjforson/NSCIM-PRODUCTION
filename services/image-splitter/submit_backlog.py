@@ -35,6 +35,10 @@ import requests
 SPLITTER_URL = os.environ.get("SPLITTER_URL", "http://localhost:5320")
 API_URL = os.environ.get("NSCIM_API_URL", "http://localhost:5205")
 API_TOKEN = os.environ.get("NSCIM_API_TOKEN", "")
+# SECURITY: TLS verification defaults to ON. Set SPLITTER_ALLOW_INSECURE_TLS=true only
+# when talking to a known-internal endpoint with a self-signed cert and you accept the
+# MITM risk (prefer installing the CA into the Python trust store instead).
+_TLS_VERIFY = os.environ.get("SPLITTER_ALLOW_INSECURE_TLS", "false").lower() != "true"
 
 
 def main():
@@ -162,7 +166,7 @@ def fetch_image(cur, c1, c2, scanner_type, inspection_id):
                     params={"container": cn},
                     headers={"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {},
                     timeout=30,
-                    verify=False,
+                    verify=_TLS_VERIFY,
                 )
                 if resp.ok and resp.headers.get("content-type", "").startswith("image/"):
                     return resp.content

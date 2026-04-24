@@ -54,20 +54,26 @@ namespace NickScanCentralImagingPortal.Services.Gateway
                 RequestedAt = DateTime.UtcNow
             };
 
-            // Create parallel tasks for requested data
-            var tasks = new List<Task>();
-
+            // Load requested data sections sequentially.
+            //
+            // CORRECTNESS: These methods share the scoped DbContext instances (_context +
+            // _icumDownloadsDbContext) and the repos/services that internally use them.
+            // DbContext is NOT thread-safe, so running the loads under Task.WhenAll
+            // produced "A second operation was started on this context instance before
+            // a previous operation completed" — the exception text was also being leaked
+            // into anonymous response bodies (pre-fallback-policy). Sequential loads are
+            // a few hundred ms slower but correct.
+            //
+            // TODO: migrate to IDbContextFactory<T> + fresh contexts per load to restore
+            // parallel execution once we have integration coverage.
             if (options.IncludeScannerData || options.IncludeImage)
-                tasks.Add(LoadScannerDataAsync(containerNumber, response));
+                await LoadScannerDataAsync(containerNumber, response);
 
             if (options.IncludeICUMS)
-                tasks.Add(LoadICUMSDataAsync(containerNumber, response));
+                await LoadICUMSDataAsync(containerNumber, response);
 
             if (options.IncludeValidation)
-                tasks.Add(LoadValidationDataAsync(containerNumber, response));
-
-            // Execute all tasks in parallel
-            await Task.WhenAll(tasks);
+                await LoadValidationDataAsync(containerNumber, response);
 
             stopwatch.Stop();
             response.ResponseTimeMs = (int)stopwatch.ElapsedMilliseconds;

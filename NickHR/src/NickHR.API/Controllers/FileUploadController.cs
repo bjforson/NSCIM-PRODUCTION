@@ -112,7 +112,6 @@ public class FileUploadController : ControllerBase
 
     /// <summary>Serve employee photo from database.</summary>
     [HttpGet("photo/{employeeId:int}")]
-    [AllowAnonymous]
     public async Task<IActionResult> GetPhoto(int employeeId)
     {
         var employee = await _db.Employees

@@ -2175,7 +2175,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get ASE image thumbnail - converts proprietary ASE format to browser-friendly JPEG
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("image/ase/thumbnail")]
         public async Task<ActionResult> GetAseImageThumbnail([FromQuery] string container)
         {
@@ -2227,7 +2226,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get ASE full image - converts proprietary ASE format to browser-friendly JPEG
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("image/ase/full")]
         public async Task<ActionResult> GetAseImageFull([FromQuery] string container)
         {

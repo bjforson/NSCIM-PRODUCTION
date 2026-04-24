@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NickHR.Core.DTOs;
@@ -8,6 +9,7 @@ using NickHR.Infrastructure.Data;
 namespace NickHR.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/attendance/biometric")]
 public class BiometricController : ControllerBase
 {
