@@ -30,6 +30,23 @@ builder.Logging.AddDebug();
 // Load environment variables with NICKCOMMS_ prefix
 builder.Configuration.AddEnvironmentVariables("NICKCOMMS_");
 
+// SECURITY: replace the ***USE_ENV_VAR_NICKSCAN_DB_PASSWORD*** placeholder in the
+// CommsDb connection string with the env-var value. The nick_comms database is now
+// reached via the nscim_app role (same credentials as the other four services).
+var _nickscanDbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
+var _commsDbConn = builder.Configuration.GetConnectionString("CommsDb");
+if (!string.IsNullOrEmpty(_commsDbConn) && _commsDbConn.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
+{
+    if (string.IsNullOrEmpty(_nickscanDbPassword))
+    {
+        throw new InvalidOperationException(
+            "NICKSCAN_DB_PASSWORD environment variable is required — the appsettings.json " +
+            "CommsDb connection string still contains the placeholder.");
+    }
+    builder.Configuration["ConnectionStrings:CommsDb"] =
+        _commsDbConn.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", _nickscanDbPassword);
+}
+
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
