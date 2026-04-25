@@ -222,6 +222,50 @@ Every module API and gateway service runs as a Windows service in production. Th
 
 ---
 
+## Operations / Backup & DR
+
+**Recovery objectives.** RPO 24 h. RTO 2 h. Driven by:
+
+- All NickERP platform databases share one Postgres cluster on
+  TEST-SERVER. A cluster loss is a business-day-of-data loss without
+  external backup.
+- Any backup older than ~24 h is tolerable for finance, HR, comms,
+  and operations data; image bytes and ICUMS attachments live in
+  filesystem stores backed up separately.
+
+**Mechanism.** `scripts/pg-backup.ps1` runs nightly via the
+`NickERP_PgBackup_Nightly` scheduled task. Per database, dumps to
+`C:\Shared\Backups\pg\<YYYY-MM-DD>\<db>.dump.gz` in custom format
+(parallel restore + per-table selection). 14-day retention sweep at
+the end of each run. Log at `C:\Shared\Backups\pg\backup.log`.
+
+Install once with:
+```powershell
+powershell -ExecutionPolicy Bypass -File `
+  C:\Shared\NSCIM_PRODUCTION\scripts\install-pg-backup-task.ps1
+```
+
+**Restore drill.** Once a quarter, restore yesterday's dump for one
+DB into a sandbox database and run a smoke query. Document the
+result in `docs/runbooks/dr-restore-test.md`.
+
+**Off-site copy.** TODO. Scheduled task currently writes only to the
+local server. Phase 11 (Backups, DR, observability) will mirror to
+an off-site Backblaze B2 bucket using rclone or equivalent.
+
+**Secret rotation cadence.**
+
+| Secret | Storage | Cadence | Procedure |
+|---|---|---|---|
+| `NICKSCAN_DB_PASSWORD` (`nscim_app`) | machine env var | yearly | manual via `pg_hba.conf` + ALTER ROLE |
+| `NICKCOMMS_API_KEY_NICKHR` | machine env var + `nick_comms.api_keys` hash | per-incident | `scripts/rotate-nickcomms-key.ps1` |
+| `NICKSCAN_JWT_SECRET_KEY` | machine env var | yearly | regenerate; restart all NSCIM services |
+| `NICKSCAN_SUPERADMIN_PASSWORD` | machine env var + Identity user | yearly | reset via SuperAdminGuard env var |
+| Cloudflare API token (operator) | operator vault only | 90 days | `scripts/rotate-cf-api-token.md` |
+| Hubtel merchant credentials (when wired) | machine env var | per Hubtel policy | TBD when Phase 12 lands |
+
+---
+
 ## Phase status (as of latest commit)
 
 | Phase | Wave | Title | Status |
