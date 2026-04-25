@@ -85,7 +85,13 @@ foreach ($svc in 'NickHR_WebApp', 'NickHR_API') {
         Restart-Service -Name $svc -Force
         Start-Sleep -Seconds 5
         $status = (Get-Service -Name $svc).Status
-        Write-Host "  $svc -> $status" -ForegroundColor (if ($status -eq 'Running') { 'Green' } else { 'Red' })
+        # `if` cannot be used as a -ForegroundColor expression directly
+        # in older PowerShell parsers; using the ternary operator
+        # ($status -eq 'Running' ? 'Green' : 'Red') would also fail in
+        # 5.1. Stick to a pre-computed scalar so the script runs on
+        # both 5.1 and 7+.
+        $clr = if ($status -eq 'Running') { 'Green' } else { 'Red' }
+        Write-Host "  $svc -> $status" -ForegroundColor $clr
     }
 }
 

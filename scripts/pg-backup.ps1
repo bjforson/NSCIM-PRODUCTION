@@ -61,7 +61,7 @@ foreach ($db in $Databases) {
     $dumpGz  = "$dumpRaw.gz"
     $dbStart = Get-Date
     try {
-        Write-Log "  $db: pg_dump -Fc ..."
+        Write-Log "  ${db}: pg_dump -Fc ..."
         & $PgDumpExe -h $PgHost -p $PgPort -U $PgUser -Fc -f $dumpRaw $db
         if ($LASTEXITCODE -ne 0) {
             throw "pg_dump exited $LASTEXITCODE for $db"
@@ -81,20 +81,21 @@ foreach ($db in $Databases) {
         Remove-Item $dumpRaw -Force
         $sizeMb = [math]::Round((Get-Item $dumpGz).Length / 1MB, 1)
         $secs   = [math]::Round(((Get-Date) - $dbStart).TotalSeconds, 1)
-        Write-Log "  $db: OK $sizeMb MB in ${secs}s"
+        Write-Log "  ${db}: OK $sizeMb MB in ${secs}s"
     } catch {
-        Write-Log "  $db: FAILED — $($_.Exception.Message)" 'ERROR'
+        Write-Log "  ${db}: FAILED - $($_.Exception.Message)" 'ERROR'
         $failures += $db
     }
 }
 
-# Retention sweep — anything older than $RetentionDays days goes.
+# Retention sweep - anything older than $RetentionDays days goes.
 $cutoff = (Get-Date).AddDays(-1 * $RetentionDays)
 $swept  = 0
 Get-ChildItem $BackupRoot -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and $_.LastWriteTime -lt $cutoff } |
     ForEach-Object {
-        Write-Log "  retention: removing $($_.FullName) (last write $($_.LastWriteTime:s))"
+        $iso = $_.LastWriteTime.ToString('s')
+        Write-Log "  retention: removing $($_.FullName) (last write $iso)"
         Remove-Item -Recurse -Force $_.FullName
         $swept++
     }
