@@ -173,10 +173,11 @@ v1 Comms: [keeps shipping forever, adapted to new platform >>>>>>>>>>>>>>>>>>>>]
 
 ### A.0 Approach
 
-- **Repo location:** `C:\Shared\NSCIM_PRODUCTION\platform\` continues to host platform code (parts already exist, e.g. `Platform.Tenancy`, `Platform.Web.Shared`). New layers added alongside.
-- **CI from day 1:** `.github/workflows/platform-ci.yml` — restore, build, test, schema-drift check on every push. Becomes the template for v2 module CI later.
-- **Demo apps:** one tiny app per layer at `platform/demos/<layer>/`. Throwaway. Exercises every contract before declaring layer "done."
+- **Repo location:** **all new platform layers live in `C:\Shared\ERP V2\platform\*` on `github.com/bjforson/ERP-V2`** (the v2 monorepo). The pre-existing `C:\Shared\NSCIM_PRODUCTION\platform\Platform.Tenancy` and `Platform.Web.Shared` are v1's own platform — left in place, not extended; v2's equivalents are fresh builds in the v2 repo. v1 and v2 stay strictly separate (memory: `reference_v1_v2_separation.md`).
+- **CI from day 1:** `.github/workflows/platform-ci.yml` (in the v2 repo) — restore, build, test, schema-drift check on every push. Becomes the template for v2 module CI later.
+- **Demo apps:** one tiny app per layer at `C:\Shared\ERP V2\platform\demos\<layer>\`. Throwaway. Exercises every contract before declaring layer "done."
 - **Documentation:** every layer ships with `<layer>.md` covering contracts, examples, and gotchas. Doc completeness is acceptance criterion, not afterthought.
+- **Path references in the §A.x task tables below** are relative paths inside the v2 repo (`C:\Shared\ERP V2\`), not v1.
 - **No v1 code touched.** Period.
 
 ### A.1 Observability foundation (~1 week)
