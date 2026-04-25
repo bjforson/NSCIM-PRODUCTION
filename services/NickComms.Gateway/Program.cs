@@ -60,6 +60,9 @@ builder.Host.UseSerilog();
 builder.Services.Configure<HubtelOptions>(builder.Configuration.GetSection(HubtelOptions.SectionName));
 builder.Services.Configure<SmsGatewayOptions>(builder.Configuration.GetSection(SmsGatewayOptions.SectionName));
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection(EmailOptions.SectionName));
+// Outbox tuning (poll cadence, batch size, retry policy, stuck-row cutoff).
+// Defaults in OutboxOptions are conservative — appsettings can override.
+builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
 // NICKSCAN ERP — multi-tenancy plumbing (Phase 1)
 // Registers ITenantContext + TenantOwnedEntityInterceptor in DI.

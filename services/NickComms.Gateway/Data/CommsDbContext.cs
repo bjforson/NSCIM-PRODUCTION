@@ -21,6 +21,11 @@ public class CommsDbContext : DbContext
             e.HasIndex(m => m.BatchId).HasFilter("batch_id IS NOT NULL");
             e.HasIndex(m => new { m.ClientApp, m.CreatedAt }).IsDescending(false, true);
             e.HasIndex(m => m.Recipient);
+            // Outbox claim path: WHERE status='queued' AND next_attempt_at <= NOW()
+            // ORDER BY created_at — this composite index keeps that scan O(log n)
+            // even with millions of historical sent rows.
+            e.HasIndex(m => new { m.Status, m.NextAttemptAt })
+             .HasDatabaseName("ix_sms_messages_outbox");
         });
 
         modelBuilder.Entity<EmailMessage>(e =>
@@ -28,6 +33,8 @@ public class CommsDbContext : DbContext
             e.HasIndex(m => m.BatchId).HasFilter("batch_id IS NOT NULL");
             e.HasIndex(m => new { m.ClientApp, m.CreatedAt }).IsDescending(false, true);
             e.HasIndex(m => m.ToEmail);
+            e.HasIndex(m => new { m.Status, m.NextAttemptAt })
+             .HasDatabaseName("ix_email_messages_outbox");
         });
 
         modelBuilder.Entity<OtpSession>(e =>

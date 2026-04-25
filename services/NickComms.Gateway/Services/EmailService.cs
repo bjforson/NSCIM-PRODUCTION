@@ -30,7 +30,10 @@ public class EmailService : IEmailService
 
     public async Task<EmailResponse> SendSingleAsync(SendEmailRequest request, string clientApp, CancellationToken ct = default)
     {
-        var attachments = DecodeAttachments(request.Attachments);
+        // Outbox: attachments are persisted on the row as base64 JSON so a
+        // crash between ACK and SMTP send can't lose them. We still validate
+        // up-front so a malformed/oversized request fails fast at 4xx.
+        var persisted = ValidateAndPersistAttachments(request.Attachments);
 
         var msg = new EmailMessage
         {
@@ -43,33 +46,32 @@ public class EmailService : IEmailService
             IsHtml = request.IsHtml,
             ClientApp = clientApp,
             ClientReference = request.ClientReference,
-            Status = "queued"
+            Status = "queued",
+            AttachmentsJson = EmailQueueService.SerializeAttachments(persisted)
         };
 
         _db.EmailMessages.Add(msg);
         await _db.SaveChangesAsync(ct);
 
-        _queue.Enqueue(new EmailQueueItem
-        {
-            MessageId = msg.Id,
-            FromEmail = msg.FromEmail,
-            FromName = msg.FromName,
-            ToEmail = msg.ToEmail,
-            ToName = msg.ToName,
-            Subject = msg.Subject,
-            Body = msg.Body,
-            IsHtml = msg.IsHtml,
-            Attachments = attachments
-        });
+        // Enqueue is now a no-op kept for backward compat — the DB row IS
+        // the queue signal. The outbox worker polls and picks it up.
+        _queue.Enqueue(new EmailQueueItem { MessageId = msg.Id });
 
         return new EmailResponse { Id = msg.Id, Status = "queued" };
     }
 
-    private static List<QueuedAttachment>? DecodeAttachments(List<EmailAttachment>? source)
+    /// <summary>
+    /// Validates each attachment (decodes the base64 to verify it parses,
+    /// enforces the 10 MB cap) and returns the list in
+    /// <see cref="EmailQueueService.PersistedAttachment"/> shape ready for
+    /// JSON-serialised outbox storage. We DON'T cache the decoded bytes here
+    /// — the worker decodes them on demand from the persisted JSON.
+    /// </summary>
+    private static List<EmailQueueService.PersistedAttachment>? ValidateAndPersistAttachments(List<EmailAttachment>? source)
     {
         if (source == null || source.Count == 0) return null;
 
-        var result = new List<QueuedAttachment>(source.Count);
+        var result = new List<EmailQueueService.PersistedAttachment>(source.Count);
         long total = 0;
 
         foreach (var att in source)
@@ -85,10 +87,10 @@ public class EmailService : IEmailService
             if (total > MaxAttachmentBytes)
                 throw new ArgumentException($"Attachments exceed maximum size of {MaxAttachmentBytes / (1024 * 1024)} MB.");
 
-            result.Add(new QueuedAttachment
+            result.Add(new EmailQueueService.PersistedAttachment
             {
                 Filename = att.Filename,
-                Content = bytes,
+                ContentBase64 = att.ContentBase64,
                 ContentType = string.IsNullOrWhiteSpace(att.ContentType) ? "application/octet-stream" : att.ContentType
             });
         }
@@ -101,7 +103,8 @@ public class EmailService : IEmailService
         var batchId = Guid.NewGuid();
         var fromEmail = request.FromEmail ?? _emailOptions.FromEmail;
         var fromName = request.FromName ?? _emailOptions.FromName;
-        var sharedAttachments = DecodeAttachments(request.Attachments);
+        var persistedShared = ValidateAndPersistAttachments(request.Attachments);
+        var sharedJson = EmailQueueService.SerializeAttachments(persistedShared);
 
         var messages = request.Recipients.Select(r => new EmailMessage
         {
@@ -115,26 +118,19 @@ public class EmailService : IEmailService
             BatchId = batchId,
             ClientApp = clientApp,
             ClientReference = request.ClientReference,
-            Status = "queued"
+            Status = "queued",
+            // Each row gets its own copy of the same shared attachment JSON
+            // so the outbox path is uniform regardless of single vs bulk.
+            AttachmentsJson = sharedJson
         }).ToList();
 
         _db.EmailMessages.AddRange(messages);
         await _db.SaveChangesAsync(ct);
 
+        // No-op enqueue for backward compat; outbox worker picks up via poll.
         foreach (var msg in messages)
         {
-            _queue.Enqueue(new EmailQueueItem
-            {
-                MessageId = msg.Id,
-                FromEmail = msg.FromEmail,
-                FromName = msg.FromName,
-                ToEmail = msg.ToEmail,
-                ToName = msg.ToName,
-                Subject = msg.Subject,
-                Body = msg.Body,
-                IsHtml = msg.IsHtml,
-                Attachments = sharedAttachments
-            });
+            _queue.Enqueue(new EmailQueueItem { MessageId = msg.Id });
         }
 
         _logger.LogInformation("Bulk email queued: batch={BatchId} count={Count} by {App}", batchId, messages.Count, clientApp);
