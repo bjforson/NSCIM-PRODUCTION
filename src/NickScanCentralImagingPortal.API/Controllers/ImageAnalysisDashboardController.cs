@@ -721,10 +721,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private async Task<AssignmentMetricsData> GetAssignmentMetricsAsync()
         {
             var now = DateTime.UtcNow;
-            var settings = await _dbContext.AnalysisSettings.FirstOrDefaultAsync() ?? new AnalysisSettings();
+            // H14: AsNoTracking — pure metrics read, no mutation downstream.
+            var settings = await _dbContext.AnalysisSettings.AsNoTracking().FirstOrDefaultAsync() ?? new AnalysisSettings();
 
             // Get active assignments
             var rawActiveAssignments = await _dbContext.AnalysisAssignments
+                .AsNoTracking()
                 .Where(a => a.State == "Active"
                     && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
                 .ToListAsync();
@@ -748,6 +750,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 // Single ID - use simple Where
                 var group = await _dbContext.AnalysisGroups
+                    .AsNoTracking()
                     .FirstOrDefaultAsync(g => g.Id == assignmentGroupIds[0]);
                 assignmentGroups = group != null ? new List<AnalysisGroup> { group } : new List<AnalysisGroup>();
             }

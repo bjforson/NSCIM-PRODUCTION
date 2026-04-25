@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -17,6 +18,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
     {
         private readonly IImageProcessingService _imageProcessingService;
         private readonly ILogger<ImageController> _logger;
+
+        // M4: Container numbers per ISO 6346 are 4 letters + 7 digits (11 chars). Allow a slightly
+        // wider charset for legacy / non-standard data, but strictly disallow path separators,
+        // dot-segments, and shell metacharacters that could be used for path traversal.
+        private static readonly Regex ContainerNumberPattern =
+            new(@"^[A-Za-z0-9_-]{1,32}$", RegexOptions.Compiled);
 
         public ImageController(IImageProcessingService imageProcessingService, ILogger<ImageController> logger)
         {
@@ -177,8 +184,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return Task.FromResult<IActionResult>(File(fileStream, contentType, enableRangeProcessing: true));
                 }
 
+                // M4: Validate container number before using it in a file path. Without this,
+                // a request like /api/Image/serve/..%5C..%5CWindows%5CSystem32%5Cconfig%5CSAM
+                // could escape C:\tadi_mirror via Path.Combine. Belt-and-braces: regex-validate
+                // the input AND verify the resolved path stays under the base directory.
+                if (!ContainerNumberPattern.IsMatch(containerNumber))
+                {
+                    _logger.LogWarning("ServeImage: rejected container number with disallowed characters: {ContainerNumber}", containerNumber);
+                    return Task.FromResult<IActionResult>(BadRequest("Invalid container number format."));
+                }
+
                 // Check TADI mirror folder for FS6000 images
-                var tadiImagePath = Path.Combine(@"C:\tadi_mirror", $"{containerNumber}.jpg");
+                const string TadiMirrorRoot = @"C:\tadi_mirror";
+                var tadiImagePath = Path.Combine(TadiMirrorRoot, $"{containerNumber}.jpg");
+                var tadiFullPath = Path.GetFullPath(tadiImagePath);
+                var tadiRootFull = Path.GetFullPath(TadiMirrorRoot);
+                if (!tadiFullPath.StartsWith(tadiRootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    && !tadiFullPath.Equals(tadiRootFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("ServeImage: resolved path escaped base directory: {Resolved}", tadiFullPath);
+                    return Task.FromResult<IActionResult>(BadRequest("Invalid container number format."));
+                }
                 if (System.IO.File.Exists(tadiImagePath))
                 {
                     // ✅ MEMORY FIX: Stream file directly instead of loading into memory

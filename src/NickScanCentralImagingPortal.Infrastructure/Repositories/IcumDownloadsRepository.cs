@@ -1,6 +1,7 @@
 using Npgsql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -10,11 +11,13 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
     public class IcumDownloadsRepository : IIcumDownloadsRepository
     {
         private readonly IcumDownloadsDbContext _context;
+        private readonly ILogger<IcumDownloadsRepository> _logger;
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Threading.SemaphoreSlim> _keyLocks = new();
 
-        public IcumDownloadsRepository(IcumDownloadsDbContext context)
+        public IcumDownloadsRepository(IcumDownloadsDbContext context, ILogger<IcumDownloadsRepository> logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         // Downloaded Files
@@ -86,7 +89,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
 
                 var changeCount = await _context.SaveChangesAsync();
 
-                Console.WriteLine($"[ICUMS-DOWNLOADS-REPO] UpdateFileStatus: FileId={fileId}, {oldStatus}→{status}, Changes={changeCount}, File={file.FileName}");
+                // M3: was Console.WriteLine — now goes through ILogger so it lands in the structured log sink.
+                _logger.LogInformation(
+                    "[ICUMS-DOWNLOADS-REPO] UpdateFileStatus: FileId={FileId}, {OldStatus}→{NewStatus}, Changes={Changes}, File={File}",
+                    fileId, oldStatus, status, changeCount, file.FileName);
 
                 // ✅ CRITICAL BUG FIX: Clear change tracker to release tracked entity
                 // Without this, files remain "Pending" and get reprocessed infinitely!
@@ -94,7 +100,7 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
             }
             else
             {
-                Console.WriteLine($"[ICUMS-DOWNLOADS-REPO] UpdateFileStatus: FileId={fileId} NOT FOUND!");
+                _logger.LogWarning("[ICUMS-DOWNLOADS-REPO] UpdateFileStatus: FileId={FileId} NOT FOUND!", fileId);
             }
         }
 

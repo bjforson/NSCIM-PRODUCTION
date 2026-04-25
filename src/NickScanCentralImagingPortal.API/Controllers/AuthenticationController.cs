@@ -255,11 +255,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return BadRequest(new { error = "Refresh token is required" });
                 }
 
+                // M6: Refresh token storage is not yet implemented (see JwtService.RefreshTokenAsync
+                // and DEFERRED_ACTIONS.md). Return 501 Not Implemented so clients can distinguish
+                // "feature missing" from "your token is invalid" (which 401 would imply, leading to
+                // confused log analysis and potentially incorrect client retry logic).
                 var newToken = await _jwtService.RefreshTokenAsync(request.RefreshToken);
                 if (newToken == null)
                 {
-                    _logger.LogWarning("⚠️ Invalid refresh token attempt");
-                    return Unauthorized(new { error = "Invalid refresh token" });
+                    _logger.LogWarning("⚠️ /auth/refresh called but refresh-token storage is not implemented; returning 501");
+                    return StatusCode(501, new { error = "Refresh token endpoint is not yet implemented. Please re-authenticate via /auth/login." });
                 }
 
                 return Ok(new RefreshResponse
