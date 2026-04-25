@@ -195,7 +195,7 @@ Format as structured text. Be concise and actionable.",
             };
         }
 
-        private static string ExtractTextFromResponse(string responseBody)
+        private string ExtractTextFromResponse(string responseBody)
         {
             try
             {
@@ -210,7 +210,15 @@ Format as structured text. Be concise and actionable.",
                     }
                 }
             }
-            catch { }
+            catch (JsonException jsonEx)
+            {
+                // Round-1 audit C-3: previously silent. If Claude returns
+                // malformed JSON, log it and fall through to the truncated
+                // raw-body path — the heuristic fallback in the caller still
+                // produces a useful triage even without parsed text.
+                _logger?.LogWarning(jsonEx,
+                    "OpsLogTriage: Claude response body was not parseable JSON; falling back to raw text");
+            }
             return responseBody.Length > 2000 ? responseBody[..2000] : responseBody;
         }
 

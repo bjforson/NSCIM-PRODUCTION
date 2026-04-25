@@ -67,11 +67,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
                 for (int i = 0; i < containerNumbers.Count; i += batchSize)
                 {
                     var batch = containerNumbers.Skip(i).Take(batchSize).ToList();
-                    // ✅ FIX: Use FromSqlRaw to avoid CTE generation from Contains()
-                    // ✅ FIX: Load full entities first, then project in memory to avoid CTE from Select()
-                    var placeholders = string.Join(",", batch.Select(s => $"'{s.Replace("'", "''")}'")); // Escape single quotes
+                    // Round-1 audit C-2: was FromSql with manual single-quote escaping.
+                    // Parameterized LINQ Contains() — Npgsql emits ContainerNumber = ANY(@p)
+                    // and the values are bound. Eliminates the manual-escape risk if
+                    // `batch` ever sources from user input.
                     var batchEntities = await _icumContext.BOEDocuments
-                        .FromSql($"SELECT * FROM BOEDocuments WHERE ContainerNumber IN ({placeholders})")
+                        .Where(b => batch.Contains(b.ContainerNumber))
                         .AsNoTracking()
                         .ToListAsync();
 

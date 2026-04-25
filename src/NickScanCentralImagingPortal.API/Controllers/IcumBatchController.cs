@@ -742,7 +742,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     {
                         dto.Documents = System.Text.Json.JsonSerializer.Deserialize<List<DocVerificationDetailDto>>(file.VerificationDetails) ?? new();
                     }
-                    catch { }
+                    catch (System.Text.Json.JsonException jsonEx)
+                    {
+                        // Round-1 audit C-3: previously a silent catch — corrupt
+                        // VerificationDetails would silently render as an empty
+                        // document list, masking ingestion data corruption.
+                        _logger.LogError(jsonEx,
+                            "Failed to deserialize VerificationDetails for IcumDownloadedFile {Id}; returning empty doc list",
+                            file.Id);
+                        dto.Documents = new();
+                    }
                 }
 
                 return Ok(dto);

@@ -109,6 +109,23 @@ builder.Services.AddStandardizedServices(builder.Configuration);
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner,
     NickScanCentralImagingPortal.Services.Security.SignedImageUrlSigner>();
 
+// ✅ Round-1 audit H-16: RFC 7807 ProblemDetails for status-code responses
+// (401/403/404/etc when no body is set explicitly) and as the canonical path
+// forward for new controllers calling `Problem(...)`. Existing thrown
+// exceptions still go through GlobalExceptionHandlerMiddleware which uses
+// the legacy ApiErrorResponse shape for backward compatibility — controllers
+// that want clean RFC 7807 today should call `Problem()` directly.
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = ctx =>
+    {
+        var correlationId = ctx.HttpContext.GetCorrelationId() ?? Guid.NewGuid().ToString();
+        ctx.ProblemDetails.Extensions["correlationId"] = correlationId;
+        ctx.ProblemDetails.Extensions["timestamp"] = DateTime.UtcNow.ToString("o");
+        ctx.ProblemDetails.Extensions["path"] = ctx.HttpContext.Request.Path.Value;
+    };
+});
+
 builder.Services.AddHttpClient();
 
 // Raw Image Engine (Python service on port 5320)
@@ -1065,6 +1082,12 @@ Log.Information("✅ Correlation ID middleware enabled");
 // ✅ Global Exception Handler (after correlation ID, before everything else)
 app.UseGlobalExceptionHandler();
 Log.Information("✅ Global exception handler enabled");
+
+// ✅ ProblemDetails for status-code responses (401/403/404/etc with no body).
+// Controller-thrown exceptions still go through UseGlobalExceptionHandler
+// above for backward compatibility with the legacy ApiErrorResponse shape.
+app.UseStatusCodePages();
+Log.Information("✅ Status-code pages → ProblemDetails enabled");
 
 // ✅ Performance Logging (track all request performance)
 if (builder.Configuration.GetValue<bool>("Performance:EnablePerformanceLogging", true))

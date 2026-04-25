@@ -1085,12 +1085,20 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                             Directory.CreateDirectory(archiveParent);
                         }
 
-                        // Move the folder with retry logic for file lock issues
+                        // Move the folder with retry logic for file lock issues.
+                        // Round-2 runtime audit M3: 25+ "Access to the path is denied"
+                        // failures per day. Previous retry only caught IOException, but
+                        // Windows surfaces antivirus/share locks as
+                        // UnauthorizedAccessException too — they look identical to a
+                        // permission denial without context. Catch both, raise the
+                        // retry budget to 5 attempts, exponential 1s/2s/4s/8s/16s,
+                        // and log the exception type so the next debug session can
+                        // tell antivirus contention from real ACL problems.
                         if (Directory.Exists(sourceFolder))
                         {
                             bool moved = false;
                             int retryCount = 0;
-                            const int maxRetries = 3;
+                            const int maxRetries = 5;
 
                             while (!moved && retryCount < maxRetries)
                             {
@@ -1108,20 +1116,22 @@ namespace NickScanCentralImagingPortal.Services.FS6000
 
                                     _logger.LogDebug("[FS6000-ARCHIVE] Moved folder: {SourceFolder} -> {ArchivePath}", sourceFolder, archivePath);
                                 }
-                                catch (IOException ex) when (retryCount < maxRetries - 1)
+                                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException)
+                                                            && retryCount < maxRetries - 1)
                                 {
                                     retryCount++;
-                                    _logger.LogWarning("[FS6000-ARCHIVE] File lock on folder {SourceFolder}, retry {Retry}/{MaxRetries} after delay",
-                                        sourceFolder, retryCount, maxRetries);
+                                    var delaySeconds = Math.Pow(2, retryCount - 1); // 1, 2, 4, 8 s
+                                    _logger.LogWarning(
+                                        "[FS6000-ARCHIVE] {ExType} on folder {SourceFolder}, retry {Retry}/{MaxRetries} after {Delay}s. Likely AV scan or open-handle race; will back off.",
+                                        ex.GetType().Name, sourceFolder, retryCount, maxRetries, delaySeconds);
 
-                                    // Wait for file locks to release (exponential backoff)
-                                    await Task.Delay(TimeSpan.FromSeconds(2 * retryCount));
+                                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
                                 }
                             }
 
                             if (!moved)
                             {
-                                throw new IOException($"Failed to move folder after {maxRetries} attempts due to file locks");
+                                throw new IOException($"Failed to move folder {sourceFolder} after {maxRetries} attempts (file lock or access-denied retries exhausted)");
                             }
                         }
                         else

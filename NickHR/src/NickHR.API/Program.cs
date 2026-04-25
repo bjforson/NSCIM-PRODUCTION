@@ -141,6 +141,33 @@ builder.Services.AddCors(options =>
 // SignalR
 builder.Services.AddSignalR();
 
+// ✅ SECURITY: Rate limiting on auth endpoints — login, refresh-token, register
+// were previously unbounded. Token bucket: 10 attempts / minute / IP for auth,
+// 100 / min for general requests. The "auth" policy applies to anything decorated
+// with [EnableRateLimiting("auth")]; the global limiter catches everything else.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("auth", httpContext =>
+        System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+    options.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<HttpContext, string>(
+        httpContext => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 200,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
+
 var app = builder.Build();
 
 // Seed data
@@ -154,6 +181,12 @@ if (app.Environment.IsDevelopment())
 
 app.UseSerilogRequestLogging();
 app.UseCors("NickHRCors");
+// UseRouting must run before UseRateLimiter for [EnableRateLimiting("auth")] on
+// individual actions to be discovered by the rate-limiter middleware. Without
+// explicit UseRouting() the implicit one runs after UseRateLimiter and the
+// per-endpoint policies silently no-op.
+app.UseRouting();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

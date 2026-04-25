@@ -47,9 +47,15 @@ builder.Logging.AddFilter("Microsoft.AspNetCore.Routing", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 
 // Configure host to ignore background service exceptions (prevents shutdown on service errors)
+// Round-2 runtime audit M1: NSCIM_WebApp was crashing 11 times in 5 days with
+// OperationCanceledException out of WindowsServiceLifetime.StopAsync because the
+// default 30-second SCM shutdown wasn't enough for in-flight Blazor circuits to
+// drain. Bump to 90s — SCM will still kill us at 120s, but circuits get a fair
+// shot to finish before we exit.
 builder.Services.Configure<HostOptions>(opts =>
 {
     opts.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+    opts.ShutdownTimeout = TimeSpan.FromSeconds(90);
 });
 
 // Add services to the container.

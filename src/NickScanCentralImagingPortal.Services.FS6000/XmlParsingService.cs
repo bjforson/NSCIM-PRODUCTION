@@ -25,9 +25,36 @@ namespace NickScanCentralImagingPortal.Services.FS6000
         private readonly ILogger<XmlParsingService> _logger;
         private const string SERVICE_ID = "[FS6000-XML-PARSER]";
 
+        // Round-1 audit H-9: hardened XmlReader settings used everywhere we
+        // turn raw FS6000 XML into XDocument. DtdProcessing.Prohibit blocks
+        // XXE/billion-laughs; XmlResolver=null prevents external entity fetch
+        // even if a DTD slips through; the size cap stops a malicious 16 MB
+        // single-element document from blowing memory.
+        private static readonly XmlReaderSettings _hardenedSettings = new()
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+            MaxCharactersInDocument = 25_000_000,
+            MaxCharactersFromEntities = 0,
+            CloseInput = true,
+        };
+
         public XmlParsingService(ILogger<XmlParsingService> logger)
         {
             _logger = logger;
+        }
+
+        /// <summary>
+        /// Parse a string of XML content using the hardened settings. Surfaces
+        /// XmlException to the caller so existing fix-then-retry paths still
+        /// work; the only behavioural difference is that DTDs and external
+        /// entities are now rejected with an XmlException.
+        /// </summary>
+        private static XDocument ParseHardened(string xmlContent)
+        {
+            using var stringReader = new StringReader(xmlContent);
+            using var xmlReader = XmlReader.Create(stringReader, _hardenedSettings);
+            return XDocument.Load(xmlReader);
         }
 
         public async Task<List<FS6000Scan>> ParseXmlFileAsync(string xmlFilePath)
@@ -49,7 +76,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 XDocument doc;
                 try
                 {
-                    doc = XDocument.Parse(xmlContent);
+                    doc = ParseHardened(xmlContent);
                 }
                 catch (XmlException ex)
                 {
@@ -60,7 +87,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
 
                     try
                     {
-                        doc = XDocument.Parse(xmlContent);
+                        doc = ParseHardened(xmlContent);
                         _logger.LogDebug("Successfully parsed XML after enhanced fixes: {XmlFilePath}", xmlFilePath);
                     }
                     catch (XmlException ex2)
@@ -335,7 +362,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     return false;
                 }
 
-                XDocument.Parse(xmlContent);
+                ParseHardened(xmlContent);
                 return true;
             }
             catch (Exception ex)
@@ -363,13 +390,13 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 XDocument doc;
                 try
                 {
-                    doc = XDocument.Parse(xmlContent);
+                    doc = ParseHardened(xmlContent);
                 }
                 catch (XmlException ex)
                 {
                     _logger.LogWarning(ex, "Initial XML parsing failed, attempting enhanced fixes");
                     xmlContent = EnhancedXmlFixes(xmlContent);
-                    doc = XDocument.Parse(xmlContent);
+                    doc = ParseHardened(xmlContent);
                 }
 
                 var root = doc.Root;
