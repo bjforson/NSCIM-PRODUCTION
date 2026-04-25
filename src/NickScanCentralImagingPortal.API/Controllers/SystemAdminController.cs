@@ -586,7 +586,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     cmdLine = searcher.Get().Cast<System.Management.ManagementObject>()
                         .FirstOrDefault()?["CommandLine"]?.ToString();
                 }
-                catch { }
+                catch (Exception cmdEx)
+                {
+                    // WMI may be unavailable (non-Windows or restricted). Restart logic falls back to
+                    // sensible defaults below; just signal so an unexpected WMI failure is debuggable.
+                    _logger.LogDebug(cmdEx,
+                        "WMI CommandLine lookup failed for PID {Pid}; falling back to defaults",
+                        webappProc.Id);
+                }
 
                 string dotnetExe;
                 string dllPath;

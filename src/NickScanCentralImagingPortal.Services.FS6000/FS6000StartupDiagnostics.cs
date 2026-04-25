@@ -42,7 +42,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             report.ConfigurationValid = CheckConfiguration();
 
             // Check 2: Source Directory
-            report.SourceDirectoryAccessible = CheckSourceDirectory();
+            report.SourceDirectoryAccessible = await CheckSourceDirectoryAsync();
 
             // Check 3: Destination Directories
             report.DestinationDirectoryAccessible = CheckDestinationDirectory();
@@ -82,13 +82,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             }
         }
 
-        private bool CheckSourceDirectory()
+        private async Task<bool> CheckSourceDirectoryAsync()
         {
             _logger.LogInformation("📁 [2/5] Checking source directory: {SourcePath} (with 30s timeout)", _config.SourcePath);
 
             try
             {
-                // Use Task.Run with timeout to prevent indefinite hangs on network drives
+                // H12: Use Task.Run with timeout to prevent indefinite hangs on network drives.
+                // Was: checkTask.Wait(timeout) + .Result — sync-over-async, blocks a thread-pool
+                // thread for up to 30s. Now: await checkTask.WaitAsync(timeout) — non-blocking.
                 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
                 var checkTask = Task.Run(() =>
@@ -121,12 +123,12 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     }
                 }, cts.Token);
 
-                // Wait for the task with timeout
-                if (checkTask.Wait(TimeSpan.FromSeconds(30)))
+                // Wait for the task with timeout — async, no thread blocking.
+                try
                 {
-                    return checkTask.Result;
+                    return await checkTask.WaitAsync(TimeSpan.FromSeconds(30));
                 }
-                else
+                catch (TimeoutException)
                 {
                     _logger.LogError("❌ Source directory check TIMED OUT after 30 seconds");
                     _logger.LogError("❌ Z:\\ drive is too slow or unresponsive");

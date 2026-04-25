@@ -742,7 +742,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     {
                         dto.Documents = System.Text.Json.JsonSerializer.Deserialize<List<DocVerificationDetailDto>>(file.VerificationDetails) ?? new();
                     }
-                    catch { }
+                    catch (Exception jsonEx)
+                    {
+                        // VerificationDetails came from our own writer, so a parse failure here is a
+                        // schema-drift bug worth surfacing (don't fail the whole request — caller still
+                        // gets the file's summary fields).
+                        _logger.LogWarning(jsonEx,
+                            "Failed to deserialize VerificationDetails for file {Id}; returning summary without per-document detail",
+                            id);
+                        dto.Documents = new();
+                    }
                 }
 
                 return Ok(dto);

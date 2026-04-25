@@ -59,7 +59,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 _config.Validate(_logger);
 
                 // Validate source directory (Z:\)
-                if (!ValidateSourceDirectory())
+                if (!await ValidateSourceDirectoryAsync())
                 {
                     throw new InvalidOperationException($"Source directory is not accessible: {_config.SourcePath}");
                 }
@@ -696,13 +696,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             return ex.InnerException is System.Net.Sockets.SocketException;
         }
 
-        private bool ValidateSourceDirectory()
+        private async Task<bool> ValidateSourceDirectoryAsync()
         {
             try
             {
                 _logger.LogInformation("🔍 Validating source directory: {SourcePath} (with 30s timeout)", _config.SourcePath);
 
-                // Use Task.Run with timeout to prevent indefinite hangs on network drives
+                // H12: Use Task.Run with timeout to prevent indefinite hangs on network drives.
+                // Was: checkTask.Wait(timeout) + .Result — sync-over-async, blocks a thread-pool
+                // thread for up to 30s. Now: await checkTask.WaitAsync(timeout) — non-blocking.
                 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
                 var checkTask = Task.Run(() =>
@@ -758,12 +760,12 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     }
                 }, cts.Token);
 
-                // Wait for the task with timeout
-                if (checkTask.Wait(TimeSpan.FromSeconds(30)))
+                // Wait for the task with timeout — async, no thread blocking.
+                try
                 {
-                    return checkTask.Result;
+                    return await checkTask.WaitAsync(TimeSpan.FromSeconds(30));
                 }
-                else
+                catch (TimeoutException)
                 {
                     _logger.LogError("❌ Source directory check TIMED OUT after 30 seconds");
                     _logger.LogError("❌ Z:\\ drive is too slow or unresponsive");

@@ -210,7 +210,14 @@ Format as structured text. Be concise and actionable.",
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Static method, no logger available. Fallback path returns the truncated raw body
+                // anyway, which is the desired behavior — but signal via Debug so anyone investigating
+                // a malformed-response issue can see it surfaced from this layer.
+                System.Diagnostics.Debug.WriteLine(
+                    $"OpsLogTriageService.ExtractTextFromResponse: JSON parse failed ({ex.GetType().Name}: {ex.Message}); falling back to raw body");
+            }
             return responseBody.Length > 2000 ? responseBody[..2000] : responseBody;
         }
 
