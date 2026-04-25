@@ -22,11 +22,21 @@ namespace NickScanCentralImagingPortal.Tests.ASE
     public class AseFormatDecoderTests
     {
         private const string SampleSingleView = "TestData/Ase/sample_single_view.ase";
-        // Values from the Python-decoded .report.json sidecar
+        // Values from the Python-decoded .report.json sidecar — these are the
+        // RAW decode dimensions before any orientation correction.
         private const int ExpectedWidth = 544;
         private const int ExpectedHeight = 1554;
         private const int ExpectedLineDataType = 2;
         private const long ExpectedSizeBytes = 1691484;
+
+        // The renderer (AsePercentileRenderer.BuildBitmap) deliberately rotates
+        // 90° CCW so its output matches the vendor DLL's landscape orientation
+        // — the entire frontend (canvas tools, pan/zoom, ROI drawing, ruler,
+        // fullscreen viewer) was built around those landscape dimensions, and
+        // the Python reference decoder also defaults to rotate_to_dll=True.
+        // After rotation, the raw 544×1554 portrait becomes 1554×544 landscape.
+        private const int ExpectedRenderedWidth = 1554;
+        private const int ExpectedRenderedHeight = 544;
 
         private static byte[] LoadSample()
         {
@@ -151,9 +161,13 @@ namespace NickScanCentralImagingPortal.Tests.ASE
             var blob = LoadSample();
             var decoded = AseFormatDecoder.Decode(blob);
 
+            // RotateFlip in BuildBitmap turns 544×1554 portrait into 1554×544
+            // landscape — see the ExpectedRenderedWidth/Height comment for why.
+            // Note that one Bitmap.RotateFlip side-effect on Format8bppIndexed
+            // bitmaps is that the PixelFormat is preserved (verified post-rotate).
             using var bmp = AsePercentileRenderer.BuildBitmap(decoded);
-            Assert.Equal(ExpectedWidth, bmp.Width);
-            Assert.Equal(ExpectedHeight, bmp.Height);
+            Assert.Equal(ExpectedRenderedWidth, bmp.Width);
+            Assert.Equal(ExpectedRenderedHeight, bmp.Height);
             Assert.Equal(PixelFormat.Format8bppIndexed, bmp.PixelFormat);
 
             // Round-trip through JPEG and re-open to confirm it's a valid image
@@ -167,8 +181,8 @@ namespace NickScanCentralImagingPortal.Tests.ASE
             Assert.Equal(0xD8, jpegBytes[1]);
 
             using var readBack = Image.FromStream(new MemoryStream(jpegBytes));
-            Assert.Equal(ExpectedWidth, readBack.Width);
-            Assert.Equal(ExpectedHeight, readBack.Height);
+            Assert.Equal(ExpectedRenderedWidth, readBack.Width);
+            Assert.Equal(ExpectedRenderedHeight, readBack.Height);
         }
 
         [Fact]
