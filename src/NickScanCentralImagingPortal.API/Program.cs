@@ -25,11 +25,31 @@ using NickScanCentralImagingPortal.Services;
 using Serilog;
 // using AspNetCoreRateLimit; // REMOVED - replaced with .NET 8 built-in rate limiting
 
-using var instanceMutex = new Mutex(true, @"Global\NSCIM_API_SingleInstance", out var isFirstInstance);
-if (!isFirstInstance)
+// Single-instance guard. Skipped when running under WebApplicationFactory or
+// EF tooling — both spin up the entry point in the same process as a parallel
+// host (the running Windows service or an EF design-time helper) and would
+// trip the mutex, exit early, and leave the test/tooling staring at "The
+// entry point exited without ever building an IHost".
+//
+// The env-var bypass is deliberately scoped: tests / EF set
+// NSCIM_SKIP_SINGLE_INSTANCE=1 once at process start; production never sets
+// it, so the mutex still gates two accidentally-launched copies of the
+// Windows service. We register Dispose on ProcessExit so production behavior
+// matches the original `using var` (release the mutex on a clean shutdown).
+var _skipMutex = string.Equals(
+    Environment.GetEnvironmentVariable("NSCIM_SKIP_SINGLE_INSTANCE"),
+    "1",
+    StringComparison.Ordinal);
+Mutex? instanceMutex = null;
+if (!_skipMutex)
 {
-    Console.Error.WriteLine("Another instance of NSCIM API is already running. Exiting.");
-    return;
+    instanceMutex = new Mutex(true, @"Global\NSCIM_API_SingleInstance", out var isFirstInstance);
+    if (!isFirstInstance)
+    {
+        Console.Error.WriteLine("Another instance of NSCIM API is already running. Exiting.");
+        return;
+    }
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => instanceMutex?.Dispose();
 }
 
 var builder = WebApplication.CreateBuilder(args);
