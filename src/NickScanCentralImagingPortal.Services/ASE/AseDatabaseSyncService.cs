@@ -74,7 +74,7 @@ namespace NickScanCentralImagingPortal.Services.ASE
                             .Replace("***USE_ENV_VAR_NICKSCAN_ASE_PASSWORD***", escapedPassword)
                             .Replace("***USE_ENV_VAR***", escapedPassword)
                             .Replace("***USE_ENV***", escapedPassword);
-                        _logger.LogInformation("{ServiceId} Replaced password placeholder in connection string (password length: {Length})", SERVICE_ID, asePassword.Length);
+                        _logger.LogInformation("{ServiceId} Replaced password placeholder in connection string", SERVICE_ID);
                     }
                 }
 
@@ -496,7 +496,7 @@ namespace NickScanCentralImagingPortal.Services.ASE
                         .Replace("***USE_ENV_VAR_NICKSCAN_ASE_PASSWORD***", escapedPassword)
                         .Replace("***USE_ENV_VAR***", escapedPassword)
                         .Replace("***USE_ENV***", escapedPassword);
-                    _logger.LogInformation("{ServiceId} Replaced password placeholder in connection string (password length: {Length})", SERVICE_ID, asePassword.Length);
+                    _logger.LogInformation("{ServiceId} Replaced password placeholder in connection string", SERVICE_ID);
                 }
             }
 

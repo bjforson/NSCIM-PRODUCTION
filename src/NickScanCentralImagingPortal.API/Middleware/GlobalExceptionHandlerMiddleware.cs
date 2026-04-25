@@ -152,7 +152,11 @@ namespace NickScanCentralImagingPortal.API.Middleware
                     break;
             }
 
-            // In development, include detailed error information
+            // H1: Even in development, do NOT serialize the full stack trace into the response body.
+            // Devs have access to the server logs; including the trace in the HTTP response is a leak
+            // surface (e.g., dev mode accidentally enabled in a non-dev deployment, dev tunnel exposed
+            // to the internet, response captured in logs/screenshots/issue trackers). Keep type and
+            // message only — same diagnostic value 95% of the time.
             if (_environment.IsDevelopment())
             {
                 response.Details = new
@@ -161,7 +165,7 @@ namespace NickScanCentralImagingPortal.API.Middleware
                     ExceptionMessage = exception.Message,
                     InnerException = exception.InnerException?.Message
                 };
-                response.StackTrace = exception.StackTrace;
+                // Stack trace intentionally omitted — server logs have full detail with CorrelationId.
             }
 
             return response;

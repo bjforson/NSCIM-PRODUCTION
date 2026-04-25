@@ -449,7 +449,7 @@ namespace NickScanCentralImagingPortal.Services
                             // Log success (but don't log the actual password)
                             var loggerFactory = services.BuildServiceProvider().GetService<ILoggerFactory>();
                             var logger = loggerFactory?.CreateLogger("AseConfiguration");
-                            logger?.LogInformation("✅ [PostConfigure] ASE connection string password replaced from environment variable (password length: {Length})", asePassword.Length);
+                            logger?.LogInformation("✅ [PostConfigure] ASE connection string password replaced from environment variable");
                         }
                     }
                     else

@@ -31,6 +31,13 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
         private const string SERVICE_ID = "ICUMS-JSON-INGESTION";
         private const long LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB - use batch processing for files larger than this
 
+        // C6: Circuit-breaker state for the outer ExecuteAsync loop. We don't crash the service
+        // (it's a BackgroundService and crashing takes down ingestion entirely), but we *do* want
+        // a loud signal when the loop is failing repeatedly so it shows up in monitoring.
+        private const int CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 5;
+        private int _consecutiveCycleFailures;
+        private DateTime _lastCircuitBreakerAlertUtc = DateTime.MinValue;
+
         // Expected fields in JSON for completeness validation
         private static readonly HashSet<string> ExpectedContainerDetailsFields = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -168,11 +175,33 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                         await CleanupArchivedFilesAsync();
 
                         _logger.LogInformation("=== INGESTION CYCLE COMPLETED ===");
+
+                        // C6: Successful cycle — reset circuit-breaker state.
+                        if (_consecutiveCycleFailures > 0)
+                        {
+                            _logger.LogInformation(
+                                "Ingestion cycle recovered after {Failures} consecutive failures",
+                                _consecutiveCycleFailures);
+                            _consecutiveCycleFailures = 0;
+                        }
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error in ICUMS JSON Ingestion Service");
                         _logger.LogError(ex, "Exception details: {Message}", ex.ToString());
+
+                        // C6: Track consecutive failures so a stuck loop is loud, not silent.
+                        // Threshold: 5 consecutive failed cycles. After that, escalate to Critical
+                        // every cycle so monitoring/alerting picks it up. Reset on next success.
+                        _consecutiveCycleFailures++;
+                        if (_consecutiveCycleFailures >= CONSECUTIVE_FAILURE_ALERT_THRESHOLD)
+                        {
+                            _logger.LogCritical(ex,
+                                $"ICUMS ingestion has now failed {_consecutiveCycleFailures} cycles in a row. " +
+                                $"Service is still running but no files are being processed. " +
+                                $"Investigate immediately. Last error: {ex.Message}");
+                            _lastCircuitBreakerAlertUtc = DateTime.UtcNow;
+                        }
                     }
 
                     // Process at configured interval (read from database settings)
@@ -294,14 +323,17 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                             {
                                 _logger.LogError(ex, "Failed to process file {FileName}: {Error}", file.FileName, ex.Message);
 
-                                try
-                                {
-                                    await repo.UpdateFileProcessingStatusAsync(file.Id, "Failed", ex.Message);
-                                }
-                                catch (Exception updateEx)
-                                {
-                                    _logger.LogError(updateEx, "Failed to update error status for file {FileName}", file.FileName);
-                                }
+                                // C5: Status-update with retry. If we don't mark this Failed, the
+                                // file stays "Processing" forever and gets re-picked next cycle —
+                                // a worst-case infinite poison loop. Retry 3x with backoff, then
+                                // escalate to Critical so it shows up in monitoring.
+                                await TryUpdateFileStatusWithRetryAsync(repo, file, "Failed", ex.Message);
+
+                                _metrics?.RecordFileFailed();
+
+                                // C5: Bring parallel branch to parity with sequential — also enqueue
+                                // for automatic retry. Previously only the sequential branch did this.
+                                await TryEnqueueFailedFileAsync(repo, file, ex);
 
                                 Interlocked.Increment(ref failedCount);
                             }
@@ -328,39 +360,15 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                         {
                             _logger.LogError(ex, "Failed to process file {FileName}: {Error}", file.FileName, ex.Message);
 
-                            await downloadsRepository.UpdateFileProcessingStatusAsync(
-                                file.Id,
-                                "Failed",
-                                ex.Message);
+                            // C5: Use retry helper so we don't lose the status update on transient
+                            // DB hiccup (which would leave the file in "Processing" forever).
+                            await TryUpdateFileStatusWithRetryAsync(downloadsRepository, file, "Failed", ex.Message);
 
                             // ✅ PHASE 3.1: Record metrics
                             _metrics?.RecordFileFailed();
 
                             // ✅ PHASE 2.2: Add to FailedProcessingQueue for automatic retry
-                            try
-                            {
-                                var failedFile = new FailedProcessingQueue
-                                {
-                                    DownloadedFileId = file.Id,
-                                    FileName = file.FileName,
-                                    FilePath = file.FilePath,
-                                    FailureReason = ex.Message,
-                                    ErrorDetails = ex.ToString(),
-                                    FailureStage = "JSON_Ingestion",
-                                    RetryCount = 0,
-                                    MaxRetries = 5,
-                                    Status = "Pending",
-                                    FailedAt = DateTime.UtcNow
-                                };
-                                await downloadsRepository.AddFailedFileAsync(failedFile);
-                                _logger.LogInformation("{ServiceId} Added file {FileName} to FailedProcessingQueue for automatic retry",
-                                    SERVICE_ID, file.FileName);
-                            }
-                            catch (Exception queueEx)
-                            {
-                                _logger.LogWarning("{ServiceId} Failed to add file {FileName} to FailedProcessingQueue: {Error}",
-                                    SERVICE_ID, file.FileName, queueEx.Message);
-                            }
+                            await TryEnqueueFailedFileAsync(downloadsRepository, file, ex);
 
                             failedCount++;
                         }
@@ -373,6 +381,88 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing ICUMS downloaded files");
+            }
+        }
+
+        /// <summary>
+        /// C5: Update a file's processing status with bounded retry. If all retries exhaust,
+        /// log Critical so monitoring picks up the orphan-status file rather than silently
+        /// leaving it in whatever state it was in (which would cause it to be re-picked next cycle
+        /// and potentially loop forever as a poison message).
+        /// </summary>
+        private async Task TryUpdateFileStatusWithRetryAsync(
+            IIcumDownloadsRepository repo,
+            DownloadedFile file,
+            string status,
+            string errorMessage)
+        {
+            const int maxAttempts = 3;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    await repo.UpdateFileProcessingStatusAsync(file.Id, status, errorMessage);
+                    if (attempt > 1)
+                    {
+                        _logger.LogInformation(
+                            "{ServiceId} UpdateFileProcessingStatusAsync succeeded for {FileName} on attempt {Attempt}",
+                            SERVICE_ID, file.FileName, attempt);
+                    }
+                    return;
+                }
+                catch (Exception ex) when (attempt < maxAttempts)
+                {
+                    var backoffMs = 200 * attempt; // 200ms, 400ms
+                    _logger.LogWarning(
+                        "{ServiceId} UpdateFileProcessingStatusAsync attempt {Attempt}/{MaxAttempts} failed for {FileName}: {Error}. Retrying in {BackoffMs}ms",
+                        SERVICE_ID, attempt, maxAttempts, file.FileName, ex.Message, backoffMs);
+                    await Task.Delay(backoffMs);
+                }
+                catch (Exception finalEx)
+                {
+                    _logger.LogCritical(finalEx,
+                        $"{SERVICE_ID} UpdateFileProcessingStatusAsync FAILED after {maxAttempts} attempts for {file.FileName} (id={file.Id}). " +
+                        $"File may be stuck in its current status and re-picked next cycle. Manual intervention required.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// C5: Enqueue a failed file for automatic retry. Catches and logs its own exceptions
+        /// (best-effort) — the calling code has already logged the original processing error and
+        /// updated the file status, so failure here only loses the auto-retry capability for one
+        /// file, not the failure signal itself.
+        /// </summary>
+        private async Task TryEnqueueFailedFileAsync(
+            IIcumDownloadsRepository repo,
+            DownloadedFile file,
+            Exception originalEx)
+        {
+            try
+            {
+                var failedFile = new FailedProcessingQueue
+                {
+                    DownloadedFileId = file.Id,
+                    FileName = file.FileName,
+                    FilePath = file.FilePath,
+                    FailureReason = originalEx.Message,
+                    ErrorDetails = originalEx.ToString(),
+                    FailureStage = "JSON_Ingestion",
+                    RetryCount = 0,
+                    MaxRetries = 5,
+                    Status = "Pending",
+                    FailedAt = DateTime.UtcNow
+                };
+                await repo.AddFailedFileAsync(failedFile);
+                _logger.LogInformation(
+                    "{ServiceId} Added file {FileName} to FailedProcessingQueue for automatic retry",
+                    SERVICE_ID, file.FileName);
+            }
+            catch (Exception queueEx)
+            {
+                _logger.LogWarning(
+                    "{ServiceId} Failed to add file {FileName} to FailedProcessingQueue: {Error}",
+                    SERVICE_ID, file.FileName, queueEx.Message);
             }
         }
 

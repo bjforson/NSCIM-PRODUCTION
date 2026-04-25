@@ -1344,7 +1344,8 @@ static void ReplaceCredentialsWithEnvironmentVariables(IConfiguration configurat
                 configuration[$"ConnectionStrings:{key}"] = connString.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", dbPassword);
             }
         }
-        Log.Information("PostgreSQL database password loaded from environment variable (password length: {Length})", dbPassword.Length);
+        // H2: Don't log password length — narrows brute-force search space if logs leak.
+        Log.Information("PostgreSQL database password loaded from environment variable");
     }
     else
     {
@@ -1361,7 +1362,7 @@ static void ReplaceCredentialsWithEnvironmentVariables(IConfiguration configurat
             aseConnString = aseConnString.Replace("***USE_ENV_VAR_NICKSCAN_ASE_PASSWORD***", asePassword);
             configuration["ASE:ConnectionString"] = aseConnString;
         }
-        Log.Information("ASE database password loaded from environment variable (password length: {Length})", asePassword.Length);
+        Log.Information("ASE database password loaded from environment variable");
     }
     else
     {
