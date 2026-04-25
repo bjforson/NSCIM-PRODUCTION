@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using NickERP.Platform.Tenancy;
 using NickHR.API.Security;
 using NickHR.Infrastructure;
 using NickHR.Infrastructure.Data;
@@ -225,6 +226,12 @@ app.UseRouting();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+// NICKSCAN ERP — resolves the tenant from the JWT tenant_id claim and feeds
+// it into ITenantContext, which the TenantConnectionInterceptor then pushes
+// down to Postgres as `app.tenant_id` so the tenant_isolation_* RLS policies
+// can actually filter. Must run AFTER UseAuthentication so the JWT principal
+// is available, and BEFORE controllers that touch tenant-owned data.
+app.UseNickERPTenancy();
 app.MapControllers();
 
 app.Run();

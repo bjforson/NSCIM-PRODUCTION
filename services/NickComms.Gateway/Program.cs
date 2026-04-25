@@ -74,7 +74,11 @@ builder.Services.AddNickERPTenancy();
 builder.Services.AddDbContext<CommsDbContext>((sp, options) =>
 {
     options.UseNpgsql(builder.Configuration.GetConnectionString("CommsDb"));
-    options.AddInterceptors(sp.GetRequiredService<NickERP.Platform.Tenancy.TenantOwnedEntityInterceptor>());
+    // Entity stamping + connection-level SET app.tenant_id. The latter
+    // turns the dormant tenant_isolation_* RLS policies into active filters.
+    options.AddInterceptors(
+        sp.GetRequiredService<NickERP.Platform.Tenancy.TenantOwnedEntityInterceptor>(),
+        sp.GetRequiredService<NickERP.Platform.Tenancy.TenantConnectionInterceptor>());
 });
 
 // Memory cache (for API key caching)

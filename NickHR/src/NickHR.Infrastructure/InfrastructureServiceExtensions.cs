@@ -22,8 +22,12 @@ public static class InfrastructureServiceExtensions
             options.UseNpgsql(configuration.GetConnectionString("DefaultConnection"),
                 npgsql => npgsql.MigrationsAssembly(typeof(NickHRDbContext).Assembly.FullName))
                 .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning));
-            // No-op until entities implement ITenantOwned, but wires the plumbing now.
-            options.AddInterceptors(sp.GetRequiredService<TenantOwnedEntityInterceptor>());
+            // Entity stamping (no-op until entities implement ITenantOwned) +
+            // connection-level SET app.tenant_id which makes the existing
+            // tenant_isolation_* RLS policies actually enforce on every query.
+            options.AddInterceptors(
+                sp.GetRequiredService<TenantOwnedEntityInterceptor>(),
+                sp.GetRequiredService<TenantConnectionInterceptor>());
         });
 
         services.AddIdentity<ApplicationUser, ApplicationRole>(options =>
