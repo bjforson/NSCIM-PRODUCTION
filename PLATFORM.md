@@ -135,8 +135,10 @@ services.AddNickERPWorkflowClient();     // INickWorkflowClient → NickWorkflow
 services.AddNickERPTenancy();            // ITenantContext + interceptor
 services.AddNickERPIdentity(o => ...);   // OIDC bearer auth
 services.AddNickERPBackgroundJobs();     // hosted job runner (Phase 7)
-services.AddNickERPTelemetry();          // OpenTelemetry baseline (Phase 11)
 ```
+
+Logging + telemetry wireup is host-level (not a client) — see **Rule 11** below.
+
 
 A module **MUST NOT** instantiate gateway clients manually, **MUST NOT** use `HttpClient` directly to talk to platform services, and **MUST NOT** read gateway secrets from `appsettings.json` (use env vars or the per-tenant settings store).
 
@@ -219,6 +221,69 @@ Every module API and gateway service runs as a Windows service in production. Th
 - All code merges to `main` via PR or fast-forward merge.
 - `main` must always build and pass the smoke test suite.
 - The git hygiene incident with NickHR (full codebase living as untracked files in a worktree) is the new floor — never again.
+
+### 11. Be observable
+
+Every module MUST register the platform's logging and telemetry baselines at startup. This is what makes "open Seq once, see everything" actually work across the suite.
+
+```csharp
+// Program.cs — usually the first two lines after CreateBuilder
+builder.UseNickErpLogging(serviceName: "NSCIM.API");
+builder.UseNickErpTelemetry(serviceName: "NSCIM.API");
+```
+
+Both packages shipped in **ROADMAP Track A.1** (commits `68c1efa` and `167982c` on `track-a/observability`). Detail in:
+
+- `platform/NickERP.Platform.Logging/README.md` — Serilog conventions, sinks, enrichers
+- `platform/NickERP.Platform.Telemetry/README.md` — OpenTelemetry conventions, Seq query primer
+- `platform/demos/observability/README.md` — end-to-end demo
+
+What this gives you:
+
+- **Logs** → Serilog to Seq (`http://localhost:5341`) + per-service rolling file at `C:\Shared\Logs\<service>\` + console (dev). Every event is enriched with `ServiceName`, `MachineName`, `ProcessId`, `ThreadId`, `CorrelationId` (resolved from `Activity.Current.RootId` or generated).
+- **Traces** → OpenTelemetry to Seq's OTLP/HTTP receiver. Auto-instrumented for ASP.NET Core inbound, HttpClient outbound, plus any `ActivitySource` you opt in via `additionalActivitySources`. The platform `ActivitySource` is `NickERP` — use `NickErpActivity.Source.StartActivity(...)` for manual spans.
+- **Metrics** → ASP.NET Core request rate / duration / errors, HttpClient latencies, .NET runtime counters (GC, threads, exceptions, allocations). The platform `Meter` is `NickERP` — use `NickErpActivity.Meter.CreateCounter<long>(...)` for custom metrics.
+
+Naming conventions (enforced by review):
+
+- **Span names**: `<module>.<action>` — e.g. `inspection.case.review`, `comms.email.send`. Lowercase, dot-separated.
+- **Metric names**: `nickerp.<module>.<measure>` — e.g. `nickerp.inspection.cases_reviewed`, `nickerp.comms.emails_sent`.
+- **Log message templates**: use structured properties — `"Container {ContainerNumber} validated with {ViolationCount} issues"`, never string interpolation. The whole point of Seq is that you can filter by `ContainerNumber`.
+
+Configuration overrides (`appsettings.json`):
+
+```json
+"NickErp": {
+  "Logging": {
+    "SeqUrl": "http://localhost:5341",
+    "FileRoot": "C:\\Shared\\Logs",
+    "MinimumLevel": "Information",
+    "SeqApiKey": ""
+  },
+  "Telemetry": {
+    "OtlpEndpoint": "http://localhost:5341/ingest/otlp",
+    "OtlpHeaders": "",
+    "ConsoleExporter": false,
+    "Environment": "Production",
+    "ServiceVersion": "1.0.0"
+  }
+}
+```
+
+A module MUST NOT:
+
+- Configure Serilog directly with its own sinks. Use `UseNickErpLogging`. If you need an additional sink, layer it on top of the platform's setup; don't replace.
+- Bypass OTel for tracing. Use `NickErpActivity.Source` or pass your module's own `ActivitySource` to `UseNickErpTelemetry(..., additionalActivitySources: [...])`.
+- Hardcode log paths, Seq URLs, or OTLP endpoints. Use config keys.
+
+Querying in Seq (login `admin` at `http://localhost:5341`):
+
+- Filter logs by `ServiceName = 'NSCIM.API'`
+- Filter spans by `Resource['service']['name'] = 'NSCIM.API'` (resource attributes go under `Resource`, not `Properties`)
+- Pin one trace by `@TraceId = '...'` — Seq groups the auto-instrumented HTTP span, manual child spans, and structured log lines by the shared trace id
+- Span name is on the message template — `@Message = 'inspection.case.review'`
+
+If a future deployment adopts Tempo or Jaeger, point `OtlpEndpoint` at the new backend; service code doesn't change.
 
 ---
 
