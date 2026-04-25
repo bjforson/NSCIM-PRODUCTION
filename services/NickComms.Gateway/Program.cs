@@ -156,6 +156,7 @@ app.MapSmsEndpoints();
 app.MapEmailEndpoints();
 app.MapOtpEndpoints();
 app.MapHistoryEndpoints();
+app.MapModuleEndpoints();
 
 app.MapHealthChecks("/api/health");
 
