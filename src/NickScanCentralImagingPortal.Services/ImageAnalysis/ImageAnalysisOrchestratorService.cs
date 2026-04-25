@@ -3932,8 +3932,11 @@ RETURNING (xmax = 0)::int;";
                         var batch = fsCandidates.Skip(i).Take(batchSize).ToList();
                         var parameters = batch.Cast<object>().ToArray();
                         var placeholders = string.Join(",", batch.Select((_, idx) => $"{{{idx}}}"));
+                        // Hoist out of $"..." to silence EF1002 — placeholders is a static
+                        // template ({0},{1},...), not user input; parameters carries the values.
+                        var fsSql = "SELECT * FROM FS6000Scans WHERE ContainerNumber IN (" + placeholders + ")";
                         var fsScans = await db.FS6000Scans
-                            .FromSqlRaw($"SELECT * FROM FS6000Scans WHERE ContainerNumber IN ({placeholders})", parameters)
+                            .FromSqlRaw(fsSql, parameters)
                             .AsNoTracking()
                             .ToListAsync(ct);
                         allFsData.AddRange(fsScans.Select(s => (s.ContainerNumber ?? string.Empty, s.HasImage)));
@@ -3975,8 +3978,9 @@ RETURNING (xmax = 0)::int;";
                         var batch = aseCandidates.Skip(i).Take(batchSize).ToList();
                         var parameters = batch.Cast<object>().ToArray();
                         var placeholders = string.Join(",", batch.Select((_, idx) => $"{{{idx}}}"));
+                        var aseSql = "SELECT * FROM AseScans WHERE ContainerNumber IN (" + placeholders + ")";
                         var aseScans = await db.AseScans
-                            .FromSqlRaw($"SELECT * FROM AseScans WHERE ContainerNumber IN ({placeholders})", parameters)
+                            .FromSqlRaw(aseSql, parameters)
                             .AsNoTracking()
                             .ToListAsync(ct);
                         allAseData.AddRange(aseScans.Select(s => (s.ContainerNumber ?? string.Empty, !string.IsNullOrEmpty(s.ImageDisplayName))));
