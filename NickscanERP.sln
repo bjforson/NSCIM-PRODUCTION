@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickFinance.PettyCash", "fi
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickFinance.PettyCash.Tests", "finance\NickFinance.PettyCash.Tests\NickFinance.PettyCash.Tests.csproj", "{E994D4CB-F578-4D6A-AB46-6CE49A953834}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickERP.Platform.Logging", "platform\NickERP.Platform.Logging\NickERP.Platform.Logging.csproj", "{9736A829-A7D5-4619-8C96-1CA050E0F958}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -173,6 +175,18 @@ Global
 		{E994D4CB-F578-4D6A-AB46-6CE49A953834}.Release|x64.Build.0 = Release|Any CPU
 		{E994D4CB-F578-4D6A-AB46-6CE49A953834}.Release|x86.ActiveCfg = Release|Any CPU
 		{E994D4CB-F578-4D6A-AB46-6CE49A953834}.Release|x86.Build.0 = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|x64.Build.0 = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Debug|x86.Build.0 = Debug|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|x64.ActiveCfg = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|x64.Build.0 = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|x86.ActiveCfg = Release|Any CPU
+		{9736A829-A7D5-4619-8C96-1CA050E0F958}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -189,5 +203,6 @@ Global
 		{00A0A42B-B432-43F8-880B-94659FEC9250} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
 		{466243B7-33C7-404E-8ABB-E68314DC47F8} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
 		{E994D4CB-F578-4D6A-AB46-6CE49A953834} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
+		{9736A829-A7D5-4619-8C96-1CA050E0F958} = {4AE8D3DC-FA65-44C7-B79F-983721AD7CFA}
 	EndGlobalSection
 EndGlobal
