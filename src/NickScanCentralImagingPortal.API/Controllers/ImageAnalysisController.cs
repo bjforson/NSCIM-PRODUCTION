@@ -32,6 +32,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IConfiguration _configuration;
         private readonly IMemoryCache _memoryCache;
         private readonly IImageAnalysisFacade _imageAnalysis;
+        private readonly IServiceScopeFactory _scopeFactory;
         private static readonly Regex _safeKeyRegex = new Regex("[^A-Za-z0-9_-]+", RegexOptions.Compiled);
         private static readonly TimeSpan MyAssignmentsCacheDuration = TimeSpan.FromSeconds(15);
 
@@ -41,7 +42,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             ILogger<ImageAnalysisController> logger,
             IConfiguration configuration,
             IMemoryCache memoryCache,
-            IImageAnalysisFacade imageAnalysis)
+            IImageAnalysisFacade imageAnalysis,
+            IServiceScopeFactory scopeFactory)
         {
             _db = db;
             _icumDb = icumDb;
@@ -49,6 +51,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _configuration = configuration;
             _memoryCache = memoryCache;
             _imageAnalysis = imageAnalysis;
+            _scopeFactory = scopeFactory;
         }
 
         // DTOs
@@ -618,13 +621,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         stuckGroups.Count,
                         string.Join(", ", stuckGroups.Select(g => g.GroupIdentifier)));
 
-                    // Auto-complete in background to avoid slowing down the response
+                    // Auto-complete in background to avoid slowing down the response.
+                    // Use the singleton IServiceScopeFactory (NOT HttpContext.RequestServices) — once
+                    // we return from this action, the request scope is disposed, so a scope created
+                    // from HttpContext.RequestServices after the response would throw
+                    // ObjectDisposedException. The scope factory survives request lifetime.
                     var stuckGroupIdentifiers = stuckGroups.Select(g => g.GroupIdentifier).ToList();
+                    var scopeFactory = _scopeFactory;
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            using var scope = HttpContext.RequestServices.CreateScope();
+                            using var scope = scopeFactory.CreateScope();
                             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
                             foreach (var groupIdentifier in stuckGroupIdentifiers)
@@ -661,7 +669,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         {
                             _logger.LogError(ex, "[GetMyAssignments] SELF-HEALING: Failed to auto-complete stuck audit groups");
                         }
-                    });
+                    }).ContinueWith(t =>
+                    {
+                        // Defense in depth: the inner try/catch should always handle, but if a
+                        // synchronous throw happens before the try (e.g., scope creation), surface it
+                        // instead of letting it become an unobserved task exception.
+                        if (t.IsFaulted && t.Exception is { } aex)
+                        {
+                            _logger.LogError(aex, "[GetMyAssignments] SELF-HEALING: Background task faulted (unobserved)");
+                        }
+                    }, TaskScheduler.Default);
 
                     // Remove stuck groups from the response (they're being completed)
                     var stuckSet = new HashSet<string>(stuckGroupIdentifiers);

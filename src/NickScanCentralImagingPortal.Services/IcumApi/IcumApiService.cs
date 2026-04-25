@@ -156,7 +156,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 else
                 {
-                    return HandleApiError<BoeSelectivityResponse>(response);
+                    return await HandleApiErrorAsync<BoeSelectivityResponse>(response);
                 }
             });
         }
@@ -239,7 +239,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 else
                 {
-                    return HandleApiError<BoeSelectivityResponse>(response);
+                    return await HandleApiErrorAsync<BoeSelectivityResponse>(response);
                 }
             });
         }
@@ -317,7 +317,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 else
                 {
-                    return HandleApiError<BoeScanDocument>(response);
+                    return await HandleApiErrorAsync<BoeScanDocument>(response);
                 }
             });
         }
@@ -395,7 +395,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 else
                 {
-                    return HandleApiError<BoeSelectivityResponse>(response);
+                    return await HandleApiErrorAsync<BoeSelectivityResponse>(response);
                 }
             });
         }
@@ -476,7 +476,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 else
                 {
-                    return HandleApiError<object>(response);
+                    return await HandleApiErrorAsync<object>(response);
                 }
             });
         }
@@ -693,9 +693,10 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             return response;
         }
 
-        private IcumApiResponse<T> HandleApiError<T>(HttpResponseMessage response) where T : class
+        private async Task<IcumApiResponse<T>> HandleApiErrorAsync<T>(HttpResponseMessage response) where T : class
         {
-            var content = response.Content.ReadAsStringAsync().Result;
+            // Was: .Result blocking call — risks deadlock under sync contexts and thread-pool starvation.
+            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
             _logger.LogError("ICUMS API error: {StatusCode} - {Content}", response.StatusCode, content);
 

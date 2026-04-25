@@ -69,9 +69,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
                     var batch = containerNumbers.Skip(i).Take(batchSize).ToList();
                     // ✅ FIX: Use FromSqlRaw to avoid CTE generation from Contains()
                     // ✅ FIX: Load full entities first, then project in memory to avoid CTE from Select()
-                    var placeholders = string.Join(",", batch.Select(s => $"'{s.Replace("'", "''")}'")); // Escape single quotes
+                    // Parameterized to prevent SQL injection (was: string-interpolated IN clause).
+                    var paramNames = batch.Select((_, idx) => $"{{{idx}}}").ToArray();
+                    var sql = $"SELECT * FROM BOEDocuments WHERE ContainerNumber IN ({string.Join(",", paramNames)})";
                     var batchEntities = await _icumContext.BOEDocuments
-                        .FromSql($"SELECT * FROM BOEDocuments WHERE ContainerNumber IN ({placeholders})")
+                        .FromSqlRaw(sql, batch.Cast<object>().ToArray())
                         .AsNoTracking()
                         .ToListAsync();
 

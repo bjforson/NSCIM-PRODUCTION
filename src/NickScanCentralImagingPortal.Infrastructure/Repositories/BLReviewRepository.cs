@@ -55,10 +55,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
                 {
                     var batch = completeContainerNumbers.Skip(i).Take(batchSize).ToList();
 
-                    var placeholders = string.Join(",", batch.Select((_, idx) => $"'{batch[idx].Replace("'", "''")}'")); 
-                    var sql = $"SELECT * FROM boedocuments WHERE containernumber IN ({placeholders}) AND blnumber IS NOT NULL AND blnumber <> ''";
+                    // Parameterized to prevent SQL injection (was: string-interpolated FromSqlRaw)
+                    var paramNames = batch.Select((_, idx) => $"{{{idx}}}").ToArray();
+                    var sql = $"SELECT * FROM boedocuments WHERE containernumber IN ({string.Join(",", paramNames)}) AND blnumber IS NOT NULL AND blnumber <> ''";
                     var batchDocuments = await _icumDownloadsContext.BOEDocuments
-                        .FromSqlRaw(sql)
+                        .FromSqlRaw(sql, batch.Cast<object>().ToArray())
                         .AsNoTracking()
                         .ToListAsync();
 

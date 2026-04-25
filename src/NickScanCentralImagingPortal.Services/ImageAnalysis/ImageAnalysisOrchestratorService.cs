@@ -240,7 +240,17 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         }
                         else
                         {
-                            _ = Task.Run(() => RunIntakeWithTrackingAsync(stoppingToken), stoppingToken);
+                            // Fire-and-forget but log unobserved failures.
+                            // RunIntakeWithTrackingAsync has its own try/catch, so this continuation is
+                            // a defense-in-depth net for future refactors that might let exceptions escape.
+                            _ = Task.Run(() => RunIntakeWithTrackingAsync(stoppingToken), stoppingToken)
+                                .ContinueWith(t =>
+                                {
+                                    if (t.IsFaulted && t.Exception is { } aex)
+                                    {
+                                        _logger.LogError(aex, "[ORCHESTRATOR] Background Intake task faulted (unobserved)");
+                                    }
+                                }, TaskScheduler.Default);
                         }
                     }
                     else

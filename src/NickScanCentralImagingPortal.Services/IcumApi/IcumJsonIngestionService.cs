@@ -2284,7 +2284,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
             }
         }
 
-        private static (string Container, int SourceFields, int MatchedFields) CountFieldAccuracy(BOEDocument doc)
+        private (string Container, int SourceFields, int MatchedFields) CountFieldAccuracy(BOEDocument doc)
         {
             var container = doc.ContainerNumber ?? "UNKNOWN";
             if (string.IsNullOrEmpty(doc.RawJsonData))
@@ -2356,7 +2356,16 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     Check(md, "DeliveryPlace", doc.DeliveryPlace);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Was: empty catch — failures here silently inflated accuracy ratios because partial
+                // counts were still returned. Now: log at Debug (this method runs per-doc, so we
+                // don't want noise) and signal "unreliable" by returning zero counts.
+                _logger.LogDebug(
+                    "{ServiceId} CountFieldAccuracy failed parsing RawJsonData for container {Container}; reporting 0/0. Error: {Error}",
+                    SERVICE_ID, container, ex.Message);
+                return (container, 0, 0);
+            }
             return (container, source, matched);
         }
 

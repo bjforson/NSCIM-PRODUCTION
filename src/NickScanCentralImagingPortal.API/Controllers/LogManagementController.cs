@@ -20,8 +20,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             _context = context;
             _logger = logger;
-            _connectionString = configuration.GetConnectionString("NS_CIS_Connection") ??
-                               "Data Source=localhost;Initial Catalog=NS_CIS;Integrated Security=true;TrustServerCertificate=true;";
+            // No hardcoded fallback — fail fast at construction time if the connection string is missing,
+            // so the app can't accidentally point at a developer-local DB in production.
+            _connectionString = configuration.GetConnectionString("NS_CIS_Connection")
+                ?? throw new InvalidOperationException(
+                    "Connection string 'NS_CIS_Connection' is not configured. " +
+                    "Set ConnectionStrings:NS_CIS_Connection in appsettings.json or environment.");
         }
 
         [HttpGet("logs")]

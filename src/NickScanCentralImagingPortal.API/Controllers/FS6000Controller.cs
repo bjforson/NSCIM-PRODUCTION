@@ -396,8 +396,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
             catch (Exception ex)
             {
+                // Don't leak stack trace / type names to the client. Full detail goes to the log.
                 _logger.LogError(ex, "Error running FS6000 diagnostics");
-                return StatusCode(500, new { error = ex.Message, details = ex.ToString() });
+                return StatusCode(500, new { error = "An internal error occurred while running FS6000 diagnostics. See server logs for details." });
             }
         }
     }
