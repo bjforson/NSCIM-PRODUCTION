@@ -17,5 +17,18 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         Task<bool> UsernameExistsAsync(string username);
         Task<bool> EmailExistsAsync(string email);
         Task<bool> UpdatePasswordAsync(int userId, string newPassword);
+
+        /// <summary>
+        /// Rotate <c>User.CurrentSessionId</c> and return the new value. Used by
+        /// the login flow to invalidate any other device's still-valid JWT for
+        /// the same user (single-session enforcement).
+        /// </summary>
+        Task<Guid?> RotateSessionIdAsync(int userId);
+
+        /// <summary>
+        /// Read the current session id without modifying it. Used by the JWT
+        /// validation hook (cached) to compare against the token's sid claim.
+        /// </summary>
+        Task<Guid?> GetCurrentSessionIdAsync(int userId);
     }
 }

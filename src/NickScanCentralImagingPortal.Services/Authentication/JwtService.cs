@@ -73,6 +73,12 @@ namespace NickScanCentralImagingPortal.Services.Authentication
                     new Claim(ClaimTypes.Name, user.Username),
                     new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
                     new Claim("FullName", $"{user.FirstName} {user.LastName}".Trim()),
+                    // Single-session enforcement (2026-04-25). Stamped from
+                    // user.CurrentSessionId at mint time; JwtBearerEvents.OnTokenValidated
+                    // rejects tokens whose sid no longer matches the column. Login on a
+                    // second device rotates CurrentSessionId, immediately invalidating
+                    // every prior-issued token for this user.
+                    new Claim("sid", user.CurrentSessionId.ToString()),
                     // NICKSCAN ERP Phase 1 — multi-tenancy claim. Defaults to tenant 1
                     // (Nick TC-Scan Operations) until per-tenant user provisioning is
                     // wired up in Phase 10. SuperAdmin gets the platform_admin claim

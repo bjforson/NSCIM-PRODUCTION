@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
@@ -22,6 +23,11 @@ public class AuthService : IAuthService
     private readonly NickHRDbContext _dbContext;
     private readonly ICentralAuthClient _centralAuth;
     private readonly ILogger<AuthService> _logger;
+    // Optional — only present if AddMemoryCache() ran. Used to invalidate the
+    // single-session sid cache immediately after a login/register rotates the
+    // canonical sid; without this the validator could briefly read a stale value
+    // and reject the just-issued token.
+    private readonly IMemoryCache? _sessionCache;
 
     public AuthService(
         UserManager<ApplicationUser> userManager,
@@ -29,7 +35,8 @@ public class AuthService : IAuthService
         IConfiguration configuration,
         NickHRDbContext dbContext,
         ICentralAuthClient centralAuth,
-        ILogger<AuthService> logger)
+        ILogger<AuthService> logger,
+        IMemoryCache? sessionCache = null)
     {
         _userManager = userManager;
         _signInManager = signInManager;
@@ -37,6 +44,7 @@ public class AuthService : IAuthService
         _dbContext = dbContext;
         _centralAuth = centralAuth;
         _logger = logger;
+        _sessionCache = sessionCache;
     }
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
@@ -88,10 +96,18 @@ public class AuthService : IAuthService
         }
 
         user.LastLoginAt = DateTime.UtcNow;
+        // Single-session enforcement (2026-04-25): rotate CurrentSessionId BEFORE
+        // minting the new JWT, so the new token's sid claim matches and any prior
+        // device's token (with the OLD sid) becomes invalid the next time it's
+        // validated.
+        user.CurrentSessionId = Guid.NewGuid();
         var refreshToken = GenerateRefreshToken();
         user.RefreshToken = refreshToken;
         user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(GetRefreshTokenExpiryDays());
         await _userManager.UpdateAsync(user);
+        // Invalidate the validator's 30s cached sid so the next request reads
+        // the rotated value from the DB instead of a stale prior sid.
+        _sessionCache?.Remove($"sid:{user.Id}");
 
         var roles = await _userManager.GetRolesAsync(user);
         var role = roles.FirstOrDefault() ?? string.Empty;
@@ -150,7 +166,13 @@ public class AuthService : IAuthService
         var refreshToken = GenerateRefreshToken();
         user.RefreshToken = refreshToken;
         user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(GetRefreshTokenExpiryDays());
+        // Single-session: RegisterAsync also returns a usable token (auto-login
+        // after registration), so rotate the sid here too. ApplicationUser ctor
+        // already gave us a fresh Guid, but rotating again is harmless and keeps
+        // the contract identical to LoginAsync.
+        user.CurrentSessionId = Guid.NewGuid();
         await _userManager.UpdateAsync(user);
+        _sessionCache?.Remove($"sid:{user.Id}");
 
         var (token, expiresAt) = GenerateJwtToken(user, request.Role);
 
@@ -242,7 +264,13 @@ public class AuthService : IAuthService
             new(ClaimTypes.NameIdentifier, user.Id),
             new(ClaimTypes.Email, user.Email ?? string.Empty),
             new(ClaimTypes.Role, role),
-            new("fullName", user.FullName)
+            new("fullName", user.FullName),
+            // Single-session enforcement (2026-04-25): sid is rotated by
+            // LoginAsync/RegisterAsync; SingleSessionValidator rejects tokens
+            // whose sid no longer matches ApplicationUser.CurrentSessionId.
+            // RefreshTokenAsync intentionally re-mints with the SAME sid so a
+            // refresh doesn't kick other devices — only a fresh Login does.
+            new("sid", user.CurrentSessionId.ToString())
         };
 
         if (user.EmployeeId.HasValue)

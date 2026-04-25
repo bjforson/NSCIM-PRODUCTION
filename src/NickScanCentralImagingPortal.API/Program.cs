@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.RateLimiting;
 using HealthChecks.UI.Client;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -228,11 +229,19 @@ builder.Services.AddAuthentication(options =>
 
     options.Events = new Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationEvents
     {
-        OnValidatePrincipal = context =>
+        OnValidatePrincipal = async context =>
         {
-            var username = context.Principal?.Identity?.Name;
-            Log.Debug("Cookie validated for user: {Username}", username);
-            return Task.CompletedTask;
+            // Single-session enforcement: reject the cookie if its sid claim no
+            // longer matches user.CurrentSessionId. Same protocol as the JWT
+            // OnTokenValidated path below — see SingleSessionValidator.
+            var ok = await NickScanCentralImagingPortal.API.Security.SingleSessionValidator
+                .ValidateAsync(context.HttpContext, context.Principal);
+            if (!ok)
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(
+                    Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme);
+            }
         },
         OnRedirectToLogin = context =>
         {
@@ -283,11 +292,18 @@ builder.Services.AddAuthentication(options =>
             Log.Warning("JWT Authentication failed: {Error}", context.Exception.Message);
             return Task.CompletedTask;
         },
-        OnTokenValidated = context =>
+        OnTokenValidated = async context =>
         {
-            var username = context.Principal?.Identity?.Name;
-            Log.Debug("JWT token validated for user: {Username}", username);
-            return Task.CompletedTask;
+            // Single-session enforcement (2026-04-25). The token carries a sid
+            // claim populated from user.CurrentSessionId at mint time. If the
+            // user logs in elsewhere we rotate that column → the previous
+            // token's sid no longer matches and we reject it here.
+            var ok = await NickScanCentralImagingPortal.API.Security.SingleSessionValidator
+                .ValidateAsync(context.HttpContext, context.Principal);
+            if (!ok)
+            {
+                context.Fail("Session invalidated by login on another device.");
+            }
         },
         OnChallenge = context =>
         {

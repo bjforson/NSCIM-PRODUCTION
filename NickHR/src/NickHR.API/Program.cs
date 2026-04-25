@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using NickHR.API.Security;
 using NickHR.Infrastructure;
 using NickHR.Infrastructure.Data;
 using NickHR.Services;
@@ -68,6 +69,14 @@ if (jwtKey.Length < 32)
         $"JWT signing key is {jwtKey.Length} chars; HS256 requires >= 32. Regenerate NICKHR_JWT_KEY.");
 }
 
+// Write the resolved key back into configuration so AuthService.GenerateJwtToken
+// (which reads _configuration["Jwt:Key"]) signs with the SAME secret the
+// JwtBearer middleware validates against. Without this overwrite, AuthService
+// keeps reading the appsettings.json placeholder string ("***USE_ENV_VAR..."),
+// signs every token with that literal, and the validator below — using the
+// real env-var key — rejects every signature with IDX10517.
+builder.Configuration["Jwt:Key"] = jwtKey;
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -86,7 +95,34 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
         ClockSkew = TimeSpan.Zero
     };
+
+    // ✅ SECURITY: Single-session enforcement (2026-04-25). Reject tokens
+    // whose sid claim no longer matches ApplicationUser.CurrentSessionId.
+    // The login flow rotates that column on every successful Login/Register,
+    // so a fresh login on Device B invalidates Device A's previously-issued
+    // token on its next request. See NickHR.API/Security/SingleSessionValidator.
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async ctx =>
+        {
+            var ok = await SingleSessionValidator.ValidateAsync(ctx.HttpContext, ctx.Principal);
+            if (!ok)
+            {
+                ctx.Fail("Session invalidated by a newer login.");
+            }
+        },
+        // Keep this — it surfaces signature mismatches (IDX10517), expired tokens
+        // and other JWT failures into the Serilog stream so they're not silent.
+        OnAuthenticationFailed = ctx =>
+        {
+            Serilog.Log.Warning(ctx.Exception, "JWT auth failed");
+            return Task.CompletedTask;
+        }
+    };
 });
+
+// IMemoryCache backs the single-session validator's 30s sid lookup.
+builder.Services.AddMemoryCache();
 
 // ✅ SECURITY: Deny-by-default. Every endpoint requires an authenticated user unless it
 // explicitly opts in with [AllowAnonymous] (login, register, health). Closes the class
