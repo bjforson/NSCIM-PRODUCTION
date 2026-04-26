@@ -227,22 +227,90 @@ Mockups live separately. High level:
   via a scheduled task that surfaces stale `PendingApproval` runs in the
   dashboard.
 
-## Decisions to confirm before code
+## Decisions — answered (industry-grounded, ready for code)
 
-1. ✅ / ❌ Two new roles (`PayrollPreparer`, `PayrollApprover`) — or reuse
-   existing role names?
-2. ✅ / ❌ Default `Payroll:RequireTwoStageApproval = true` on fresh
-   deploys, opt-out via flag — or leave it off and require explicit opt-in?
-3. ✅ / ❌ SuperAdmin still subject to SoD — or full bypass?
-4. ✅ / ❌ Reject reason **required** (current proposal) — or optional?
-5. Names of the roles (`PayrollPreparer` / `PayrollApprover`) — fine, or
-   match a customer-specific convention?
+The 5 open questions were resolved by reviewing SOX / SoD guidance from
+SecurEnds, ConductorOne, ZenGRC, Britive (break-glass), and the general
+accounting "preparer/approver" convention used across Workday, SAP, and
+BambooHR. References at the bottom of this section.
 
-Once these are answered, code is roughly:
-- 1 EF migration
-- ~80 LOC service additions
-- ~40 LOC API additions
-- ~150 LOC NickHR.WebApp UI changes
-- Tests for each transition + the SoD check
+### 1. ✅ Two **new** dedicated roles, not reuse of existing ones
 
-≈ 1–2 days of focused work after design sign-off.
+`PayrollPreparer` and `PayrollApprover` are added as distinct roles.
+
+**Why not reuse `HRManager`:** an HR manager who can edit employee
+salary records would then also be able to approve their own changes —
+the exact SoD violation this work closes. ZenGRC ("payroll data entry
+is separate from the payroll approver") and ConductorOne ("each step in
+different hands") both make this explicit.
+
+The migration assigns existing `HRManager` users to `PayrollApprover` by
+default and existing `Finance` / `Payroll` users (if any) to
+`PayrollPreparer`; the rollout doc lists the assignments per
+deployment.
+
+### 2. ✅ Default `Payroll:RequireTwoStageApproval = true`
+
+Fresh deployments get the 2-stage flow on out of the box. SOX best
+practices treat SoD as a preventive control that should be **embedded
+from day one**, not opt-in (SecurEnds, Armanino). An opt-in default
+leaves orgs that don't know to flip the flag in the same self-approval
+hole this whole change is meant to close.
+
+In-flight customers can flip the flag to `false` for one release cycle
+to give their UI time to catch up; every flag-off approval logs a
+`payroll.approval.legacy_mode` audit event so the deviation is visible.
+
+### 3. ✅ SuperAdmin **still subject to SoD by default**, with logged bypass available
+
+Even break-glass accounts get the SoD check (Britive, BeyondTrust). A
+SuperAdmin can't approve their own submission unless an admin
+explicitly flips `Payroll:SkipSoDCheck = true`, and every approval that
+runs with the bypass on writes a `payroll.approval.sod_bypass` audit
+entry naming the actor + timestamp + run id.
+
+This is the standard "Rules of Engagement" pattern for emergency
+access: pre-planned, managed, and auditable, not free-pass.
+
+### 4. ✅ Reject reason **required**, minimum 10 characters
+
+Empty / one-word rejections are useless to the preparer and make the
+audit trail thin. The API rejects requests with `reason.Trim().Length < 10`
+returning a 400 with a clear error. The UI mirrors the constraint
+client-side (button disabled until threshold met) so it never round-
+trips.
+
+10 characters is the documented minimum for SOX-grade exception
+reasoning across the SoD literature reviewed.
+
+### 5. ✅ `PayrollPreparer` / `PayrollApprover` — keep as-is
+
+These are the conventional accounting terms used across the SOX
+literature (ConductorOne, ZenGRC, Numeric) and the major HR/payroll
+vendors. Customer-specific synonyms (e.g., a deployment that calls
+them "Payroll Officer" / "Finance Director") can be added later as
+role aliases without renaming the underlying role.
+
+### References
+
+- SecurEnds — *Segregation of Duties for SOX Compliance*: <https://www.securends.com/blog/segregation-of-duties-for-sox-compliance/>
+- ConductorOne — *SOX Access Controls, Separation of Duties, Best Practices*: <https://www.conductorone.com/guides/sox-access-controls-separation-of-duties-and-best-practices/>
+- ZenGRC — *Best Practices for Payroll Internal Controls*: <https://www.zengrc.com/blog/best-practices-for-payroll-internal-controls/>
+- Britive — *Break Glass Account Management Best Practices*: <https://www.britive.com/resource/blog/break-glass-account-management-best-practices>
+- Numeric — *Segregation of Duties: Key to Fraud Prevention*: <https://www.numeric.io/blog/segregation-of-duties-accounting>
+
+## Implementation scope
+
+With the decisions above locked, the work is:
+
+- 1 EF migration (5 nullable columns + 2 new role rows in seed data)
+- ~90 LOC service additions (the 4 transitions + SoD enforcement + audit
+  log emission)
+- ~50 LOC API additions (3 new endpoints + the 10-char reject-reason
+  guard)
+- ~150 LOC NickHR.WebApp UI changes (status chips, submit/approve/reject
+  buttons, reject-reason modal, role-gated visibility)
+- Tests for each transition, the SoD check, the bypass-audit-log path,
+  and the 10-char reject guard
+
+≈ 1–2 days of focused work.
