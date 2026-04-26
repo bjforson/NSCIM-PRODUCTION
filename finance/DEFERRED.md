@@ -1,11 +1,12 @@
 # NickFinance — pinned items awaiting external decisions
 
-> Status (2026-04-26): the NickFinance suite is feature-complete. Four
+> Status (2026-04-26): the NickFinance suite is feature-complete. Six
 > production-cutover items are pinned because they need a decision or a
 > credential the engineering team can't provide on its own. Everything
 > below is wired with a sandbox / no-op default that keeps the system
 > functioning end-to-end; the swap-in for each is one DI registration
-> in `finance/NickFinance.WebApp/Program.cs`.
+> in `finance/NickFinance.WebApp/Program.cs` (or, for the WhatsApp /
+> mobile items, a separate workstream).
 
 ---
 
@@ -172,6 +173,76 @@ The web UI raises this list automatically:
 
 ---
 
+## 5. WhatsApp approval flow
+
+**Pin:** Meta WhatsApp Business Cloud API requires a verified Meta
+business account, a Cloud API access token, a phone-number id, and a
+publicly-reachable webhook (HTTPS) for delivery callbacks. None of
+these exist for Nick TC-Scan yet.
+
+Until they do, AP payment runs and large petty-cash vouchers route
+approvals through the in-UI approvals queue (`/petty-cash` + the
+upcoming `/approvals` page); CFO approves on-screen rather than via
+WhatsApp.
+
+**To unpin:**
+
+1. Provision the Meta Business assets and capture
+   `WHATSAPP_CLOUD_API_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`.
+2. Implement `IWhatsAppApprovalChannel` (sketch — not in tree yet) on
+   top of NickComms.Gateway's `/api/whatsapp/template-message`
+   endpoint (which itself needs to ship at NickComms first).
+3. Wire it into the approval engine via a new `IApprovalNotifier` hook:
+   ```csharp
+   builder.Services.AddSingleton<IApprovalNotifier, WhatsAppApprovalNotifier>();
+   ```
+4. Webhook handler maps the user's reply ("APPROVE INV-2026-04-00012")
+   back to `IPettyCashService.ApproveVoucherAsync` with a token-derived
+   actor user id.
+
+**Acceptance:** CFO receives a WhatsApp template message for any
+voucher >GHS 100k or any AP payment run, taps Approve in the chat,
+the voucher transitions to Approved, and the WhatsApp delivery
+metadata lands on the `voucher_approvals.comment` for audit.
+
+---
+
+## 6. Mobile / PWA offline mode (border sites)
+
+**Pin:** Aflao + Paga + Elubo lose Starlink frequently. The Blazor
+Server UI requires a live SignalR connection, so it goes down with the
+network. A true offline-first PWA needs Blazor WebAssembly with
+IndexedDB-backed queueing — that's a non-trivial port (server-side
+DI / DbContext don't transfer to WASM directly).
+
+**Workaround in the meantime:** custodians at border sites use the
+WebApp during the daily Starlink window (typically 2-3 hours);
+voucher submissions outside that window are recorded on paper and
+entered the next online morning.
+
+**To unpin (when offline becomes a hard requirement):**
+
+1. Stand up a `NickFinance.WebApp.Wasm` companion project with
+   per-page Blazor Render Modes set to `InteractiveAuto` (server +
+   WASM hybrid). The shell stays Blazor Server; only the
+   submit/approve pages flip to Auto so they keep working when the
+   circuit drops.
+2. Build a service worker (`wwwroot/service-worker.js`) caching the
+   submit page assets + a JS-side queue in IndexedDB.
+3. Implement `IPettyCashOfflineQueue` that POSTs to a
+   `NickFinance.WebApp.Api` endpoint when online, queues otherwise.
+4. Voucher carries a `queued_offline=true` flag on submit when from
+   the queue, so audit can see which vouchers came in via the
+   offline path.
+
+**Acceptance:** custodian submits a voucher mid-network-blackout,
+the page UI confirms "queued, will submit when online", Starlink
+returns 40 minutes later, the queued voucher posts automatically,
+and a Submitted status lands on the server-side row with
+`queued_offline=true`.
+
+---
+
 ## Tracker
 
 | # | Item | Owner | Decision needed by | Status |
@@ -180,6 +251,8 @@ The web UI raises this list automatically:
 | 2 | NickComms /api/disburse/momo build | NickComms team | Before first MoMo-rail voucher | Pinned |
 | 3 | Azure Document Intelligence subscription | CTO | Before fraud signal F3 (duplicate-receipt) goes live for production audit | Pinned (low urgency) |
 | 4 | Live `nickhr` rollout window | DBA + ops | When 1 + 2 are in place | Pinned |
+| 5 | WhatsApp approval flow (Meta Cloud API) | CFO + CTO | Quality-of-life — defer to Phase 2 | Pinned |
+| 6 | Mobile / PWA offline (border sites) | CTO | When border-site network drops cause real loss | Pinned (low urgency) |
 
 Update the table when each pin lifts. Delete this file when zero rows
 remain.

@@ -3,6 +3,7 @@ using NickFinance.PettyCash.Approvals;
 using NickFinance.PettyCash.Budgets;
 using NickFinance.PettyCash.CashCounts;
 using NickFinance.PettyCash.Receipts;
+using NickFinance.PettyCash.Recurring;
 
 namespace NickFinance.PettyCash;
 
@@ -27,6 +28,7 @@ public class PettyCashDbContext : DbContext
     public DbSet<VoucherReceipt> VoucherReceipts => Set<VoucherReceipt>();
     public DbSet<CashCount> CashCounts => Set<CashCount>();
     public DbSet<Budget> Budgets => Set<Budget>();
+    public DbSet<RecurringVoucherTemplate> RecurringVoucherTemplates => Set<RecurringVoucherTemplate>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -272,6 +274,34 @@ public class PettyCashDbContext : DbContext
 
             e.HasIndex(x => new { x.TenantId, x.Scope, x.ScopeKey, x.PeriodStart, x.PeriodEnd })
              .HasDatabaseName("ix_budgets_tenant_scope_period");
+        });
+
+        // -------------------------------------------------------------------
+        // recurring_voucher_templates (v1.2)
+        // -------------------------------------------------------------------
+        b.Entity<RecurringVoucherTemplate>(e =>
+        {
+            e.ToTable("recurring_voucher_templates");
+            e.HasKey(x => x.RecurringVoucherTemplateId);
+            e.Property(x => x.RecurringVoucherTemplateId).HasColumnName("recurring_voucher_template_id");
+            e.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
+            e.Property(x => x.FloatId).HasColumnName("float_id").IsRequired();
+            e.Property(x => x.RequesterUserId).HasColumnName("requester_user_id").IsRequired();
+            e.Property(x => x.Category).HasColumnName("category").HasConversion<short>().IsRequired();
+            e.Property(x => x.Purpose).HasColumnName("purpose").HasMaxLength(500).IsRequired();
+            e.Property(x => x.AmountMinor).HasColumnName("amount_minor").IsRequired();
+            e.Property(x => x.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
+            e.Property(x => x.Frequency).HasColumnName("frequency").HasConversion<short>().IsRequired();
+            e.Property(x => x.StartDate).HasColumnName("start_date").IsRequired();
+            e.Property(x => x.EndDate).HasColumnName("end_date");
+            e.Property(x => x.LastFiredOn).HasColumnName("last_fired_on");
+            e.Property(x => x.IsActive).HasColumnName("is_active").IsRequired();
+            e.Property(x => x.PayeeName).HasColumnName("payee_name").HasMaxLength(200);
+            e.Property(x => x.ProjectCode).HasColumnName("project_code").HasMaxLength(64);
+            e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+            e.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.HasIndex(x => new { x.TenantId, x.IsActive, x.Frequency }).HasDatabaseName("ix_recurring_tenant_active_freq");
         });
     }
 }

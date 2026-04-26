@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Design;
 using NickFinance.AP;
 using NickFinance.AR;
 using NickFinance.Banking;
+using NickFinance.Budgeting;
 using NickFinance.FixedAssets;
 using NickFinance.Coa;
 using NickFinance.Ledger;
@@ -97,5 +98,17 @@ public sealed class FixedAssetsDesignTimeFactory : IDesignTimeDbContextFactory<F
             ?? "Host=localhost;Port=5432;Database=nickerp_design_only;Username=postgres;Password=design";
         var opts = new DbContextOptionsBuilder<FixedAssetsDbContext>().UseNpgsql(conn).Options;
         return new FixedAssetsDbContext(opts);
+    }
+}
+
+/// <inheritdoc cref="LedgerDesignTimeFactory"/>
+public sealed class BudgetingDesignTimeFactory : IDesignTimeDbContextFactory<BudgetingDbContext>
+{
+    public BudgetingDbContext CreateDbContext(string[] args)
+    {
+        var conn = Environment.GetEnvironmentVariable("NICKERP_FINANCE_DB_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=nickerp_design_only;Username=postgres;Password=design";
+        var opts = new DbContextOptionsBuilder<BudgetingDbContext>().UseNpgsql(conn).Options;
+        return new BudgetingDbContext(opts);
     }
 }
