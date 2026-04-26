@@ -1,0 +1,50 @@
+@page "/ap"
+@using Microsoft.EntityFrameworkCore
+@inject ApDbContext Db
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Payables</PageTitle>
+
+<h1>Accounts payable</h1>
+<p class="lede">All AP bills for tenant @User.TenantId. Capture + approve + pay flows live in the <code>IApService</code> API; UI for create-and-pay is on the v1.3 roadmap.</p>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr><th>No.</th><th>Vendor</th><th>Bill date</th><th>Due</th><th class="right">Gross</th><th class="right">Outstanding</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var b in _bills)
+            {
+                <tr>
+                    <td><code>@b.BillNo</code></td>
+                    <td>@(_vendors.TryGetValue(b.VendorId, out var v) ? v : b.VendorId.ToString("N")[..8])</td>
+                    <td>@b.BillDate.ToString("yyyy-MM-dd")</td>
+                    <td>@b.DueDate.ToString("yyyy-MM-dd")</td>
+                    <td class="right">@((b.GrossMinor / 100m).ToString("N2"))</td>
+                    <td class="right">@(((b.GrossMinor - b.PaidMinor) / 100m).ToString("N2"))</td>
+                    <td><StatusPill Status="@b.Status.ToString()" /></td>
+                </tr>
+            }
+            @if (_bills.Count == 0)
+            {
+                <tr><td colspan="7" class="muted">No bills yet.</td></tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<ApBill> _bills = new();
+    private Dictionary<Guid, string> _vendors = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _bills = await Db.Bills.Where(b => b.TenantId == User.TenantId)
+            .OrderByDescending(b => b.BillDate).Take(100).ToListAsync();
+        var ids = _bills.Select(b => b.VendorId).Distinct().ToList();
+        _vendors = await Db.Vendors.Where(v => ids.Contains(v.VendorId))
+            .ToDictionaryAsync(v => v.VendorId, v => v.Name);
+    }
+}

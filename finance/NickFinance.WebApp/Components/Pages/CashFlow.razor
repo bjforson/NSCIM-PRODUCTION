@@ -1,0 +1,66 @@
+@page "/reports/cash-flow"
+@inject IFinancialReports Reports
+@inject LedgerDbContext Lg
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Cash Flow</PageTitle>
+
+<h1>Cash flow · @_from to @_to</h1>
+
+<section class="card">
+    <label>From <input type="date" @bind="_from" /></label>
+    <label>To <input type="date" @bind="_to" /></label>
+    <button class="primary" @onclick="ReloadAsync">Reload</button>
+</section>
+
+@if (_cfs is not null)
+{
+    <section class="card">
+        <h3>Operating activities</h3>
+        <table>
+            <tbody>
+                @foreach (var l in _cfs.Operating)
+                {
+                    <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr>
+                }
+                <tr class="total"><td>Net cash from operating</td><td class="right">@((_cfs.OperatingNet.Minor / 100m).ToString("N2"))</td></tr>
+            </tbody>
+        </table>
+    </section>
+    <section class="card">
+        <h3>Investing activities</h3>
+        <table>
+            <tbody>
+                @foreach (var l in _cfs.Investing) { <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr> }
+                <tr class="total"><td>Net cash from investing</td><td class="right">@((_cfs.InvestingNet.Minor / 100m).ToString("N2"))</td></tr>
+            </tbody>
+        </table>
+    </section>
+    <section class="card">
+        <h3>Financing activities</h3>
+        <table>
+            <tbody>
+                @foreach (var l in _cfs.Financing) { <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr> }
+                <tr class="total"><td>Net cash from financing</td><td class="right">@((_cfs.FinancingNet.Minor / 100m).ToString("N2"))</td></tr>
+            </tbody>
+        </table>
+    </section>
+    <section class="card">
+        <p>Opening cash: <strong>@((_cfs.OpeningCash.Minor / 100m).ToString("N2"))</strong></p>
+        <p>Closing cash: <strong>@((_cfs.ClosingCash.Minor / 100m).ToString("N2"))</strong></p>
+    </section>
+}
+
+@code {
+    private DateOnly _from = new(DateTime.UtcNow.Year, 1, 1);
+    private DateOnly _to = DateOnly.FromDateTime(DateTime.UtcNow);
+    private CashFlowStatementReport? _cfs;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _cfs = await CashFlowStatementBuilder.BuildAsync(Lg, Reports, "GHS", _from, _to, User.TenantId);
+    }
+}

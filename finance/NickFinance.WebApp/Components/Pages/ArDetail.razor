@@ -1,0 +1,103 @@
+@page "/ar/{InvoiceId:guid}"
+@using Microsoft.EntityFrameworkCore
+@inject ArDbContext Db
+@inject IArService Svc
+@inject IPeriodService Periods
+@inject CurrentUser User
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Invoice</PageTitle>
+
+@if (_invoice is null)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <h1>Invoice @(_invoice.InvoiceNo ?? "(unissued)")</h1>
+    <p class="lede">
+        <StatusPill Status="@_invoice.Status.ToString()" />
+        · @_customerName
+        · @_invoice.InvoiceDate.ToString("yyyy-MM-dd")
+    </p>
+
+    <section class="card">
+        <dl>
+            <dt>Customer</dt><dd>@_customerName</dd>
+            <dt>Reference</dt><dd>@_invoice.Reference</dd>
+            <dt>Net</dt><dd>@((_invoice.SubtotalNetMinor / 100m).ToString("N2"))</dd>
+            <dt>Levies</dt><dd>@((_invoice.LeviesMinor / 100m).ToString("N2"))</dd>
+            <dt>VAT</dt><dd>@((_invoice.VatMinor / 100m).ToString("N2"))</dd>
+            <dt>Gross</dt><dd>@((_invoice.GrossMinor / 100m).ToString("N2"))</dd>
+            <dt>Paid</dt><dd>@((_invoice.PaidMinor / 100m).ToString("N2"))</dd>
+            <dt>Outstanding</dt><dd>@((_invoice.OutstandingMinor / 100m).ToString("N2"))</dd>
+            <dt>e-VAT IRN</dt>
+            <dd>
+                @if (string.IsNullOrEmpty(_invoice.EvatIrn))
+                {
+                    <span class="muted">—</span>
+                }
+                else if (StubEvatProvider.IsSandbox(_invoice.EvatIrn))
+                {
+                    <span class="pill warn">SANDBOX</span> <code class="muted-code">@_invoice.EvatIrn</code>
+                }
+                else
+                {
+                    <code>@_invoice.EvatIrn</code>
+                }
+            </dd>
+        </dl>
+    </section>
+
+    @if (_invoice.Status == ArInvoiceStatus.Draft)
+    {
+        <section class="card">
+            <button class="primary" disabled="@_busy" @onclick="IssueAsync">Issue (compute taxes + IRN + post journal)</button>
+            @if (!string.IsNullOrEmpty(_error)) { <div class="error">@_error</div> }
+        </section>
+    }
+
+    @if (_invoice.Status is ArInvoiceStatus.Issued or ArInvoiceStatus.PartiallyPaid)
+    {
+        <section class="card">
+            <a class="primary" href="@($"/ar/{InvoiceId}/receipt")">Record receipt</a>
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid InvoiceId { get; set; }
+    private ArInvoice? _invoice;
+    private string _customerName = "(unknown)";
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _invoice = await Db.Invoices.Include(i => i.Lines)
+            .FirstOrDefaultAsync(i => i.ArInvoiceId == InvoiceId && i.TenantId == User.TenantId);
+        if (_invoice is not null)
+        {
+            var cust = await Db.Customers.FirstOrDefaultAsync(c => c.CustomerId == _invoice.CustomerId);
+            _customerName = cust?.Name ?? "(unknown)";
+        }
+    }
+
+    private async Task IssueAsync()
+    {
+        _busy = true; _error = null;
+        try
+        {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var period = await Periods.GetByDateAsync(today, User.TenantId)
+                ?? await Periods.CreateAsync(today.Year, (byte)today.Month, User.TenantId);
+            await Svc.IssueInvoiceAsync(InvoiceId, User.UserId, today, period.PeriodId);
+            await ReloadAsync();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}

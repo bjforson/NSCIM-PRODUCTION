@@ -1,10 +1,16 @@
 using Microsoft.EntityFrameworkCore;
+using NickFinance.AP;
 using NickFinance.AR;
+using NickFinance.Banking;
+using NickFinance.Budgeting;
 using NickFinance.Coa;
+using NickFinance.FixedAssets;
+using NickFinance.Itaps;
 using NickFinance.Ledger;
 using NickFinance.PettyCash;
 using NickFinance.PettyCash.Approvals;
 using NickFinance.PettyCash.Receipts;
+using NickFinance.PettyCash.Recurring;
 using NickFinance.Reporting;
 using NickFinance.WebApp.Components;
 using NickFinance.WebApp.Services;
@@ -21,6 +27,10 @@ builder.Services.AddDbContext<LedgerDbContext>(opts => opts.UseNpgsql(connection
 builder.Services.AddDbContext<PettyCashDbContext>(opts => opts.UseNpgsql(connectionString));
 builder.Services.AddDbContext<CoaDbContext>(opts => opts.UseNpgsql(connectionString));
 builder.Services.AddDbContext<ArDbContext>(opts => opts.UseNpgsql(connectionString));
+builder.Services.AddDbContext<ApDbContext>(opts => opts.UseNpgsql(connectionString));
+builder.Services.AddDbContext<BankingDbContext>(opts => opts.UseNpgsql(connectionString));
+builder.Services.AddDbContext<FixedAssetsDbContext>(opts => opts.UseNpgsql(connectionString));
+builder.Services.AddDbContext<BudgetingDbContext>(opts => opts.UseNpgsql(connectionString));
 
 // Domain services
 builder.Services.AddScoped<ILedgerWriter, LedgerWriter>();
@@ -31,6 +41,15 @@ builder.Services.AddScoped<IFinancialReports, FinancialReports>();
 builder.Services.AddScoped<IApprovalEngine, SingleStepApprovalEngine>();
 builder.Services.AddScoped<IPettyCashService, PettyCashService>();
 builder.Services.AddScoped<IArService, ArService>();
+builder.Services.AddScoped<IDunningService, DunningService>();
+builder.Services.AddScoped<ICustomerStatementService, CustomerStatementService>();
+builder.Services.AddScoped<IApService, ApService>();
+builder.Services.AddSingleton<BankCsvParserRegistry>();
+builder.Services.AddScoped<IBankingService, BankingService>();
+builder.Services.AddScoped<IFixedAssetService, FixedAssetService>();
+builder.Services.AddScoped<IBudgetingService, BudgetingService>();
+builder.Services.AddScoped<IItapsExporter, ItapsExporter>();
+builder.Services.AddScoped<IRecurringVoucherRunner, RecurringVoucherRunner>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 
 // Receipt storage rooted at the configured path.

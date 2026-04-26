@@ -22,6 +22,12 @@
     <ProjectReference Include="..\NickFinance.Ledger\NickFinance.Ledger.csproj" />
     <ProjectReference Include="..\NickFinance.PettyCash\NickFinance.PettyCash.csproj" />
     <ProjectReference Include="..\NickFinance.AR\NickFinance.AR.csproj" />
+    <ProjectReference Include="..\NickFinance.AP\NickFinance.AP.csproj" />
+    <ProjectReference Include="..\NickFinance.Banking\NickFinance.Banking.csproj" />
+    <ProjectReference Include="..\NickFinance.Budgeting\NickFinance.Budgeting.csproj" />
+    <ProjectReference Include="..\NickFinance.FixedAssets\NickFinance.FixedAssets.csproj" />
+    <ProjectReference Include="..\NickFinance.GlSync\NickFinance.GlSync.csproj" />
+    <ProjectReference Include="..\NickFinance.Itaps\NickFinance.Itaps.csproj" />
     <ProjectReference Include="..\NickFinance.Coa\NickFinance.Coa.csproj" />
     <ProjectReference Include="..\NickFinance.Reporting\NickFinance.Reporting.csproj" />
     <ProjectReference Include="..\NickFinance.TaxEngine\NickFinance.TaxEngine.csproj" />

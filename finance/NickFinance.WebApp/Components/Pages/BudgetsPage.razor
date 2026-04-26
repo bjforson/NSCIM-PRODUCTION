@@ -1,0 +1,47 @@
+@page "/budgets"
+@using Microsoft.EntityFrameworkCore
+@inject BudgetingDbContext Db
+@inject IBudgetingService Svc
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Budgets</PageTitle>
+
+<h1>Annual budgets</h1>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr><th>Year</th><th>Department</th><th>Name</th><th>Currency</th><th>Status</th><th class="right">Lines</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var b in _budgets)
+            {
+                <tr>
+                    <td>@b.FiscalYear</td>
+                    <td>@(b.DepartmentCode ?? "(entity)")</td>
+                    <td>@b.Name</td>
+                    <td>@b.CurrencyCode</td>
+                    <td><StatusPill Status="@b.Status.ToString()" /></td>
+                    <td class="right">@b.Lines.Count</td>
+                </tr>
+            }
+            @if (_budgets.Count == 0)
+            {
+                <tr><td colspan="6" class="muted">No budgets yet.</td></tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<AnnualBudget> _budgets = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _budgets = await Db.Budgets
+            .Include(b => b.Lines)
+            .Where(b => b.TenantId == User.TenantId)
+            .OrderByDescending(b => b.FiscalYear).ToListAsync();
+    }
+}

@@ -1,0 +1,62 @@
+@page "/banking"
+@using Microsoft.EntityFrameworkCore
+@inject BankingDbContext Db
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Banking</PageTitle>
+
+<h1>Banking</h1>
+<p class="lede">Bank accounts + recent transactions. Statement import + auto-match + reconciliation live in <code>IBankingService</code>; admin UI is v1.3.</p>
+
+<section class="card">
+    <h3>Accounts</h3>
+    <table>
+        <thead><tr><th>Code</th><th>Name</th><th>Bank</th><th>Account #</th><th>GL</th><th>Currency</th></tr></thead>
+        <tbody>
+            @foreach (var a in _accounts)
+            {
+                <tr>
+                    <td><code>@a.Code</code></td>
+                    <td>@a.Name</td>
+                    <td>@a.BankName</td>
+                    <td><code>@a.AccountNumber</code></td>
+                    <td><code>@a.LedgerAccount</code></td>
+                    <td>@a.CurrencyCode</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+<section class="card">
+    <h3>Recent transactions</h3>
+    <table>
+        <thead><tr><th>Date</th><th>Account</th><th>Description</th><th>Reference</th><th class="right">Amount</th><th>Match</th></tr></thead>
+        <tbody>
+            @foreach (var t in _transactions)
+            {
+                <tr>
+                    <td>@t.TransactionDate.ToString("yyyy-MM-dd")</td>
+                    <td>@(_accounts.FirstOrDefault(a => a.BankAccountId == t.BankAccountId)?.Code ?? "?")</td>
+                    <td>@t.Description</td>
+                    <td>@t.Reference</td>
+                    <td class="right">@(t.Direction == BankTransactionDirection.Debit ? "-" : "+")@((t.AmountMinor / 100m).ToString("N2"))</td>
+                    <td><StatusPill Status="@t.MatchStatus.ToString()" /></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<BankAccount> _accounts = new();
+    private List<BankTransaction> _transactions = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _accounts = await Db.BankAccounts.Where(a => a.TenantId == User.TenantId).OrderBy(a => a.Code).ToListAsync();
+        _transactions = await Db.Transactions.Where(t => t.TenantId == User.TenantId)
+            .OrderByDescending(t => t.TransactionDate).Take(50).ToListAsync();
+    }
+}

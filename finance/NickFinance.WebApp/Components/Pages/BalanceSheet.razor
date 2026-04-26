@@ -1,0 +1,46 @@
+@page "/reports/bs"
+@inject IFinancialReports Reports
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Balance Sheet</PageTitle>
+
+<h1>Balance sheet · @_asOf.ToString("yyyy-MM-dd")</h1>
+
+<section class="card">
+    <label>As-of date <input type="date" @bind="_asOf" /></label>
+    <button class="primary" @onclick="ReloadAsync">Reload</button>
+</section>
+
+@if (_bs is not null)
+{
+    <p class="muted">@(_bs.IsBalanced ? "✓ Assets = Liabilities + Equity" : "✗ NOT balanced — investigate.")</p>
+    @foreach (var s in _bs.Sections)
+    {
+        <section class="card">
+            <h3>@s.Heading</h3>
+            <table>
+                <thead><tr><th>Code</th><th>Account</th><th class="right">Balance</th></tr></thead>
+                <tbody>
+                    @foreach (var l in s.Lines)
+                    {
+                        <tr><td><code>@l.AccountCode</code></td><td>@l.AccountName</td><td class="right">@((l.Balance.Minor / 100m).ToString("N2"))</td></tr>
+                    }
+                    <tr class="total"><td></td><td>Total @s.Heading</td><td class="right">@((s.SectionTotal.Minor / 100m).ToString("N2"))</td></tr>
+                </tbody>
+            </table>
+        </section>
+    }
+    <section class="card">
+        <p>Total assets: <strong>@((_bs.TotalAssets.Minor / 100m).ToString("N2"))</strong></p>
+        <p>Total liabilities + equity: <strong>@((_bs.TotalLiabilitiesAndEquity.Minor / 100m).ToString("N2"))</strong></p>
+    </section>
+}
+
+@code {
+    private DateOnly _asOf = DateOnly.FromDateTime(DateTime.UtcNow);
+    private BalanceSheetReport? _bs;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+    private async Task ReloadAsync() => _bs = await Reports.BalanceSheetAsync("GHS", _asOf, User.TenantId);
+}

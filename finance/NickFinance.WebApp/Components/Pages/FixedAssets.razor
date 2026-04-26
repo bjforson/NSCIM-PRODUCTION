@@ -1,0 +1,46 @@
+@page "/fixed-assets"
+@using Microsoft.EntityFrameworkCore
+@inject FixedAssetsDbContext Db
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Assets</PageTitle>
+
+<h1>Fixed assets</h1>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr><th>Tag</th><th>Name</th><th>Category</th><th>Acquired</th><th class="right">Cost</th><th class="right">Acc dep</th><th class="right">NBV</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in _assets)
+            {
+                <tr>
+                    <td><code>@a.AssetTag</code></td>
+                    <td>@a.Name</td>
+                    <td>@a.Category</td>
+                    <td>@a.AcquiredOn.ToString("yyyy-MM-dd")</td>
+                    <td class="right">@((a.AcquisitionCostMinor / 100m).ToString("N2"))</td>
+                    <td class="right">@((a.AccumulatedDepreciationMinor / 100m).ToString("N2"))</td>
+                    <td class="right">@((a.NetBookValueMinor / 100m).ToString("N2"))</td>
+                    <td><StatusPill Status="@a.Status.ToString()" /></td>
+                </tr>
+            }
+            @if (_assets.Count == 0)
+            {
+                <tr><td colspan="8" class="muted">No assets registered yet.</td></tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<FixedAsset> _assets = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _assets = await Db.Assets.Where(a => a.TenantId == User.TenantId)
+            .OrderBy(a => a.AssetTag).ToListAsync();
+    }
+}
