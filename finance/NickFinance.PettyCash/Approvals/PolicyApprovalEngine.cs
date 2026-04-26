@@ -3,15 +3,34 @@ namespace NickFinance.PettyCash.Approvals;
 /// <summary>
 /// Multi-step engine driven by an <see cref="ApprovalPolicy"/>. For each
 /// voucher it picks the matching <see cref="ApprovalBand"/> by amount,
-/// then resolves each band step's role into a user via
-/// <see cref="IApproverResolver"/>. Sequential approval — every step must
-/// land Approved in order for the voucher to clear; any Rejection short-
-/// circuits.
+/// then resolves each band step's roles into users via
+/// <see cref="IApproverResolver"/>. Sequential approval — every step
+/// must land Approved (parallel: every role row at that step) before
+/// the next step opens.
 /// </summary>
 /// <remarks>
-/// Parallel-approver bands (the <c>[[role1, role2]]</c> shorthand from the
-/// PETTY_CASH spec) are not yet supported — those land in v1.2 alongside
-/// delegation and escalation timeouts. v1.1 is sequential-only.
+/// <para>
+/// <b>Parallel approvers</b>: a step with multiple roles produces one
+/// <see cref="VoucherApproval"/> row per role at the same
+/// <c>step_no</c>. The step is "complete" when every row at that
+/// <c>step_no</c> is <see cref="ApprovalDecision.Approved"/>; the
+/// chain advances when the highest-numbered Pending step has been
+/// fully approved.
+/// </para>
+/// <para>
+/// <b>Delegation</b>: callers wrap the resolver with
+/// <see cref="DelegatingApproverResolver"/> which substitutes a
+/// covering user when the assignee has an active row in
+/// <c>petty_cash.approval_delegations</c>. Audit captures the
+/// original-vs-actual via the engine's
+/// <see cref="VoucherApproval.Comment"/> on decide.
+/// </para>
+/// <para>
+/// <b>Escalation</b> at decision time (i.e. when an operator runs the
+/// scheduled escalator) is handled by
+/// <see cref="IPettyCashService.EscalateOverdueApprovalsAsync"/> —
+/// the engine itself stays stateless about wall-clock.
+/// </para>
 /// </remarks>
 public sealed class PolicyApprovalEngine : IApprovalEngine
 {
@@ -40,29 +59,38 @@ public sealed class PolicyApprovalEngine : IApprovalEngine
                 + "Either the amount exceeds the largest band or the category isn't policy-mapped.");
 
         var now = _clock.GetUtcNow();
-        var steps = new List<VoucherApproval>(band.Steps.Count);
-        short n = 1;
-        foreach (var role in band.Steps)
+        var rows = new List<VoucherApproval>(band.Steps.Count);
+        short stepNo = 1;
+        foreach (var step in band.Steps)
         {
-            var assignee = _resolver.Resolve(role, voucher);
-            // Separation of duties — the requester can never appear in their
-            // own chain. We mark such a step UnfillableRole so the service
-            // can pre-reject the voucher and a human can investigate (the
-            // requester probably submitted under the wrong category).
-            var unfillable = assignee == Guid.Empty || assignee == voucher.RequesterUserId;
-
-            steps.Add(new VoucherApproval
+            // Each role within a step becomes its own row at the same step_no.
+            // For parallel steps, all rows must Approve before the step is done.
+            // For solo steps, there's just one row at this step_no.
+            var assignedAny = false;
+            foreach (var role in step.Roles)
             {
-                VoucherId = voucher.VoucherId,
-                StepNo = n++,
-                Role = role,
-                AssignedToUserId = unfillable ? Guid.Empty : assignee,
-                Decision = unfillable ? ApprovalDecision.UnfillableRole : ApprovalDecision.Pending,
-                CreatedAt = now,
-                TenantId = voucher.TenantId
-            });
+                var assignee = _resolver.Resolve(role, voucher);
+                var unfillable = assignee == Guid.Empty || assignee == voucher.RequesterUserId;
+                rows.Add(new VoucherApproval
+                {
+                    VoucherId = voucher.VoucherId,
+                    StepNo = stepNo,
+                    Role = role,
+                    AssignedToUserId = unfillable ? Guid.Empty : assignee,
+                    Decision = unfillable ? ApprovalDecision.UnfillableRole : ApprovalDecision.Pending,
+                    CreatedAt = now,
+                    TenantId = voucher.TenantId
+                });
+                if (!unfillable) assignedAny = true;
+            }
+            if (!assignedAny)
+            {
+                // None of the parallel roles could be filled — short-circuit so
+                // the consumer service can mark the voucher Rejected up-front.
+            }
+            stepNo++;
         }
-        return steps;
+        return rows;
     }
 
     public ApprovalAdvance Decide(
@@ -75,45 +103,102 @@ public sealed class PolicyApprovalEngine : IApprovalEngine
         ArgumentNullException.ThrowIfNull(voucher);
         ArgumentNullException.ThrowIfNull(steps);
 
-        // If any step was unfillable we should never have reached "Decide"
-        // for that voucher — the service is supposed to mark it Rejected
-        // up-front.
         if (steps.Any(s => s.Decision == ApprovalDecision.UnfillableRole))
         {
             throw new PettyCashException("Voucher has an unfillable approval step; cannot decide.");
         }
 
-        // Locate the next pending step in order.
-        var step = steps
+        // Find the lowest step_no that still has any Pending row.
+        var pendingStepNo = steps
             .Where(s => s.Decision == ApprovalDecision.Pending)
-            .OrderBy(s => s.StepNo)
-            .FirstOrDefault()
-            ?? throw new PettyCashException("No pending approval step found.");
+            .Select(s => (int)s.StepNo)
+            .DefaultIfEmpty(int.MinValue)
+            .Min();
+        if (pendingStepNo == int.MinValue)
+        {
+            throw new PettyCashException("No pending approval step found.");
+        }
 
-        if (step.AssignedToUserId != deciderUserId)
+        // Among rows at that step, find the one assigned to the decider.
+        // (Decider could be the original assignee, an escalated assignee, or
+        // a delegated covering user — the resolver wraps that complexity.)
+        var row = steps.FirstOrDefault(s =>
+            s.StepNo == pendingStepNo &&
+            s.Decision == ApprovalDecision.Pending &&
+            s.AssignedToUserId == deciderUserId);
+        if (row is null)
         {
             throw new SeparationOfDutiesException(
-                $"Step {step.StepNo} ({step.Role}) is assigned to {step.AssignedToUserId}; user {deciderUserId} cannot decide it.");
+                $"User {deciderUserId} is not an assigned approver on the open step (step {pendingStepNo}) of voucher {voucher.VoucherId}.");
         }
         if (deciderUserId == voucher.RequesterUserId)
         {
-            // Defence in depth — Plan() already excluded this case.
             throw new SeparationOfDutiesException("The requester cannot decide on their own voucher.");
         }
 
-        step.DecidedByUserId = deciderUserId;
-        step.Comment = comment;
-        step.DecidedAt = _clock.GetUtcNow();
-        step.Decision = reject ? ApprovalDecision.Rejected : ApprovalDecision.Approved;
+        row.DecidedByUserId = deciderUserId;
+        row.Comment = comment;
+        row.DecidedAt = _clock.GetUtcNow();
+        row.Decision = reject ? ApprovalDecision.Rejected : ApprovalDecision.Approved;
 
         if (reject)
         {
-            return new ApprovalAdvance(ApprovalAdvanceOutcome.Rejected, step.StepNo);
+            return new ApprovalAdvance(ApprovalAdvanceOutcome.Rejected, row.StepNo);
         }
 
-        var anyPendingLeft = steps.Any(s => s.Decision == ApprovalDecision.Pending);
+        // ESCALATION SHORT-CIRCUIT: when an escalation row exists at the same
+        // step_no AND a different role from the row that just approved, the
+        // approval clears the role's quorum on its own. We mark all OTHER
+        // still-Pending rows for the same role at this step as Skipped (they
+        // were the same "slot" — escalations are an OR with the original).
+        // Pure parallel approvers (different roles each, no escalation) keep
+        // their AND semantic because their roles differ from the row that
+        // just approved.
+        var sameRoleAfterTrim = SameRoleNormalised(row.Role);
+        foreach (var other in steps.Where(s =>
+            s.StepNo == pendingStepNo &&
+            s.Decision == ApprovalDecision.Pending &&
+            SameRoleNormalised(s.Role) == sameRoleAfterTrim))
+        {
+            other.Decision = ApprovalDecision.Skipped;
+            other.DecidedAt = _clock.GetUtcNow();
+            other.Comment = $"Skipped — step decided by {row.Role}";
+        }
+
+        // Step done? — no Pending left at this step_no, no Rejected at this step_no,
+        // and every distinct role at this step_no has at least one Approved row.
+        var thisStep = steps.Where(s => s.StepNo == pendingStepNo).ToList();
+        var anyPending = thisStep.Any(s => s.Decision == ApprovalDecision.Pending);
+        if (anyPending)
+        {
+            return new ApprovalAdvance(ApprovalAdvanceOutcome.StillInApproval, row.StepNo);
+        }
+        var rolesAtStep = thisStep.Select(s => SameRoleNormalised(s.Role)).Distinct().ToList();
+        var allRolesApproved = rolesAtStep.All(r =>
+            thisStep.Any(s => SameRoleNormalised(s.Role) == r && s.Decision == ApprovalDecision.Approved));
+        if (!allRolesApproved)
+        {
+            return new ApprovalAdvance(ApprovalAdvanceOutcome.StillInApproval, row.StepNo);
+        }
+
+        var anyLaterPending = steps
+            .Any(s => s.StepNo > pendingStepNo && s.Decision == ApprovalDecision.Pending);
         return new ApprovalAdvance(
-            anyPendingLeft ? ApprovalAdvanceOutcome.StillInApproval : ApprovalAdvanceOutcome.FullyApproved,
-            step.StepNo);
+            anyLaterPending ? ApprovalAdvanceOutcome.StillInApproval : ApprovalAdvanceOutcome.FullyApproved,
+            row.StepNo);
+    }
+
+    /// <summary>
+    /// Strip the " (escalated)" suffix added by
+    /// <see cref="IPettyCashService.EscalateOverdueApprovalsAsync"/> so the
+    /// engine treats an escalation row and its original as the same role
+    /// "slot" for quorum purposes.
+    /// </summary>
+    private static string SameRoleNormalised(string role)
+    {
+        const string Suffix = " (escalated)";
+        return role.EndsWith(Suffix, StringComparison.Ordinal)
+            ? role[..^Suffix.Length]
+            : role;
     }
 }

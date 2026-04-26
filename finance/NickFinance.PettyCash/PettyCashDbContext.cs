@@ -20,6 +20,7 @@ public class PettyCashDbContext : DbContext
     public DbSet<Voucher> Vouchers => Set<Voucher>();
     public DbSet<VoucherLineItem> VoucherLines => Set<VoucherLineItem>();
     public DbSet<VoucherApproval> VoucherApprovals => Set<VoucherApproval>();
+    public DbSet<ApprovalDelegation> ApprovalDelegations => Set<ApprovalDelegation>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -137,9 +138,18 @@ public class PettyCashDbContext : DbContext
             e.Property(x => x.DecidedAt).HasColumnName("decided_at");
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
 
-            e.HasIndex(x => new { x.VoucherId, x.StepNo })
+            // Step is not unique on (voucher, step_no) any more — parallel
+            // steps generate multiple rows with the same step_no, one per
+            // role / assignee. (voucher, step_no, assigned_to) IS unique
+            // because each assignee can only get one row per step (the
+            // escalator inserts at the same step_no but with a NEW
+            // assignee and a NEW row — so still unique).
+            e.HasIndex(x => new { x.VoucherId, x.StepNo, x.AssignedToUserId })
              .IsUnique()
-             .HasDatabaseName("ux_voucher_approvals_voucher_step");
+             .HasDatabaseName("ux_voucher_approvals_voucher_step_assignee");
+
+            e.HasIndex(x => new { x.VoucherId, x.StepNo })
+             .HasDatabaseName("ix_voucher_approvals_voucher_step");
 
             e.HasIndex(x => new { x.TenantId, x.AssignedToUserId, x.Decision })
              .HasDatabaseName("ix_voucher_approvals_assignee_decision");
@@ -148,6 +158,27 @@ public class PettyCashDbContext : DbContext
              .WithMany()
              .HasForeignKey(x => x.VoucherId)
              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // -------------------------------------------------------------------
+        // approval_delegations — covering-while-away assignments
+        // -------------------------------------------------------------------
+        b.Entity<ApprovalDelegation>(e =>
+        {
+            e.ToTable("approval_delegations");
+            e.HasKey(x => x.ApprovalDelegationId);
+            e.Property(x => x.ApprovalDelegationId).HasColumnName("approval_delegation_id");
+            e.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+            e.Property(x => x.DelegateUserId).HasColumnName("delegate_user_id").IsRequired();
+            e.Property(x => x.ValidFromUtc).HasColumnName("valid_from_utc").IsRequired();
+            e.Property(x => x.ValidUntilUtc).HasColumnName("valid_until_utc").IsRequired();
+            e.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(500);
+            e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+            e.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+
+            e.HasIndex(x => new { x.TenantId, x.UserId, x.ValidFromUtc, x.ValidUntilUtc })
+             .HasDatabaseName("ix_approval_delegations_user_window");
         });
     }
 }

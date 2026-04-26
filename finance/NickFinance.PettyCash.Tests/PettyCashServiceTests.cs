@@ -249,7 +249,9 @@ public class PettyCashServiceTests
         await using var pc = _fx.CreatePettyCash();
         await using var lg = _fx.CreateLedger();
         var periodSvc = new PeriodService(lg);
-        var period = await periodSvc.CreateAsync(2026, 4);
+        // Use a unique year far from any other test so hard-closing here
+        // doesn't poison the shared fixture DB for the rest of the run.
+        var period = await periodSvc.CreateAsync(2099, 12);
         await periodSvc.HardCloseAsync(period.PeriodId, Guid.NewGuid());
 
         var svc = new PettyCashService(pc, new LedgerWriter(lg));

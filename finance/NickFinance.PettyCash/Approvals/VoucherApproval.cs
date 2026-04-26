@@ -49,5 +49,12 @@ public enum ApprovalDecision
     Rejected = 2,
 
     /// <summary>The role couldn't be filled at submit time; voucher is auto-rejected. Recorded for audit.</summary>
-    UnfillableRole = 3
+    UnfillableRole = 3,
+
+    /// <summary>
+    /// The row was rendered moot by another decision on the same step
+    /// (e.g. an escalation row got the Approved before the original
+    /// assignee saw it, or vice versa). Audit-only state.
+    /// </summary>
+    Skipped = 4
 }

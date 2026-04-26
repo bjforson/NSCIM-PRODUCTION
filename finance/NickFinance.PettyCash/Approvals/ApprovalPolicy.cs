@@ -41,7 +41,35 @@ public sealed record ApprovalPolicy(
     }
 }
 
-/// <summary>One band row inside a <see cref="ApprovalPolicy"/>.</summary>
+/// <summary>
+/// One band row inside a <see cref="ApprovalPolicy"/>. <see cref="Steps"/>
+/// is a list of <see cref="ApprovalStep"/>; each step has one or more
+/// roles that all must approve (parallel) before the chain advances.
+/// </summary>
 public sealed record ApprovalBand(
     long MaxAmountMinor,
-    IReadOnlyList<string> Steps);
+    IReadOnlyList<ApprovalStep> Steps);
+
+/// <summary>
+/// One step within a band. A step has 1+ <see cref="Roles"/>; the engine
+/// creates one <see cref="VoucherApproval"/> row per role at the same
+/// <c>step_no</c>. The step is "complete" only once <em>every</em> role
+/// at that step has decided Approved (parallel approval).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="EscalateAfterHours"/> + <see cref="EscalateTo"/> drive the
+/// timeout-based escalation. When a step is older than the threshold
+/// without a decision, an operator (or scheduled job) calls
+/// <see cref="IPettyCashService"/>.<c>EscalateOverdueApprovalsAsync</c>
+/// which inserts an additional <see cref="VoucherApproval"/> row at the
+/// same <c>step_no</c> assigned to <see cref="EscalateTo"/> resolved
+/// against the original requester. The original row stays Pending —
+/// either the original assignee or the escalation target can clear the
+/// step.
+/// </para>
+/// </remarks>
+public sealed record ApprovalStep(
+    IReadOnlyList<string> Roles,
+    int? EscalateAfterHours = null,
+    string? EscalateTo = null);

@@ -42,8 +42,10 @@ public class ApprovalPolicyTests
         var transportBands = p.Categories[VoucherCategory.Transport];
         Assert.Equal(3, transportBands.Count);
         Assert.Equal(20000, transportBands[0].MaxAmountMinor);
-        Assert.Equal(new[] { "line_manager" }, transportBands[0].Steps);
-        Assert.Equal(new[] { "line_manager", "site_supervisor", "finance" }, transportBands[2].Steps);
+        Assert.Equal(new[] { "line_manager" }, transportBands[0].Steps[0].Roles);
+        Assert.Equal(new[] { "line_manager" },     transportBands[2].Steps[0].Roles);
+        Assert.Equal(new[] { "site_supervisor" },  transportBands[2].Steps[1].Roles);
+        Assert.Equal(new[] { "finance" },          transportBands[2].Steps[2].Roles);
     }
 
     [Fact]
@@ -95,13 +97,14 @@ public class ApprovalPolicyTests
     [Fact]
     public void BandFor_PicksFirstMatchingByAscendingMax()
     {
+        ApprovalStep S(params string[] roles) => new(roles);
         var p = new ApprovalPolicy("v", new Dictionary<VoucherCategory, IReadOnlyList<ApprovalBand>>
         {
             [VoucherCategory.Transport] = new[]
             {
-                new ApprovalBand(20000, new[] { "line_manager" }),
-                new ApprovalBand(100000, new[] { "line_manager", "site_supervisor" }),
-                new ApprovalBand(500000, new[] { "line_manager", "site_supervisor", "finance" })
+                new ApprovalBand(20000, new[] { S("line_manager") }),
+                new ApprovalBand(100000, new[] { S("line_manager"), S("site_supervisor") }),
+                new ApprovalBand(500000, new[] { S("line_manager"), S("site_supervisor"), S("finance") })
             }
         });
         Assert.Equal(20000, p.BandFor(VoucherCategory.Transport, 19_999)!.MaxAmountMinor);
@@ -109,6 +112,43 @@ public class ApprovalPolicyTests
         Assert.Equal(100000, p.BandFor(VoucherCategory.Transport, 20_001)!.MaxAmountMinor);
         Assert.Null(p.BandFor(VoucherCategory.Transport, 500_001));
         Assert.Null(p.BandFor(VoucherCategory.Fuel, 100));
+    }
+
+    [Fact]
+    public void Yaml_Parses_ParallelStep()
+    {
+        var yaml = """
+            version: "v2"
+            categories:
+              Emergency:
+                bands:
+                  - { max: 1000000, steps: [[site_supervisor, finance]] }
+            """;
+        var p = ApprovalPolicyYamlLoader.Load(yaml);
+        var step = p.Categories[VoucherCategory.Emergency][0].Steps[0];
+        Assert.Equal(new[] { "site_supervisor", "finance" }, step.Roles);
+    }
+
+    [Fact]
+    public void Yaml_Parses_StepMappingWithEscalation()
+    {
+        var yaml = """
+            version: "v2"
+            escalation:
+              default_hours: 48
+              default_target: site_supervisor
+            categories:
+              Emergency:
+                bands:
+                  - max: 1000000
+                    steps:
+                      - { roles: [finance, cfo], escalate_after_hours: 8, escalate_to: chairman }
+            """;
+        var p = ApprovalPolicyYamlLoader.Load(yaml);
+        var step = p.Categories[VoucherCategory.Emergency][0].Steps[0];
+        Assert.Equal(new[] { "finance", "cfo" }, step.Roles);
+        Assert.Equal(8, step.EscalateAfterHours);
+        Assert.Equal("chairman", step.EscalateTo);
     }
 
     // ------------------------------------------------------------------
@@ -335,6 +375,172 @@ public class ApprovalPolicyTests
                 fl.FloatId, Guid.NewGuid(), VoucherCategory.Transport, "huge trip",
                 Ghs(500_000),
                 new[] { new VoucherLineInput("a", Ghs(500_000)) })));
+
+        await pc.DisposeAsync(); await lg.DisposeAsync();
+    }
+
+    // ------------------------------------------------------------------
+    // Parallel approvers
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Parallel_BothMustApprove_BeforeChainAdvances()
+    {
+        var pc = _fx.CreatePettyCash();
+        var lg = _fx.CreateLedger();
+        await new PeriodService(lg).CreateAsync(2026, 4);
+
+        var ss = Guid.NewGuid();
+        var fin = Guid.NewGuid();
+        var resolver = new StaticApproverResolver(new Dictionary<string, Guid>
+        {
+            ["site_supervisor"] = ss,
+            ["finance"] = fin
+        });
+        var policy = ApprovalPolicyYamlLoader.Load("""
+            version: "v2"
+            categories:
+              Emergency:
+                bands:
+                  - { max: 10000000, steps: [[site_supervisor, finance]] }
+            """);
+
+        var svc = new PettyCashService(pc, new LedgerWriter(lg), new PolicyApprovalEngine(policy, resolver));
+        var fl = await svc.CreateFloatAsync(Guid.NewGuid(), Guid.NewGuid(), Ghs(10_000_000), Guid.NewGuid());
+
+        var v = await svc.SubmitVoucherAsync(new SubmitVoucherRequest(
+            fl.FloatId, Guid.NewGuid(), VoucherCategory.Emergency, "burst pipe",
+            Ghs(500_000),
+            new[] { new VoucherLineInput("plumber", Ghs(500_000)) }));
+
+        // Step has TWO rows at step_no=1, one per role.
+        var rowsBefore = await pc.VoucherApprovals.Where(a => a.VoucherId == v.VoucherId).OrderBy(a => a.AssignedToUserId).ToListAsync();
+        Assert.Equal(2, rowsBefore.Count);
+        Assert.All(rowsBefore, r => Assert.Equal(1, (int)r.StepNo));
+
+        // First approver decides — voucher stays Submitted (the parallel sibling is still Pending).
+        v = await svc.ApproveVoucherAsync(v.VoucherId, ss, null, "ss OK");
+        Assert.Equal(VoucherStatus.Submitted, v.Status);
+
+        // Second approver decides — voucher transitions to Approved.
+        v = await svc.ApproveVoucherAsync(v.VoucherId, fin, null, "fin OK");
+        Assert.Equal(VoucherStatus.Approved, v.Status);
+
+        await pc.DisposeAsync(); await lg.DisposeAsync();
+    }
+
+    // ------------------------------------------------------------------
+    // Delegation
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Delegation_SubstitutesCoveringApprover()
+    {
+        var pc = _fx.CreatePettyCash();
+        var lg = _fx.CreateLedger();
+        await new PeriodService(lg).CreateAsync(2026, 4);
+
+        var awayLm = Guid.NewGuid();
+        var coveringLm = Guid.NewGuid();
+        var baseResolver = new StaticApproverResolver(new Dictionary<string, Guid>
+        {
+            ["line_manager"] = awayLm
+        });
+        var delegations = new List<ApprovalDelegation>
+        {
+            new() { UserId = awayLm, DelegateUserId = coveringLm,
+                    ValidFromUtc = DateTimeOffset.UtcNow.AddDays(-1),
+                    ValidUntilUtc = DateTimeOffset.UtcNow.AddDays(7),
+                    TenantId = 1 }
+        };
+        var resolver = new DelegatingApproverResolver(baseResolver, delegations);
+
+        var policy = ApprovalPolicyYamlLoader.Load("""
+            version: "v2"
+            categories:
+              Transport:
+                bands:
+                  - { max: 1000000, steps: [line_manager] }
+            """);
+
+        var svc = new PettyCashService(pc, new LedgerWriter(lg), new PolicyApprovalEngine(policy, resolver));
+        var fl = await svc.CreateFloatAsync(Guid.NewGuid(), Guid.NewGuid(), Ghs(10_000_000), Guid.NewGuid());
+
+        var v = await svc.SubmitVoucherAsync(new SubmitVoucherRequest(
+            fl.FloatId, Guid.NewGuid(), VoucherCategory.Transport, "delivery",
+            Ghs(50_000),
+            new[] { new VoucherLineInput("courier", Ghs(50_000)) }));
+
+        // The Pending row should be assigned to the COVERING user, not the away user.
+        var row = await pc.VoucherApprovals.FirstAsync(a => a.VoucherId == v.VoucherId);
+        Assert.Equal(coveringLm, row.AssignedToUserId);
+
+        // Away user can't approve (not assigned anymore).
+        await Assert.ThrowsAsync<SeparationOfDutiesException>(() =>
+            svc.ApproveVoucherAsync(v.VoucherId, awayLm, null, null));
+
+        // Covering user can.
+        v = await svc.ApproveVoucherAsync(v.VoucherId, coveringLm, null, null);
+        Assert.Equal(VoucherStatus.Approved, v.Status);
+
+        await pc.DisposeAsync(); await lg.DisposeAsync();
+    }
+
+    // ------------------------------------------------------------------
+    // Escalation
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Escalation_AddsTargetRow_WhenBeyondThreshold()
+    {
+        var pc = _fx.CreatePettyCash();
+        var lg = _fx.CreateLedger();
+        await new PeriodService(lg).CreateAsync(2026, 4);
+
+        var lm = Guid.NewGuid();
+        var ss = Guid.NewGuid();
+        var resolver = new StaticApproverResolver(new Dictionary<string, Guid>
+        {
+            ["line_manager"] = lm,
+            ["site_supervisor"] = ss
+        });
+        var policy = ApprovalPolicyYamlLoader.Load("""
+            version: "v2"
+            escalation:
+              default_hours: 48
+              default_target: site_supervisor
+            categories:
+              Transport:
+                bands:
+                  - { max: 1000000, steps: [line_manager] }
+            """);
+        var svc = new PettyCashService(pc, new LedgerWriter(lg), new PolicyApprovalEngine(policy, resolver));
+        var fl = await svc.CreateFloatAsync(Guid.NewGuid(), Guid.NewGuid(), Ghs(10_000_000), Guid.NewGuid());
+
+        var v = await svc.SubmitVoucherAsync(new SubmitVoucherRequest(
+            fl.FloatId, Guid.NewGuid(), VoucherCategory.Transport, "courier",
+            Ghs(50_000),
+            new[] { new VoucherLineInput("a", Ghs(50_000)) }));
+
+        // Backdate the original Pending row by 49 hours so it's overdue.
+        var row = await pc.VoucherApprovals.FirstAsync(a => a.VoucherId == v.VoucherId);
+        row.CreatedAt = DateTimeOffset.UtcNow.AddHours(-49);
+        await pc.SaveChangesAsync();
+
+        var added = await svc.EscalateOverdueApprovalsAsync(policy, resolver);
+        Assert.Equal(1, added);
+
+        var rowsAfter = await pc.VoucherApprovals.Where(a => a.VoucherId == v.VoucherId).ToListAsync();
+        Assert.Equal(2, rowsAfter.Count);
+        Assert.Contains(rowsAfter, r => r.AssignedToUserId == ss && r.Decision == ApprovalDecision.Pending);
+
+        // Re-running is a no-op (the escalation target is already on the step).
+        var addedAgain = await svc.EscalateOverdueApprovalsAsync(policy, resolver);
+        Assert.Equal(0, addedAgain);
+
+        // Either the original line_manager OR the escalation target can clear the step.
+        v = await svc.ApproveVoucherAsync(v.VoucherId, ss, null, "escalated approval");
+        Assert.Equal(VoucherStatus.Approved, v.Status);
 
         await pc.DisposeAsync(); await lg.DisposeAsync();
     }

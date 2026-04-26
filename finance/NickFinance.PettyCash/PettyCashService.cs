@@ -53,6 +53,19 @@ public interface IPettyCashService
         DateOnly effectiveDate,
         Guid periodId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Sweep all currently-pending <see cref="VoucherApproval"/> rows
+    /// older than their <c>EscalateAfterHours</c> threshold and create
+    /// an additional row at the same <c>step_no</c> assigned to the
+    /// step's <c>EscalateTo</c> role. Returns the number of escalations
+    /// created. Idempotent — a second call within the same window is
+    /// a no-op because the original row's wall-clock hasn't moved.
+    /// </summary>
+    Task<int> EscalateOverdueApprovalsAsync(
+        ApprovalPolicy policy,
+        IApproverResolver resolver,
+        CancellationToken ct = default);
 }
 
 /// <summary>Input for <see cref="IPettyCashService.SubmitVoucherAsync"/>.</summary>
@@ -424,6 +437,80 @@ public sealed class PettyCashService : IPettyCashService
             .Where(s => s.VoucherId == voucherId)
             .OrderBy(s => s.StepNo)
             .ToListAsync(ct);
+    }
+
+    public async Task<int> EscalateOverdueApprovalsAsync(
+        ApprovalPolicy policy,
+        IApproverResolver resolver,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(resolver);
+
+        var now = _clock.GetUtcNow();
+        // Pull all open approval rows; could narrow with a per-tenant filter if needed.
+        var pending = await _db.VoucherApprovals
+            .Where(s => s.Decision == ApprovalDecision.Pending)
+            .ToListAsync(ct);
+        if (pending.Count == 0) return 0;
+
+        var voucherIds = pending.Select(p => p.VoucherId).Distinct().ToArray();
+        var vouchers = await _db.Vouchers
+            .Where(v => voucherIds.Contains(v.VoucherId))
+            .ToListAsync(ct);
+        var voucherById = vouchers.ToDictionary(v => v.VoucherId);
+
+        var inserted = 0;
+        var grouped = pending
+            .GroupBy(p => (p.VoucherId, p.StepNo))
+            .ToList();
+        foreach (var group in grouped)
+        {
+            if (!voucherById.TryGetValue(group.Key.VoucherId, out var voucher)) continue;
+
+            var band = policy.BandFor(voucher.Category, voucher.AmountRequestedMinor);
+            if (band is null) continue;
+            if (group.Key.StepNo - 1 < 0 || group.Key.StepNo - 1 >= band.Steps.Count) continue;
+
+            var step = band.Steps[group.Key.StepNo - 1];
+            if (step.EscalateAfterHours is null || step.EscalateTo is null) continue;
+
+            var hours = step.EscalateAfterHours.Value;
+            var oldestPending = group.Min(s => s.CreatedAt);
+            if (now - oldestPending < TimeSpan.FromHours(hours)) continue;
+
+            // Resolve the escalation target. If anyone in the group is already
+            // assigned to that target, skip — the escalation has already
+            // happened (idempotency).
+            var target = resolver.Resolve(step.EscalateTo, voucher);
+            if (target == Guid.Empty || target == voucher.RequesterUserId) continue;
+            if (group.Any(s => s.AssignedToUserId == target)) continue;
+
+            // The escalation row stays in the SAME "role slot" as the
+            // original — when SS approves on behalf of LM, the engine
+            // should treat that as clearing the line_manager slot.
+            // Pick the role being escalated FROM (the first Pending row
+            // at this step) and tag the suffix; the engine strips it on
+            // role-equality checks.
+            var escalateFromRole = group
+                .Where(s => s.Decision == ApprovalDecision.Pending)
+                .Select(s => s.Role)
+                .FirstOrDefault() ?? step.EscalateTo;
+
+            _db.VoucherApprovals.Add(new VoucherApproval
+            {
+                VoucherId = voucher.VoucherId,
+                StepNo = group.Key.StepNo,
+                Role = escalateFromRole + " (escalated)",
+                AssignedToUserId = target,
+                Decision = ApprovalDecision.Pending,
+                CreatedAt = now,
+                TenantId = voucher.TenantId
+            });
+            inserted++;
+        }
+        if (inserted > 0) await _db.SaveChangesAsync(ct);
+        return inserted;
     }
 
     /// <summary>
