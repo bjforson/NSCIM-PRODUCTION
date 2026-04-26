@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NickFinance.Ledger;
 using NickFinance.PettyCash.Approvals;
+using NickFinance.PettyCash.Disbursement;
 using NickFinance.TaxEngine;
 
 namespace NickFinance.PettyCash;
@@ -44,14 +45,26 @@ public interface IPettyCashService
     /// <summary>
     /// Disburse an Approved voucher. Posts the journal to the Ledger
     /// (DR each line's <c>GlAccount</c>, CR <c>1060 Petty cash float</c>)
-    /// and flips the voucher to Disbursed in the same transaction. The
-    /// custodian who disburses must differ from the approver.
+    /// and flips the voucher to Disbursed in the same transaction.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When <paramref name="channel"/> is supplied (default: <see cref="OfflineCashChannel"/>),
+    /// the channel is invoked BEFORE the journal post; if the rail
+    /// rejects, the journal isn't posted, the voucher stays Approved,
+    /// and the rejection reason bubbles up as a <see cref="PettyCashException"/>
+    /// so the operator can retry once the upstream service comes back.
+    /// </para>
+    /// <para>
+    /// The custodian who disburses must differ from the approver.
+    /// </para>
+    /// </remarks>
     Task<Voucher> DisburseVoucherAsync(
         Guid voucherId,
         Guid custodianUserId,
         DateOnly effectiveDate,
         Guid periodId,
+        IDisbursementChannel? channel = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -365,8 +378,10 @@ public sealed class PettyCashService : IPettyCashService
         Guid custodianUserId,
         DateOnly effectiveDate,
         Guid periodId,
+        IDisbursementChannel? channel = null,
         CancellationToken ct = default)
     {
+        channel ??= new OfflineCashChannel();
         var v = await LoadVoucher(voucherId, ct);
         if (v.Status != VoucherStatus.Approved)
         {
@@ -389,6 +404,27 @@ public sealed class PettyCashService : IPettyCashService
                 + "Reject + resubmit at the corrected amount.");
         }
 
+        // 1. Send the funds via the chosen rail. If the rail rejects the
+        //    request, leave the voucher Approved so the operator can retry.
+        var disbursement = await channel.DisburseAsync(new DisbursementRequest(
+            VoucherId: v.VoucherId,
+            VoucherNo: v.VoucherNo,
+            AmountMinor: v.AmountApprovedMinor!.Value,
+            CurrencyCode: v.CurrencyCode,
+            PayeeName: v.PayeeName ?? "(self)",
+            PayeeMomoNumber: v.PayeeMomoNumber,
+            PayeeMomoNetwork: v.PayeeMomoNetwork,
+            ClientReference: $"petty_cash:{v.VoucherId:N}",
+            TenantId: v.TenantId), ct);
+        if (!disbursement.Accepted)
+        {
+            throw new PettyCashException(
+                $"Disbursement via {channel.Channel} was rejected: {disbursement.FailureReason ?? "(no reason given)"}.");
+        }
+
+        // 2. Post the journal — voucher rail outcomes don't appear in the GL,
+        //    just the cash movement and any taxes. The rail reference is on
+        //    the voucher row for audit.
         var ledgerEvent = new LedgerEvent
         {
             TenantId = v.TenantId,
@@ -416,6 +452,8 @@ public sealed class PettyCashService : IPettyCashService
         v.DisbursedByUserId = custodianUserId;
         v.DisbursedAt = _clock.GetUtcNow();
         v.LedgerEventId = eventId;
+        v.DisbursementChannel = channel.Channel;
+        v.DisbursementReference = disbursement.RailReference;
         await _db.SaveChangesAsync(ct);
         return v;
     }

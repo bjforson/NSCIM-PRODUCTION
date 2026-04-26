@@ -106,8 +106,20 @@ public class Voucher
     /// <summary>Optional payee — the third party receiving the cash, if not the requester themselves.</summary>
     public string? PayeeName { get; set; }
 
+    /// <summary>Mobile money number of the payee, when the disbursement channel is MoMo.</summary>
+    public string? PayeeMomoNumber { get; set; }
+
+    /// <summary>MoMo network label — <c>MTN</c>, <c>VODA</c>, <c>ATM</c>.</summary>
+    public string? PayeeMomoNetwork { get; set; }
+
     /// <summary>Optional cost-centre / project code recorded on the journal line as a dimension.</summary>
     public string? ProjectCode { get; set; }
+
+    /// <summary>The rail used to disburse — <c>cash</c>, <c>momo:hubtel</c>, etc. Set on the Disbursed transition.</summary>
+    public string? DisbursementChannel { get; set; }
+
+    /// <summary>The rail's reference (transaction id, MoMo reference). Set on Disbursed.</summary>
+    public string? DisbursementReference { get; set; }
 
     /// <summary>
     /// How taxes apply to this voucher. <see cref="TaxTreatment.None"/> (the

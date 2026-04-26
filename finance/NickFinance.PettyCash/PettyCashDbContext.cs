@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NickFinance.PettyCash.Approvals;
+using NickFinance.PettyCash.Receipts;
 
 namespace NickFinance.PettyCash;
 
@@ -21,6 +22,7 @@ public class PettyCashDbContext : DbContext
     public DbSet<VoucherLineItem> VoucherLines => Set<VoucherLineItem>();
     public DbSet<VoucherApproval> VoucherApprovals => Set<VoucherApproval>();
     public DbSet<ApprovalDelegation> ApprovalDelegations => Set<ApprovalDelegation>();
+    public DbSet<VoucherReceipt> VoucherReceipts => Set<VoucherReceipt>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -68,7 +70,11 @@ public class PettyCashDbContext : DbContext
             e.Property(x => x.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
             e.Property(x => x.Status).HasColumnName("status").HasConversion<short>().IsRequired();
             e.Property(x => x.PayeeName).HasColumnName("payee_name").HasMaxLength(200);
+            e.Property(x => x.PayeeMomoNumber).HasColumnName("payee_momo_number").HasMaxLength(32);
+            e.Property(x => x.PayeeMomoNetwork).HasColumnName("payee_momo_network").HasMaxLength(16);
             e.Property(x => x.ProjectCode).HasColumnName("project_code").HasMaxLength(64);
+            e.Property(x => x.DisbursementChannel).HasColumnName("disbursement_channel").HasMaxLength(64);
+            e.Property(x => x.DisbursementReference).HasColumnName("disbursement_reference").HasMaxLength(128);
             e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
             e.Property(x => x.SubmittedAt).HasColumnName("submitted_at");
             e.Property(x => x.DecidedAt).HasColumnName("decided_at");
@@ -179,6 +185,42 @@ public class PettyCashDbContext : DbContext
 
             e.HasIndex(x => new { x.TenantId, x.UserId, x.ValidFromUtc, x.ValidUntilUtc })
              .HasDatabaseName("ix_approval_delegations_user_window");
+        });
+
+        // -------------------------------------------------------------------
+        // voucher_receipts
+        // -------------------------------------------------------------------
+        b.Entity<VoucherReceipt>(e =>
+        {
+            e.ToTable("voucher_receipts");
+            e.HasKey(x => x.VoucherReceiptId);
+            e.Property(x => x.VoucherReceiptId).HasColumnName("voucher_receipt_id");
+            e.Property(x => x.VoucherId).HasColumnName("voucher_id").IsRequired();
+            e.Property(x => x.Ordinal).HasColumnName("ordinal").IsRequired();
+            e.Property(x => x.FilePath).HasColumnName("file_path").HasMaxLength(1000).IsRequired();
+            e.Property(x => x.Sha256).HasColumnName("sha256").HasMaxLength(64).IsRequired();
+            e.Property(x => x.ApproximateHash).HasColumnName("approximate_hash").HasMaxLength(64).IsRequired();
+            e.Property(x => x.ContentType).HasColumnName("content_type").HasMaxLength(100).IsRequired();
+            e.Property(x => x.FileSizeBytes).HasColumnName("file_size_bytes").IsRequired();
+            e.Property(x => x.OcrVendor).HasColumnName("ocr_vendor").HasMaxLength(64);
+            e.Property(x => x.OcrAmountMinor).HasColumnName("ocr_amount_minor");
+            e.Property(x => x.OcrDate).HasColumnName("ocr_date");
+            e.Property(x => x.OcrRawText).HasColumnName("ocr_raw_text");
+            e.Property(x => x.OcrConfidence).HasColumnName("ocr_confidence");
+            e.Property(x => x.UploadedByUserId).HasColumnName("uploaded_by_user_id").IsRequired();
+            e.Property(x => x.UploadedAt).HasColumnName("uploaded_at").IsRequired();
+            e.Property(x => x.GpsLatitude).HasColumnName("gps_latitude").HasPrecision(9, 6);
+            e.Property(x => x.GpsLongitude).HasColumnName("gps_longitude").HasPrecision(9, 6);
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+
+            e.HasIndex(x => new { x.VoucherId, x.Ordinal })
+             .IsUnique()
+             .HasDatabaseName("ux_voucher_receipts_voucher_ordinal");
+            e.HasIndex(x => new { x.TenantId, x.Sha256 })
+             .HasDatabaseName("ix_voucher_receipts_tenant_sha");
+            e.HasIndex(x => new { x.TenantId, x.ApproximateHash })
+             .HasDatabaseName("ix_voucher_receipts_tenant_approx");
+            e.HasOne<Voucher>().WithMany().HasForeignKey(x => x.VoucherId).OnDelete(DeleteBehavior.Cascade);
         });
     }
 }
