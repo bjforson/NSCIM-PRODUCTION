@@ -30,6 +30,7 @@
     <ProjectReference Include="..\NickFinance.AR\NickFinance.AR.csproj" />
     <ProjectReference Include="..\NickFinance.AP\NickFinance.AP.csproj" />
     <ProjectReference Include="..\NickFinance.Banking\NickFinance.Banking.csproj" />
+    <ProjectReference Include="..\NickFinance.FixedAssets\NickFinance.FixedAssets.csproj" />
   </ItemGroup>
 
 </Project>
