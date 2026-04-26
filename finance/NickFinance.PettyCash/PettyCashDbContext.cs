@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickFinance.PettyCash.Approvals;
 
 namespace NickFinance.PettyCash;
 
@@ -18,6 +19,7 @@ public class PettyCashDbContext : DbContext
     public DbSet<Float> Floats => Set<Float>();
     public DbSet<Voucher> Vouchers => Set<Voucher>();
     public DbSet<VoucherLineItem> VoucherLines => Set<VoucherLineItem>();
+    public DbSet<VoucherApproval> VoucherApprovals => Set<VoucherApproval>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -112,6 +114,38 @@ public class PettyCashDbContext : DbContext
             e.HasIndex(x => new { x.VoucherId, x.LineNo })
              .IsUnique()
              .HasDatabaseName("ux_voucher_lines_voucher_lineno");
+        });
+
+        // -------------------------------------------------------------------
+        // voucher_approvals — one row per step, ordered by step_no.
+        // -------------------------------------------------------------------
+        b.Entity<VoucherApproval>(e =>
+        {
+            e.ToTable("voucher_approvals");
+            e.HasKey(x => x.VoucherApprovalId);
+            e.Property(x => x.VoucherApprovalId).HasColumnName("voucher_approval_id");
+            e.Property(x => x.VoucherId).HasColumnName("voucher_id").IsRequired();
+            e.Property(x => x.StepNo).HasColumnName("step_no").IsRequired();
+            e.Property(x => x.Role).HasColumnName("role").HasMaxLength(64).IsRequired();
+            e.Property(x => x.AssignedToUserId).HasColumnName("assigned_to_user_id").IsRequired();
+            e.Property(x => x.Decision).HasColumnName("decision").HasConversion<short>().IsRequired();
+            e.Property(x => x.DecidedByUserId).HasColumnName("decided_by_user_id");
+            e.Property(x => x.Comment).HasColumnName("comment").HasMaxLength(1000);
+            e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+            e.Property(x => x.DecidedAt).HasColumnName("decided_at");
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+
+            e.HasIndex(x => new { x.VoucherId, x.StepNo })
+             .IsUnique()
+             .HasDatabaseName("ux_voucher_approvals_voucher_step");
+
+            e.HasIndex(x => new { x.TenantId, x.AssignedToUserId, x.Decision })
+             .HasDatabaseName("ix_voucher_approvals_assignee_decision");
+
+            e.HasOne<Voucher>()
+             .WithMany()
+             .HasForeignKey(x => x.VoucherId)
+             .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

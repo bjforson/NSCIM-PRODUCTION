@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NickFinance.Ledger;
+using NickFinance.PettyCash.Approvals;
 
 namespace NickFinance.PettyCash;
 
@@ -82,15 +83,31 @@ public sealed class PettyCashService : IPettyCashService
 {
     private readonly PettyCashDbContext _db;
     private readonly ILedgerWriter _ledger;
+    private readonly IApprovalEngine _approvals;
     private readonly TimeProvider _clock;
 
+    /// <summary>
+    /// Default constructor — uses the single-step approval engine, which
+    /// matches the original MVP-zero behaviour. New consumers should pass
+    /// in a configured <see cref="PolicyApprovalEngine"/> for multi-step
+    /// flows.
+    /// </summary>
     public PettyCashService(
         PettyCashDbContext db,
         ILedgerWriter ledger,
         TimeProvider? clock = null)
+        : this(db, ledger, new SingleStepApprovalEngine(clock), clock) { }
+
+    /// <summary>v1.1 constructor — caller supplies the approval engine.</summary>
+    public PettyCashService(
+        PettyCashDbContext db,
+        ILedgerWriter ledger,
+        IApprovalEngine approvals,
+        TimeProvider? clock = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
+        _approvals = approvals ?? throw new ArgumentNullException(nameof(approvals));
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -228,6 +245,29 @@ public sealed class PettyCashService : IPettyCashService
         }
 
         _db.Vouchers.Add(voucher);
+
+        // Build the approval chain via the engine. If any step is unfillable,
+        // the voucher is auto-rejected on submit (the engine populates the
+        // step rows with UnfillableRole so audit can see why).
+        var steps = _approvals.Plan(voucher);
+        if (steps.Count == 0)
+        {
+            // Auto-approve at submit time — the engine returned an empty chain.
+            voucher.Status = VoucherStatus.Approved;
+            voucher.AmountApprovedMinor = voucher.AmountRequestedMinor;
+            voucher.DecidedAt = now;
+        }
+        else
+        {
+            foreach (var s in steps) _db.VoucherApprovals.Add(s);
+            if (steps.Any(s => s.Decision == ApprovalDecision.UnfillableRole))
+            {
+                voucher.Status = VoucherStatus.Rejected;
+                voucher.DecidedAt = now;
+                voucher.DecisionComment = "Auto-rejected at submit: at least one approval role could not be filled.";
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
         return voucher;
     }
@@ -244,10 +284,6 @@ public sealed class PettyCashService : IPettyCashService
         {
             throw new InvalidVoucherTransitionException(v.Status, "approve");
         }
-        if (v.RequesterUserId == approverUserId)
-        {
-            throw new SeparationOfDutiesException("The requester cannot approve their own voucher.");
-        }
 
         var approved = amountApprovedMinor ?? v.AmountRequestedMinor;
         if (approved <= 0)
@@ -259,11 +295,25 @@ public sealed class PettyCashService : IPettyCashService
             throw new ArgumentException("Approved amount cannot exceed the requested amount.", nameof(amountApprovedMinor));
         }
 
-        v.Status = VoucherStatus.Approved;
-        v.AmountApprovedMinor = approved;
+        var steps = await LoadStepsAsync(voucherId, ct);
+        var advance = _approvals.Decide(v, steps, approverUserId, comment, reject: false);
+
+        // Stamp the voucher's rolled-up decision fields with the LAST decider
+        // so existing UIs / reports keep working without joining the
+        // approvals table.
         v.DecidedByUserId = approverUserId;
         v.DecisionComment = comment;
         v.DecidedAt = _clock.GetUtcNow();
+
+        if (advance.Outcome == ApprovalAdvanceOutcome.FullyApproved)
+        {
+            v.Status = VoucherStatus.Approved;
+            v.AmountApprovedMinor = approved;
+        }
+        // Mid-chain approvals leave Status = Submitted and AmountApprovedMinor null
+        // until the LAST step arrives. Approved-amount on intermediate steps is
+        // ignored by design (only the final approver locks it in for v1.1).
+
         await _db.SaveChangesAsync(ct);
         return v;
     }
@@ -284,10 +334,9 @@ public sealed class PettyCashService : IPettyCashService
         {
             throw new InvalidVoucherTransitionException(v.Status, "reject");
         }
-        if (v.RequesterUserId == approverUserId)
-        {
-            throw new SeparationOfDutiesException("The requester cannot reject their own voucher.");
-        }
+
+        var steps = await LoadStepsAsync(voucherId, ct);
+        _approvals.Decide(v, steps, approverUserId, reason, reject: true);
 
         v.Status = VoucherStatus.Rejected;
         v.DecidedByUserId = approverUserId;
@@ -396,6 +445,14 @@ public sealed class PettyCashService : IPettyCashService
         return await _db.Vouchers.Include(v => v.Lines)
             .FirstOrDefaultAsync(v => v.VoucherId == voucherId, ct)
             ?? throw new PettyCashException($"Voucher {voucherId} not found.");
+    }
+
+    private async Task<List<VoucherApproval>> LoadStepsAsync(Guid voucherId, CancellationToken ct)
+    {
+        return await _db.VoucherApprovals
+            .Where(s => s.VoucherId == voucherId)
+            .OrderBy(s => s.StepNo)
+            .ToListAsync(ct);
     }
 
     /// <summary>
