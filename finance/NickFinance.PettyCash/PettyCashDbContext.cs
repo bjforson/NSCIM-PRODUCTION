@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NickFinance.PettyCash.Approvals;
+using NickFinance.PettyCash.Budgets;
+using NickFinance.PettyCash.CashCounts;
 using NickFinance.PettyCash.Receipts;
 
 namespace NickFinance.PettyCash;
@@ -23,6 +25,8 @@ public class PettyCashDbContext : DbContext
     public DbSet<VoucherApproval> VoucherApprovals => Set<VoucherApproval>();
     public DbSet<ApprovalDelegation> ApprovalDelegations => Set<ApprovalDelegation>();
     public DbSet<VoucherReceipt> VoucherReceipts => Set<VoucherReceipt>();
+    public DbSet<CashCount> CashCounts => Set<CashCount>();
+    public DbSet<Budget> Budgets => Set<Budget>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -221,6 +225,53 @@ public class PettyCashDbContext : DbContext
             e.HasIndex(x => new { x.TenantId, x.ApproximateHash })
              .HasDatabaseName("ix_voucher_receipts_tenant_approx");
             e.HasOne<Voucher>().WithMany().HasForeignKey(x => x.VoucherId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // -------------------------------------------------------------------
+        // cash_counts
+        // -------------------------------------------------------------------
+        b.Entity<CashCount>(e =>
+        {
+            e.ToTable("cash_counts");
+            e.HasKey(x => x.CashCountId);
+            e.Property(x => x.CashCountId).HasColumnName("cash_count_id");
+            e.Property(x => x.FloatId).HasColumnName("float_id").IsRequired();
+            e.Property(x => x.CountedByUserId).HasColumnName("counted_by_user_id").IsRequired();
+            e.Property(x => x.WitnessUserId).HasColumnName("witness_user_id");
+            e.Property(x => x.CountedAt).HasColumnName("counted_at").IsRequired();
+            e.Property(x => x.PhysicalAmountMinor).HasColumnName("physical_amount_minor").IsRequired();
+            e.Property(x => x.SystemAmountMinor).HasColumnName("system_amount_minor").IsRequired();
+            e.Property(x => x.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
+            e.Property(x => x.VarianceReason).HasColumnName("variance_reason").HasMaxLength(1000);
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+            e.Ignore(x => x.VarianceMinor);
+
+            e.HasIndex(x => new { x.FloatId, x.CountedAt }).HasDatabaseName("ix_cash_counts_float_when");
+            e.HasOne<Float>().WithMany().HasForeignKey(x => x.FloatId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // -------------------------------------------------------------------
+        // budgets
+        // -------------------------------------------------------------------
+        b.Entity<Budget>(e =>
+        {
+            e.ToTable("budgets");
+            e.HasKey(x => x.BudgetId);
+            e.Property(x => x.BudgetId).HasColumnName("budget_id");
+            e.Property(x => x.Scope).HasColumnName("scope").HasConversion<short>().IsRequired();
+            e.Property(x => x.ScopeKey).HasColumnName("scope_key").HasMaxLength(64).IsRequired();
+            e.Property(x => x.PeriodStart).HasColumnName("period_start").IsRequired();
+            e.Property(x => x.PeriodEnd).HasColumnName("period_end").IsRequired();
+            e.Property(x => x.AmountMinor).HasColumnName("amount_minor").IsRequired();
+            e.Property(x => x.ConsumedMinor).HasColumnName("consumed_minor").IsRequired();
+            e.Property(x => x.CurrencyCode).HasColumnName("currency_code").HasMaxLength(3).IsRequired();
+            e.Property(x => x.AlertThresholdPct).HasColumnName("alert_threshold_pct").IsRequired();
+            e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+            e.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
+            e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
+
+            e.HasIndex(x => new { x.TenantId, x.Scope, x.ScopeKey, x.PeriodStart, x.PeriodEnd })
+             .HasDatabaseName("ix_budgets_tenant_scope_period");
         });
     }
 }
