@@ -1,21 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <RollForward>LatestMajor</RollForward>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>NickFinance.Database.Bootstrap</RootNamespace>
-    <AssemblyName>NickFinance.Database.Bootstrap</AssemblyName>
-    <Description>NICKSCAN ERP / NickFinance — bootstrap CLI. Applies EF migrations for the Ledger and Petty Cash schemas, applies the Postgres-level triggers, and optionally seeds the Ghana standard chart of accounts. Run by a DBA against the live nickhr database; idempotent.</Description>
+    <RootNamespace>NickFinance.AR</RootNamespace>
+    <AssemblyName>NickFinance.AR</AssemblyName>
+    <Description>NICKSCAN ERP / NickFinance — Accounts Receivable. Customer master, invoice + line items + state machine (Draft / Issued / PartiallyPaid / Paid / Void), GRA e-VAT integration via IEvatProvider, scan-to-invoice trigger, AR receipts that post to the Ledger.</Description>
     <Version>0.1.0</Version>
     <Company>Nick TC-Scan Ltd</Company>
     <Product>NICKSCAN ERP SOLUTION</Product>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -25,9 +26,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NickFinance.Ledger\NickFinance.Ledger.csproj" />
-    <ProjectReference Include="..\NickFinance.PettyCash\NickFinance.PettyCash.csproj" />
     <ProjectReference Include="..\NickFinance.Coa\NickFinance.Coa.csproj" />
-    <ProjectReference Include="..\NickFinance.AR\NickFinance.AR.csproj" />
+    <ProjectReference Include="..\NickFinance.TaxEngine\NickFinance.TaxEngine.csproj" />
   </ItemGroup>
 
 </Project>

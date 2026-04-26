@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickFinance.AR;
 using NickFinance.Coa;
 using NickFinance.Ledger;
 using NickFinance.PettyCash;
@@ -39,11 +40,12 @@ public static class Program
             await ApplyLedgerMigrationsAsync(conn);
             await ApplyPettyCashMigrationsAsync(conn);
             await ApplyCoaMigrationsAsync(conn);
+            await ApplyArMigrationsAsync(conn);
             await ApplySchemaTriggersAsync(conn);
             if (seedCoa) await SeedGhanaChartAsync(conn);
 
             Console.WriteLine();
-            Console.WriteLine("Bootstrap complete. The Ledger + Petty Cash + CoA schemas are ready.");
+            Console.WriteLine("Bootstrap complete. Ledger + Petty Cash + CoA + AR schemas are ready.");
             return 0;
         }
         catch (Exception ex)
@@ -86,9 +88,18 @@ public static class Program
         Console.WriteLine("       CoA: up to date.");
     }
 
+    private static async Task ApplyArMigrationsAsync(string conn)
+    {
+        Console.WriteLine("[4/6] Applying AR migrations (ar schema)...");
+        var opts = new DbContextOptionsBuilder<ArDbContext>().UseNpgsql(conn).Options;
+        await using var db = new ArDbContext(opts);
+        await db.Database.MigrateAsync();
+        Console.WriteLine("       AR: up to date.");
+    }
+
     private static async Task ApplySchemaTriggersAsync(string conn)
     {
-        Console.WriteLine("[4/5] Applying Postgres triggers (balance invariant + append-only)...");
+        Console.WriteLine("[5/6] Applying Postgres triggers (balance invariant + append-only)...");
         var opts = new DbContextOptionsBuilder<LedgerDbContext>().UseNpgsql(conn).Options;
         await using var db = new LedgerDbContext(opts);
         await SchemaBootstrap.ApplyConstraintsAsync(db);
@@ -97,7 +108,7 @@ public static class Program
 
     private static async Task SeedGhanaChartAsync(string conn)
     {
-        Console.WriteLine("[5/5] Seeding Ghana standard chart of accounts...");
+        Console.WriteLine("[6/6] Seeding Ghana standard chart of accounts...");
         var opts = new DbContextOptionsBuilder<CoaDbContext>().UseNpgsql(conn).Options;
         await using var db = new CoaDbContext(opts);
         var svc = new CoaService(db);
