@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using NickComms.Gateway.Configuration;
 using NickComms.Gateway.Data;
 using NickComms.Gateway.Endpoints;
@@ -30,6 +30,23 @@ builder.Logging.AddDebug();
 // Load environment variables with NICKCOMMS_ prefix
 builder.Configuration.AddEnvironmentVariables("NICKCOMMS_");
 
+// SECURITY: replace the ***USE_ENV_VAR_NICKSCAN_DB_PASSWORD*** placeholder in the
+// CommsDb connection string with the env-var value. The nick_comms database is now
+// reached via the nscim_app role (same credentials as the other four services).
+var _nickscanDbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
+var _commsDbConn = builder.Configuration.GetConnectionString("CommsDb");
+if (!string.IsNullOrEmpty(_commsDbConn) && _commsDbConn.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
+{
+    if (string.IsNullOrEmpty(_nickscanDbPassword))
+    {
+        throw new InvalidOperationException(
+            "NICKSCAN_DB_PASSWORD environment variable is required — the appsettings.json " +
+            "CommsDb connection string still contains the placeholder.");
+    }
+    builder.Configuration["ConnectionStrings:CommsDb"] =
+        _commsDbConn.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", _nickscanDbPassword);
+}
+
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
@@ -43,6 +60,9 @@ builder.Host.UseSerilog();
 builder.Services.Configure<HubtelOptions>(builder.Configuration.GetSection(HubtelOptions.SectionName));
 builder.Services.Configure<SmsGatewayOptions>(builder.Configuration.GetSection(SmsGatewayOptions.SectionName));
 builder.Services.Configure<EmailOptions>(builder.Configuration.GetSection(EmailOptions.SectionName));
+// Outbox tuning (poll cadence, batch size, retry policy, stuck-row cutoff).
+// Defaults in OutboxOptions are conservative — appsettings can override.
+builder.Services.Configure<OutboxOptions>(builder.Configuration.GetSection(OutboxOptions.SectionName));
 
 // NICKSCAN ERP — multi-tenancy plumbing (Phase 1)
 // Registers ITenantContext + TenantOwnedEntityInterceptor in DI.
@@ -54,7 +74,11 @@ builder.Services.AddNickERPTenancy();
 builder.Services.AddDbContext<CommsDbContext>((sp, options) =>
 {
     options.UseNpgsql(builder.Configuration.GetConnectionString("CommsDb"));
-    options.AddInterceptors(sp.GetRequiredService<NickERP.Platform.Tenancy.TenantOwnedEntityInterceptor>());
+    // Entity stamping + connection-level SET app.tenant_id. The latter
+    // turns the dormant tenant_isolation_* RLS policies into active filters.
+    options.AddInterceptors(
+        sp.GetRequiredService<NickERP.Platform.Tenancy.TenantOwnedEntityInterceptor>(),
+        sp.GetRequiredService<NickERP.Platform.Tenancy.TenantConnectionInterceptor>());
 });
 
 // Memory cache (for API key caching)
@@ -97,14 +121,12 @@ builder.Services.AddSwaggerGen(c =>
         Type = SecuritySchemeType.ApiKey,
         Description = "API key for client app authentication"
     });
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    // Swashbuckle 10.x + Microsoft.OpenApi 2.x: use OpenApiSecuritySchemeReference
+    c.AddSecurityRequirement((document) => new OpenApiSecurityRequirement
     {
         {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "ApiKey" }
-            },
-            Array.Empty<string>()
+            new OpenApiSecuritySchemeReference("ApiKey", document),
+            new List<string>()
         }
     });
 });
@@ -141,6 +163,7 @@ app.MapSmsEndpoints();
 app.MapEmailEndpoints();
 app.MapOtpEndpoints();
 app.MapHistoryEndpoints();
+app.MapModuleEndpoints();
 
 app.MapHealthChecks("/api/health");
 

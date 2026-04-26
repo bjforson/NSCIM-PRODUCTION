@@ -67,9 +67,13 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
                 for (int i = 0; i < containerNumbers.Count; i += batchSize)
                 {
                     var batch = containerNumbers.Skip(i).Take(batchSize).ToList();
-                    // ✅ FIX: Use FromSqlRaw to avoid CTE generation from Contains()
-                    // ✅ FIX: Load full entities first, then project in memory to avoid CTE from Select()
-                    // Parameterized to prevent SQL injection (was: string-interpolated IN clause).
+                    // Round-1 audit C-2: previously string-interpolated IN clause.
+                    // Now parameterised via FromSqlRaw with positional placeholders
+                    // ({0},{1},...) so EF binds each batch value as a parameter —
+                    // safe from SQL injection. FromSqlRaw chosen over LINQ Contains()
+                    // to avoid CTE generation on the EF Core 8.x baseline; net10's
+                    // Npgsql translator can swap to `= ANY(@p)` later if profiling
+                    // shows the CTE path is no longer a concern.
                     var paramNames = batch.Select((_, idx) => $"{{{idx}}}").ToArray();
                     var sql = $"SELECT * FROM BOEDocuments WHERE ContainerNumber IN ({string.Join(",", paramNames)})";
                     var batchEntities = await _icumContext.BOEDocuments

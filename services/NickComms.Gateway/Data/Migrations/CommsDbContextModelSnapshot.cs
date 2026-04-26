@@ -17,7 +17,7 @@ namespace NickComms.Gateway.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.4")
+                .HasAnnotation("ProductVersion", "10.0.7")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -76,6 +76,14 @@ namespace NickComms.Gateway.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("AttachmentsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("attachments_json");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
                     b.Property<Guid?>("BatchId")
                         .HasColumnType("uuid")
                         .HasColumnName("batch_id");
@@ -119,6 +127,14 @@ namespace NickComms.Gateway.Data.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_html");
 
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<DateTime?>("ProcessingStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processing_started_at");
+
                     b.Property<DateTime?>("SentAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("sent_at");
@@ -155,6 +171,9 @@ namespace NickComms.Gateway.Data.Migrations
 
                     b.HasIndex("ClientApp", "CreatedAt")
                         .IsDescending(false, true);
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("ix_email_messages_outbox");
 
                     b.ToTable("email_messages");
                 });
@@ -213,6 +232,10 @@ namespace NickComms.Gateway.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
                     b.Property<Guid?>("BatchId")
                         .HasColumnType("uuid")
                         .HasColumnName("batch_id");
@@ -250,6 +273,14 @@ namespace NickComms.Gateway.Data.Migrations
                         .HasColumnType("numeric")
                         .HasColumnName("hubtel_rate");
 
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<DateTime?>("ProcessingStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processing_started_at");
+
                     b.Property<string>("Recipient")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -281,6 +312,9 @@ namespace NickComms.Gateway.Data.Migrations
 
                     b.HasIndex("ClientApp", "CreatedAt")
                         .IsDescending(false, true);
+
+                    b.HasIndex("Status", "NextAttemptAt")
+                        .HasDatabaseName("ix_sms_messages_outbox");
 
                     b.ToTable("sms_messages");
                 });

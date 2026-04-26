@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.RateLimiting;
 using HealthChecks.UI.Client;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -24,11 +25,31 @@ using NickScanCentralImagingPortal.Services;
 using Serilog;
 // using AspNetCoreRateLimit; // REMOVED - replaced with .NET 8 built-in rate limiting
 
-using var instanceMutex = new Mutex(true, @"Global\NSCIM_API_SingleInstance", out var isFirstInstance);
-if (!isFirstInstance)
+// Single-instance guard. Skipped when running under WebApplicationFactory or
+// EF tooling — both spin up the entry point in the same process as a parallel
+// host (the running Windows service or an EF design-time helper) and would
+// trip the mutex, exit early, and leave the test/tooling staring at "The
+// entry point exited without ever building an IHost".
+//
+// The env-var bypass is deliberately scoped: tests / EF set
+// NSCIM_SKIP_SINGLE_INSTANCE=1 once at process start; production never sets
+// it, so the mutex still gates two accidentally-launched copies of the
+// Windows service. We register Dispose on ProcessExit so production behavior
+// matches the original `using var` (release the mutex on a clean shutdown).
+var _skipMutex = string.Equals(
+    Environment.GetEnvironmentVariable("NSCIM_SKIP_SINGLE_INSTANCE"),
+    "1",
+    StringComparison.Ordinal);
+Mutex? instanceMutex = null;
+if (!_skipMutex)
 {
-    Console.Error.WriteLine("Another instance of NSCIM API is already running. Exiting.");
-    return;
+    instanceMutex = new Mutex(true, @"Global\NSCIM_API_SingleInstance", out var isFirstInstance);
+    if (!isFirstInstance)
+    {
+        Console.Error.WriteLine("Another instance of NSCIM API is already running. Exiting.");
+        return;
+    }
+    AppDomain.CurrentDomain.ProcessExit += (_, _) => instanceMutex?.Dispose();
 }
 
 var builder = WebApplication.CreateBuilder(args);
@@ -98,6 +119,33 @@ builder.Host.UseSerilog();
 
 // Add standardized services
 builder.Services.AddStandardizedServices(builder.Configuration);
+
+// ✅ SECURITY: Server-side HMAC signer for image URLs. Mirror of the WebApp's
+// SignedImageUrlBuilder. Controllers and services that emit image URLs into
+// response DTOs inject this and call Sign* to produce a short-lived signed
+// URL the browser can use in <img src> without a JWT header. Lives in
+// .Services so .Services-project classes (e.g. CargoGroupService) can
+// inject it without .Services depending on .API. See the Core interface
+// + SignedImageUrlMiddleware for the full protocol.
+builder.Services.AddSingleton<NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner,
+    NickScanCentralImagingPortal.Services.Security.SignedImageUrlSigner>();
+
+// ✅ Round-1 audit H-16: RFC 7807 ProblemDetails for status-code responses
+// (401/403/404/etc when no body is set explicitly) and as the canonical path
+// forward for new controllers calling `Problem(...)`. Existing thrown
+// exceptions still go through GlobalExceptionHandlerMiddleware which uses
+// the legacy ApiErrorResponse shape for backward compatibility — controllers
+// that want clean RFC 7807 today should call `Problem()` directly.
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = ctx =>
+    {
+        var correlationId = ctx.HttpContext.GetCorrelationId() ?? Guid.NewGuid().ToString();
+        ctx.ProblemDetails.Extensions["correlationId"] = correlationId;
+        ctx.ProblemDetails.Extensions["timestamp"] = DateTime.UtcNow.ToString("o");
+        ctx.ProblemDetails.Extensions["path"] = ctx.HttpContext.Request.Path.Value;
+    };
+});
 
 builder.Services.AddHttpClient();
 
@@ -201,11 +249,19 @@ builder.Services.AddAuthentication(options =>
 
     options.Events = new Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationEvents
     {
-        OnValidatePrincipal = context =>
+        OnValidatePrincipal = async context =>
         {
-            var username = context.Principal?.Identity?.Name;
-            Log.Debug("Cookie validated for user: {Username}", username);
-            return Task.CompletedTask;
+            // Single-session enforcement: reject the cookie if its sid claim no
+            // longer matches user.CurrentSessionId. Same protocol as the JWT
+            // OnTokenValidated path below — see SingleSessionValidator.
+            var ok = await NickScanCentralImagingPortal.API.Security.SingleSessionValidator
+                .ValidateAsync(context.HttpContext, context.Principal);
+            if (!ok)
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(
+                    Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme);
+            }
         },
         OnRedirectToLogin = context =>
         {
@@ -256,11 +312,18 @@ builder.Services.AddAuthentication(options =>
             Log.Warning("JWT Authentication failed: {Error}", context.Exception.Message);
             return Task.CompletedTask;
         },
-        OnTokenValidated = context =>
+        OnTokenValidated = async context =>
         {
-            var username = context.Principal?.Identity?.Name;
-            Log.Debug("JWT token validated for user: {Username}", username);
-            return Task.CompletedTask;
+            // Single-session enforcement (2026-04-25). The token carries a sid
+            // claim populated from user.CurrentSessionId at mint time. If the
+            // user logs in elsewhere we rotate that column → the previous
+            // token's sid no longer matches and we reject it here.
+            var ok = await NickScanCentralImagingPortal.API.Security.SingleSessionValidator
+                .ValidateAsync(context.HttpContext, context.Principal);
+            if (!ok)
+            {
+                context.Fail("Session invalidated by login on another device.");
+            }
         },
         OnChallenge = context =>
         {
@@ -273,6 +336,14 @@ builder.Services.AddAuthentication(options =>
 // Add authorization policies
 builder.Services.AddAuthorization(options =>
 {
+    // ✅ SECURITY: Deny-by-default. Every endpoint requires an authenticated user unless it
+    // explicitly opts in with [AllowAnonymous] (health, login, public stats).
+    // This closes the class of bugs where a controller forgot its class-level [Authorize]
+    // and anonymous requests fell through — see ImageAnalysisManagementController history.
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+
     static bool HasAnyPermission(System.Security.Claims.ClaimsPrincipal? user, params string[] permissions)
     {
         if (user == null) return false;
@@ -363,7 +434,7 @@ builder.Services.AddScoped<IAuthorizationHandler, NickScanCentralImagingPortal.A
 // ✅ Configure Swagger with JWT support, XML docs, and examples
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
     {
         Title = "NickScan Central Imaging Portal API",
         Version = "v1.0.0",
@@ -395,13 +466,13 @@ and real-time monitoring capabilities.
 - Login: 5 attempts/minute
 - Health checks: No limit
 ",
-        Contact = new Microsoft.OpenApi.Models.OpenApiContact
+        Contact = new Microsoft.OpenApi.OpenApiContact
         {
             Name = "NickScan Support",
             Email = "support@nickscan.com",
             Url = new Uri("https://nickscan.com")
         },
-        License = new Microsoft.OpenApi.Models.OpenApiLicense
+        License = new Microsoft.OpenApi.OpenApiLicense
         {
             Name = "Proprietary",
             Url = new Uri("https://nickscan.com/license")
@@ -440,13 +511,13 @@ and real-time monitoring capabilities.
     options.OrderActionsBy((apiDesc) => $"{apiDesc.ActionDescriptor.RouteValues["controller"]}_{apiDesc.HttpMethod}");
 
     // Add JWT authentication to Swagger UI
-    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
     {
         Name = "Authorization",
-        Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+        Type = Microsoft.OpenApi.SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT",
-        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        In = Microsoft.OpenApi.ParameterLocation.Header,
         Description = @"
 JWT Authorization header using the Bearer scheme.
 
@@ -471,18 +542,14 @@ Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 "
     });
 
-    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    // Swashbuckle 10.x + Microsoft.OpenApi 2.x: AddSecurityRequirement now takes a
+     // Func<OpenApiDocument, OpenApiSecurityRequirement> and uses OpenApiSecuritySchemeReference
+     // instead of the old OpenApiSecurityScheme { Reference = ... } pattern.
+    options.AddSecurityRequirement((document) => new Microsoft.OpenApi.OpenApiSecurityRequirement
     {
         {
-            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
-            {
-                Reference = new Microsoft.OpenApi.Models.OpenApiReference
-                {
-                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
+            new Microsoft.OpenApi.OpenApiSecuritySchemeReference("Bearer", document),
+            new List<string>()
         }
     });
 });
@@ -1052,6 +1119,12 @@ Log.Information("✅ Correlation ID middleware enabled");
 app.UseGlobalExceptionHandler();
 Log.Information("✅ Global exception handler enabled");
 
+// ✅ ProblemDetails for status-code responses (401/403/404/etc with no body).
+// Controller-thrown exceptions still go through UseGlobalExceptionHandler
+// above for backward compatibility with the legacy ApiErrorResponse shape.
+app.UseStatusCodePages();
+Log.Information("✅ Status-code pages → ProblemDetails enabled");
+
 // ✅ Performance Logging (track all request performance)
 if (builder.Configuration.GetValue<bool>("Performance:EnablePerformanceLogging", true))
 {
@@ -1182,6 +1255,15 @@ Log.Information("✅ Routing middleware enabled");
 // ✅ CRITICAL: Add authentication BEFORE authorization
 app.UseAuthentication(); // Authenticates the user (validates JWT token)
 Log.Information("✅ Authentication middleware enabled");
+
+// ✅ SECURITY: HMAC-signed short-lived URL auth for image-serving endpoints that
+// browser <img src>/cross-origin fetch cannot carry a Bearer or SameSite=Strict
+// cookie on. MUST run AFTER UseAuthentication (so we only act on requests the
+// normal schemes didn't claim) and BEFORE UseAuthorization (so the [Authorize]
+// filter sees a populated User principal). See SignedImageUrlMiddleware.
+app.UseMiddleware<NickScanCentralImagingPortal.API.Middleware.SignedImageUrlMiddleware>();
+Log.Information("✅ Signed-image-URL middleware enabled");
+
 app.UseAuthorization();  // Authorizes the user (checks permissions)
 Log.Information("✅ Authorization middleware enabled");
 

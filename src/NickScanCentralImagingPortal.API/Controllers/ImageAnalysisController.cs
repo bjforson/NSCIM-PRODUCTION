@@ -475,11 +475,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         var batch = groupIdentifiersForQuery.Skip(i).Take(batchSize).ToList();
                         if (!batch.Any()) continue;
 
-                        var placeholders = string.Join(",", batch.Select(g => $"'{g!.Replace("'", "''")}'"));
-
-                        // Query ContainerCompletenessStatuses using EF Core
+                        // Round-1 audit C-2: previously this used FromSql with a manually
+                        // single-quote-escaped IN list — fragile if any future change ever
+                        // routes user input into batch. LINQ Contains() translates to
+                        // = ANY(@p) under Npgsql so the values are bound parameters.
+                        var batchKeys = batch.Where(g => !string.IsNullOrEmpty(g)).ToList();
                         var batchCompleteness = await _db.ContainerCompletenessStatuses
-                            .FromSql($"SELECT * FROM ContainerCompletenessStatuses WHERE GroupIdentifier IN ({placeholders})")
+                            .Where(c => c.GroupIdentifier != null && batchKeys.Contains(c.GroupIdentifier))
                             .AsNoTracking()
                             .ToListAsync();
 

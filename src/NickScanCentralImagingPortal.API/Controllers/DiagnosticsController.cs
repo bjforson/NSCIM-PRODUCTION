@@ -68,7 +68,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             System.IO.File.Delete(testPath);
                             diagnostics.FileSystemAccessible = true;
                         }
-                        catch { }
+                        catch (UnauthorizedAccessException uaEx)
+                        {
+                            // Round-1 audit C-3: previously silent. The "write
+                            // access OK?" probe used to claim success even on
+                            // permission denial, which made operators trust an
+                            // unwritable folder.
+                            _logger.LogWarning(uaEx, "[DIAGNOSTICS] Write access denied on {Path}", downloadsPath);
+                            diagnostics.FileSystemAccessible = false;
+                        }
+                        catch (IOException ioEx)
+                        {
+                            _logger.LogWarning(ioEx, "[DIAGNOSTICS] IO error during write probe on {Path}", downloadsPath);
+                            diagnostics.FileSystemAccessible = false;
+                        }
                     }
                 }
                 catch (Exception ex)

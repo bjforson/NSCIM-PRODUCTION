@@ -47,9 +47,15 @@ builder.Logging.AddFilter("Microsoft.AspNetCore.Routing", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 
 // Configure host to ignore background service exceptions (prevents shutdown on service errors)
+// Round-2 runtime audit M1: NSCIM_WebApp was crashing 11 times in 5 days with
+// OperationCanceledException out of WindowsServiceLifetime.StopAsync because the
+// default 30-second SCM shutdown wasn't enough for in-flight Blazor circuits to
+// drain. Bump to 90s — SCM will still kill us at 120s, but circuits get a fair
+// shot to finish before we exit.
 builder.Services.Configure<HostOptions>(opts =>
 {
     opts.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+    opts.ShutdownTimeout = TimeSpan.FromSeconds(90);
 });
 
 // Add services to the container.
@@ -174,6 +180,14 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.InactivityTimerService>()
 
 // Add SignalR service for real-time updates
 builder.Services.AddSingleton<NickScanWebApp.New.Services.SignalRService>();
+
+// ✅ SECURITY: Server-side signer for image-serving URLs. The WebApp's Blazor
+// <img src> tags cannot carry a Bearer header, so we mint short-lived HMAC-
+// signed URLs and the API validates them via SignedImageUrlMiddleware. Both
+// services must have the same NICKSCAN_IMAGE_SIGNING_KEY env var set.
+// Singleton because the key is immutable for the process lifetime and the
+// signer holds no per-user state.
+builder.Services.AddSingleton<NickScanWebApp.New.Services.SignedImageUrlBuilder>();
 
 // Add application services
 builder.Services.AddMemoryCache();

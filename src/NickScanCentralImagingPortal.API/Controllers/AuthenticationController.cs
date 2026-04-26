@@ -43,19 +43,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ILogger<AuthenticationController> _logger;
         private readonly IPermissionService _permissionService;
         private readonly IConfiguration _configuration;
+        private readonly Microsoft.Extensions.Caching.Memory.IMemoryCache? _sessionCache;
 
         public AuthenticationController(
             IUserRepository userRepository,
             IJwtService jwtService,
             ILogger<AuthenticationController> logger,
             IPermissionService permissionService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            Microsoft.Extensions.Caching.Memory.IMemoryCache? sessionCache = null)
         {
             _userRepository = userRepository;
             _jwtService = jwtService;
             _logger = logger;
             _permissionService = permissionService;
             _configuration = configuration;
+            _sessionCache = sessionCache;
         }
 
         /// <summary>
@@ -173,6 +176,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         permissions.Count);
                 }
 
+                // Single-session enforcement (2026-04-25): rotate the user's
+                // CurrentSessionId BEFORE minting the token, so the new JWT carries
+                // the new sid claim and any token issued to a previous device
+                // becomes invalid the next time it's validated.
+                var rotatedSid = await _userRepository.RotateSessionIdAsync(user.Id);
+                if (rotatedSid.HasValue)
+                {
+                    user.CurrentSessionId = rotatedSid.Value;
+                }
+                // Invalidate the cached sid (if any) so the validator re-reads from DB
+                // and doesn't briefly accept the old value during the cache TTL window.
+                _sessionCache?.Remove($"sid:{user.Id}");
+
                 // Generate JWT token
                 var token = _jwtService.GenerateToken(user);
                 var refreshToken = _jwtService.GenerateRefreshToken();
@@ -185,6 +201,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     new Claim(ClaimTypes.Name, user.Username),
                     new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
                     new Claim(ClaimTypes.Role, resolvedRoleName),
+                    // Single-session: cookie-auth carries the same sid claim so the
+                    // OnValidatePrincipal hook can reject stale Blazor sessions too.
+                    new Claim("sid", user.CurrentSessionId.ToString()),
                     new Claim("FullName", $"{user.FirstName} {user.LastName}".Trim())
                 };
 

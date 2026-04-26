@@ -46,13 +46,9 @@ public class SmsService : ISmsService
         _db.SmsMessages.Add(msg);
         await _db.SaveChangesAsync(ct);
 
-        _queue.Enqueue(new SmsQueueItem
-        {
-            MessageId = msg.Id,
-            From = senderId,
-            To = request.To,
-            Content = request.Content
-        });
+        // Outbox: the DB row IS the queue signal; the polling worker picks it up
+        // on its next tick. Enqueue() remains as a no-op for source compat.
+        _queue.Enqueue(new SmsQueueItem { MessageId = msg.Id });
 
         return new SmsResponse { Id = msg.Id, Status = "queued" };
     }
@@ -76,15 +72,10 @@ public class SmsService : ISmsService
         _db.SmsMessages.AddRange(messages);
         await _db.SaveChangesAsync(ct);
 
+        // Outbox no-op — DB row commit IS the queue signal.
         foreach (var msg in messages)
         {
-            _queue.Enqueue(new SmsQueueItem
-            {
-                MessageId = msg.Id,
-                From = senderId,
-                To = msg.Recipient,
-                Content = msg.Content
-            });
+            _queue.Enqueue(new SmsQueueItem { MessageId = msg.Id });
         }
 
         _logger.LogInformation("Bulk SMS queued: batch={BatchId} count={Count} by {App}", batchId, messages.Count, clientApp);

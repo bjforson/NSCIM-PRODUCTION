@@ -10,8 +10,12 @@ DATABASE_URL = f"postgresql+asyncpg://postgres:{DB_PASSWORD_ENCODED}@localhost:5
 DATABASE_URL_SYNC = f"postgresql+psycopg2://postgres:{DB_PASSWORD_ENCODED}@localhost:5432/nickscan_production"
 
 # Service config
+# SECURITY: default to loopback only. The splitter has no auth layer and is supervised
+# by NSCIM_API on the same host, so a localhost bind is sufficient. Operators who need
+# cross-host access must set SPLITTER_HOST=0.0.0.0 deliberately AND front the service
+# with an auth proxy.
 SERVICE_PORT = int(os.getenv("SPLITTER_PORT", "5320"))
-SERVICE_HOST = os.getenv("SPLITTER_HOST", "0.0.0.0")
+SERVICE_HOST = os.getenv("SPLITTER_HOST", "127.0.0.1")
 
 # Image processing
 MAX_IMAGE_SIZE_MB = 100

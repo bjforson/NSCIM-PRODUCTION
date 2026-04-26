@@ -26,15 +26,19 @@
    * Fetch the raw plane buffer from the API. Returns a metadata object
    * with geometry + the typed array (Uint16Array for energies, Uint8Array
    * for material). Throws on network / HTTP errors.
+   *
+   * rawUrl must be a complete signed URL built server-side by
+   * SignedImageUrlBuilder — it carries ?exp&uid&sig query params the
+   * API's SignedImageUrlMiddleware validates. We intentionally no longer
+   * build the URL here since JS has no access to the signing key.
    */
-  async function fetchPlane(apiBaseUrl, container, plane) {
-    const url = `${apiBaseUrl}/api/ImageProcessing/container/${encodeURIComponent(container)}/raw?plane=${encodeURIComponent(plane)}`;
+  async function fetchPlane(rawUrl, container, plane) {
     const key = cacheKey(container, plane);
     if (cache.has(key)) return cache.get(key);
 
-    const res = await fetch(url, { credentials: "include" });
+    const res = await fetch(rawUrl, { credentials: "include" });
     if (!res.ok) {
-      throw new Error(`Raw plane fetch failed: HTTP ${res.status} for ${url}`);
+      throw new Error(`Raw plane fetch failed: HTTP ${res.status}`);
     }
 
     const width    = parseInt(res.headers.get("X-Width")    || "0", 10);
@@ -105,9 +109,13 @@
   /**
    * Combined fetch + render path — what Blazor calls. Returns the plane
    * metadata so Blazor can display geometry (e.g. "3256×1378 @16-bit").
+   *
+   * rawUrl is the full signed URL (built server-side via
+   * SignedImageUrlBuilder) — this function MUST be called with a signed
+   * URL or the API will return 401.
    */
-  async function loadAndRender(canvas, apiBaseUrl, container, plane, levelPct, windowPct, invert) {
-    const data = await fetchPlane(apiBaseUrl, container, plane);
+  async function loadAndRender(canvas, rawUrl, container, plane, levelPct, windowPct, invert) {
+    const data = await fetchPlane(rawUrl, container, plane);
     render(canvas, data, levelPct, windowPct, invert);
     return {
       width: data.width,

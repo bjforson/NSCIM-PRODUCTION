@@ -562,7 +562,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// This endpoint will be removed in a future version.
         /// </summary>
         [Obsolete("Use /api/ImageProcessing/container/{containerNumber}/complete/image?size=thumbnail instead")]
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/thumbnail")]
         public async Task<ActionResult> GetContainerThumbnail(string containerNumber)
         {
@@ -663,7 +662,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// This endpoint will be removed in a future version.
         /// </summary>
         [Obsolete("Use /api/ImageProcessing/container/{containerNumber}/complete/image?size=full instead")]
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/full")]
         public async Task<ActionResult> GetContainerFull(string containerNumber)
         {
@@ -742,7 +740,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get complete container data including image and full scanner records - UNIFIED ENDPOINT
         /// Returns both the image and all scanner-specific metadata in a single call
         /// </summary>
-        [AllowAnonymous] // Allow unauthenticated access
         [HttpGet("container/{containerNumber}/complete")]
         [ProducesResponseType(200, Type = typeof(NickScanCentralImagingPortal.Core.Models.ContainerImageDataResponse))]
         [ProducesResponseType(404)]
@@ -781,7 +778,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <param name="containerNumber">Container number</param>
         /// <param name="imageType">Optional: Image type filter for FS6000 (Main, Icon, CCR, LPR, Manifest). If not provided, returns first available image.</param>
         /// <param name="size">Optional: Image size preference (thumbnail, full, original). Default: full. Note: Currently all sizes return full resolution - resizing to be implemented.</param>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/complete/image")]
         public async Task<ActionResult> GetCompleteContainerDataImage(
             string containerNumber,
@@ -950,7 +946,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 {
                     _logger.LogWarning("No image found for container {ContainerNumber}, imageType: {ImageType} — returning placeholder", containerNumber, imageType ?? "default");
                     var placeholder = GenerateNoImagePlaceholder(containerNumber);
-                    Response.Headers.CacheControl = "public, max-age=60";
+                    // SECURITY: private NOT public. "public" lets the server's
+                    // ResponseCachingMiddleware + any intermediate proxy serve this
+                    // body to any subsequent requester for 60s — so a single signed
+                    // request would "unlock" the placeholder for every anon caller.
+                    // private + 60s means only the specific user agent caches.
+                    Response.Headers.CacheControl = "private, max-age=60";
                     return File(placeholder, "image/jpeg");
                 }
 
@@ -1041,7 +1042,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// lineDataType: tri-panel = 9 modes, single-view = 3 modes
         /// (bw / inverse / edge).
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/mode-capabilities")]
         [ProducesResponseType(200, Type = typeof(ScanModeCapabilities))]
         [ProducesResponseType(404)]
@@ -1074,7 +1074,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// a "not applicable" material block so the UI can render a
         /// simplified view without null-checking every field.
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/roi")]
         [ProducesResponseType(200, Type = typeof(RoiInspectorResult))]
         [ProducesResponseType(404)]
@@ -1116,7 +1115,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Coordinates are image-native; clamped server-side so the client
         /// doesn't need to guard bounds.
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/pixel")]
         [ProducesResponseType(200, Type = typeof(PixelValueResult))]
         [ProducesResponseType(404)]
@@ -1160,7 +1158,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// anyway, but a repeated client-side re-fetch within a minute is
         /// a likely pattern (e.g. operator switches planes and back).
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/raw")]
         [ProducesResponseType(200)]
         [ProducesResponseType(400)]

@@ -315,7 +315,10 @@ async def create_split_job(
         image_data = base64_to_bytes(request.image_base64)
     elif request.image_url:
         import httpx
-        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+        # SECURITY: TLS validation is enforced. If a caller needs to fetch from an
+        # internal endpoint with a self-signed cert, it must be on the trust store —
+        # do NOT disable verification.
+        async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(request.image_url)
             resp.raise_for_status()
             image_data = resp.content
@@ -1025,4 +1028,7 @@ async def verify_candidates_endpoint(job_id: UUID, db: AsyncSession = Depends(ge
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=SERVICE_HOST, port=SERVICE_PORT, reload=True)
+    # SECURITY/RELIABILITY: reload=True is dev-only. It disables graceful shutdown,
+    # orphans workers, and bypasses SIGTERM handling. Enable via env var for local dev.
+    _reload = os.getenv("SPLITTER_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", host=SERVICE_HOST, port=SERVICE_PORT, reload=_reload)

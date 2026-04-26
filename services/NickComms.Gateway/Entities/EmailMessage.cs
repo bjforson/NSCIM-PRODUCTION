@@ -59,4 +59,28 @@ public class EmailMessage
 
     [Column("sent_at")]
     public DateTime? SentAt { get; set; }
+
+    // ---------------------------------------------------------------------
+    // Outbox columns (added 2026-04-25). See SmsMessage for the lifecycle
+    // contract. Email also persists attachments here as base64 JSON so a
+    // crashed worker can resume sending after restart instead of losing the
+    // payload that previously lived in the in-memory Channel.
+    // ---------------------------------------------------------------------
+
+    [Column("attempt_count")]
+    public int AttemptCount { get; set; }
+
+    [Column("next_attempt_at")]
+    public DateTime NextAttemptAt { get; set; } = DateTime.UtcNow;
+
+    [Column("processing_started_at")]
+    public DateTime? ProcessingStartedAt { get; set; }
+
+    /// <summary>
+    /// JSON array of <c>PersistedAttachment {filename, contentType, contentBase64}</c>
+    /// captured when the request was accepted. Null/empty means no attachments.
+    /// Stored as <c>jsonb</c>; the 10 MB API-side cap keeps row size manageable.
+    /// </summary>
+    [Column("attachments_json", TypeName = "jsonb")]
+    public string? AttachmentsJson { get; set; }
 }

@@ -69,6 +69,16 @@ namespace NickScanCentralImagingPortal.Core.Models
 
         public string? UpdatedBy { get; set; }
 
+        /// <summary>
+        /// Single-session enforcement (added 2026-04-25). Rotated on every
+        /// successful login, logout, password change, and force-deactivation.
+        /// Embedded as the <c>sid</c> claim in the JWT; JwtBearerEvents.OnTokenValidated
+        /// rejects tokens whose <c>sid</c> doesn't match this column. Effect: when
+        /// the same user logs in on Device 2, Device 1's token immediately becomes
+        /// invalid the next time it's used.
+        /// </summary>
+        public Guid CurrentSessionId { get; set; } = Guid.NewGuid();
+
         // Navigation properties
         public virtual Role? AssignedRole { get; set; }
         public virtual ICollection<UserPermission> UserPermissions { get; set; } = new List<UserPermission>();

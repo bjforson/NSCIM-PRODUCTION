@@ -17,6 +17,7 @@
 @inject NickScanWebApp.New.Services.ImageAnalysisViewPreloader ImageAnalysisPreloader
 @inject IJSRuntime JSRuntime
 @inject AuthenticationStateProvider AuthStateProvider
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 
         <MudDialog>
     <TitleContent>
@@ -2155,7 +2156,11 @@
     {
         try
         {
-            var imageUrl = $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image";
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var uid = authState.User.Identity?.Name ?? "anon";
+            var imageUrl = UrlBuilder.Build(
+                $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image",
+                uid);
 
             // Resolve scanner type from completeness data (don't hardcode)
             var scannerType = ScannerType;

@@ -97,7 +97,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("sync-status")]
-        [AllowAnonymous] // ✅ Allow anonymous access for diagnostics
         public async Task<ActionResult<object>> GetSyncStatus()
         {
             try
@@ -178,7 +177,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpPost("diagnose-sync")]
-        [AllowAnonymous] // ✅ Allow anonymous for diagnostics
         public async Task<ActionResult<object>> DiagnoseSync()
         {
             try
@@ -349,7 +347,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpPost("test-connection")]
-        [AllowAnonymous] // ✅ Allow anonymous for diagnostics
         public async Task<ActionResult<object>> TestConnection()
         {
             try
@@ -433,7 +430,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpPost("trigger-sync")]
-        [AllowAnonymous] // ✅ Allow anonymous for diagnostics
         public async Task<ActionResult<object>> TriggerSync()
         {
             try

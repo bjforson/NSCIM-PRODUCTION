@@ -378,9 +378,37 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 using var scope = _serviceScopeFactory.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
+                // Round-1 audit H-10: path-traversal guard. The {year}/{monthDay}/{serial}
+                // segments come from FS6000 scanner XML and could in theory contain
+                // ".." or absolute-path tokens that escape DestinationPath/ProcessedPath.
+                // Reject any segment that is empty, contains a separator, or contains "..".
+                if (!IsSafePathSegment(year) || !IsSafePathSegment(monthDay) || !IsSafePathSegment(serial))
+                {
+                    _logger.LogWarning(
+                        "Rejecting unsafe FS6000 path segments year={Year} monthDay={MonthDay} serial={Serial}",
+                        year, monthDay, serial);
+                    return false;
+                }
+
                 var relativePath = $"{year}/{monthDay}/{serial}";
                 var destinationFolder = Path.Combine(_config.DestinationPath, relativePath);
                 var processedFolder = Path.Combine(_config.ProcessedPath, relativePath);
+
+                // Belt-and-suspenders: confirm the resolved absolute paths still sit
+                // inside the configured roots. Path.GetFullPath canonicalises ".."
+                // sequences; if either resolved path escapes its base we abort.
+                var destRoot = Path.GetFullPath(_config.DestinationPath);
+                var procRoot = Path.GetFullPath(_config.ProcessedPath);
+                var destResolved = Path.GetFullPath(destinationFolder);
+                var procResolved = Path.GetFullPath(processedFolder);
+                if (!destResolved.StartsWith(destRoot, StringComparison.OrdinalIgnoreCase)
+                    || !procResolved.StartsWith(procRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "Rejecting FS6000 path that escapes its root: dest={Dest} proc={Proc}",
+                        destResolved, procResolved);
+                    return false;
+                }
 
                 _logger.LogDebug("Processing folder: {SourceFolder} -> {DestinationFolder}", sourceFolder, destinationFolder);
 
@@ -842,6 +870,22 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 _cancellationTokenSource?.Dispose();
                 _disposed = true;
             }
+        }
+
+        /// <summary>
+        /// Validate that a single path segment from scanner metadata is safe to
+        /// drop into <see cref="Path.Combine"/> without enabling traversal:
+        /// non-empty, no path separators, no "..".  Used by
+        /// <see cref="ProcessSerialFolderAsync"/> as a first-line filter.
+        /// </summary>
+        private static bool IsSafePathSegment(string? segment)
+        {
+            if (string.IsNullOrWhiteSpace(segment)) return false;
+            if (segment.Contains("..", StringComparison.Ordinal)) return false;
+            if (segment.IndexOfAny(new[] { '/', '\\', ':' }) >= 0) return false;
+            // Reserved Windows device names + control chars get caught by Path.GetFullPath
+            // when we resolve the combined path against the root anyway.
+            return true;
         }
     }
 }

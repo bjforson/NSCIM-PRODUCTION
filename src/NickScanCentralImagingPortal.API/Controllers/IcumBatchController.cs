@@ -746,7 +746,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     {
                         // VerificationDetails came from our own writer, so a parse failure here is a
                         // schema-drift bug worth surfacing (don't fail the whole request — caller still
-                        // gets the file's summary fields).
+                        // gets the file's summary fields). Originally surfaced by Round-1 audit C-3
+                        // — both feature branches addressed it; merged here on main.
                         _logger.LogWarning(jsonEx,
                             "Failed to deserialize VerificationDetails for file {Id}; returning summary without per-document detail",
                             id);

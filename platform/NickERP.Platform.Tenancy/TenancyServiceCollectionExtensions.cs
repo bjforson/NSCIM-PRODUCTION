@@ -11,14 +11,17 @@ namespace NickERP.Platform.Tenancy;
 public static class TenancyServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="ITenantContext"/> (scoped) and the
-    /// <see cref="TenantOwnedEntityInterceptor"/> (scoped). Call this in every
-    /// module's <c>Program.cs</c>.
+    /// Registers <see cref="ITenantContext"/> (scoped), the entity-stamping
+    /// <see cref="TenantOwnedEntityInterceptor"/> (scoped), and the connection-
+    /// level <see cref="TenantConnectionInterceptor"/> (scoped) which pushes
+    /// the current tenant id down to Postgres so the row-level-security
+    /// policies can actually filter. Call this in every module's <c>Program.cs</c>.
     /// </summary>
     public static IServiceCollection AddNickERPTenancy(this IServiceCollection services)
     {
         services.AddScoped<ITenantContext, TenantContext>();
         services.AddScoped<TenantOwnedEntityInterceptor>();
+        services.AddScoped<TenantConnectionInterceptor>();
         return services;
     }
 

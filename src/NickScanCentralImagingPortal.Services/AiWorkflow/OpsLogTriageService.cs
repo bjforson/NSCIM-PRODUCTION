@@ -195,7 +195,7 @@ Format as structured text. Be concise and actionable.",
             };
         }
 
-        private static string ExtractTextFromResponse(string responseBody)
+        private string ExtractTextFromResponse(string responseBody)
         {
             try
             {
@@ -210,13 +210,16 @@ Format as structured text. Be concise and actionable.",
                     }
                 }
             }
-            catch (Exception ex)
+            catch (JsonException jsonEx)
             {
-                // Static method, no logger available. Fallback path returns the truncated raw body
-                // anyway, which is the desired behavior — but signal via Debug so anyone investigating
-                // a malformed-response issue can see it surfaced from this layer.
-                System.Diagnostics.Debug.WriteLine(
-                    $"OpsLogTriageService.ExtractTextFromResponse: JSON parse failed ({ex.GetType().Name}: {ex.Message}); falling back to raw body");
+                // Round-1 audit C-3: previously silent. If Claude returns
+                // malformed JSON, log it and fall through to the truncated
+                // raw-body path — the heuristic fallback in the caller still
+                // produces a useful triage even without parsed text.
+                // (Both feature branches addressed C-3; this version uses the
+                // class's existing _logger field rather than Debug.WriteLine.)
+                _logger?.LogWarning(jsonEx,
+                    "OpsLogTriage: Claude response body was not parseable JSON; falling back to raw text");
             }
             return responseBody.Length > 2000 ? responseBody[..2000] : responseBody;
         }

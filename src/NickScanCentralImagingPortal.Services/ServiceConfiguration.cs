@@ -131,6 +131,15 @@ namespace NickScanCentralImagingPortal.Services
                 if (tenantInterceptor != null)
                     options.AddInterceptors(tenantInterceptor);
 
+                // Connection-level SET app.tenant_id — drives the existing
+                // tenant_isolation_* RLS policies. Before this was wired the
+                // policy expression COALESCE-fell-through to '1' on every
+                // request, making RLS a silent no-op. With it wired, RLS
+                // actually enforces per-tenant visibility.
+                var tenantConnectionInterceptor = serviceProvider.GetService<NickERP.Platform.Tenancy.TenantConnectionInterceptor>();
+                if (tenantConnectionInterceptor != null)
+                    options.AddInterceptors(tenantConnectionInterceptor);
+
                 // ✅ FIX: Validate connection string with clear error message
                 var connectionString = configuration.GetConnectionString("NS_CIS_Connection");
                 if (string.IsNullOrWhiteSpace(connectionString))
@@ -160,6 +169,14 @@ namespace NickScanCentralImagingPortal.Services
                 if (tenantInterceptor != null)
                     options.AddInterceptors(tenantInterceptor);
 
+                // Connection-level SET app.tenant_id. icums tables don't yet
+                // carry tenant_id (Phase-2 work) so the setting is a harmless
+                // no-op today, but wiring it here keeps every DbContext on
+                // the same contract for when icums tables join the policy.
+                var tenantConnectionInterceptor = serviceProvider.GetService<NickERP.Platform.Tenancy.TenantConnectionInterceptor>();
+                if (tenantConnectionInterceptor != null)
+                    options.AddInterceptors(tenantConnectionInterceptor);
+
                 var connectionString = configuration.GetConnectionString("ICUMS_Connection");
                 if (string.IsNullOrWhiteSpace(connectionString))
                 {
@@ -187,6 +204,12 @@ namespace NickScanCentralImagingPortal.Services
                 var tenantInterceptor = serviceProvider.GetService<NickERP.Platform.Tenancy.TenantOwnedEntityInterceptor>();
                 if (tenantInterceptor != null)
                     options.AddInterceptors(tenantInterceptor);
+
+                // Connection-level SET app.tenant_id (same forward-compat
+                // wiring as the IcumDbContext above).
+                var tenantConnectionInterceptor = serviceProvider.GetService<NickERP.Platform.Tenancy.TenantConnectionInterceptor>();
+                if (tenantConnectionInterceptor != null)
+                    options.AddInterceptors(tenantConnectionInterceptor);
 
                 var connectionString = configuration.GetConnectionString("ICUMS_Downloads_Connection");
                 if (string.IsNullOrWhiteSpace(connectionString))

@@ -15,6 +15,23 @@ var builder = WebApplication.CreateBuilder(args);
 // Windows Service support (ignored when run via `dotnet run`).
 builder.Host.UseWindowsService();
 
+// SECURITY: replace the ***USE_ENV_VAR_NICKSCAN_DB_PASSWORD*** placeholder in the
+// NickHrDb connection string with the env-var value. Prior to this the password was
+// hard-coded in appsettings.json and therefore in git — rotate it after deployment.
+var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
+var nickHrConn = builder.Configuration.GetConnectionString("NickHrDb");
+if (!string.IsNullOrEmpty(nickHrConn) && nickHrConn.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
+{
+    if (string.IsNullOrEmpty(dbPassword))
+    {
+        throw new InvalidOperationException(
+            "NICKSCAN_DB_PASSWORD environment variable is required — the appsettings.json " +
+            "NickHrDb connection string still contains the placeholder.");
+    }
+    builder.Configuration["ConnectionStrings:NickHrDb"] =
+        nickHrConn.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", dbPassword);
+}
+
 // MudBlazor for visual consistency with NickHR.
 builder.Services.AddMudServices(config =>
 {

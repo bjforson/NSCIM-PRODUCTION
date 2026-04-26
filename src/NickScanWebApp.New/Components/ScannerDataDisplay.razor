@@ -1,6 +1,7 @@
 @using System.Net.Http.Json
 @inject HttpClient Http
 @inject IConfiguration Configuration
+@inject NickScanWebApp.New.Services.ApiService ApiService
 
 <!-- Example component showing how to use the complete container data endpoint -->
 <MudPaper Elevation="2" Class="pa-4">
@@ -190,10 +191,10 @@
 
         try
         {
-            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            var url = $"{apiBaseUrl}/api/ImageProcessing/container/{ContainerNumber}/complete";
-
-            containerData = await Http.GetFromJsonAsync<ContainerImageDataResponse>(url);
+            // Route via ApiService → AuthenticatedHttpMessageHandler so the JWT
+            // bearer is attached. Direct HttpClient would 401 after Week-1.
+            containerData = await ApiService.GetAsync<ContainerImageDataResponse>(
+                $"/api/ImageProcessing/container/{ContainerNumber}/complete");
         }
         catch (Exception ex)
         {

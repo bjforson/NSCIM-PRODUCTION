@@ -120,13 +120,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     for (int i = 0; i < containerNumbers.Count; i += boeBatchSize)
                     {
                         var batch = containerNumbers.Skip(i).Take(boeBatchSize).ToList();
-                        // ✅ FIX: Use FromSqlRaw to avoid CTE generation from Contains()
-                        // Safe: batch contains container numbers from database, properly escaped
-                        var placeholders = string.Join(",", batch.Select(s => $"'{s.Replace("'", "''")}'")); // Escape single quotes
-#pragma warning disable EF1002 // Method 'FromSqlRaw' inserts interpolated strings directly into the SQL
+                        // Round-1 audit C-2: was FromSqlRaw with manual single-quote escaping.
+                        // Now parameterized via LINQ Contains — Npgsql translates to
+                        // ContainerNumber = ANY(@p) so values are bound parameters and
+                        // SQL injection is impossible regardless of where `batch` came
+                        // from. The original "no CTE" concern is moot in EF Core 10.
                         var batchDocs = await _icumDownloadsDbContext.BOEDocuments
-                            .FromSqlRaw($"SELECT * FROM BOEDocuments WHERE ContainerNumber IN ({placeholders})")
-#pragma warning restore EF1002
+                            .Where(b => batch.Contains(b.ContainerNumber))
                             .AsNoTracking()
                             .ToListAsync();
                         var grouped = batchDocs

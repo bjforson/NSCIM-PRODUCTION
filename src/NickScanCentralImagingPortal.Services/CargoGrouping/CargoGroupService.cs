@@ -25,13 +25,15 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
         private readonly ILogger<CargoGroupService> _logger;
         private readonly IConfiguration _configuration;
         private readonly IHttpContextAccessor _httpContextAccessor;
+        private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
 
         public CargoGroupService(
             IcumDownloadsDbContext icumDbContext,
             ApplicationDbContext appDbContext,
             ILogger<CargoGroupService> logger,
             IConfiguration configuration,
-            IHttpContextAccessor httpContextAccessor)
+            IHttpContextAccessor httpContextAccessor,
+            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
         {
             _icumDbContext = icumDbContext;
             _appDbContext = appDbContext;
@@ -39,6 +41,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             _logger = logger;
             _configuration = configuration;
             _httpContextAccessor = httpContextAccessor;
+            _urlSigner = urlSigner;
         }
 
         /// <summary>
@@ -2804,9 +2807,9 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                         FileName = image.FileName?.ToString() ?? scan.FilePath?.ToString() ?? "",
                                         FileSizeBytes = image.FileSizeBytes != null ? (long)image.FileSizeBytes : 0,
                                         CreatedAt = (DateTime)scan.ScanTime,
-                                        // ✅ Use unified endpoint with imageType and size parameters
-                                        ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=thumbnail{imageCacheBuster}",
-                                        FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=full{imageCacheBuster}"
+                                        // ✅ Signed URL — browser <img src> can't carry JWT.
+                                        ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=thumbnail{imageCacheBuster}"),
+                                        FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=full{imageCacheBuster}")
                                     });
                                 }
                             }
@@ -2820,9 +2823,9 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                     FileName = scan.FilePath?.ToString() ?? "",
                                     FileSizeBytes = 0L,
                                     CreatedAt = (DateTime)scan.ScanTime,
-                                    // ✅ Use unified endpoint with size parameters
-                                    ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}",
-                                    FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}"
+                                    // ✅ Signed URL (see earlier).
+                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}"),
+                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}")
                                 });
                             }
                         }
@@ -2842,9 +2845,9 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                 FileName = scan.ImageDisplayName?.ToString() ?? $"ASE_Scan_{containerNumber}.jpg",
                                 FileSizeBytes = scan.ImageSize != null ? (int)scan.ImageSize : 0,
                                 CreatedAt = (DateTime)scan.ScanTime,
-                                // ✅ Use unified endpoint with ASE decoder and size parameters
-                                ThumbnailUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}",
-                                FullImageUrl = $"{publicBaseUrl}/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}"
+                                // ✅ Signed URL (see earlier).
+                                ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}"),
+                                FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}")
                             });
                         }
                     }

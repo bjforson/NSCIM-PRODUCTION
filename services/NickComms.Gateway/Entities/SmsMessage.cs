@@ -51,4 +51,34 @@ public class SmsMessage
 
     [Column("sent_at")]
     public DateTime? SentAt { get; set; }
+
+    // ---------------------------------------------------------------------
+    // Outbox columns (added 2026-04-25). Replaces the in-memory Channel that
+    // would lose queued messages on crash. Lifecycle:
+    //   queued (next_attempt_at <= NOW)
+    //     → processing (worker claims it, sets processing_started_at, ++attempts)
+    //         → sent / failed (terminal)
+    //         → queued again with next_attempt_at = NOW + backoff (transient retry)
+    //   processing rows older than the stuck-row cutoff get reset to queued
+    //   on worker startup.
+    // ---------------------------------------------------------------------
+
+    [Column("attempt_count")]
+    public int AttemptCount { get; set; }
+
+    /// <summary>
+    /// Earliest UTC time the worker is allowed to pick this row up. Set to
+    /// <c>NOW()</c> on insert (ready immediately) and to <c>NOW + backoff</c>
+    /// on transient retry.
+    /// </summary>
+    [Column("next_attempt_at")]
+    public DateTime NextAttemptAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Set when the worker claims the row. Drives the stuck-row sweeper —
+    /// any row in <c>processing</c> older than the cutoff is assumed to have
+    /// been orphaned by a crash and gets reset to <c>queued</c>.
+    /// </summary>
+    [Column("processing_started_at")]
+    public DateTime? ProcessingStartedAt { get; set; }
 }

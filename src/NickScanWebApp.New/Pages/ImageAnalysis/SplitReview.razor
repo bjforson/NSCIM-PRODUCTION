@@ -10,6 +10,7 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 @implements IDisposable
 
 <PageTitle>Image Split Review</PageTitle>
@@ -682,7 +683,10 @@ else
 
     private string GetResultImageUrl(Guid jobId, Guid resultId, string side)
     {
-        return $"{_apiBaseUrl}/api/image-splitter/jobs/{jobId}/results/{resultId}/image/{side}";
+        // Signed URL — browser <img src> can't carry JWT.
+        return UrlBuilder.Build(
+            $"/api/image-splitter/jobs/{jobId}/results/{resultId}/image/{side}",
+            _currentUser);
     }
 
     private async Task InitHoverTracker(string containerId, int imageWidth, int imageHeight)

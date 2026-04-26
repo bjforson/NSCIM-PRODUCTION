@@ -2,8 +2,19 @@
   <PropertyGroup>
     <!-- Comprehensive check: analyzer and code style enforcement -->
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <AnalysisLevel>8.0</AnalysisLevel>
+    <AnalysisLevel>10.0</AnalysisLevel>
     <!-- Tighten CI: Uncomment when baseline has 0 warnings. Then bump AnalysisLevel to latest-all if desired. -->
     <!-- <TreatWarningsAsErrors>true</TreatWarningsAsErrors> -->
   </PropertyGroup>
+
+  <!-- Exclude the per-service 'publish/' output directories from Compile/Content globs.
+       These are deploy artifacts from `dotnet publish` (gitignored), but the SDK's default
+       globs pick them up as source and produce duplicate-type errors during the solution
+       build. Do NOT remove — required for a clean top-level `dotnet build NickscanERP.sln`. -->
+  <ItemGroup>
+    <Compile Remove="publish\**" />
+    <Content Remove="publish\**" />
+    <EmbeddedResource Remove="publish\**" />
+    <None Remove="publish\**" />
+  </ItemGroup>
 </Project>

@@ -48,7 +48,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <param name="includeVehicles">Include vehicle data if available (default: false)</param>
         /// <param name="includeHistory">Include processing history (default: false)</param>
         /// <returns>Unified container data response</returns>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}")]
         [ProducesResponseType(200, Type = typeof(ContainerCompleteResponse))]
         [ProducesResponseType(404)]
@@ -115,7 +114,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// </summary>
         /// <param name="containerNumber">Container identifier</param>
         /// <returns>JPEG image bytes</returns>
-        [AllowAnonymous]
         [HttpGet("container/{containerNumber}/image")]
         [ProducesResponseType(200, Type = typeof(FileContentResult))]
         [ProducesResponseType(404)]
@@ -169,7 +167,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <param name="includeImages">Include image processing statistics</param>
         /// <param name="includeTrends">Include trend data</param>
         /// <returns>Dashboard statistics</returns>
-        [AllowAnonymous]
         [HttpGet("dashboard/stats")]
         [ProducesResponseType(200, Type = typeof(DashboardStats))]
         public async Task<ActionResult<DashboardStats>> GetDashboardStats(
@@ -204,7 +201,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Global search across all entities (Phase 2)
         /// </summary>
-        [AllowAnonymous]
         [HttpPost("search")]
         [ProducesResponseType(200, Type = typeof(GlobalSearchResponse))]
         public async Task<ActionResult<GlobalSearchResponse>> GlobalSearch(
@@ -238,7 +234,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Generate reports (Phase 2)
         /// </summary>
-        [AllowAnonymous]
         [HttpPost("reports/generate")]
         [ProducesResponseType(200, Type = typeof(ReportGenerationResponse))]
         public async Task<ActionResult<ReportGenerationResponse>> GenerateReport(
@@ -274,7 +269,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Queue batch operation (Phase 2)
         /// </summary>
-        [AllowAnonymous]
         [HttpPost("batch")]
         [ProducesResponseType(200, Type = typeof(BatchOperationResponse))]
         public async Task<ActionResult<BatchOperationResponse>> QueueBatchOperation(
@@ -298,7 +292,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Get batch operation status (Phase 2)
         /// </summary>
-        [AllowAnonymous]
         [HttpGet("batch/{batchId}")]
         [ProducesResponseType(200, Type = typeof(BatchOperationResponse))]
         public async Task<ActionResult<BatchOperationResponse>> GetBatchStatus(string batchId)

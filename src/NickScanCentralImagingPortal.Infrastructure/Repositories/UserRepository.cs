@@ -401,6 +401,53 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
             }
         }
 
+        /// <summary>
+        /// Rotate the user's <c>CurrentSessionId</c> and return the new value.
+        /// Used by the login flow to enforce single-session: any prior-issued
+        /// JWT (carrying the OLD sid claim) becomes invalid the next time the
+        /// token validator runs <see cref="JwtBearerEvents.OnTokenValidated"/>.
+        /// </summary>
+        /// <returns>The new session id, or null if the user was not found.</returns>
+        public async Task<Guid?> RotateSessionIdAsync(int userId)
+        {
+            try
+            {
+                var user = await _context.Users.AsTracking().FirstOrDefaultAsync(u => u.Id == userId);
+                if (user == null) return null;
+                user.CurrentSessionId = Guid.NewGuid();
+                await _context.SaveChangesAsync();
+                return user.CurrentSessionId;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error rotating session id for user {UserId}", userId);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Read the current session id without modifying it. Used by the JWT
+        /// validation hook to compare the token's <c>sid</c> claim against the
+        /// canonical column. Cached at the call site (IMemoryCache, ~30 s TTL)
+        /// to keep this off the hot DB path.
+        /// </summary>
+        public async Task<Guid?> GetCurrentSessionIdAsync(int userId)
+        {
+            try
+            {
+                return await _context.Users
+                    .AsNoTracking()
+                    .Where(u => u.Id == userId)
+                    .Select(u => (Guid?)u.CurrentSessionId)
+                    .FirstOrDefaultAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reading session id for user {UserId}", userId);
+                return null;
+            }
+        }
+
         public async Task<bool> UsernameExistsAsync(string username)
         {
             try
