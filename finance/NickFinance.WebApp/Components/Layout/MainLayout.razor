@@ -1,0 +1,26 @@
+@inherits LayoutComponentBase
+@inject CurrentUser User
+
+<div class="page">
+    <header class="topnav">
+        <div class="brand">
+            <span class="brand-mark">NickFinance</span>
+            <span class="brand-tagline">Finance · NickERP</span>
+        </div>
+        <nav class="nav-links">
+            <NavLink href="/" Match="NavLinkMatch.All">Home</NavLink>
+            <NavLink href="/petty-cash">Petty cash</NavLink>
+            <NavLink href="/ar">Receivables</NavLink>
+            <NavLink href="/reports">Reports</NavLink>
+        </nav>
+        <div class="who">
+            <span class="who-name">@User.DisplayName</span>
+            <span class="who-email">@User.Email</span>
+        </div>
+    </header>
+    <main>
+        <article class="content">
+            @Body
+        </article>
+    </main>
+</div>

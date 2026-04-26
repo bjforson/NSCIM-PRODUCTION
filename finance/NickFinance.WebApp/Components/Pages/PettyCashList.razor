@@ -1,0 +1,53 @@
+@page "/petty-cash"
+@using Microsoft.EntityFrameworkCore
+@inject PettyCashDbContext Db
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Petty cash</PageTitle>
+
+<h1>Petty cash</h1>
+<p class="lede">All vouchers for tenant @User.TenantId. Click a voucher to view detail / approve / disburse.</p>
+
+<section class="card">
+    <div class="card-actions">
+        <a href="/petty-cash/new" class="primary">New voucher</a>
+    </div>
+    <table>
+        <thead>
+            <tr><th>No.</th><th>Date</th><th>Requester</th><th>Category</th><th>Purpose</th><th class="right">Amount (GHS)</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var v in _vouchers)
+            {
+                <tr>
+                    <td><code>@v.VoucherNo</code></td>
+                    <td>@v.CreatedAt.UtcDateTime.ToString("yyyy-MM-dd")</td>
+                    <td><code>@(v.RequesterUserId.ToString("N")[..8])</code></td>
+                    <td>@v.Category</td>
+                    <td>@v.Purpose</td>
+                    <td class="right">@((v.AmountApprovedMinor ?? v.AmountRequestedMinor) / 100m).ToString("N2")</td>
+                    <td><StatusPill Status="@v.Status.ToString()" /></td>
+                    <td><a href="@($"/petty-cash/{v.VoucherId}")">view</a></td>
+                </tr>
+            }
+            @if (_vouchers.Count == 0)
+            {
+                <tr><td colspan="8" class="muted">No vouchers yet — start with <a href="/petty-cash/new">New voucher</a>.</td></tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<Voucher> _vouchers = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _vouchers = await Db.Vouchers
+            .Where(v => v.TenantId == User.TenantId)
+            .OrderByDescending(v => v.CreatedAt)
+            .Take(100)
+            .ToListAsync();
+    }
+}

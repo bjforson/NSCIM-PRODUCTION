@@ -1,0 +1,153 @@
+@page "/petty-cash/{VoucherId:guid}"
+@using Microsoft.EntityFrameworkCore
+@inject PettyCashDbContext Db
+@inject IPettyCashService Svc
+@inject IPeriodService Periods
+@inject CurrentUser User
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Voucher</PageTitle>
+
+@if (_voucher is null)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <h1>Voucher <code>@_voucher.VoucherNo</code></h1>
+    <p class="lede">
+        <StatusPill Status="@_voucher.Status.ToString()" /> ·
+        @_voucher.Category · GHS @((_voucher.AmountRequestedMinor / 100m).ToString("N2"))
+        · requester <code>@_voucher.RequesterUserId.ToString("N")[..8]</code>
+    </p>
+
+    <section class="card">
+        <dl>
+            <dt>Purpose</dt><dd>@_voucher.Purpose</dd>
+            <dt>Payee</dt><dd>@(_voucher.PayeeName ?? "(self)")</dd>
+            <dt>Created</dt><dd>@_voucher.CreatedAt.ToString("u")</dd>
+            <dt>Submitted</dt><dd>@(_voucher.SubmittedAt?.ToString("u") ?? "—")</dd>
+            <dt>Decided</dt><dd>@(_voucher.DecidedAt?.ToString("u") ?? "—")</dd>
+            <dt>Disbursed</dt><dd>@(_voucher.DisbursedAt?.ToString("u") ?? "—")</dd>
+            <dt>Tax treatment</dt><dd>@_voucher.TaxTreatment</dd>
+            <dt>WHT treatment</dt><dd>@_voucher.WhtTreatment</dd>
+            @if (_voucher.LedgerEventId is not null)
+            {
+                <dt>Ledger event</dt><dd><code>@_voucher.LedgerEventId</code></dd>
+            }
+        </dl>
+    </section>
+
+    <section class="card">
+        <h3>Lines</h3>
+        <table>
+            <thead><tr><th>#</th><th>Description</th><th>GL</th><th class="right">Amount (GHS)</th></tr></thead>
+            <tbody>
+                @foreach (var l in _voucher.Lines.OrderBy(l => l.LineNo))
+                {
+                    <tr>
+                        <td>@l.LineNo</td>
+                        <td>@l.Description</td>
+                        <td><code>@l.GlAccount</code></td>
+                        <td class="right">@((l.GrossAmountMinor / 100m).ToString("N2"))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+
+    @if (_voucher.Status == VoucherStatus.Submitted)
+    {
+        <section class="card">
+            <h3>Decide</h3>
+            @if (_voucher.RequesterUserId == User.UserId)
+            {
+                <p class="muted">You submitted this voucher; somebody else needs to decide it (separation of duties).</p>
+            }
+            else
+            {
+                <button class="primary" disabled="@_busy" @onclick="ApproveAsync">Approve</button>
+                <button class="secondary" disabled="@_busy" @onclick="ToggleReject">Reject…</button>
+                @if (_showRejectInput)
+                {
+                    <div class="reject-row">
+                        <input type="text" @bind="_rejectReason" placeholder="Reason (required)" maxlength="1000" />
+                        <button class="secondary" disabled="@_busy" @onclick="RejectAsync">Confirm reject</button>
+                    </div>
+                }
+            }
+        </section>
+    }
+
+    @if (_voucher.Status == VoucherStatus.Approved)
+    {
+        <section class="card">
+            <h3>Disburse</h3>
+            @if (_voucher.DecidedByUserId == User.UserId)
+            {
+                <p class="muted">You approved this voucher; somebody else (a custodian) needs to disburse it.</p>
+            }
+            else
+            {
+                <button class="primary" disabled="@_busy" @onclick="DisburseAsync">Disburse (cash)</button>
+            }
+        </section>
+    }
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="error">@_error</div>
+    }
+}
+
+@code {
+    [Parameter] public Guid VoucherId { get; set; }
+    private Voucher? _voucher;
+    private bool _busy;
+    private bool _showRejectInput;
+    private string? _rejectReason;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _voucher = await Db.Vouchers.Include(v => v.Lines)
+            .FirstOrDefaultAsync(v => v.VoucherId == VoucherId && v.TenantId == User.TenantId);
+    }
+
+    private async Task ApproveAsync()
+    {
+        _busy = true; _error = null;
+        try { await Svc.ApproveVoucherAsync(VoucherId, User.UserId, null, null); await ReloadAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void ToggleReject() => _showRejectInput = !_showRejectInput;
+
+    private async Task RejectAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_rejectReason)) { _error = "Reason required."; return; }
+        _busy = true; _error = null;
+        try { await Svc.RejectVoucherAsync(VoucherId, User.UserId, _rejectReason!); await ReloadAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task DisburseAsync()
+    {
+        _busy = true; _error = null;
+        try
+        {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var period = await Periods.GetByDateAsync(today, User.TenantId)
+                ?? await Periods.CreateAsync(today.Year, (byte)today.Month, User.TenantId);
+            await Svc.DisburseVoucherAsync(VoucherId, User.UserId, today, period.PeriodId);
+            await ReloadAsync();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}

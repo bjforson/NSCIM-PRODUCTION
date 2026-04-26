@@ -1,0 +1,74 @@
+@page "/"
+@using Microsoft.EntityFrameworkCore
+@inject IFinancialReports Reports
+@inject CurrentUser User
+@inject PettyCashDbContext Pc
+@inject ArDbContext Ar
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Home</PageTitle>
+
+<h1>NickFinance</h1>
+<p class="lede">Welcome, @User.DisplayName. Tenant @User.TenantId · @DateTimeOffset.UtcNow.ToString("u").</p>
+
+<section class="tile-row">
+    <div class="tile">
+        <div class="tile-label">Open vouchers</div>
+        <div class="tile-value">@_openVouchers</div>
+        <a href="/petty-cash" class="tile-link">Manage →</a>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Open invoices</div>
+        <div class="tile-value">@_openInvoices</div>
+        <a href="/ar" class="tile-link">Manage →</a>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Outstanding AR</div>
+        <div class="tile-value">@_outstandingAr.ToString("N0") <span class="tile-unit">GHS</span></div>
+        <a href="/reports/aging" class="tile-link">Aging →</a>
+    </div>
+    <div class="tile">
+        <div class="tile-label">YTD Net (P&amp;L)</div>
+        <div class="tile-value">@_ytdNet.ToString("N0") <span class="tile-unit">GHS</span></div>
+        <a href="/reports/pnl" class="tile-link">Profit &amp; Loss →</a>
+    </div>
+</section>
+
+<section class="card">
+    <h3>What works today</h3>
+    <ul class="feature-list">
+        <li><strong>Petty cash</strong> — float setup, voucher submit/approve/disburse, multi-step YAML approval policies, MoMo via NickComms gateway, receipts with duplicate detection, cash counts, budgets, fraud signals (8 rules).</li>
+        <li><strong>Accounts receivable</strong> — customer master, invoice draft/issue (Ghana tax: NHIL+GETFund+COVID compounded with VAT), e-VAT IRN issuance, customer receipts, scan-to-invoice auto-draft, aging report.</li>
+        <li><strong>Reports</strong> — trial balance, balance sheet, P&amp;L, GL detail. Each rolls live from the journal — no batch ETL.</li>
+        <li><strong>Underneath it all</strong> — append-only journal kernel with deferred balance-trigger constraint, idempotent posts, period lock, full audit reachable from <code>SourceModule</code> + <code>SourceEntityId</code>.</li>
+    </ul>
+</section>
+
+@code {
+    private int _openVouchers;
+    private int _openInvoices;
+    private long _outstandingAr;
+    private long _ytdNet;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _openVouchers = await Pc.Vouchers
+            .CountAsync(v => v.TenantId == User.TenantId
+                          && (v.Status == VoucherStatus.Submitted || v.Status == VoucherStatus.Approved));
+
+        _openInvoices = await Ar.Invoices
+            .CountAsync(i => i.TenantId == User.TenantId
+                          && (i.Status == ArInvoiceStatus.Issued || i.Status == ArInvoiceStatus.PartiallyPaid));
+
+        _outstandingAr = await Ar.Invoices
+            .Where(i => i.TenantId == User.TenantId
+                     && (i.Status == ArInvoiceStatus.Issued || i.Status == ArInvoiceStatus.PartiallyPaid))
+            .SumAsync(i => (long?)(i.GrossMinor - i.PaidMinor)) ?? 0L;
+        _outstandingAr /= 100;
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var yearStart = new DateOnly(today.Year, 1, 1);
+        var pnl = await Reports.ProfitAndLossAsync("GHS", yearStart, today, User.TenantId);
+        _ytdNet = pnl.NetResult.Minor / 100;
+    }
+}

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NickFinance.WebApp</RootNamespace>
+    <AssemblyName>NickFinance.WebApp</AssemblyName>
+    <Description>NICKSCAN ERP / NickFinance — Blazor Server UI. Petty Cash voucher submission + approval + disbursement, AR invoices and receipts, financial reports (TB / BS / P&amp;L / GL detail). Talks to the same nickhr Postgres database via the kernel + per-module DbContexts.</Description>
+    <Version>0.1.0</Version>
+    <Company>Nick TC-Scan Ltd</Company>
+    <Product>NICKSCAN ERP SOLUTION</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NickFinance.Ledger\NickFinance.Ledger.csproj" />
+    <ProjectReference Include="..\NickFinance.PettyCash\NickFinance.PettyCash.csproj" />
+    <ProjectReference Include="..\NickFinance.AR\NickFinance.AR.csproj" />
+    <ProjectReference Include="..\NickFinance.Coa\NickFinance.Coa.csproj" />
+    <ProjectReference Include="..\NickFinance.Reporting\NickFinance.Reporting.csproj" />
+    <ProjectReference Include="..\NickFinance.TaxEngine\NickFinance.TaxEngine.csproj" />
+  </ItemGroup>
+
+</Project>

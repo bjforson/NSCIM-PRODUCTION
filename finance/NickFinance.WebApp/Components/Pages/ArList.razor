@@ -1,0 +1,55 @@
+@page "/ar"
+@using Microsoft.EntityFrameworkCore
+@inject ArDbContext Db
+@inject CurrentUser User
+@rendermode InteractiveServer
+
+<PageTitle>NickFinance · Receivables</PageTitle>
+
+<h1>Accounts receivable</h1>
+<p class="lede">All AR invoices for tenant @User.TenantId. Most recent first.</p>
+
+<section class="card">
+    <table>
+        <thead>
+            <tr><th>No.</th><th>Date</th><th>Customer</th><th>Reference</th><th class="right">Gross (GHS)</th><th class="right">Outstanding</th><th>Status</th><th>IRN</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var i in _invoices)
+            {
+                <tr>
+                    <td><code>@(string.IsNullOrEmpty(i.InvoiceNo) ? "(unissued)" : i.InvoiceNo)</code></td>
+                    <td>@i.InvoiceDate.ToString("yyyy-MM-dd")</td>
+                    <td>@(_customers.TryGetValue(i.CustomerId, out var c) ? c : i.CustomerId.ToString("N")[..8])</td>
+                    <td>@i.Reference</td>
+                    <td class="right">@((i.GrossMinor / 100m).ToString("N2"))</td>
+                    <td class="right">@(((i.GrossMinor - i.PaidMinor) / 100m).ToString("N2"))</td>
+                    <td><StatusPill Status="@i.Status.ToString()" /></td>
+                    <td><code>@(i.EvatIrn ?? "—")</code></td>
+                </tr>
+            }
+            @if (_invoices.Count == 0)
+            {
+                <tr><td colspan="8" class="muted">No invoices yet.</td></tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    private List<ArInvoice> _invoices = new();
+    private Dictionary<Guid, string> _customers = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _invoices = await Db.Invoices
+            .Where(i => i.TenantId == User.TenantId)
+            .OrderByDescending(i => i.InvoiceDate)
+            .Take(100)
+            .ToListAsync();
+        var ids = _invoices.Select(i => i.CustomerId).Distinct().ToList();
+        _customers = await Db.Customers
+            .Where(c => ids.Contains(c.CustomerId))
+            .ToDictionaryAsync(c => c.CustomerId, c => c.Name);
+    }
+}
