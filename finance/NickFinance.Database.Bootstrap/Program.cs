@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickFinance.AP;
 using NickFinance.AR;
 using NickFinance.Coa;
 using NickFinance.Ledger;
@@ -41,11 +42,12 @@ public static class Program
             await ApplyPettyCashMigrationsAsync(conn);
             await ApplyCoaMigrationsAsync(conn);
             await ApplyArMigrationsAsync(conn);
+            await ApplyApMigrationsAsync(conn);
             await ApplySchemaTriggersAsync(conn);
             if (seedCoa) await SeedGhanaChartAsync(conn);
 
             Console.WriteLine();
-            Console.WriteLine("Bootstrap complete. Ledger + Petty Cash + CoA + AR schemas are ready.");
+            Console.WriteLine("Bootstrap complete. All NickFinance schemas are ready.");
             return 0;
         }
         catch (Exception ex)
@@ -90,16 +92,25 @@ public static class Program
 
     private static async Task ApplyArMigrationsAsync(string conn)
     {
-        Console.WriteLine("[4/6] Applying AR migrations (ar schema)...");
+        Console.WriteLine("[4/7] Applying AR migrations (ar schema)...");
         var opts = new DbContextOptionsBuilder<ArDbContext>().UseNpgsql(conn).Options;
         await using var db = new ArDbContext(opts);
         await db.Database.MigrateAsync();
         Console.WriteLine("       AR: up to date.");
     }
 
+    private static async Task ApplyApMigrationsAsync(string conn)
+    {
+        Console.WriteLine("[5/7] Applying AP migrations (ap schema)...");
+        var opts = new DbContextOptionsBuilder<ApDbContext>().UseNpgsql(conn).Options;
+        await using var db = new ApDbContext(opts);
+        await db.Database.MigrateAsync();
+        Console.WriteLine("       AP: up to date.");
+    }
+
     private static async Task ApplySchemaTriggersAsync(string conn)
     {
-        Console.WriteLine("[5/6] Applying Postgres triggers (balance invariant + append-only)...");
+        Console.WriteLine("[6/7] Applying Postgres triggers (balance invariant + append-only)...");
         var opts = new DbContextOptionsBuilder<LedgerDbContext>().UseNpgsql(conn).Options;
         await using var db = new LedgerDbContext(opts);
         await SchemaBootstrap.ApplyConstraintsAsync(db);
@@ -108,7 +119,7 @@ public static class Program
 
     private static async Task SeedGhanaChartAsync(string conn)
     {
-        Console.WriteLine("[6/6] Seeding Ghana standard chart of accounts...");
+        Console.WriteLine("[7/7] Seeding Ghana standard chart of accounts...");
         var opts = new DbContextOptionsBuilder<CoaDbContext>().UseNpgsql(conn).Options;
         await using var db = new CoaDbContext(opts);
         var svc = new CoaService(db);
