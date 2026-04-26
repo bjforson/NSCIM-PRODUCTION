@@ -25,7 +25,21 @@
                     <td class="right">@((i.GrossMinor / 100m).ToString("N2"))</td>
                     <td class="right">@(((i.GrossMinor - i.PaidMinor) / 100m).ToString("N2"))</td>
                     <td><StatusPill Status="@i.Status.ToString()" /></td>
-                    <td><code>@(i.EvatIrn ?? "—")</code></td>
+                    <td>
+                        @if (string.IsNullOrEmpty(i.EvatIrn))
+                        {
+                            <span class="muted">—</span>
+                        }
+                        else if (StubEvatProvider.IsSandbox(i.EvatIrn))
+                        {
+                            <span class="pill warn" title="Issued via the stub e-VAT provider; not submitted to GRA. See finance/DEFERRED.md.">SANDBOX</span>
+                            <code class="muted-code">@i.EvatIrn</code>
+                        }
+                        else
+                        {
+                            <code>@i.EvatIrn</code>
+                        }
+                    </td>
                 </tr>
             }
             @if (_invoices.Count == 0)

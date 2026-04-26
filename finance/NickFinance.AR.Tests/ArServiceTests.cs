@@ -94,7 +94,8 @@ public class ArServiceTests
         Assert.Equal(159_00, inv.VatMinor);     // 15% of 1060
         Assert.Equal(1_219_00, inv.GrossMinor);
         Assert.NotNull(inv.EvatIrn);
-        Assert.StartsWith("IRN-", inv.EvatIrn);
+        Assert.True(StubEvatProvider.IsSandbox(inv.EvatIrn),
+            $"Expected sandbox-prefixed IRN, got '{inv.EvatIrn}'.");
         Assert.NotNull(inv.LedgerEventId);
         Assert.StartsWith("INV-2026-04-", inv.InvoiceNo);
 

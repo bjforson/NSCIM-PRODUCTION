@@ -1,15 +1,35 @@
 @page "/"
 @using Microsoft.EntityFrameworkCore
+@using NickFinance.AR
+@using NickFinance.PettyCash.Disbursement
+@using NickFinance.PettyCash.Receipts
 @inject IFinancialReports Reports
 @inject CurrentUser User
 @inject PettyCashDbContext Pc
 @inject ArDbContext Ar
+@inject IEvatProvider Evat
+@inject IOcrEngine Ocr
+@inject IDisbursementChannel Cash
 @rendermode InteractiveServer
 
 <PageTitle>NickFinance · Home</PageTitle>
 
 <h1>NickFinance</h1>
 <p class="lede">Welcome, @User.DisplayName. Tenant @User.TenantId · @DateTimeOffset.UtcNow.ToString("u").</p>
+
+@if (_pinned.Count > 0)
+{
+    <section class="card warning">
+        <h3>Deferred — sandbox / not-yet-wired</h3>
+        <p class="muted">These integrations are pinned. The system is functionally complete; production-cutover items are tracked in <code>finance/DEFERRED.md</code>.</p>
+        <ul class="feature-list">
+            @foreach (var p in _pinned)
+            {
+                <li>@p</li>
+            }
+        </ul>
+    </section>
+}
 
 <section class="tile-row">
     <div class="tile">
@@ -49,9 +69,24 @@
     private int _openInvoices;
     private long _outstandingAr;
     private long _ytdNet;
+    private List<string> _pinned = new();
 
     protected override async Task OnInitializedAsync()
     {
+        // Build the deferred banner once on page load.
+        if (Evat is StubEvatProvider)
+        {
+            _pinned.Add("e-VAT integration — using the SANDBOX provider. New invoices get IRNs prefixed 'SANDBOX-IRN-'; they are not submitted to GRA. Wire the certified partner (Hubtel / Persol / Blue Skies) when the contract lands.");
+        }
+        if (Ocr is NoopOcrEngine)
+        {
+            _pinned.Add("Receipt OCR — using the no-op engine. Receipts upload + dedupe but no amount/date is auto-extracted. Wire AzureFormRecognizerOcrEngine when the AZURE_DOCUMENT_INTELLIGENCE_KEY is configured.");
+        }
+        if (Cash is OfflineCashChannel)
+        {
+            _pinned.Add("MoMo disbursement — using the offline-cash channel. Voucher disbursement assumes the custodian hands cash physically. Wire NickCommsMomoChannel when NickComms.Gateway's /api/disburse/momo endpoint is live and the Hubtel merchant key is in place.");
+        }
+
         _openVouchers = await Pc.Vouchers
             .CountAsync(v => v.TenantId == User.TenantId
                           && (v.Status == VoucherStatus.Submitted || v.Status == VoucherStatus.Approved));

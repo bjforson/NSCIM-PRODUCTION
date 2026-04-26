@@ -35,9 +35,28 @@ public sealed record EvatIssueResult(
     string? QrPayload,
     string? FailureReason);
 
-/// <summary>Stub — returns a deterministic synthesised IRN. Tests can verify the IRN appears on the persisted invoice.</summary>
+/// <summary>
+/// Stub — returns a visibly-sandbox IRN so an invoice issued through it
+/// cannot be confused with a real GRA-allocated number. The
+/// <c>SANDBOX-IRN-</c> prefix is the contract: AR + UI code use
+/// <see cref="IsSandbox"/> to flag "this invoice was NOT submitted to
+/// GRA". When the certified partner is wired (CFO + CTO decision —
+/// see <c>finance/DEFERRED.md</c>) the partner provider takes over and
+/// real <c>IRN-...</c> values land for new invoices.
+/// </summary>
+/// <remarks>
+/// <b>Important:</b> never invoice a real customer through this provider.
+/// Tests + acceptance demos only.
+/// </remarks>
 public sealed class StubEvatProvider : IEvatProvider
 {
+    /// <summary>The literal prefix every <see cref="StubEvatProvider"/>-issued IRN starts with. Use <see cref="IsSandbox"/> to check at the call-site.</summary>
+    public const string SandboxPrefix = "SANDBOX-IRN-";
+
+    /// <summary>True if the supplied IRN was minted by <see cref="StubEvatProvider"/> (case-insensitive prefix match).</summary>
+    public static bool IsSandbox(string? irn) =>
+        !string.IsNullOrEmpty(irn) && irn.StartsWith(SandboxPrefix, StringComparison.OrdinalIgnoreCase);
+
     public string Provider => "stub";
 
     public Task<EvatIssueResult> IssueAsync(EvatIssueRequest req, CancellationToken ct = default)
@@ -47,11 +66,9 @@ public sealed class StubEvatProvider : IEvatProvider
         {
             return Task.FromResult(new EvatIssueResult(false, null, null, "Gross amount must be positive."));
         }
-        // IRN format mirrors the GRA convention "IRN-{yyyyMMdd}-{12 hex}"
-        // so consumers don't need to special-case stub values in display.
         var ts = req.InvoiceDate.ToString("yyyyMMdd");
         var hex = req.InvoiceId.ToString("N")[..12].ToUpperInvariant();
-        var irn = $"IRN-{ts}-{hex}";
+        var irn = $"{SandboxPrefix}{ts}-{hex}";
         var qr = $"{irn}|{req.GrossMinor}|{req.CurrencyCode}";
         return Task.FromResult(new EvatIssueResult(true, irn, qr, null));
     }

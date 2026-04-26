@@ -39,6 +39,16 @@ var receiptRoot = builder.Configuration.GetValue<string>("NickFinance:ReceiptSto
 builder.Services.AddSingleton<IReceiptStorage>(_ => new LocalDiskReceiptStorage(receiptRoot));
 builder.Services.AddScoped<IReceiptService, ReceiptService>();
 
+// External integrations — pinned to sandbox/no-op/offline defaults until
+// the corresponding credentials decisions land. See finance/DEFERRED.md.
+//   * e-VAT  — IEvatProvider          → StubEvatProvider (sandbox IRN)
+//   * OCR    — IOcrEngine             → NoopOcrEngine
+//   * MoMo   — IDisbursementChannel   → OfflineCashChannel
+// When each decision lands, swap the line below in this Program.cs.
+builder.Services.AddSingleton<NickFinance.AR.IEvatProvider, NickFinance.AR.StubEvatProvider>();
+builder.Services.AddSingleton<NickFinance.PettyCash.Receipts.IOcrEngine, NickFinance.PettyCash.Receipts.NoopOcrEngine>();
+builder.Services.AddSingleton<NickFinance.PettyCash.Disbursement.IDisbursementChannel, NickFinance.PettyCash.Disbursement.OfflineCashChannel>();
+
 // Current user — for v1, the configured dev user. Production wires to
 // NickERP.Platform.Identity.
 builder.Services.AddScoped(sp =>
