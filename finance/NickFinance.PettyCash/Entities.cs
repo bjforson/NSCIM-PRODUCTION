@@ -109,6 +109,18 @@ public class Voucher
     /// <summary>Optional cost-centre / project code recorded on the journal line as a dimension.</summary>
     public string? ProjectCode { get; set; }
 
+    /// <summary>
+    /// How taxes apply to this voucher. <see cref="TaxTreatment.None"/> (the
+    /// default) means lines post at face value. <see cref="TaxTreatment.GhanaInclusive"/>
+    /// means the gross-line amounts include NHIL/GETFund/COVID/VAT, and the
+    /// disbursement journal will split them into the four levy/VAT payable
+    /// accounts so the GL stays compliant.
+    /// </summary>
+    public TaxTreatment TaxTreatment { get; set; } = TaxTreatment.None;
+
+    /// <summary>Withholding tax classification for the supplier; <see cref="WhtTreatment.None"/> = no WHT deducted.</summary>
+    public WhtTreatment WhtTreatment { get; set; } = WhtTreatment.None;
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? SubmittedAt { get; set; }
     public DateTimeOffset? DecidedAt { get; set; }
@@ -182,6 +194,45 @@ public enum VoucherStatus
 
     /// <summary>Cash paid out and journal posted to the Ledger.</summary>
     Disbursed = 4
+}
+
+/// <summary>How a voucher's gross amount should be decomposed for the journal.</summary>
+public enum TaxTreatment
+{
+    /// <summary>No tax handling — lines post at face value (default; covers the bulk of petty cash).</summary>
+    None = 0,
+
+    /// <summary>
+    /// The line gross amounts INCLUDE Ghana indirect taxes (NHIL+GETFund+COVID+VAT).
+    /// On disbursement we back-solve the net per <see cref="TaxEngine.TaxCalculator.FromGross"/>
+    /// and post one line each to the levy + VAT payable / receivable accounts.
+    /// </summary>
+    GhanaInclusive = 1
+}
+
+/// <summary>How withholding tax is treated when paying a supplier from petty cash.</summary>
+public enum WhtTreatment
+{
+    /// <summary>No WHT deducted (default — most petty cash payees aren't subject).</summary>
+    None = 0,
+
+    /// <summary>3% — supply of goods to a VAT-registered vendor.</summary>
+    GoodsVatRegistered = 1,
+
+    /// <summary>7% — supply of goods to a non-VAT-registered vendor.</summary>
+    GoodsNonVatRegistered = 2,
+
+    /// <summary>5% — supply of works (construction, fabrication).</summary>
+    Works = 3,
+
+    /// <summary>7.5% — supply of services / management / technical / consulting.</summary>
+    Services = 4,
+
+    /// <summary>8% — rent.</summary>
+    Rent = 5,
+
+    /// <summary>10% — commission to agents.</summary>
+    Commission = 6
 }
 
 /// <summary>The five allowed spend categories in MVP-zero. Each maps to a default GL account.</summary>

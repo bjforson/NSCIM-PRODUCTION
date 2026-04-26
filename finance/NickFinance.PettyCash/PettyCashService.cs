@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NickFinance.Ledger;
 using NickFinance.PettyCash.Approvals;
+using NickFinance.TaxEngine;
 
 namespace NickFinance.PettyCash;
 
@@ -367,15 +368,11 @@ public sealed class PettyCashService : IPettyCashService
             throw new SeparationOfDutiesException("The approver cannot also be the disbursing custodian.");
         }
 
-        // Build the journal: DR expense lines, CR petty-cash float (1060).
-        // Total of DR lines == AmountApprovedMinor (we may have to scale lines
-        // proportionally if the approver part-approved; in MVP-zero we keep
-        // it simple and require the total approved == requested. Pro-rata
-        // scaling can come later.).
+        // Build the journal — branches by tax/WHT treatment.
         if (v.AmountApprovedMinor.Value != v.AmountRequestedMinor)
         {
             throw new PettyCashException(
-                "MVP-zero: partial-approval disbursements aren't supported yet. "
+                "Partial-approval disbursements aren't supported yet. "
                 + "Reject + resubmit at the corrected amount.");
         }
 
@@ -393,33 +390,7 @@ public sealed class PettyCashService : IPettyCashService
             ActorUserId = custodianUserId
         };
 
-        // Debit each line against its GL account.
-        short lineNo = 1;
-        foreach (var line in v.Lines.OrderBy(l => l.LineNo))
-        {
-            ledgerEvent.Lines.Add(new LedgerEventLine
-            {
-                LineNo = lineNo++,
-                AccountCode = line.GlAccount,
-                DebitMinor = line.GrossAmountMinor,
-                CreditMinor = 0,
-                CurrencyCode = line.CurrencyCode,
-                ProjectCode = v.ProjectCode,
-                Description = line.Description
-            });
-        }
-
-        // Single credit leg against petty cash float.
-        ledgerEvent.Lines.Add(new LedgerEventLine
-        {
-            LineNo = lineNo,
-            AccountCode = "1060",                       // Petty cash float — Ghana standard chart
-            DebitMinor = 0,
-            CreditMinor = v.AmountApprovedMinor.Value,
-            CurrencyCode = v.CurrencyCode,
-            ProjectCode = v.ProjectCode,
-            Description = $"{v.VoucherNo} float draw"
-        });
+        BuildJournalLines(v, ledgerEvent, effectiveDate);
 
         // The Ledger writer + its underlying DB triggers will reject the post
         // if anything is malformed (closed period, unbalanced, mixed currency,
@@ -454,6 +425,154 @@ public sealed class PettyCashService : IPettyCashService
             .OrderBy(s => s.StepNo)
             .ToListAsync(ct);
     }
+
+    /// <summary>
+    /// Walk the voucher's lines and add the corresponding ledger lines onto
+    /// <paramref name="ev"/>. Handles three cases:
+    /// <list type="number">
+    ///   <item><description><see cref="TaxTreatment.None"/> + no WHT — DR expense, CR petty cash float.</description></item>
+    ///   <item><description><see cref="TaxTreatment.GhanaInclusive"/> — back-solve net per the levy stack and post each component to the matching payable / receivable account, still CR petty cash float at the gross.</description></item>
+    ///   <item><description>WHT applies — split the credit leg between the supplier float and the WHT payable account at the WHT rate.</description></item>
+    /// </list>
+    /// </summary>
+    private static void BuildJournalLines(Voucher v, LedgerEvent ev, DateOnly effective)
+    {
+        var rates = GhanaTaxRates.ForDate(effective);
+        short lineNo = 1;
+
+        long totalCash = 0;     // total debit-side per-line amounts (= net to expense + tax recoverable)
+        long totalLevyVat = 0;  // sum of levies + VAT credited to payable accounts
+
+        foreach (var line in v.Lines.OrderBy(l => l.LineNo))
+        {
+            if (v.TaxTreatment == TaxTreatment.GhanaInclusive)
+            {
+                // Line gross is INCLUSIVE of the levies + VAT. Back-solve the
+                // net + each tax component, then post each piece to its account.
+                var t = TaxCalculator.FromGross(new Money(line.GrossAmountMinor, line.CurrencyCode), rates);
+
+                // DR expense at NET (the actual cost to the business)
+                if (!t.Net.IsZero)
+                {
+                    ev.Lines.Add(new LedgerEventLine
+                    {
+                        LineNo = lineNo++,
+                        AccountCode = line.GlAccount,
+                        DebitMinor = t.Net.Minor,
+                        CurrencyCode = line.CurrencyCode,
+                        ProjectCode = v.ProjectCode,
+                        Description = line.Description
+                    });
+                }
+                // DR VAT input recoverable at VAT
+                if (!t.Vat.IsZero)
+                {
+                    ev.Lines.Add(new LedgerEventLine
+                    {
+                        LineNo = lineNo++,
+                        AccountCode = "1410",   // VAT input recoverable
+                        DebitMinor = t.Vat.Minor,
+                        CurrencyCode = line.CurrencyCode,
+                        ProjectCode = v.ProjectCode,
+                        Description = $"VAT input on {line.Description}"
+                    });
+                }
+                // The three levies are NOT recoverable in Ghana (NHIL, GETFund,
+                // COVID are operating costs to the business). We expense them
+                // on the same line as the underlying spend.
+                if (!t.Nhil.IsZero) AddExpenseLine(ev, ref lineNo, line, v, t.Nhil, "NHIL on");
+                if (!t.GetFund.IsZero) AddExpenseLine(ev, ref lineNo, line, v, t.GetFund, "GETFund on");
+                if (!t.Covid.IsZero) AddExpenseLine(ev, ref lineNo, line, v, t.Covid, "COVID levy on");
+                totalCash = checked(totalCash + line.GrossAmountMinor);
+            }
+            else
+            {
+                // No tax decomposition — straight DR expense at gross.
+                ev.Lines.Add(new LedgerEventLine
+                {
+                    LineNo = lineNo++,
+                    AccountCode = line.GlAccount,
+                    DebitMinor = line.GrossAmountMinor,
+                    CurrencyCode = line.CurrencyCode,
+                    ProjectCode = v.ProjectCode,
+                    Description = line.Description
+                });
+                totalCash = checked(totalCash + line.GrossAmountMinor);
+            }
+        }
+
+        // Split the credit leg by WHT.
+        if (v.WhtTreatment != WhtTreatment.None)
+        {
+            var rate = WhtTreatmentToRate(v.WhtTreatment);
+            var whtMoney = new Money(totalCash, v.CurrencyCode).MultiplyRate(rate);
+            var floatMoney = new Money(totalCash - whtMoney.Minor, v.CurrencyCode);
+
+            // CR 2150 WHT payable
+            if (!whtMoney.IsZero)
+            {
+                ev.Lines.Add(new LedgerEventLine
+                {
+                    LineNo = lineNo++,
+                    AccountCode = "2150",
+                    CreditMinor = whtMoney.Minor,
+                    CurrencyCode = v.CurrencyCode,
+                    ProjectCode = v.ProjectCode,
+                    Description = $"WHT @ {rate:P1} on {v.VoucherNo}"
+                });
+            }
+            // CR 1060 petty cash float (net of WHT)
+            ev.Lines.Add(new LedgerEventLine
+            {
+                LineNo = lineNo,
+                AccountCode = "1060",
+                CreditMinor = floatMoney.Minor,
+                CurrencyCode = v.CurrencyCode,
+                ProjectCode = v.ProjectCode,
+                Description = $"{v.VoucherNo} float draw (net of WHT)"
+            });
+        }
+        else
+        {
+            // CR 1060 petty cash float at the full gross
+            ev.Lines.Add(new LedgerEventLine
+            {
+                LineNo = lineNo,
+                AccountCode = "1060",
+                CreditMinor = totalCash,
+                CurrencyCode = v.CurrencyCode,
+                ProjectCode = v.ProjectCode,
+                Description = $"{v.VoucherNo} float draw"
+            });
+        }
+
+        _ = totalLevyVat;   // reserved for future audit logging
+    }
+
+    private static void AddExpenseLine(LedgerEvent ev, ref short lineNo, VoucherLineItem srcLine, Voucher v, Money amount, string label)
+    {
+        ev.Lines.Add(new LedgerEventLine
+        {
+            LineNo = lineNo++,
+            AccountCode = srcLine.GlAccount,    // levies post against the same expense account as the spend
+            DebitMinor = amount.Minor,
+            CurrencyCode = srcLine.CurrencyCode,
+            ProjectCode = v.ProjectCode,
+            Description = $"{label} {srcLine.Description}"
+        });
+    }
+
+    private static decimal WhtTreatmentToRate(WhtTreatment t) => t switch
+    {
+        WhtTreatment.None                  => 0m,
+        WhtTreatment.GoodsVatRegistered    => 0.03m,
+        WhtTreatment.GoodsNonVatRegistered => 0.07m,
+        WhtTreatment.Works                 => 0.05m,
+        WhtTreatment.Services              => 0.075m,
+        WhtTreatment.Rent                  => 0.08m,
+        WhtTreatment.Commission            => 0.10m,
+        _ => throw new ArgumentOutOfRangeException(nameof(t), t, "Unknown WhtTreatment.")
+    };
 
     /// <summary>
     /// Generate <c>PC-{site8}-{year}-{ordinal}</c>. The ordinal is computed

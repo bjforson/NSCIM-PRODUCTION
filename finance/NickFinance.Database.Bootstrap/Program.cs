@@ -38,11 +38,12 @@ public static class Program
         {
             await ApplyLedgerMigrationsAsync(conn);
             await ApplyPettyCashMigrationsAsync(conn);
+            await ApplyCoaMigrationsAsync(conn);
             await ApplySchemaTriggersAsync(conn);
             if (seedCoa) await SeedGhanaChartAsync(conn);
 
             Console.WriteLine();
-            Console.WriteLine("Bootstrap complete. The Ledger + Petty Cash schemas are ready.");
+            Console.WriteLine("Bootstrap complete. The Ledger + Petty Cash + CoA schemas are ready.");
             return 0;
         }
         catch (Exception ex)
@@ -69,16 +70,25 @@ public static class Program
 
     private static async Task ApplyPettyCashMigrationsAsync(string conn)
     {
-        Console.WriteLine("[2/4] Applying Petty Cash migrations (petty_cash schema)...");
+        Console.WriteLine("[2/5] Applying Petty Cash migrations (petty_cash schema)...");
         var opts = new DbContextOptionsBuilder<PettyCashDbContext>().UseNpgsql(conn).Options;
         await using var db = new PettyCashDbContext(opts);
         await db.Database.MigrateAsync();
         Console.WriteLine("       Petty Cash: up to date.");
     }
 
+    private static async Task ApplyCoaMigrationsAsync(string conn)
+    {
+        Console.WriteLine("[3/5] Applying CoA migrations (coa schema)...");
+        var opts = new DbContextOptionsBuilder<CoaDbContext>().UseNpgsql(conn).Options;
+        await using var db = new CoaDbContext(opts);
+        await db.Database.MigrateAsync();
+        Console.WriteLine("       CoA: up to date.");
+    }
+
     private static async Task ApplySchemaTriggersAsync(string conn)
     {
-        Console.WriteLine("[3/4] Applying Postgres triggers (balance invariant + append-only)...");
+        Console.WriteLine("[4/5] Applying Postgres triggers (balance invariant + append-only)...");
         var opts = new DbContextOptionsBuilder<LedgerDbContext>().UseNpgsql(conn).Options;
         await using var db = new LedgerDbContext(opts);
         await SchemaBootstrap.ApplyConstraintsAsync(db);
@@ -87,29 +97,12 @@ public static class Program
 
     private static async Task SeedGhanaChartAsync(string conn)
     {
-        Console.WriteLine("[4/4] Seeding Ghana standard chart of accounts...");
-        // CoA lives in petty_cash schema only because that's where it's
-        // currently consumed; if a future module needs the chart it can
-        // own its own table or read from this one. For v1 we let the
-        // operator persist accounts via raw INSERT — the kernel does NOT
-        // enforce account membership, so wiring CoA is module-by-module.
-        // The seed below is the canonical 70-row Ghana baseline.
-
-        // Insertion uses raw INSERT … ON CONFLICT DO NOTHING so re-runs
-        // are idempotent. The accounts table doesn't yet ship with EF
-        // migrations (no consumer requires it persisted) — when AR / AP
-        // arrive and need the chart, those modules will own the table
-        // and emit migrations.
-
-        // For now this prints a guidance message; a future Phase 6.5 task
-        // will land the accounts table + migration once a consumer needs it.
-        await Task.CompletedTask;
-        var count = GhanaStandardChart.Default.Count;
-        Console.WriteLine($"       Loaded {count} CoA rows in-memory.");
-        Console.WriteLine("       NOTE: no database table for Accounts yet — modules read");
-        Console.WriteLine("             GhanaStandardChart.Default directly. Persistent CoA");
-        Console.WriteLine("             ships with the AR module (Phase 6.2) when validation");
-        Console.WriteLine("             becomes a hard requirement.");
+        Console.WriteLine("[5/5] Seeding Ghana standard chart of accounts...");
+        var opts = new DbContextOptionsBuilder<CoaDbContext>().UseNpgsql(conn).Options;
+        await using var db = new CoaDbContext(opts);
+        var svc = new CoaService(db);
+        var inserted = await svc.SeedGhanaStandardChartAsync(tenantId: 1);
+        Console.WriteLine($"       CoA seed: inserted {inserted} new accounts (existing rows left untouched).");
     }
 
     // -----------------------------------------------------------------

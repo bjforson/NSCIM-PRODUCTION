@@ -7,11 +7,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>NickFinance.Coa</RootNamespace>
     <AssemblyName>NickFinance.Coa</AssemblyName>
-    <Description>NICKSCAN ERP / NickFinance — Chart of Accounts. Plain entities + Ghana SME default chart. Deliberately separate from the Ledger kernel: the kernel doesn't validate account codes, modules opt-in to CoA lookup as they need it.</Description>
+    <Description>NICKSCAN ERP / NickFinance — Chart of Accounts. Persistent accounts table in the `coa` Postgres schema + the Ghana SME default chart. The Ledger kernel doesn't validate account codes; modules opt-in to CoA lookup via ICoaService.</Description>
     <Version>0.1.0</Version>
     <Company>Nick TC-Scan Ltd</Company>
     <Product>NICKSCAN ERP SOLUTION</Product>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
+  </ItemGroup>
 
 </Project>

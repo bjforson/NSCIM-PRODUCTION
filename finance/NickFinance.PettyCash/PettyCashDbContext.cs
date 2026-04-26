@@ -76,6 +76,8 @@ public class PettyCashDbContext : DbContext
             e.Property(x => x.DecisionComment).HasColumnName("decision_comment").HasMaxLength(1000);
             e.Property(x => x.DisbursedByUserId).HasColumnName("disbursed_by_user_id");
             e.Property(x => x.LedgerEventId).HasColumnName("ledger_event_id");
+            e.Property(x => x.TaxTreatment).HasColumnName("tax_treatment").HasConversion<short>().IsRequired();
+            e.Property(x => x.WhtTreatment).HasColumnName("wht_treatment").HasConversion<short>().IsRequired();
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
 
             e.HasIndex(x => new { x.TenantId, x.VoucherNo })

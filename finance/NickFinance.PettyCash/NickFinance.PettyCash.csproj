@@ -28,6 +28,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NickFinance.Ledger\NickFinance.Ledger.csproj" />
     <ProjectReference Include="..\NickFinance.Coa\NickFinance.Coa.csproj" />
+    <ProjectReference Include="..\NickFinance.TaxEngine\NickFinance.TaxEngine.csproj" />
   </ItemGroup>
 
 </Project>
