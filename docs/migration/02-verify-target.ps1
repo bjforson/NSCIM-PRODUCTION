@@ -2,6 +2,7 @@
 # Run ON TARGET SERVER (10.0.1.254) via RDP
 # Validates target is ready to receive NSCIM
 
+# Continues past errors intentionally: 9-step pre-flight check aggregates per-check FAIL/WARN status and writes to target-state-before.txt — failing fast at check 3 hides issues with checks 4-9.
 $ErrorActionPreference = 'Continue'
 $results = [ordered]@{}
 

@@ -12,6 +12,7 @@ param(
     [switch]$CheckConfig
 )
 
+# Continues past errors intentionally: diagnostic that runs independent config / status / log checks (any combo via -CheckConfig/-CheckStatus/-CheckLogs); per-section failures must not abort the report.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

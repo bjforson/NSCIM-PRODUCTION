@@ -7,6 +7,7 @@ param(
     [string[]]$Databases = @("NS_CIS", "ICUMS", "ICUMS_Downloads")
 )
 
+# Continues past errors intentionally: orchestrates Check_Database_Sync_Status + Generate_Sync_Todo_List, both of which iterate per-table; explicit $LASTEXITCODE checks enforce the real fail-fast.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

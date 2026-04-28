@@ -6,6 +6,7 @@ param(
     [string]$Username = "analyst"
 )
 
+# Continues past errors intentionally: diagnostic script runs many independent heartbeat / readiness checks and reports each — failing fast hides downstream symptoms.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Heartbeat Issue Diagnosis" -ForegroundColor Cyan

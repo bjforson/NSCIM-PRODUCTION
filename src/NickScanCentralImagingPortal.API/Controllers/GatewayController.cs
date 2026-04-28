@@ -10,6 +10,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
     /// Reduces frontend API calls by combining related data into single responses
     /// </summary>
     [ApiController]
+    [Authorize]
     [Route("api/[controller]")]
     public class GatewayController : ControllerBase
     {

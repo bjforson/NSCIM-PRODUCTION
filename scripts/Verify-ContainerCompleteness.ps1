@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: verification script runs independent completeness checks across multiple status / data-flag breakdowns; failing fast hides downstream signals.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Fix 3: Verify ContainerCompletenessService" -ForegroundColor Cyan

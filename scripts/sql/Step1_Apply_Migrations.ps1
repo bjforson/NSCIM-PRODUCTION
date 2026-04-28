@@ -1,6 +1,6 @@
 # Step 1: Apply EF Core Migrations to create schema on MSSQLSERVER
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"  # 2026-04-28: was "Continue" — silent failures masked breakage. Wrap genuinely tolerated steps in try/catch.
 
 Write-Host "Applying EF Core Migrations to MSSQLSERVER..." -ForegroundColor Cyan
 Write-Host ""

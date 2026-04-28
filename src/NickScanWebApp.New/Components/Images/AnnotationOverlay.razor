@@ -1,4 +1,5 @@
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ILogger<AnnotationOverlay> Logger
 
 @if (_rectangles.Any())
 {
@@ -76,7 +77,9 @@
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"AnnotationOverlay: Error loading annotations for {ContainerNumber}: {ex.Message}");
+            // 2026-04-27: replaced Console.WriteLine — container number was leaking into stdout
+            // logs that are not redacted. ILogger goes through the Serilog sink which strips/scopes.
+            Logger.LogWarning(ex, "Error loading annotations for {Container}", ContainerNumber);
         }
     }
 

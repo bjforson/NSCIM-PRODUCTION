@@ -1,6 +1,7 @@
 # Show Output Locations
 # Usage: .\scripts\Show-OutputLocations.ps1
 
+# Continues past errors intentionally: info-display script lists many independent paths/files; missing items are part of the report, not failures.
 $ErrorActionPreference = "Continue"
 
 Write-Host "==================================================" -ForegroundColor Cyan

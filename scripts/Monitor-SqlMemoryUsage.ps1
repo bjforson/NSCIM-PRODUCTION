@@ -10,6 +10,7 @@ param(
     [int]$IntervalSeconds = 30
 )
 
+# Continues past errors intentionally: monitor loop polls SQL stats and tolerates transient query failures (continuous mode); errors are caught per-query and reported.
 $ErrorActionPreference = "Continue"
 
 Write-Host "SQL Server Memory Usage Monitor" -ForegroundColor Cyan

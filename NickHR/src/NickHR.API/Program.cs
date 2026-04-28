@@ -13,7 +13,7 @@ using Serilog;
 using var mutex = new Mutex(true, @"Global\NickHR_API_SingleInstance", out var createdNew);
 if (!createdNew)
 {
-    Console.WriteLine("NickHR API is already running. Exiting.");
+    Log.Warning("NickHR API is already running. Exiting.");
     return;
 }
 
@@ -25,8 +25,29 @@ var builder = WebApplication.CreateBuilder(args);
 // Windows Service support
 builder.Host.UseWindowsService();
 
-// Resolve DB password from environment variable
-var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD") ?? "postgres";
+// Resolve DB password from environment variable.
+// API connection string uses Username=nscim_app (migrated in commit a5067a2),
+// so it reads NICKSCAN_DB_PASSWORD which holds the nscim_app role's password.
+// (The WebApp project still uses Username=postgres and reads NICKHR_DB_PASSWORD;
+// they intentionally diverge until the WebApp is also migrated.)
+// 2026-04-27: fail-fast on missing NICKSCAN_DB_PASSWORD in production.
+// Pre-fix behaviour was a silent fallback to the literal "postgres" — leftover from
+// dev convenience — which made misconfiguration look like a 401-loop instead of a
+// startup failure. Mirrors the JWT-key fail-fast pattern from this same file.
+var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
+if (string.IsNullOrEmpty(dbPassword))
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "NICKSCAN_DB_PASSWORD environment variable is not set. NickHR.API cannot start in " +
+            "production without the nscim_app role password. Set it via " +
+            "[Environment]::SetEnvironmentVariable('NICKSCAN_DB_PASSWORD', <value>, 'Machine')");
+    }
+    Log.Warning("NICKSCAN_DB_PASSWORD not set — falling back to dev default 'postgres'. Production startup would fail here.");
+    dbPassword = "postgres";
+}
+
 var connString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (!string.IsNullOrEmpty(connString) && connString.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
 {
@@ -94,7 +115,10 @@ builder.Services.AddAuthentication(options =>
         ValidIssuer = builder.Configuration["Jwt:Issuer"],
         ValidAudience = builder.Configuration["Jwt:Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
-        ClockSkew = TimeSpan.Zero
+        // 60s skew tolerates routine clock drift across servers without granting
+        // a meaningful extra-validity window. ZERO was rejecting valid tokens
+        // when the API host and a client diverged by >1s.
+        ClockSkew = TimeSpan.FromSeconds(60)
     };
 
     // ✅ SECURITY: Single-session enforcement (2026-04-25). Reject tokens
@@ -124,6 +148,16 @@ builder.Services.AddAuthentication(options =>
 
 // IMemoryCache backs the single-session validator's 30s sid lookup.
 builder.Services.AddMemoryCache();
+
+// Health checks. /api/health runs everything; /api/health/live is a pure liveness
+// probe (just confirms the process is up); /api/health/ready runs only checks
+// tagged "ready" — currently the NickHR Postgres connection. NSCIM_API's downstream
+// liveness probe was previously hitting /api/_module/manifest as a proxy because
+// no /health endpoint existed; this replaces that hack.
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<NickHRDbContext>(
+        "NickHR_Database",
+        tags: new[] { "database", "ready" });
 
 // ✅ SECURITY: Deny-by-default. Every endpoint requires an authenticated user unless it
 // explicitly opts in with [AllowAnonymous] (login, register, health). Closes the class
@@ -232,6 +266,20 @@ app.UseAuthorization();
 // can actually filter. Must run AFTER UseAuthentication so the JWT principal
 // is available, and BEFORE controllers that touch tenant-owned data.
 app.UseNickERPTenancy();
+
+// Anonymous health endpoints. The deny-by-default fallback policy above (RequireAuthenticatedUser)
+// rejects unauthenticated requests on every other endpoint; these explicitly opt out so probes
+// (load balancer, NSCIM_API's /health downstream check) work without a JWT.
+app.MapHealthChecks("/api/health").AllowAnonymous();
+app.MapHealthChecks("/api/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = _ => false  // liveness: no checks, just process is up
+}).AllowAnonymous();
+app.MapHealthChecks("/api/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+}).AllowAnonymous();
+
 app.MapControllers();
 
 app.Run();

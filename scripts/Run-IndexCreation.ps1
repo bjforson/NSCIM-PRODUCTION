@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: applies multiple independent .sql index files; each is wrapped in try/catch and reported separately so a failure in one file doesn't block the others.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Creating Date Indexes for Memory Optimization" -ForegroundColor Cyan

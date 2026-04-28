@@ -2,6 +2,7 @@
 # Run from current box if cutover is aborted
 # Reverses the actions of 08-cutover-stop-source.ps1
 
+# Continues past errors intentionally: rollback must attempt to restart all services even if one fails — partial restore is better than aborting halfway through service recovery.
 $ErrorActionPreference = 'Continue'
 
 Write-Host "=== ROLLBACK: Restarting source services ===" -ForegroundColor Yellow

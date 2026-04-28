@@ -6,6 +6,7 @@ param(
     [int]$SampleCount = 6
 )
 
+# Continues past errors intentionally: monitoring script samples process state across multiple intervals and per-service log dirs; per-sample failures must not abort the run.
 $ErrorActionPreference = "Continue"
 
 function Write-Step {

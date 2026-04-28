@@ -7,6 +7,7 @@ param(
     [switch]$Detailed
 )
 
+# Continues past errors intentionally: comprehensive diagnostic with many independent assignment-flow checks; failing fast at one check hides subsequent issues.
 $ErrorActionPreference = "Continue"
 
 Write-Host "🔍 Image Analyst Assignment Diagnostic Tool" -ForegroundColor Cyan

@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: read-only diagnostic that aggregates WorkflowStage stats across many groups; per-stage query failures must not abort the report.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Check WorkflowStage Filter" -ForegroundColor Cyan

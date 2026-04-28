@@ -2,6 +2,7 @@
 # Run from current box at cutover time
 # Disables auto-recovery first so services actually stay stopped
 
+# Continues past errors intentionally: cutover stop must attempt to halt every service and report leftover PIDs even if individual sc.exe / Stop-Service calls fail.
 $ErrorActionPreference = 'Continue'
 
 Write-Host "=== CUTOVER: Stopping source services ===" -ForegroundColor Red

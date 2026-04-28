@@ -28,8 +28,28 @@ var builder = WebApplication.CreateBuilder(args);
 // Windows Service support
 builder.Host.UseWindowsService();
 
-// Resolve DB password from environment variable
-var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD") ?? "postgres";
+// Resolve DB password from environment variable.
+// Prefer NICKHR_DB_PASSWORD (the postgres-user password used by the nickhr DB),
+// then fall back to NICKSCAN_DB_PASSWORD for backward compatibility.
+// NOTE: NICKSCAN_DB_PASSWORD was repurposed in commit a5067a2 to hold the
+// nscim_app role's password. NickHR still connects as postgres super-user, so
+// it needs its own variable. Long-term fix: migrate NickHR to a dedicated
+// nickhr_app role.
+// 2026-04-27: fail-fast on missing DB password in production. Was silently
+// falling through to "postgres", which only failed at first query.
+var dbPassword = Environment.GetEnvironmentVariable("NICKHR_DB_PASSWORD")
+                 ?? Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
+if (string.IsNullOrEmpty(dbPassword))
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "Neither NICKHR_DB_PASSWORD nor NICKSCAN_DB_PASSWORD environment variable is set. " +
+            "NickHR.WebApp cannot start in production without the postgres-user password.");
+    }
+    dbPassword = "postgres";
+}
+
 var connString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (!string.IsNullOrEmpty(connString) && connString.Contains("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***"))
 {
@@ -37,12 +57,21 @@ if (!string.IsNullOrEmpty(connString) && connString.Contains("***USE_ENV_VAR_NIC
         connString.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", dbPassword);
 }
 
-// Resolve SMTP password from environment variable
-var smtpPassword = Environment.GetEnvironmentVariable("NICKHR_SMTP_PASSWORD") ?? "";
+// Resolve SMTP password from environment variable.
+// 2026-04-27: SMTP missing in production is now a startup failure rather than a
+// silent empty-string substitution that surfaces as opaque 535 errors at send time.
+var smtpPassword = Environment.GetEnvironmentVariable("NICKHR_SMTP_PASSWORD");
 var smtpPwConfig = builder.Configuration["Email:Password"];
-if (!string.IsNullOrEmpty(smtpPwConfig) && smtpPwConfig.Contains("***USE_ENV_VAR_NICKHR_SMTP_PASSWORD***"))
+var smtpRequiresEnv = !string.IsNullOrEmpty(smtpPwConfig) && smtpPwConfig.Contains("***USE_ENV_VAR_");
+if (smtpRequiresEnv)
 {
-    builder.Configuration["Email:Password"] = smtpPassword;
+    if (string.IsNullOrEmpty(smtpPassword) && builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "NICKHR_SMTP_PASSWORD environment variable is not set but Email:Password expects it. " +
+            "Set the env var or remove the placeholder from appsettings.json.");
+    }
+    builder.Configuration["Email:Password"] = smtpPassword ?? string.Empty;
 }
 
 // Add MudBlazor

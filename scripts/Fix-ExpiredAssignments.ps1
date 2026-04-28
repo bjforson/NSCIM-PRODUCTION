@@ -7,7 +7,7 @@ param(
     [switch]$DryRun
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"  # 2026-04-28: was "Continue" — silent failures masked breakage. Wrap genuinely tolerated steps in try/catch.
 
 Write-Host "Fix Expired Assignments" -ForegroundColor Cyan
 Write-Host "======================" -ForegroundColor Cyan

@@ -10,6 +10,7 @@ param(
     [switch]$SkipVerification = $false
 )
 
+# Continues past errors intentionally: loops across many tables retransferring incomplete data; per-table failures are reported and aggregated, must not abort the resync.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

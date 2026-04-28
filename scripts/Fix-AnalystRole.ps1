@@ -7,7 +7,7 @@ param(
     [string[]]$UserNames = @()  # If empty, will list all users for selection
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"  # 2026-04-28: was "Continue" — silent failures masked breakage. Wrap genuinely tolerated steps in try/catch.
 
 Write-Host "Fix 2: Assign Analyst Role" -ForegroundColor Cyan
 Write-Host "===========================" -ForegroundColor Cyan

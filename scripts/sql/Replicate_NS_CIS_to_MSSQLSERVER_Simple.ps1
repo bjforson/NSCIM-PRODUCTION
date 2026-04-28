@@ -10,6 +10,7 @@ param(
     [string]$BackupPath = "C:\Temp\DB_Backups"
 )
 
+# Continues past errors intentionally: iterates DB backup/restore per-DB; one DB's restore failure must not abort the others (script uses `continue` after $LASTEXITCODE checks).
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

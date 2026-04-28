@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
 
 namespace NickScanWebApp.New.Services
@@ -11,13 +12,21 @@ namespace NickScanWebApp.New.Services
     /// </summary>
     public class CargoSummaryService
     {
+        private readonly ILogger<CargoSummaryService> _logger;
+
+        public CargoSummaryService(ILogger<CargoSummaryService> logger)
+        {
+            _logger = logger;
+        }
+
         public Task<CargoSummaryDto> GenerateSummaryAsync(CargoGroupDto cargoGroup)
         {
             var summaryStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var extractionStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var textGenerationStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            Console.WriteLine($"⏱️ [CargoSummaryService] GenerateSummaryAsync START - GroupIdentifier: {cargoGroup.GroupIdentifier}, Type: {cargoGroup.Type}");
+            _logger.LogDebug("GenerateSummaryAsync START - GroupIdentifier: {GroupIdentifier}, Type: {Type}",
+                cargoGroup.GroupIdentifier, cargoGroup.Type);
 
             try
             {
@@ -37,7 +46,8 @@ namespace NickScanWebApp.New.Services
                     .DistinctBy(b => b.BOEId)
                     .ToList();
                 extractionStopwatch.Stop();
-                Console.WriteLine($"⏱️ [CargoSummaryService] Data extraction took: {extractionStopwatch.ElapsedMilliseconds}ms, Records: {allRecords.Count}, BOEs: {allBOEDetails.Count}");
+                _logger.LogDebug("Data extraction took {ElapsedMs}ms, Records: {RecordCount}, BOEs: {BoeCount}",
+                    extractionStopwatch.ElapsedMilliseconds, allRecords.Count, allBOEDetails.Count);
 
                 // Extract key information
                 var extractStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -52,22 +62,23 @@ namespace NickScanWebApp.New.Services
                 ExtractLineItemCount(summary, allRecords);
                 ExtractAdditionalDetails(summary, allRecords, cargoGroup);
                 extractStopwatch.Stop();
-                Console.WriteLine($"⏱️ [CargoSummaryService] Field extraction took: {extractStopwatch.ElapsedMilliseconds}ms");
+                _logger.LogDebug("Field extraction took {ElapsedMs}ms", extractStopwatch.ElapsedMilliseconds);
 
                 // Generate formatted summary text
                 textGenerationStopwatch.Restart();
                 summary.SummaryText = GenerateSummaryText(summary, cargoGroup);
                 textGenerationStopwatch.Stop();
-                Console.WriteLine($"⏱️ [CargoSummaryService] Text generation took: {textGenerationStopwatch.ElapsedMilliseconds}ms");
+                _logger.LogDebug("Text generation took {ElapsedMs}ms", textGenerationStopwatch.ElapsedMilliseconds);
 
                 summaryStopwatch.Stop();
-                Console.WriteLine($"⏱️ [CargoSummaryService] GenerateSummaryAsync COMPLETE - Total: {summaryStopwatch.ElapsedMilliseconds}ms ({summaryStopwatch.Elapsed.TotalSeconds:F2}s)");
+                _logger.LogDebug("GenerateSummaryAsync COMPLETE - Total: {ElapsedMs}ms ({ElapsedSec:F2}s)",
+                    summaryStopwatch.ElapsedMilliseconds, summaryStopwatch.Elapsed.TotalSeconds);
 
                 return Task.FromResult(summary);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error generating cargo summary: {ex.Message}");
+                _logger.LogError(ex, "Error generating cargo summary for {GroupIdentifier}", cargoGroup.GroupIdentifier);
                 return Task.FromResult(new CargoSummaryDto
                 {
                     SummaryText = "Unable to generate cargo summary at this time."

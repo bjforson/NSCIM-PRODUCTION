@@ -6,7 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"  # 2026-04-27: was "Continue" — silent failures masked migration breakage in 56 scripts. Use try/catch where you genuinely want to continue past a step.
 
 Write-Host "Checking for users with Analyst role..." -ForegroundColor Cyan
 Write-Host "=======================================" -ForegroundColor Cyan

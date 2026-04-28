@@ -9,7 +9,7 @@ param(
     [int]$MinMemoryGB = 4
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"  # 2026-04-28: was "Continue" — silent failures masked breakage. Wrap genuinely tolerated steps in try/catch.
 
 Write-Host "SQL Server Memory Configuration" -ForegroundColor Cyan
 Write-Host "===============================" -ForegroundColor Cyan

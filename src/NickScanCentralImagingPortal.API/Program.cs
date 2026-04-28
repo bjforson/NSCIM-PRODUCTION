@@ -46,7 +46,7 @@ if (!_skipMutex)
     instanceMutex = new Mutex(true, @"Global\NSCIM_API_SingleInstance", out var isFirstInstance);
     if (!isFirstInstance)
     {
-        Console.Error.WriteLine("Another instance of NSCIM API is already running. Exiting.");
+        Log.Warning("Another instance of NSCIM API is already running. Exiting.");
         return;
     }
     AppDomain.CurrentDomain.ProcessExit += (_, _) => instanceMutex?.Dispose();
@@ -582,7 +582,53 @@ builder.Services.AddHealthChecks()
     .AddNpgSql(
         builder.Configuration.GetConnectionString("ICUMS_Downloads_Connection") ?? "",
         name: "ICUMS_Downloads_PG_Connection",
-        tags: new[] { "database", "postgresql" });
+        tags: new[] { "database", "postgresql" })
+    // 2026-04-27: downstream service probes — `/health/ready` was returning 200 OK while
+    // NickComms.Gateway / image-splitter / NickHR were dead because nothing checked them.
+    // Tagged "ready" so they participate in the readiness probe predicate at line ~1291.
+    // AspNetCore.HealthChecks.Uris isn't referenced — using AddAsyncCheck inline keeps the
+    // dependency footprint unchanged. Each probe builds its own HttpClient (5s timeout)
+    // so a hung downstream can't block the others.
+    .AddAsyncCheck("NickComms_Gateway", ct => DownstreamProbeAsync(
+        builder.Configuration["HealthChecks:NickCommsHealthUrl"] ?? "http://localhost:5220/api/health",
+        "NickComms.Gateway", ct), tags: new[] { "downstream", "ready" })
+    .AddAsyncCheck("RawImageEngine", ct => DownstreamProbeAsync(
+        builder.Configuration["HealthChecks:RawImageEngineHealthUrl"] ?? "http://localhost:5320/api/health",
+        "Splitter", ct), tags: new[] { "downstream", "ready" })
+    .AddAsyncCheck("NickHR_API", ct => DownstreamProbeAsync(
+        builder.Configuration["HealthChecks:NickHRHealthUrl"] ?? "http://localhost:5299/api/health",
+        "NickHR.API", ct), tags: new[] { "downstream", "ready" });
+
+// 2026-04-28: shared probe for downstream service health.
+// AllowAutoRedirect=false means a 3xx response (e.g. NickHR.API's HTTP→HTTPS redirect on
+// /api/health) is treated as proof-of-life, not a failure to fetch the redirect target.
+// 2xx/3xx → Healthy, 4xx → Degraded, 5xx → Unhealthy, network failure → Unhealthy.
+static async Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult> DownstreamProbeAsync(
+    string url, string name, CancellationToken ct)
+{
+    using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+    using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+    try
+    {
+        var resp = await client.GetAsync(url, ct);
+        var code = (int)resp.StatusCode;
+        if (code >= 200 && code < 400)
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy($"{name} OK ({code})");
+        if (code >= 400 && code < 500)
+            return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Degraded($"{name} HTTP {code}");
+        return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy($"{name} HTTP {code}");
+    }
+    catch (Exception ex)
+    {
+        return Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Unhealthy($"{name} unreachable", ex);
+    }
+}
+
+// 2026-04-27: register correlation propagation infrastructure so any typed HttpClient
+// can chain `.AddHttpMessageHandler<CorrelationForwardingHandler>()` to forward the
+// inbound X-Correlation-ID across service boundaries.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddTransient<NickScanCentralImagingPortal.Services.Http.CorrelationForwardingHandler>();
 
 // ✅ Add Health Checks UI
 builder.Services.AddHealthChecksUI(settings =>
@@ -1197,9 +1243,12 @@ app.Use(async (context, next) =>
         context.Response.Headers["Referrer-Policy"] = referrerPolicy;
     }
 
-    // Content-Security-Policy (CSP) - Basic policy
+    // Content-Security-Policy (CSP)
+    // 'unsafe-eval' removed 2026-04-27 — Blazor Server has no eval requirement; killed it
+    // unilaterally. 'unsafe-inline' (script + style) is still here as a Razor/Blazor rendering
+    // crutch — replacing it requires a per-request nonce middleware. TODO: migrate to nonces.
     context.Response.Headers["Content-Security-Policy"] =
-        "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';";
+        "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';";
 
     // Permissions-Policy (formerly Feature-Policy)
     context.Response.Headers["Permissions-Policy"] =
@@ -1281,17 +1330,20 @@ app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks
     ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
 }).AllowAnonymous().DisableRateLimiting();
 
-// Liveness probe (simple check, no rate limiting)
+// Liveness probe (simple check, no rate limiting). 2026-04-28: AllowAnonymous added —
+// without it the FallbackPolicy.RequireAuthenticatedUser() at line ~344 catches the
+// endpoint and the cookie scheme's LoginPath redirects probes to /login → endless loop.
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {
     Predicate = _ => false // No checks, just returns 200 if app is running
-}).DisableRateLimiting();
+}).DisableRateLimiting().AllowAnonymous();
 
-// Readiness probe (all dependencies must be ready, no rate limiting)
+// Readiness probe (all dependencies must be ready, no rate limiting). Same AllowAnonymous
+// reasoning as /health/live above.
 app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("database") || check.Tags.Contains("ready")
-}).DisableRateLimiting();
+}).DisableRateLimiting().AllowAnonymous();
 
 // Health Check UI
 app.MapHealthChecksUI(options =>
@@ -1380,14 +1432,14 @@ static void NormalizeConnectionStrings(IConfiguration configuration, IWebHostEnv
         "ConnectionStrings:ICUMS_Downloads_Connection"
     };
 
-    Console.WriteLine("✅ Validating PostgreSQL connection strings...");
+    Log.Information("Validating PostgreSQL connection strings...");
 
     foreach (var connStringKey in connectionStringKeys)
     {
         var connString = configuration[connStringKey];
         if (string.IsNullOrEmpty(connString))
         {
-            Console.WriteLine($"   ⚠️ {connStringKey.Split(':').Last()} is empty — skipping");
+            Log.Warning("Connection string {ConnectionName} is empty — skipping", connStringKey.Split(':').Last());
             continue;
         }
 
@@ -1395,11 +1447,12 @@ static void NormalizeConnectionStrings(IConfiguration configuration, IWebHostEnv
         {
             var builder = new Npgsql.NpgsqlConnectionStringBuilder(connString);
             var keyName = connStringKey.Split(':').Last();
-            Console.WriteLine($"   ✅ {keyName}: Host={builder.Host}, Port={builder.Port}, Database={builder.Database}");
+            Log.Information("Connection string {ConnectionName} validated: Host={Host}, Port={Port}, Database={Database}",
+                keyName, builder.Host, builder.Port, builder.Database);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"   ❌ {connStringKey.Split(':').Last()} is malformed: {ex.Message}");
+            Log.Error(ex, "Connection string {ConnectionName} is malformed", connStringKey.Split(':').Last());
         }
     }
 }
@@ -1412,11 +1465,38 @@ static void NormalizeConnectionStrings(IConfiguration configuration, IWebHostEnv
 #pragma warning restore CS1587
 static void ReplaceCredentialsWithEnvironmentVariables(IConfiguration configuration)
 {
-    const string placeholder = "***USE_ENV_VAR_";
+    // 2026-04-27 hardening: this function used to log a warning and continue when
+    // env vars were missing, leaving the literal "***USE_ENV_VAR_*" placeholder in
+    // place as if it were the actual secret. Services then failed at first use with
+    // opaque 401/network errors that took ops a long time to diagnose. The new
+    // pattern is fail-fast in production (matches NickHR.API and Portal/NickComms).
+    const string placeholderMarker = "***USE_ENV_VAR_";
+    var isProduction = string.Equals(
+        Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+        "Production",
+        StringComparison.OrdinalIgnoreCase);
 
-    // PostgreSQL Database Password
-    var dbPassword = Environment.GetEnvironmentVariable("NICKSCAN_DB_PASSWORD");
-    if (!string.IsNullOrEmpty(dbPassword))
+    void RequireSecret(string envVarName, Action<string> apply, string description)
+    {
+        var value = Environment.GetEnvironmentVariable(envVarName);
+        if (!string.IsNullOrEmpty(value))
+        {
+            apply(value);
+            Log.Information("{Description} loaded from {EnvVar}", description, envVarName);
+            return;
+        }
+        if (isProduction)
+        {
+            Log.Fatal("{EnvVar} is not set — {Description} cannot be initialized in production", envVarName, description);
+            throw new InvalidOperationException(
+                $"{envVarName} environment variable is not set. {description} cannot be initialized " +
+                $"in production. Set it via [Environment]::SetEnvironmentVariable('{envVarName}', <value>, 'Machine').");
+        }
+        Log.Warning("{EnvVar} not set — {Description} will fail at use (non-production)", envVarName, description);
+    }
+
+    // ── PostgreSQL Database Password (3 connection strings) ──
+    RequireSecret("NICKSCAN_DB_PASSWORD", dbPassword =>
     {
         foreach (var key in new[] { "NS_CIS_Connection", "ICUMS_Connection", "ICUMS_Downloads_Connection" })
         {
@@ -1426,78 +1506,47 @@ static void ReplaceCredentialsWithEnvironmentVariables(IConfiguration configurat
                 configuration[$"ConnectionStrings:{key}"] = connString.Replace("***USE_ENV_VAR_NICKSCAN_DB_PASSWORD***", dbPassword);
             }
         }
-        // H2: Don't log password length — narrows brute-force search space if logs leak.
-        Log.Information("PostgreSQL database password loaded from environment variable");
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_DB_PASSWORD not set — PostgreSQL connections will fail");
-    }
+    }, "PostgreSQL database password");
 
-    // ASE Database Password
-    var asePassword = Environment.GetEnvironmentVariable("NICKSCAN_ASE_PASSWORD");
-    if (!string.IsNullOrEmpty(asePassword))
+    // ── ASE Database Password ──
+    RequireSecret("NICKSCAN_ASE_PASSWORD", asePassword =>
     {
         var aseConnString = configuration["ASE:ConnectionString"];
         if (!string.IsNullOrEmpty(aseConnString))
         {
-            aseConnString = aseConnString.Replace("***USE_ENV_VAR_NICKSCAN_ASE_PASSWORD***", asePassword);
-            configuration["ASE:ConnectionString"] = aseConnString;
+            configuration["ASE:ConnectionString"] = aseConnString.Replace("***USE_ENV_VAR_NICKSCAN_ASE_PASSWORD***", asePassword);
         }
-        Log.Information("ASE database password loaded from environment variable");
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_ASE_PASSWORD not set — ASE connections will fail");
-    }
+    }, "ASE database password");
 
-    // FS6000 Network Share Password
-    var fs6000Password = Environment.GetEnvironmentVariable("NICKSCAN_FS6000_NETWORK_PASSWORD");
-    if (!string.IsNullOrEmpty(fs6000Password))
+    // ── FS6000 Network Share Password ──
+    RequireSecret("NICKSCAN_FS6000_NETWORK_PASSWORD", fs6000Password =>
     {
         var current = configuration["FS6000:FileSync:NetworkSharePassword"];
-        if (!string.IsNullOrEmpty(current) && current.Contains(placeholder))
+        if (!string.IsNullOrEmpty(current) && current.Contains(placeholderMarker))
         {
             configuration["FS6000:FileSync:NetworkSharePassword"] = fs6000Password;
         }
-        Log.Information("FS6000 network share password loaded from environment variable");
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_FS6000_NETWORK_PASSWORD not set — FS6000 file sync will fail");
-    }
+    }, "FS6000 network share password");
 
-    // ICUMS Auth Keys
-    var icumsAuthKey = Environment.GetEnvironmentVariable("NICKSCAN_ICUMS_AUTH_KEY");
-    if (!string.IsNullOrEmpty(icumsAuthKey))
-    {
-        configuration["ICUMS:AuthKey"] = icumsAuthKey;
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_ICUMS_AUTH_KEY not set — ICUMS API calls will fail");
-    }
+    // ── ICUMS Auth Keys (3 endpoints) ──
+    RequireSecret("NICKSCAN_ICUMS_AUTH_KEY",
+        v => configuration["ICUMS:AuthKey"] = v,
+        "ICUMS API auth key");
 
-    var icumsDocsAuthKey = Environment.GetEnvironmentVariable("NICKSCAN_ICUMS_DOCS_AUTH_KEY");
-    if (!string.IsNullOrEmpty(icumsDocsAuthKey))
-    {
-        configuration["ICUMS:DocumentsAuthKey"] = icumsDocsAuthKey;
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_ICUMS_DOCS_AUTH_KEY not set — ICUMS document API calls will fail");
-    }
+    RequireSecret("NICKSCAN_ICUMS_DOCS_AUTH_KEY",
+        v => configuration["ICUMS:DocumentsAuthKey"] = v,
+        "ICUMS documents API auth key");
 
-    var icumsJsonAuthKey = Environment.GetEnvironmentVariable("NICKSCAN_ICUMS_JSON_AUTH_KEY");
-    if (!string.IsNullOrEmpty(icumsJsonAuthKey))
-    {
-        configuration["ICUMS:JsonDocumentsAuthKey"] = icumsJsonAuthKey;
-    }
-    else
-    {
-        Log.Warning("NICKSCAN_ICUMS_JSON_AUTH_KEY not set — ICUMS JSON document API calls will fail");
-    }
+    RequireSecret("NICKSCAN_ICUMS_JSON_AUTH_KEY",
+        v => configuration["ICUMS:JsonDocumentsAuthKey"] = v,
+        "ICUMS JSON documents API auth key");
 
+    // 2026-04-28: catch-all "fail on any remaining placeholder" sweep removed.
+    // It was too aggressive — the codebase has placeholders (NICKSCAN_API_CERT_PASSWORD,
+    // NICKSCAN_SUPERADMIN_PASSWORD, etc.) handled by their own consumer code (SuperAdminGuard,
+    // CertificateHealthCheck, etc.) rather than by this central helper, so the sweep
+    // refused production startup for legitimate config. Per-secret RequireSecret() above
+    // still fails fast on the 6 critical credentials it covers, which is the actual win.
     Log.Information("Credential environment variable substitution complete");
 }
 

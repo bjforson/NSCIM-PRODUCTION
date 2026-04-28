@@ -8,6 +8,7 @@ param(
     [string]$TargetInstance = "(local)"
 )
 
+# Continues past errors intentionally: generated runner that transfers ~21 tables one-by-one; per-table errors are tallied in $errorCount and run must complete the rest.
 $ErrorActionPreference = "Continue"
 
 # Get the script directory for relative paths

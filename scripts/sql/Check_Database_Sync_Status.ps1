@@ -9,6 +9,7 @@ param(
     [string]$OutputFile = "sync_status_report.txt"
 )
 
+# Continues past errors intentionally: scans DBs/tables comparing source vs target row counts; per-table connect/query failures must be recorded and reporting must continue.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

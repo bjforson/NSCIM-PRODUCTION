@@ -10,6 +10,7 @@ param(
     [string]$DataPath = "C:\Temp\DB_Replication"
 )
 
+# Continues past errors intentionally: BCP exports/imports per-table across DBs; per-table BCP exit codes are checked and tallied, parent loop must complete.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

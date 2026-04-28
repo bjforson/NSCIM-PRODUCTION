@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: runs 5 independent diagnostic SQL queries; per-query errors are caught inside Invoke-SqlQuery and reported, run must continue to remaining queries.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

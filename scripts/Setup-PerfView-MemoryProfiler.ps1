@@ -7,6 +7,7 @@ param(
     [string]$InstallPath = "$env:USERPROFILE\Tools\PerfView"
 )
 
+# Continues past errors intentionally: setup helper runs optional download/install/probe steps and prints guidance regardless of which step succeeds.
 $ErrorActionPreference = "Continue"
 
 function Write-Step {

@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: read-only listing of analyst users; report continues even if a Format-Table or per-row enrichment hits a transient issue.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Final Check: Users with Analyst Role" -ForegroundColor Cyan

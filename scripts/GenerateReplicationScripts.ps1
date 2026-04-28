@@ -10,6 +10,7 @@ param(
     [string]$OutputDir = "scripts\sql\replication"
 )
 
+# Continues past errors intentionally: loops over multiple databases scripting structure to .sql files; per-DB script-generation errors must not abort the rest.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

@@ -96,10 +96,11 @@ namespace NickScanWebApp.New.Services
                 }
 
                 var networkStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                Console.WriteLine($"⏱️ [CargoGroupService] API call START - URL: {url}");
+                _logger.LogDebug("API call START - URL: {Url}", url);
                 var group = await _apiService.GetAsync<CargoGroupDto>(url);
                 networkStopwatch.Stop();
-                Console.WriteLine($"⏱️ [CargoGroupService] API call COMPLETE - Network time: {networkStopwatch.ElapsedMilliseconds}ms ({networkStopwatch.Elapsed.TotalSeconds:F2}s)");
+                _logger.LogDebug("API call COMPLETE - Network time: {ElapsedMs}ms ({ElapsedSec:F2}s)",
+                    networkStopwatch.ElapsedMilliseconds, networkStopwatch.Elapsed.TotalSeconds);
 
                 if (group != null)
                 {

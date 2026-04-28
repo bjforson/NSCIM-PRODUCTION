@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: explicitly tries multiple table-name variations (AspNetRoles, dbo.AspNetRoles, INFORMATION_SCHEMA probe); per-attempt failures are expected.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Checking for users with Analyst role..." -ForegroundColor Cyan

@@ -14,6 +14,7 @@ param(
     [switch]$All
 )
 
+# Continues past errors intentionally: test runner toggles many independent ICUMS improvement tests via -Test* switches; one test failure must not skip the rest.
 $ErrorActionPreference = "Continue"
 
 Write-Host "🧪 ICUMS Improvements Testing Script" -ForegroundColor Cyan

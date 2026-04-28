@@ -7,6 +7,7 @@ param(
     [string]$ObjectType = "VIEW"  # VIEW, PROCEDURE, FUNCTION, TRIGGER
 )
 
+# Continues past errors intentionally: scripts views/procs/functions/triggers from a DB; an inaccessible object must not abort scripting of the rest.
 $ErrorActionPreference = "Continue"
 
 function Get-ViewDefinitions {

@@ -21,11 +21,16 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
         private readonly ILogger<ComprehensiveHealthCheckService> _logger;
         private readonly IServiceProvider _serviceProvider;
         private readonly IConfiguration _configuration;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly Dictionary<string, ServiceHealthStatus> _serviceStatuses = new();
         private readonly Dictionary<string, DateTime> _lastHealthCheckTimes = new();
         private readonly Dictionary<string, int> _consecutiveFailures = new();
         private readonly object _lockObject = new();
         private const string SERVICE_ID = "[HEALTH-CHECK]";
+
+        // 2026-04-27: cap individual health-check tasks. Pre-fix Task.WhenAll had no per-task
+        // timeout, so a single slow downstream (e.g. unreachable ICUMS) hung the whole cycle.
+        private static readonly TimeSpan PerTaskTimeout = TimeSpan.FromSeconds(15);
 
         // Health check intervals (in minutes)
         private readonly Dictionary<string, int> _healthCheckIntervals = new()
@@ -50,11 +55,13 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
         public ComprehensiveHealthCheckService(
             ILogger<ComprehensiveHealthCheckService> logger,
             IServiceProvider serviceProvider,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IHttpClientFactory httpClientFactory)
         {
             _logger = logger;
             _serviceProvider = serviceProvider;
             _configuration = configuration;
+            _httpClientFactory = httpClientFactory;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -113,26 +120,53 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
         private async Task PerformComprehensiveHealthChecks(CancellationToken stoppingToken)
         {
-            var tasks = new List<Task>
+            // 2026-04-27: each check is wrapped in a per-task timeout so a single hung
+            // downstream cannot stall the whole cycle. WhenAll waits for all to finish
+            // (success, failure, or timeout). A timed-out check is logged and reported
+            // as Degraded — not silent.
+            var checks = new (string Name, Func<CancellationToken, Task> Run)[]
             {
-                CheckDatabaseHealth(stoppingToken),
-                CheckFileSystemHealth(stoppingToken),
-                CheckNetworkHealth(stoppingToken),
-                CheckFS6000BackgroundServiceHealth(stoppingToken),
-                CheckAseBackgroundServiceHealth(stoppingToken),
-                CheckIcumBackgroundServiceHealth(stoppingToken),
-                CheckImageProcessingServiceHealth(stoppingToken),
-                CheckFileSyncServiceHealth(stoppingToken),
-                CheckIngestionServiceHealth(stoppingToken),
-                CheckWebAPIHealth(stoppingToken),
-                CheckWebAppHealth(stoppingToken),
-                CheckSystemResourcesHealth(stoppingToken),
-                CheckImageAnalysisOrchestratorHealth(stoppingToken),
-                CheckRawImageEngineHealth(stoppingToken),
-                CheckAssignmentQueueHealth(stoppingToken)
+                ("Database", CheckDatabaseHealth),
+                ("FileSystem", CheckFileSystemHealth),
+                ("Network", CheckNetworkHealth),
+                ("FS6000BackgroundService", CheckFS6000BackgroundServiceHealth),
+                ("AseBackgroundService", CheckAseBackgroundServiceHealth),
+                ("IcumBackgroundService", CheckIcumBackgroundServiceHealth),
+                ("ImageProcessingService", CheckImageProcessingServiceHealth),
+                ("FileSyncService", CheckFileSyncServiceHealth),
+                ("IngestionService", CheckIngestionServiceHealth),
+                ("WebAPI", CheckWebAPIHealth),
+                ("WebApp", CheckWebAppHealth),
+                ("SystemResources", CheckSystemResourcesHealth),
+                ("ImageAnalysisOrchestrator", CheckImageAnalysisOrchestratorHealth),
+                ("RawImageEngine", CheckRawImageEngineHealth),
+                ("AssignmentQueue", CheckAssignmentQueueHealth),
             };
 
+            var tasks = checks.Select(c => RunWithTimeoutAsync(c.Name, c.Run, stoppingToken));
             await Task.WhenAll(tasks);
+        }
+
+        private async Task RunWithTimeoutAsync(string name, Func<CancellationToken, Task> probe, CancellationToken stoppingToken)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            cts.CancelAfter(PerTaskTimeout);
+            try
+            {
+                await probe(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("{ServiceId} Health check '{Name}' exceeded {Timeout}s — marking Degraded.",
+                    SERVICE_ID, name, PerTaskTimeout.TotalSeconds);
+                UpdateServiceStatus(name, HealthStatus.Degraded, (long)PerTaskTimeout.TotalMilliseconds,
+                    errorMessage: $"Probe exceeded {PerTaskTimeout.TotalSeconds}s timeout");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{ServiceId} Health check '{Name}' threw unexpectedly", SERVICE_ID, name);
+                UpdateServiceStatus(name, HealthStatus.Unhealthy, 0, errorMessage: ex.Message);
+            }
         }
 
         #region Individual Health Checks
@@ -242,7 +276,8 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                using var httpClient = new HttpClient();
+                // 2026-04-27: was `new HttpClient()` per check (socket exhaustion).
+                var httpClient = _httpClientFactory.CreateClient("HealthCheck");
                 httpClient.Timeout = TimeSpan.FromSeconds(10);
 
                 // Test internet connectivity
@@ -488,7 +523,8 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                using var httpClient = new HttpClient();
+                // 2026-04-27: was `new HttpClient()` per check (socket exhaustion).
+                var httpClient = _httpClientFactory.CreateClient("HealthCheck");
                 httpClient.Timeout = TimeSpan.FromSeconds(10);
 
                 var apiHealthUrl = _configuration["HealthChecks:ApiHealthUrl"] ?? "http://localhost:5205/health";

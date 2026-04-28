@@ -287,8 +287,9 @@ namespace NickScanCentralImagingPortal.API.Hubs
             }
             catch (Exception ex)
             {
-                // Log error but don't throw to prevent disrupting the health check service
-                Console.WriteLine($"Error broadcasting system status update: {ex.Message}");
+                // Log error but don't throw to prevent disrupting the health check service.
+                // Static method — using Serilog.Log static sink (configured in Program.cs).
+                Serilog.Log.Warning(ex, "Error broadcasting system status update");
             }
         }
 
@@ -321,7 +322,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error broadcasting alert: {ex.Message}");
+                Serilog.Log.Warning(ex, "Error broadcasting alert: {AlertType}", alertType);
             }
         }
 

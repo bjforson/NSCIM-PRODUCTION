@@ -10,6 +10,7 @@
     4. Verifies all services are running
 #>
 
+# Continues past errors intentionally: startup script must attempt to start API, WebApp, and Cloudflare Tunnel even if one fails — partial startup is reported per-service rather than aborting.
 $ErrorActionPreference = "Continue"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }

@@ -16,17 +16,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IcumDownloadsDbContext _icumContext;
         private readonly ApplicationDbContext _appContext;
         private readonly IConfiguration _configuration;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         public DiagnosticsController(
             ILogger<DiagnosticsController> logger,
             IcumDownloadsDbContext icumContext,
             ApplicationDbContext appContext,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IHttpClientFactory httpClientFactory)
         {
             _logger = logger;
             _icumContext = icumContext;
             _appContext = appContext;
             _configuration = configuration;
+            _httpClientFactory = httpClientFactory;
         }
 
         [HttpGet("system")]
@@ -100,7 +103,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                     else
                     {
-                        using var client = new HttpClient();
+                        // 2026-04-27: was `new HttpClient()` per call — socket exhaustion risk
+                        // (especially on the diagnostics path which gets polled by the health UI).
+                        var client = _httpClientFactory.CreateClient("Diagnostics");
                         client.Timeout = TimeSpan.FromSeconds(10);
                         await client.GetAsync($"{icumsBaseUrl.TrimEnd('/')}/");
                         diagnostics.IcumsApiReachable = true; // Got a response = server is reachable

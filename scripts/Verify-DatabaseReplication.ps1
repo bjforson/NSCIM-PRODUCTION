@@ -8,6 +8,7 @@ param(
     [string[]]$Databases = @("NS_CIS", "ICUMS", "ICUMS_Downloads")
 )
 
+# Continues past errors intentionally: per-table source/target row count comparison across multiple DBs; per-table errors are recorded and reporting must continue.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

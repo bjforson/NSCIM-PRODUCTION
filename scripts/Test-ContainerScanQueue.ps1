@@ -8,6 +8,7 @@ param(
     [switch]$Watch
 )
 
+# Continues past errors intentionally: monitoring/test runner loops over independent queue health queries (and supports -Watch continuous mode); per-query errors must not abort the run.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Container Scan Queue Testing & Monitoring Tool" -ForegroundColor Cyan

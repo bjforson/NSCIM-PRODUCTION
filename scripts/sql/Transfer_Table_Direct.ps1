@@ -11,6 +11,7 @@ param(
     [string]$ProgressLogFile = "transfer_progress.log"
 )
 
+# Continues past errors intentionally: invoked per-table by orchestrator scripts that need it to report failures via $LASTEXITCODE rather than abort the parent loop; internal try/catch handles fatal cases.
 $ErrorActionPreference = "Continue"
 
 $fullTableName = "[$Schema].[$TableName]"

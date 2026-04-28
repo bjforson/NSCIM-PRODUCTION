@@ -70,9 +70,13 @@ namespace NickScanCentralImagingPortal.API.Attributes
                     await cacheService.SetAsync(cacheKey, response, TimeSpan.FromSeconds(_durationSeconds));
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // On cache error, just proceed without caching
+                // Log so cache outages are visible — silently proceeding hid Redis failures
+                // for weeks during the 2026-04 audit. Caller still gets a fresh response.
+                var fallbackLogger = context.HttpContext.RequestServices
+                    .GetService<ILogger<CachedAttribute>>();
+                fallbackLogger?.LogWarning(ex, "Cache lookup/store failed for {Path}; serving uncached", context.HttpContext.Request.Path);
                 await next();
             }
         }

@@ -92,6 +92,12 @@ builder.Services.AddMudServices(config =>
 // ✅ AUTHENTICATION: Register AuthenticatedHttpMessageHandler for automatic token injection
 builder.Services.AddScoped<NickScanWebApp.New.Services.AuthenticatedHttpMessageHandler>();
 
+// 2026-04-27: CorrelationForwardingHandler propagates X-Correlation-ID outbound. Without it,
+// distributed tracing dies at every service boundary (audit confirmed inbound middleware
+// stamps the header but no outbound handler forwarded it).
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddTransient<NickScanWebApp.New.Services.CorrelationForwardingHandler>();
+
 // ✅ HttpClient with authentication handler to automatically add JWT tokens
 builder.Services.AddHttpClient("NickScanAPI", client =>
 {
@@ -117,20 +123,53 @@ builder.Services.AddHttpClient("NickScanAPI", client =>
     client.Timeout = TimeSpan.FromSeconds(builder.Configuration.GetValue<int>("ApiSettings:HttpClientTimeoutSeconds", 90));
 })
 .AddHttpMessageHandler<NickScanWebApp.New.Services.AuthenticatedHttpMessageHandler>()
+.AddHttpMessageHandler<NickScanWebApp.New.Services.CorrelationForwardingHandler>()
 .ConfigurePrimaryHttpMessageHandler(() =>
 {
     var handler = new HttpClientHandler();
 
-    // ✅ SSL Certificate Validation
-    // Always allow self-signed certificates to prevent certificate validation errors
-    // This is safe for internal network use and prevents HTTPS connection failures
+    // SSL Certificate Validation — three-tier fallback.
+    //
+    // 2026-04-28 (hot fix): the API's self-signed cert at 10.0.1.254:5206 is in the
+    // CurrentUser cert store of the Administrator account but NOT in LocalMachine\Root.
+    // The WebApp Windows service runs under a different account, so OS-trust-chain
+    // validation fails silently here even though it works from an Administrator shell.
+    // The earlier 2026-04-27 hardening exposed this (it disabled the unconditional
+    // bypass in production) but the prior bypass was masking a real trust gap.
+    //
+    // Resolution: pin to the specific cert thumbprint from NICKSCAN_API_CERT_THUMBPRINT.
+    // This is STRONGER than the pre-2026-04-27 unconditional accept (it rejects
+    // every cert except the one we expect), and works regardless of which trust
+    // store the service account can read.
+    // 2026-04-28 (final): callback accepts EITHER an OS-validated chain OR a thumbprint
+    // match. Discovery: NICKSCAN_API_CERT_THUMBPRINT holds the CA *root* cert thumbprint
+    // (from LocalMachine\Root), but the API serves a *leaf* cert signed by that root.
+    // Pinning leaf-against-root never matches — that's what was breaking login. Meanwhile
+    // System.Net's chain build approves the leaf cleanly (sslPolicyErrors=None) because
+    // the root is in the trust store. So we accept on either signal.
+    //
+    // Net effect vs. pre-audit code:
+    //   pre-2026-04-27: `=> true` always (accepted even MITM)
+    //   this:           accept if (chain valid) OR (leaf thumbprint matches pinned)
+    //                   reject everything else
+    // Strictly stronger than the original; still works with the misconfigured env var.
+    var pinnedThumbprint = Environment.GetEnvironmentVariable("NICKSCAN_API_CERT_THUMBPRINT")
+                           ?? builder.Configuration["Security:ApiCertThumbprint"];
+    var expectedThumbprint = pinnedThumbprint?.Replace(":", "").Replace(" ", "").Trim();
+
     handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
     {
-        // Accept any certificate (including self-signed) to prevent HTTPS connection failures
-        // This is appropriate for internal network use (10.0.1.254)
-        return true;
+        if (cert == null) return false;
+        // 1. OS-built chain says it's fine (root in LocalMachine\Root, valid leaf, etc.).
+        if (errors == System.Net.Security.SslPolicyErrors.None) return true;
+        // 2. Pinned-thumbprint fallback for environments where chain build can't reach.
+        if (!string.IsNullOrEmpty(expectedThumbprint)
+            && string.Equals(cert.Thumbprint, expectedThumbprint, StringComparison.OrdinalIgnoreCase))
+            return true;
+        // 3. Dev/staging convenience: accept anything when not in Production.
+        if (!builder.Environment.IsProduction()) return true;
+        return false;
     };
-    Console.WriteLine("✅ HTTPS: Allowing self-signed SSL certificates for internal network use");
 
     return handler;
 });

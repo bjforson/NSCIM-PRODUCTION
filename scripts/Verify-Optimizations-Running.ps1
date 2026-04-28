@@ -7,6 +7,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: verification script runs independent endpoint/feature tests and aggregates pass/fail in $allTestsPassed — must run every test.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

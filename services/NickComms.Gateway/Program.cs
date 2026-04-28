@@ -15,7 +15,7 @@ using Serilog;
 using var instanceMutex = new Mutex(true, @"Global\NickComms_Gateway_SingleInstance", out var isFirstInstance);
 if (!isFirstInstance)
 {
-    Console.Error.WriteLine("Another instance of NickComms Gateway is already running. Exiting.");
+    Log.Warning("Another instance of NickComms Gateway is already running. Exiting.");
     return;
 }
 
@@ -146,8 +146,12 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Middleware
-app.UseSwagger();
-app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "NickComms Gateway v1"));
+// Swagger only in non-prod — gateway serves SMS/email; schema disclosure is unhelpful in prod.
+if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "NickComms Gateway v1"));
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

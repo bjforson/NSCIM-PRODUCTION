@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: probes multiple schema/table-name combinations; per-attempt failures are expected and trigger fallbacks.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Checking for users with Analyst role (Custom Schema)..." -ForegroundColor Cyan

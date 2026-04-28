@@ -312,13 +312,13 @@ namespace NickScanWebApp.New.Services
                 var identity = new ClaimsIdentity(claims, "jwt");
                 var principal = new ClaimsPrincipal(identity);
 
-                // Notify auth state provider
-                if (_authStateProvider is ServerAuthStateProvider serverAuthProvider)
-                {
-                    serverAuthProvider.SetAuthenticatedUser(principal);
-                    _logger.LogInformation("✅ Authentication state restored for user: {Username}",
-                        principal.Identity?.Name ?? "Unknown");
-                }
+                // 2026-04-28: previously had `if (_authStateProvider is ServerAuthStateProvider …)`
+                // here, but ServerAuthStateProvider was never registered in DI (system uses
+                // SimpleAuthStateProvider/CustomAuthStateProvider per Program.cs:203-209) — the
+                // type-check never matched and the body never ran. Block removed; principal is
+                // built above for any future use but no notification fires here. If a notification
+                // hook is needed, route through SimpleAuthStateProvider's existing API.
+                _ = principal; // suppress "unused" hint; kept for parity with previous code path
             }
             catch (Exception ex)
             {

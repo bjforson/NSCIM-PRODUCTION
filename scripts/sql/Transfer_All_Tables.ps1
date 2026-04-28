@@ -5,6 +5,7 @@ param(
     [string]$TargetInstance = "(local)"
 )
 
+# Continues past errors intentionally: loops through every table in a DB calling Transfer_Table_Simple.ps1; per-table errors are tallied in $errorCount, must not abort the rest.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

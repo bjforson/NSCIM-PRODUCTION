@@ -1,20 +1,35 @@
 # ============================================================
 # NSCIM Production Deployment Script
 # ============================================================
-# Publishes API and WebApp to the canonical publish directory,
-# restarts the Windows services, and verifies the deployment.
+# Publishes one or more NickERP services to the canonical publish
+# directory, restarts the Windows services, and verifies the
+# deployment.
 #
 # CANONICAL PATHS (never change these without updating the
 # Windows service binPath via nssm set <service> Application):
-#   - API:    C:\Shared\NSCIM_PRODUCTION\publish\API
-#   - WebApp: C:\Shared\NSCIM_PRODUCTION\publish\WebApp
+#   - NSCIM_API:         C:\Shared\NSCIM_PRODUCTION\publish\API
+#   - NSCIM_WebApp:      C:\Shared\NSCIM_PRODUCTION\publish\WebApp
+#   - NSCIM_NickComms:   C:\Shared\NSCIM_PRODUCTION\publish\NickComms
+#   - NSCIM_Portal:      C:\Shared\NSCIM_PRODUCTION\publish\Portal
+#   - NickHR_API:        C:\Shared\NSCIM_PRODUCTION\NickHR\deploy\api
+#   - NickHR_WebApp:     C:\Shared\NSCIM_PRODUCTION\NickHR\deploy\webapp
+#   - NickFinance_WebApp: C:\Shared\NSCIM_PRODUCTION\publish\NickFinance.WebApp
 #
 # Usage:
-#   .\Deploy.ps1                    # Full deploy
-#   .\Deploy.ps1 -WebAppOnly        # Only WebApp
-#   .\Deploy.ps1 -ApiOnly           # Only API
+#   .\Deploy.ps1                    # Default: API + WebApp (back-compat)
+#   .\Deploy.ps1 -Full              # All 6 (NSCIM_*) + NickHR + NickFinance
+#   .\Deploy.ps1 -ApiOnly           # Only NSCIM_API
+#   .\Deploy.ps1 -WebAppOnly        # Only NSCIM_WebApp
+#   .\Deploy.ps1 -NickCommsOnly     # Only NSCIM_NickComms
+#   .\Deploy.ps1 -PortalOnly        # Only NSCIM_Portal
+#   .\Deploy.ps1 -NickHROnly        # NickHR_API + NickHR_WebApp
+#   .\Deploy.ps1 -NickFinanceOnly   # Only NickFinance_WebApp
 #   .\Deploy.ps1 -SkipBuild         # Just restart services
 #   .\Deploy.ps1 -DryRun            # Show plan without doing it
+#
+# Flags can combine, e.g.:
+#   .\Deploy.ps1 -Full -DryRun
+#   .\Deploy.ps1 -Full -SkipBuild
 #
 # Run from repo root: C:\Shared\NSCIM_PRODUCTION
 # ============================================================
@@ -22,6 +37,11 @@
 param(
     [switch]$WebAppOnly,
     [switch]$ApiOnly,
+    [switch]$NickCommsOnly,
+    [switch]$PortalOnly,
+    [switch]$NickHROnly,
+    [switch]$NickFinanceOnly,
+    [switch]$Full,
     [switch]$SkipBuild,
     [switch]$DryRun
 )
@@ -31,17 +51,111 @@ $ScriptRoot = $PSScriptRoot
 
 # --- Canonical paths (match the Windows service binPaths) ---
 $PUBLISH_ROOT = "C:\Shared\NSCIM_PRODUCTION\publish"
-$API_PUBLISH = Join-Path $PUBLISH_ROOT "API"
-$WEBAPP_PUBLISH = Join-Path $PUBLISH_ROOT "WebApp"
+$NICKHR_DEPLOY_ROOT = "C:\Shared\NSCIM_PRODUCTION\NickHR\deploy"
 
-$API_CSPROJ = Join-Path $ScriptRoot "src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj"
-$WEBAPP_CSPROJ = Join-Path $ScriptRoot "src\NickScanWebApp.New\NickScanWebApp.New.csproj"
+# --- Service catalogue -------------------------------------------------------
+# A single source of truth for every supervised .NET service this script can
+# deploy. Each entry is a hashtable consumed by the Phase 1..5 helpers below.
+#   Key          Service name (Get-Service / nssm)
+#   Csproj       Absolute path to the project to `dotnet publish`
+#   Publish      Absolute target directory (must match the service binPath)
+#   Dll          Filename of the published entry-point DLL (for verification)
+#   Tag          Short label used in console output / phase headers
+#   Group        Logical group used by the per-service flags ("nickhr"
+#                groups api+webapp under -NickHROnly, etc.)
+# ----------------------------------------------------------------------------
+$SERVICES = @(
+    @{
+        Key     = "NSCIM_API"
+        Csproj  = Join-Path $ScriptRoot "src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj"
+        Publish = Join-Path $PUBLISH_ROOT "API"
+        Dll     = "NickScanCentralImagingPortal.API.dll"
+        Tag     = "API"
+        Group   = "api"
+    },
+    @{
+        Key     = "NSCIM_WebApp"
+        Csproj  = Join-Path $ScriptRoot "src\NickScanWebApp.New\NickScanWebApp.New.csproj"
+        Publish = Join-Path $PUBLISH_ROOT "WebApp"
+        Dll     = "NickScanWebApp.New.dll"
+        Tag     = "WebApp"
+        Group   = "webapp"
+    },
+    @{
+        Key     = "NSCIM_NickComms"
+        Csproj  = Join-Path $ScriptRoot "services\NickComms.Gateway\NickComms.Gateway.csproj"
+        Publish = Join-Path $PUBLISH_ROOT "NickComms"
+        Dll     = "NickComms.Gateway.dll"
+        Tag     = "NickComms"
+        Group   = "nickcomms"
+    },
+    @{
+        Key     = "NSCIM_Portal"
+        Csproj  = Join-Path $ScriptRoot "platform\NickERP.Portal\NickERP.Portal.csproj"
+        Publish = Join-Path $PUBLISH_ROOT "Portal"
+        Dll     = "NickERP.Portal.dll"
+        Tag     = "Portal"
+        Group   = "portal"
+    },
+    @{
+        Key     = "NickHR_API"
+        Csproj  = Join-Path $ScriptRoot "NickHR\src\NickHR.API\NickHR.API.csproj"
+        Publish = Join-Path $NICKHR_DEPLOY_ROOT "api"
+        Dll     = "NickHR.API.dll"
+        Tag     = "NickHR.API"
+        Group   = "nickhr"
+    },
+    @{
+        Key     = "NickHR_WebApp"
+        Csproj  = Join-Path $ScriptRoot "NickHR\src\NickHR.WebApp\NickHR.WebApp.csproj"
+        Publish = Join-Path $NICKHR_DEPLOY_ROOT "webapp"
+        Dll     = "NickHR.WebApp.dll"
+        Tag     = "NickHR.WebApp"
+        Group   = "nickhr"
+    },
+    @{
+        Key     = "NickFinance_WebApp"
+        Csproj  = Join-Path $ScriptRoot "finance\NickFinance.WebApp\NickFinance.WebApp.csproj"
+        Publish = Join-Path $PUBLISH_ROOT "NickFinance.WebApp"
+        Dll     = "NickFinance.WebApp.dll"
+        Tag     = "NickFinance.WebApp"
+        Group   = "nickfinance"
+    }
+)
 
-# --- Windows services (in dependency order) ---
+# Convenience lookup - existing references like $SERVICE_API still work.
 $SERVICE_API = "NSCIM_API"
 $SERVICE_WEBAPP = "NSCIM_WebApp"
 # 2.15.3: the Python image-splitter is now supervised as a child of NSCIM_API
 # (see ImageSplitterSupervisorService). No separate Windows service to manage.
+
+# --- Selection logic ---------------------------------------------------------
+# Resolve which $SERVICES entries to deploy this run, based on the flags.
+# Default (no flags): API + WebApp - matches pre-2026-04-27 behavior.
+# -Full: every entry in $SERVICES.
+# Any *Only flag: just that group; multiple *Only flags can combine.
+# ----------------------------------------------------------------------------
+function Get-SelectedServices {
+    $onlyFlags = @{
+        "api"         = $ApiOnly
+        "webapp"      = $WebAppOnly
+        "nickcomms"   = $NickCommsOnly
+        "portal"      = $PortalOnly
+        "nickhr"      = $NickHROnly
+        "nickfinance" = $NickFinanceOnly
+    }
+    $anyOnly = $false
+    foreach ($v in $onlyFlags.Values) { if ($v) { $anyOnly = $true; break } }
+
+    if ($Full) {
+        return $SERVICES
+    }
+    if ($anyOnly) {
+        return $SERVICES | Where-Object { $onlyFlags[$_.Group] }
+    }
+    # Default: legacy API + WebApp pair.
+    return $SERVICES | Where-Object { $_.Group -in @("api", "webapp") }
+}
 
 function Write-Header($text) {
     Write-Host ""
@@ -113,6 +227,10 @@ function Publish-Project($name, $csproj, $target) {
         Write-Host "    [DryRun] Would publish $name to $target" -ForegroundColor Magenta
         return
     }
+    if (-not (Test-Path $csproj)) {
+        Write-Fail "$name csproj missing at $csproj"
+        throw "Publish failed: csproj not found for $name"
+    }
     Write-Step "Publishing $name to $target..."
     $output = & dotnet publish $csproj -c Release -o $target 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -128,7 +246,9 @@ function Set-RuntimeConfigRollForward($target) {
     # so assemblies built against net8.0 keep running under net10+. `dotnet publish`
     # rewrites these files on every publish, so we re-apply here as a post-publish step.
     # Originally lived as Deploy-ERP-Target.ps1 step 8.5 on the deploy target; baked in
-    # here 2026-04-19 so a cold source-driven deploy does not regress.
+    # here 2026-04-19 so a cold source-driven deploy does not regress. Applied uniformly
+    # to every selected service (2026-04-27) since they all share the same net8/net10
+    # mismatch story.
     if ($DryRun) {
         Write-Host "    [DryRun] Would set rollForward=latestMajor on runtimeconfig.json files under $target" -ForegroundColor Magenta
         return
@@ -198,6 +318,7 @@ function Set-NssmEnvPair($service, $name, $value) {
 
 function Test-DeploymentBinary($name, $dllPath) {
     if ($DryRun) { return }
+    if ($SkipBuild) { return }
     if (-not (Test-Path $dllPath)) {
         Write-Fail "$name DLL missing at $dllPath"
         throw "Deployment verification failed"
@@ -233,63 +354,73 @@ function Test-ProcessPath($serviceName, $expectedPath) {
 Write-Header "NSCIM Production Deployment"
 Write-Host "Repo root:     $ScriptRoot"
 Write-Host "Publish root:  $PUBLISH_ROOT"
-$mode = "Full deploy"
-if ($DryRun) { $mode = "DRY RUN" }
-elseif ($SkipBuild) { $mode = "Skip build" }
-elseif ($WebAppOnly) { $mode = "WebApp only" }
-elseif ($ApiOnly) { $mode = "API only" }
-Write-Host "Mode:          $mode"
-Write-Host ""
 
-if (-not (Test-Path $API_CSPROJ)) {
-    Write-Fail "Cannot find $API_CSPROJ - are you running from the repo root?"
+$selected = @(Get-SelectedServices)
+if ($selected.Count -eq 0) {
+    Write-Fail "No services selected. Check your flags."
     exit 1
 }
 
-# --- Phase 1: Stop services ---
-Write-Header "Phase 1: Stop services"
-if ($WebAppOnly) {
-    Stop-SvcIfRunning $SERVICE_WEBAPP
+# Compose human-readable mode label from the active flags.
+$modeParts = @()
+if ($DryRun) { $modeParts += "DRY RUN" }
+if ($SkipBuild) { $modeParts += "Skip build" }
+if ($Full) {
+    $modeParts += "Full deploy ($($selected.Count) services)"
 } else {
-    # Stopping NSCIM_API also terminates the supervised Python splitter child
-    # (2.15.3 ImageSplitterSupervisorService kills its process tree on shutdown).
-    Stop-SvcIfRunning $SERVICE_WEBAPP
-    Stop-SvcIfRunning $SERVICE_API
+    $modeParts += "Selected: " + (($selected | ForEach-Object { $_.Tag }) -join ", ")
+}
+Write-Host "Mode:          $($modeParts -join ' | ')"
+Write-Host "Services:      $(($selected | ForEach-Object { $_.Key }) -join ', ')"
+Write-Host ""
+
+# Sanity-check every selected csproj exists *before* we touch any service.
+# Cheap pre-flight - catches typos and missing repos without leaving services
+# stopped mid-deploy.
+foreach ($s in $selected) {
+    if (-not (Test-Path $s.Csproj)) {
+        Write-Fail "Cannot find $($s.Csproj) for $($s.Key) - are you running from the repo root?"
+        exit 1
+    }
+}
+
+# --- Phase 1: Stop services ---
+# Stop in reverse selection order. Within the default API+WebApp pair this
+# preserves the historical sequence (WebApp before API) so the API's
+# ImageSplitter supervisor isn't yanked out from under a busy WebApp request.
+Write-Header "Phase 1: Stop services"
+$stopOrder = @($selected) ; [array]::Reverse($stopOrder)
+foreach ($s in $stopOrder) {
+    Stop-SvcIfRunning $s.Key
 }
 
 # --- Phase 2: Publish ---
 Write-Header "Phase 2: Publish"
-if ($ApiOnly -or (-not $WebAppOnly)) {
-    Publish-Project "API" $API_CSPROJ $API_PUBLISH
-}
-if ($WebAppOnly -or (-not $ApiOnly)) {
-    Publish-Project "WebApp" $WEBAPP_CSPROJ $WEBAPP_PUBLISH
+foreach ($s in $selected) {
+    Publish-Project $s.Tag $s.Csproj $s.Publish
 }
 
 # --- Phase 3: Verify binaries ---
 Write-Header "Phase 3: Verify binaries"
-if ($ApiOnly -or (-not $WebAppOnly)) {
-    Test-DeploymentBinary "API" (Join-Path $API_PUBLISH "NickScanCentralImagingPortal.API.dll")
-}
-if ($WebAppOnly -or (-not $ApiOnly)) {
-    Test-DeploymentBinary "WebApp" (Join-Path $WEBAPP_PUBLISH "NickScanWebApp.New.dll")
+foreach ($s in $selected) {
+    Test-DeploymentBinary $s.Tag (Join-Path $s.Publish $s.Dll)
 }
 
 # --- Phase 3.5: Post-publish config (baked in 2026-04-19 from operator hot-patches) ---
 #   * rollForward=latestMajor so net8-built assemblies run on net10 host runtime
 #   * NSSM env var hands the ImageSplitter the FS6000 UNC path (LocalSystem cannot
 #     use the user-mapped Z:\ drive that the operator sees)
-# Runs on every deploy — including -SkipBuild — because the helpers are idempotent
+# Runs on every deploy - including -SkipBuild - because the helpers are idempotent
 # and the publish/ dir may have been refreshed by a hand-copy before the operator
 # ran Deploy.ps1 -SkipBuild to cycle services.
 Write-Header "Phase 3.5: Post-publish config"
-if ($ApiOnly -or (-not $WebAppOnly)) {
-    Set-RuntimeConfigRollForward $API_PUBLISH
+foreach ($s in $selected) {
+    Set-RuntimeConfigRollForward $s.Publish
 }
-if ($WebAppOnly -or (-not $ApiOnly)) {
-    Set-RuntimeConfigRollForward $WEBAPP_PUBLISH
-}
-if (-not $WebAppOnly) {
+# The FS6000 UNC env var is API-specific (only the ImageSplitter supervisor
+# under NSCIM_API needs it); apply only when the API service is in the
+# selection set.
+if ($selected | Where-Object { $_.Key -eq $SERVICE_API }) {
     # 2.15.3: env var now applies to NSCIM_API (supervisor inherits it to the
     # Python child). Previously set on the standalone NSCIM_ImageSplitter NSSM
     # service which has been removed.
@@ -297,24 +428,19 @@ if (-not $WebAppOnly) {
 }
 
 # --- Phase 4: Start services ---
+# Start in original (forward) selection order; with default API+WebApp this
+# means API comes up first so its ImageSplitterSupervisorService is ready
+# before WebApp starts servicing requests.
 Write-Header "Phase 4: Start services"
-if ($WebAppOnly) {
-    Start-Svc $SERVICE_WEBAPP
-} else {
-    # NSCIM_API's ImageSplitterSupervisorService auto-spawns the Python
-    # image-splitter child ~10s after the API is healthy.
-    Start-Svc $SERVICE_API
-    Start-Svc $SERVICE_WEBAPP
+foreach ($s in $selected) {
+    Start-Svc $s.Key
 }
 
 # --- Phase 5: Verify running process paths ---
 Write-Header "Phase 5: Verify running processes"
 Start-Sleep -Seconds 2
-if ($ApiOnly -or (-not $WebAppOnly)) {
-    Test-ProcessPath $SERVICE_API $API_PUBLISH
-}
-if ($WebAppOnly -or (-not $ApiOnly)) {
-    Test-ProcessPath $SERVICE_WEBAPP $WEBAPP_PUBLISH
+foreach ($s in $selected) {
+    Test-ProcessPath $s.Key $s.Publish
 }
 
 Write-Header "Deployment complete"

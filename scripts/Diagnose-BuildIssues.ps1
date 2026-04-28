@@ -1,6 +1,7 @@
 # Diagnose Build Issues on Production Server
 # Usage: .\scripts\Diagnose-BuildIssues.ps1
 
+# Continues past errors intentionally: diagnostic script runs many independent build-environment checks and reports each — failing fast on the first check defeats the diagnostic purpose.
 $ErrorActionPreference = "Continue"
 
 Write-Host "==================================================" -ForegroundColor Cyan

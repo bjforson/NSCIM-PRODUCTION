@@ -14,6 +14,7 @@ param(
     [string]$ProgressLogFile = "transfer_progress.log"
 )
 
+# Continues past errors intentionally: invoked per-table by orchestrators; batched-transfer errors are reported via $LASTEXITCODE so the parent loop can continue with the next table.
 $ErrorActionPreference = "Continue"
 
 $fullTableName = "[$Schema].[$TableName]"

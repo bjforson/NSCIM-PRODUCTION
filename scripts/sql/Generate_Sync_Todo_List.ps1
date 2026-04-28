@@ -129,6 +129,7 @@ param(
     [string]`$TargetInstance = "(local)"
 )
 
+# Continues past errors intentionally: generated runner transfers many tables one-by-one; per-table errors are tallied, must not abort the rest.
 `$ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

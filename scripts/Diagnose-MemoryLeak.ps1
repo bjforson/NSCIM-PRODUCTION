@@ -6,6 +6,7 @@ param(
     [int]$ProcessCheckIntervalSeconds = 5
 )
 
+# Continues past errors intentionally: memory-leak diagnostic samples process and logs at intervals — partial samples are still informative, hard-failing loses the trend signal.
 $ErrorActionPreference = "Continue"
 $script:startTime = Get-Date
 

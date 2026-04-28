@@ -10,6 +10,7 @@ param(
     [switch]$SkipObjects = $false
 )
 
+# Continues past errors intentionally: comprehensive replication loops across DBs, schemas, tables, indexes, views, procs, funcs, triggers — partial completeness is reported, per-object failures must not abort the run.
 $ErrorActionPreference = "Continue"
 $script:SourceInstance = $SourceInstance
 $script:TargetInstance = $TargetInstance

@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: read-only diagnostic listing all analysts and their readiness; report continues even if individual queries fail.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Real-Time Analyst Readiness Check" -ForegroundColor Cyan

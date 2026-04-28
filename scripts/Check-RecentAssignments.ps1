@@ -7,6 +7,7 @@ param(
     [int]$MinutesAgo = 10
 )
 
+# Continues past errors intentionally: read-only diagnostic listing recent assignments; report continues even if a query returns no rows or errors.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Check Recent Assignments (Last $MinutesAgo Minutes)" -ForegroundColor Cyan

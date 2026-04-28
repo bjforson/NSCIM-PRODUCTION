@@ -7,6 +7,7 @@ param(
     [string]$Username = ""  # If empty, will check all analysts
 )
 
+# Continues past errors intentionally: loops over every analyst checking/creating UserReadiness records — one analyst failure must not stop processing the rest.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Check UserReadiness Records" -ForegroundColor Cyan

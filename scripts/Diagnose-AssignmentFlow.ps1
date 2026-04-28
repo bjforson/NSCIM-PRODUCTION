@@ -6,6 +6,7 @@ param(
     [string]$Database = "NS_CIS"
 )
 
+# Continues past errors intentionally: comprehensive diagnostic running ~10 independent assignment-flow checks; failing fast at check 1 hides subsequent issues.
 $ErrorActionPreference = "Continue"
 
 Write-Host "Assignment Flow Diagnostic - Signed-In Analyst" -ForegroundColor Cyan

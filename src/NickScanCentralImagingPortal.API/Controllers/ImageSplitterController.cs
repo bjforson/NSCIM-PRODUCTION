@@ -245,12 +245,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to get split options for container {Container}", containerNumber);
-                return Ok(new
+                // 2026-04-27: was returning 200 OK with empty options on every error — frontend
+                // could not distinguish "no candidates" from "splitter unavailable". Now signals
+                // explicit failure so the UI can render a retry/error state instead of a blank list.
+                return StatusCode(503, new
                 {
+                    error = "split_options_unavailable",
                     containerNumber,
-                    isMultiContainer = false,
-                    splitStatus = (string?)null,
-                    options = Array.Empty<object>()
+                    detail = "Could not retrieve split options. The splitter may be unreachable."
                 });
             }
         }
@@ -438,7 +440,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 var job = JsonSerializer.Deserialize<JsonElement>(json);
                 return job.TryGetProperty("status", out var s) ? s.GetString() : null;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                // Was: catch { return null; } — meant a splitter outage looked identical to "no
+                // such job" upstream. Caller still gets null but ops now has a trail.
+                _logger.LogWarning(ex, "Failed to fetch splitter job status for {JobId}", jobId);
+                return null;
+            }
         }
 
         /// <summary>

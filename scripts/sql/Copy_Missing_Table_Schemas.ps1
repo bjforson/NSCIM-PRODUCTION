@@ -7,6 +7,7 @@ param(
     [string[]]$Databases = @("NS_CIS", "ICUMS", "ICUMS_Downloads")
 )
 
+# Continues past errors intentionally: loops across DBs/tables creating missing schemas on target; per-table create errors are tallied and reported, must not abort the run.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

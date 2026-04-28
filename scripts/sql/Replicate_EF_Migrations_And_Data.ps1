@@ -12,6 +12,7 @@ param(
     [string]$StartupProject = "src\NickScanCentralImagingPortal.API"
 )
 
+# Continues past errors intentionally: orchestrates linked-server setup + EF migrations + per-table data transfer; linked-server "already exists" warnings are expected, parent loop must continue.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan

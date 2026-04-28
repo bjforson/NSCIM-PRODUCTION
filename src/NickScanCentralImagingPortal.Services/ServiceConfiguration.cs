@@ -303,7 +303,10 @@ namespace NickScanCentralImagingPortal.Services
                 // BaseAddress and X-Api-Key are set per-call inside the client from ISettingsProvider,
                 // so the admin settings page can update them at runtime without restart.
                 client.Timeout = TimeSpan.FromSeconds(15);
-            });
+            })
+            // 2026-04-27: forward X-Correlation-ID across the API → Gateway boundary so
+            // ops can grep a single ID through both services' logs.
+            .AddHttpMessageHandler<NickScanCentralImagingPortal.Services.Http.CorrelationForwardingHandler>();
 
             // Settings Management Services
             services.AddScoped<ISettingsRepository, SettingsRepository>();

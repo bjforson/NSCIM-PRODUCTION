@@ -7,6 +7,7 @@ param(
     [string[]]$Databases = @("NS_CIS", "ICUMS", "ICUMS_Downloads")
 )
 
+# Continues past errors intentionally: iterates every table across multiple DBs invoking linked-server INSERT; per-table errors are tallied and report must complete.
 $ErrorActionPreference = "Continue"
 
 Write-Host "========================================" -ForegroundColor Cyan
