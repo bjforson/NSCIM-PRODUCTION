@@ -602,8 +602,10 @@ and human-review status. Auditor dashboard shows unreviewed flags.
 
 ### 11.1 Auth / Z
 
-- Edge: Cloudflare Access (reuse the `NickScan Services` app — add
-  `finance.nickscan.net` to `self_hosted_domains`)
+- Edge: Cloudflare Access — `finance.nickscan.net` already has its own
+  Access app (`NickFinance`, AUD `4fb33ade…`); reuse it. (As of 2026-04-29
+  each hostname has its own dedicated Access app — do **not** add
+  finance to `NickScan Services`.)
 - App: trusts `CF-Access-Jwt-Assertion` header (Option D from `SSO.md`)
 - Authorization scopes (stored in Identity service, ROADMAP P1):
   - `PettyCash.Requester` — default for all employees

@@ -28,7 +28,11 @@
 
 - Cloudflare Tunnel (`nickhr`, UUID `bef442b0-...`) — single connector on TEST-SERVER
 - Public hostnames: `erp`, `hr`, `lan`, `scan`, `api` — all on `nickscan.net`
-- Cloudflare Access: one app (`NickScan Services`) covering all five hostnames
+- Cloudflare Access: one app per hostname (`NickScan Services` for erp,
+  `NickScan HR` for hr, `NickScan LAN` for lan, `NickScan Scan` for scan,
+  `NickScan API` for api). Split 2026-04-29 to stop hr/lan/scan/api logins
+  chaining the auth callback through erp.nickscan.net (which Chrome had
+  flagged via Safe Browsing). Each app has its own AUD.
 - Identity provider: Email OTP (free)
 - Policy: include `email_domain: nickscan.com`
 - Session: 24h
