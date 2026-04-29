@@ -4,6 +4,7 @@ using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Recognition;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -68,7 +69,7 @@ public class RecognitionController : ControllerBase
 
     /// <summary>Nominate an employee for Employee of the Month.</summary>
     [HttpPost("employee-of-month/nominate")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Nominate([FromBody] NominateRequest request)
     {
         try

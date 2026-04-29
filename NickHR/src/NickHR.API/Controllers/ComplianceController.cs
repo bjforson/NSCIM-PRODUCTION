@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.System;
 using NickHR.Services.Compliance;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+[Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 public class ComplianceController : ControllerBase
 {
     private readonly ComplianceService _complianceService;

@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Services.Exit;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/exit")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+[Authorize(Roles = RoleSets.HRStaff)]
 public class ExitController : ControllerBase
 {
     private readonly IExitService _exit;

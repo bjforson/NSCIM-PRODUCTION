@@ -1,3 +1,4 @@
+using Ganss.Xss;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NickHR.Core.Interfaces;
@@ -43,6 +44,13 @@ public static class ServiceExtensions
 {
     public static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
+        // XSS HARDENING (Wave 2J): central HtmlSanitizer used by LetterService and any
+        // Razor component rendering user-influenced HTML. Default config strips
+        // <script>, javascript: URLs, on* event handlers, and other XSS payloads
+        // while preserving safe formatting (<p>, <strong>, <h1-6>, etc.). Singleton
+        // is fine — HtmlSanitizer is thread-safe per its docs.
+        services.AddSingleton<IHtmlSanitizer>(_ => new HtmlSanitizer());
+
         services.AddScoped<IAuthService, AuthService>();
 
         // Central Auth Client (for SSO with NSCIS)

@@ -147,7 +147,14 @@ builder.Services.AddAuthentication(options =>
 });
 
 // IMemoryCache backs the single-session validator's 30s sid lookup.
-builder.Services.AddMemoryCache();
+// SizeLimit caps total entry-count cost (each entry sets Size = 1) so a
+// pathological burst can't OOM the API host. SingleSessionValidator already
+// sets Size = 1 on its entries; any future cache.Set callers MUST also set
+// Size or MemoryCache will throw.
+builder.Services.AddMemoryCache(opts =>
+{
+    opts.SizeLimit = 100 * 1024 * 1024; // 100 MB cost units
+});
 
 // Health checks. /api/health runs everything; /api/health/live is a pure liveness
 // probe (just confirms the process is up); /api/health/ready runs only checks

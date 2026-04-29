@@ -4,6 +4,7 @@ using NickHR.Core.DTOs;
 using NickHR.Core.DTOs.Department;
 using NickHR.Core.DTOs.Employee;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -22,7 +23,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpGet]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<PagedResult<EmployeeListDto>>>> GetList(
         [FromQuery] EmployeeSearchFilter filter)
     {
@@ -33,6 +34,15 @@ public class EmployeesController : ControllerBase
     [HttpGet("{id:int}")]
     public async Task<ActionResult<ApiResponse<EmployeeDetailDto>>> GetById(int id)
     {
+        // Class-level [Authorize] permits any authenticated user, so without an
+        // explicit per-employee scope a regular employee could enumerate every
+        // record by id. Self-access OR HR/admin role required.
+        if (!await _currentUser.CanAccessEmployeeAsync(id,
+                "SuperAdmin", "HRManager", "HROfficer"))
+        {
+            return Forbid();
+        }
+
         var employee = await _employeeService.GetByIdAsync(id);
         if (employee is null)
             return NotFound(ApiResponse<EmployeeDetailDto>.Fail($"Employee with id {id} not found."));
@@ -51,7 +61,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<EmployeeDetailDto>>> Create([FromBody] CreateEmployeeDto dto)
     {
         try
@@ -67,7 +77,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<EmployeeDetailDto>>> Update(int id, [FromBody] UpdateEmployeeDto dto)
     {
         try
@@ -86,7 +96,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpDelete("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<ActionResult<ApiResponse<object>>> Delete(int id)
     {
         try

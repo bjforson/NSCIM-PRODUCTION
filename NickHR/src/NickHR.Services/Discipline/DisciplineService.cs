@@ -16,7 +16,7 @@ public interface IDisciplineService
     Task<Warning> RecordActionAsync(int caseId, DisciplinaryAction action, int issuedById, string description);
 
     // Grievances
-    Task<Grievance> CreateGrievanceAsync(int employeeId, string subject, string description, bool isAnonymous);
+    Task<Grievance> CreateGrievanceAsync(int? employeeId, string subject, string description, bool isAnonymous);
     Task<List<Grievance>> GetGrievancesAsync(string? status = null);
     Task<Grievance> AssignGrievanceAsync(int id, int assignedToId);
     Task<Grievance> ResolveGrievanceAsync(int id, string resolution);
@@ -123,12 +123,14 @@ public class DisciplineService : IDisciplineService
 
     // ─── Grievances ──────────────────────────────────────────────────────────
 
-    public async Task<Grievance> CreateGrievanceAsync(int employeeId, string subject,
+    public async Task<Grievance> CreateGrievanceAsync(int? employeeId, string subject,
         string description, bool isAnonymous)
     {
+        // PRIVACY: anonymous grievances must carry no linkable EmployeeId. Schema
+        // is now `int?` so we store `null` rather than the previous `0` sentinel.
         var grievance = new Grievance
         {
-            EmployeeId = employeeId,
+            EmployeeId = isAnonymous ? null : employeeId,
             Subject = subject,
             Description = description,
             IsAnonymous = isAnonymous,

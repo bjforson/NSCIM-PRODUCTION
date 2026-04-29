@@ -9,6 +9,7 @@
 @inject UserManager<ApplicationUser> UserManager
 @inject IServiceProvider ServiceProvider
 @inject IHttpContextAccessor HttpContextAccessor
+@inject ILogger<Login> Logger
 
 <PageTitle>NICKSCAN ERP — NickHR — Login</PageTitle>
 
@@ -574,7 +575,13 @@
             if (result.IsLockedOut) { await LogFailedLoginAsync(_loginModel.Email); _errorMessage = "Account locked. Try again later."; return; }
             if (!result.Succeeded) { await LogFailedLoginAsync(_loginModel.Email); _errorMessage = "Invalid email or password."; return; }
             user.LastLoginAt = DateTime.UtcNow; await UserManager.UpdateAsync(user);
-            _ = Task.Run(async () => { try { await LogLoginAuditAsync(user); } catch { } });
+            // Audit logging is best-effort and runs out-of-band so an audit failure
+            // never blocks a successful login. Log the audit failure though.
+            _ = Task.Run(async () =>
+            {
+                try { await LogLoginAuditAsync(user); }
+                catch (Exception ex) { Logger.LogWarning(ex, "Login audit logging failed for user {UserId}", user.Id); }
+            });
 
             // Force password change on first login
             if (user.MustChangePassword)

@@ -1,22 +1,34 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
+using NickHR.Core.Interfaces;
 using NickHR.Services.Discipline;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/discipline")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+[Authorize(Roles = RoleSets.HRStaff)]
 public class DisciplineController : ControllerBase
 {
     private readonly IDisciplineService _discipline;
+    private readonly IAuditService _audit;
+    private readonly ICurrentUserService _currentUser;
 
-    public DisciplineController(IDisciplineService discipline)
+    public DisciplineController(
+        IDisciplineService discipline,
+        IAuditService audit,
+        ICurrentUserService currentUser)
     {
         _discipline = discipline;
+        _audit = audit;
+        _currentUser = currentUser;
     }
+
+    private string? RemoteIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
     // ─── Disciplinary Cases ──────────────────────────────────────────────────
 
@@ -29,6 +41,17 @@ public class DisciplineController : ControllerBase
             var disciplinaryCase = await _discipline.CreateCaseAsync(
                 req.EmployeeId, req.IncidentDate, req.Description,
                 req.Witnesses, req.Evidence);
+
+            // HIPAA-adjacent action: opening a disciplinary record creates a permanent
+            // entry tied to a named employee. Capture WHO did it for audit replay.
+            await _audit.LogAsync(
+                userId: _currentUser.UserId,
+                action: "DisciplinaryCase.Create",
+                entityType: nameof(NickHR.Core.Entities.Discipline.DisciplinaryCase),
+                entityId: disciplinaryCase.Id.ToString(),
+                oldValues: null,
+                newValues: JsonSerializer.Serialize(new { req.EmployeeId, req.IncidentDate, disciplinaryCase.Status }),
+                ipAddress: RemoteIp);
 
             return Ok(ApiResponse<object>.Ok(new
             {
@@ -133,8 +156,23 @@ public class DisciplineController : ControllerBase
     {
         try
         {
+            // SECURITY: ignore the client-supplied IssuedById and use the authenticated
+            // user instead so a Warning row can't be forged onto a different HR officer.
+            // (See Wave 2H notes — DTO field retained only for backward DTO compat.)
+            var issuedById = _currentUser.EmployeeId
+                ?? throw new InvalidOperationException("No employee profile linked to current user.");
+
             var warning = await _discipline.RecordActionAsync(
-                caseId, req.Action, req.IssuedById, req.Description);
+                caseId, req.Action, issuedById, req.Description);
+
+            await _audit.LogAsync(
+                userId: _currentUser.UserId,
+                action: "DisciplinaryCase.RecordAction",
+                entityType: nameof(NickHR.Core.Entities.Discipline.Warning),
+                entityId: warning.Id.ToString(),
+                oldValues: null,
+                newValues: JsonSerializer.Serialize(new { caseId, Action = req.Action.ToString(), IssuedById = issuedById }),
+                ipAddress: RemoteIp);
 
             return Ok(ApiResponse<object>.Ok(new
             {
@@ -162,8 +200,24 @@ public class DisciplineController : ControllerBase
     {
         try
         {
+            // PRIVACY (Wave 2H): when IsAnonymous is true the grievance must NOT
+            // store the linkable EmployeeId, otherwise "anonymous" is anonymous to
+            // the UI but transparent to anyone reading the row. Schema is now
+            // `int?` (Grievance.EmployeeId nullable) — service layer maps anonymous
+            // grievances to a true NULL FK, no more sentinel zeros.
+            int? employeeIdForRow = req.IsAnonymous ? null : req.EmployeeId;
+
             var grievance = await _discipline.CreateGrievanceAsync(
-                req.EmployeeId, req.Subject, req.Description, req.IsAnonymous);
+                employeeIdForRow, req.Subject, req.Description, req.IsAnonymous);
+
+            await _audit.LogAsync(
+                userId: _currentUser.UserId,
+                action: req.IsAnonymous ? "Grievance.CreateAnonymous" : "Grievance.Create",
+                entityType: nameof(NickHR.Core.Entities.Discipline.Grievance),
+                entityId: grievance.Id.ToString(),
+                oldValues: null,
+                newValues: JsonSerializer.Serialize(new { grievance.Subject, grievance.IsAnonymous }),
+                ipAddress: RemoteIp);
 
             return Ok(ApiResponse<object>.Ok(new
             {

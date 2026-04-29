@@ -1,10 +1,11 @@
 @page "/discipline/grievances"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaff)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Discipline
 @using NickHR.Core.Entities.Core
+@using NickHR.Core.Constants
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -182,7 +183,9 @@
                 {
                     Id = g.Id,
                     Subject = g.Subject,
-                    FiledByName = g.Employee.FirstName + " " + g.Employee.LastName,
+                    // Anonymous grievances carry a NULL Employee FK (privacy);
+                    // the row template renders an "Anonymous" chip in that case.
+                    FiledByName = g.Employee != null ? g.Employee.FirstName + " " + g.Employee.LastName : "",
                     IsAnonymous = g.IsAnonymous,
                     FiledDate = g.FiledDate,
                     AssignedToName = g.AssignedTo != null ? g.AssignedTo.FirstName + " " + g.AssignedTo.LastName : null,

@@ -17,9 +17,22 @@ public static class InfrastructureServiceExtensions
         // NICKSCAN ERP — Phase 1 multi-tenancy
         services.AddNickERPTenancy();
 
+        // Append connection-pool tuning to whatever connection string the host
+        // resolved in Program.cs. Defaults Npgsql ships with (Min Pool=0, Max=100,
+        // idle ~15min) leave the API gasping under burst load and slow to recycle
+        // dead connections. These values bound the pool and trim idle conns at 5min.
+        var rawConn = configuration.GetConnectionString("DefaultConnection") ?? string.Empty;
+        var connBuilder = new Npgsql.NpgsqlConnectionStringBuilder(rawConn)
+        {
+            MaxPoolSize = 100,
+            MinPoolSize = 5,
+            ConnectionIdleLifetime = 300
+        };
+        var pooledConn = connBuilder.ConnectionString;
+
         services.AddDbContext<NickHRDbContext>((sp, options) =>
         {
-            options.UseNpgsql(configuration.GetConnectionString("DefaultConnection"),
+            options.UseNpgsql(pooledConn,
                 npgsql => npgsql.MigrationsAssembly(typeof(NickHRDbContext).Assembly.FullName))
                 .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning));
             // Entity stamping (no-op until entities implement ITenantOwned) +

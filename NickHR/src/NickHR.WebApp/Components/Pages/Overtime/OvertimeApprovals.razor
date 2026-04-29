@@ -1,5 +1,5 @@
 @page "/overtime/approvals"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
 @rendermode InteractiveServer
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
@@ -8,6 +8,7 @@
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Leave
 @using NickHR.Core.Enums
+@using NickHR.Core.Constants
 
 <PageTitle>NICKSCAN ERP — NickHR — Overtime Approvals</PageTitle>
 

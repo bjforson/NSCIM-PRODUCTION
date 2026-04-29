@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.Core;
 using NickHR.Services.Travel;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -33,7 +34,7 @@ public class TravelController : ControllerBase
     }
 
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> GetPending()
     {
         var requests = await _travelService.GetPendingApprovalsAsync();
@@ -41,7 +42,7 @@ public class TravelController : ControllerBase
     }
 
     [HttpPost("{id}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Approve(int id, [FromQuery] int approvedById)
     {
         await _travelService.ApproveAsync(id, approvedById);
@@ -49,7 +50,7 @@ public class TravelController : ControllerBase
     }
 
     [HttpPost("{id}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Reject(int id, [FromQuery] int approvedById)
     {
         await _travelService.RejectAsync(id, approvedById);

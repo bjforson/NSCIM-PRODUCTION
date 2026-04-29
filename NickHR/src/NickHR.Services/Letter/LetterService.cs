@@ -1,4 +1,5 @@
 using System.Text;
+using Ganss.Xss;
 using Microsoft.EntityFrameworkCore;
 using NickHR.Core.Entities.System;
 using NickHR.Infrastructure.Data;
@@ -8,10 +9,12 @@ namespace NickHR.Services.Letter;
 public class LetterService
 {
     private readonly NickHRDbContext _db;
+    private readonly IHtmlSanitizer _sanitizer;
 
-    public LetterService(NickHRDbContext db)
+    public LetterService(NickHRDbContext db, IHtmlSanitizer sanitizer)
     {
         _db = db;
+        _sanitizer = sanitizer;
     }
 
     public async Task<List<LetterTemplate>> GetTemplatesAsync()
@@ -143,15 +146,25 @@ Please take the necessary steps to address this matter promptly.</p>
 
     private string MergeFields(string htmlBody, NickHR.Core.Entities.Core.Employee emp)
     {
-        return htmlBody
-            .Replace("{{FirstName}}", emp.FirstName)
-            .Replace("{{LastName}}", emp.LastName)
-            .Replace("{{EmployeeCode}}", emp.EmployeeCode)
+        // TRUST BOUNDARY (Wave 2J): templates are privileged-author trusted (HR
+        // admins authoring rich HTML via EmailTemplateDialog), but merge values
+        // come from user-editable employee fields and could contain `<script>`,
+        // `<img onerror=...>`, or `javascript:` URLs. A full HtmlSanitizer pass
+        // over the assembled body strips XSS payloads from EITHER source while
+        // preserving the template's intentional HTML structure (headings,
+        // <strong>, paragraphs, etc.).
+
+        var merged = htmlBody
+            .Replace("{{FirstName}}", emp.FirstName ?? string.Empty)
+            .Replace("{{LastName}}", emp.LastName ?? string.Empty)
+            .Replace("{{EmployeeCode}}", emp.EmployeeCode ?? string.Empty)
             .Replace("{{Department}}", emp.Department?.Name ?? "N/A")
             .Replace("{{Designation}}", emp.Designation?.Title ?? "N/A")
             .Replace("{{HireDate}}", emp.HireDate?.ToString("dd MMM yyyy") ?? "N/A")
             .Replace("{{BasicSalary}}", emp.BasicSalary.ToString("N2"))
             .Replace("{{Date}}", DateTime.UtcNow.ToString("dd MMM yyyy"));
+
+        return _sanitizer.Sanitize(merged);
     }
 
     private byte[] ConvertHtmlToSimplePdf(string html)

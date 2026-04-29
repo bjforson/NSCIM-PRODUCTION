@@ -7,6 +7,7 @@
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.System
 @using NickHR.Core.Enums
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
@@ -25,7 +26,7 @@
     <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
 }
 
-<AuthorizeView Roles="SuperAdmin,HRManager">
+<AuthorizeView Roles = RoleSets.SeniorHR>
     <Authorized>
         <MudStack Row="true" Class="mb-4" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
             <MudText Typo="Typo.h6">All Surveys</MudText>

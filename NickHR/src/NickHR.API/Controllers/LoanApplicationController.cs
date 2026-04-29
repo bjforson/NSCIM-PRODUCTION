@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -67,7 +68,7 @@ public class LoanApplicationController : ControllerBase
 
     // GET /api/loan-applications/pending?status=
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffPlusFinanceAndDept)]
     public async Task<ActionResult<ApiResponse<List<LoanApplicationDto>>>> GetPending([FromQuery] LoanApplicationStatus? status)
     {
         try
@@ -80,7 +81,7 @@ public class LoanApplicationController : ControllerBase
 
     // POST /api/loan-applications/{id}/manager-approve
     [HttpPost("{id:int}/manager-approve")]
-    [Authorize(Roles = "SuperAdmin,DepartmentManager")]
+    [Authorize(Roles = RoleSets.AdminOrDeptManager)]
     public async Task<ActionResult<ApiResponse<LoanApplicationDto>>> ManagerApprove(int id)
     {
         try
@@ -96,7 +97,7 @@ public class LoanApplicationController : ControllerBase
 
     // POST /api/loan-applications/{id}/hr-approve
     [HttpPost("{id:int}/hr-approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<LoanApplicationDto>>> HRApprove(int id)
     {
         try
@@ -112,7 +113,7 @@ public class LoanApplicationController : ControllerBase
 
     // POST /api/loan-applications/{id}/finance-approve
     [HttpPost("{id:int}/finance-approve")]
-    [Authorize(Roles = "SuperAdmin,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.AdminOrFinance)]
     public async Task<ActionResult<ApiResponse<LoanApplicationDto>>> FinanceApprove(int id)
     {
         try
@@ -128,7 +129,7 @@ public class LoanApplicationController : ControllerBase
 
     // POST /api/loan-applications/{id}/reject
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffPlusFinanceAndDept)]
     public async Task<ActionResult<ApiResponse<LoanApplicationDto>>> Reject(int id, [FromBody] ReasonRequest body)
     {
         try
@@ -144,7 +145,7 @@ public class LoanApplicationController : ControllerBase
 
     // POST /api/loan-applications/{id}/disburse
     [HttpPost("{id:int}/disburse")]
-    [Authorize(Roles = "SuperAdmin,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.AdminOrFinance)]
     public async Task<ActionResult<ApiResponse<LoanApplicationDto>>> Disburse(int id, [FromBody] ReferenceRequest body)
     {
         try

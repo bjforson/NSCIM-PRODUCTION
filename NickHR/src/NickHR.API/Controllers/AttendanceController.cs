@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Attendance;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -125,7 +126,7 @@ public class AttendanceController : ControllerBase
 
     /// <summary>GET /api/attendance/report?departmentId=&amp;startDate=&amp;endDate=</summary>
     [HttpGet("report")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<List<AttendanceReportEntryDto>>>> GetReport(
         [FromQuery] int? departmentId,
         [FromQuery] DateTime? startDate,

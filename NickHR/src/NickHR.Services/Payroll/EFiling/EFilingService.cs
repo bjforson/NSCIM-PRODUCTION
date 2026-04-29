@@ -16,7 +16,9 @@ public class EFilingService
     /// <summary>Generate SSNIT e-filing CSV for a given month/year.</summary>
     public async Task<byte[]> GenerateSSNITEFileAsync(int month, int year)
     {
+        // Wave 2L: AsNoTracking — read-only export, skip the change-tracker.
         var run = await _db.PayrollRuns
+            .AsNoTracking()
             .Include(r => r.PayrollItems).ThenInclude(i => i.Employee)
             .FirstOrDefaultAsync(r => r.PayPeriodMonth == month && r.PayPeriodYear == year)
             ?? throw new InvalidOperationException($"No payroll run found for {month}/{year}.");
@@ -26,6 +28,7 @@ public class EFilingService
 
         // Get employer SSNIT number from company settings
         var employerSsnit = await _db.CompanySettings
+            .AsNoTracking()
             .Where(c => c.Key == "EmployerSSNITNumber")
             .Select(c => c.Value)
             .FirstOrDefaultAsync() ?? "EMPLOYER_SSNIT";
@@ -44,6 +47,7 @@ public class EFilingService
     public async Task<byte[]> GenerateGRAEFileAsync(int month, int year)
     {
         var run = await _db.PayrollRuns
+            .AsNoTracking()
             .Include(r => r.PayrollItems).ThenInclude(i => i.Employee)
             .FirstOrDefaultAsync(r => r.PayPeriodMonth == month && r.PayPeriodYear == year)
             ?? throw new InvalidOperationException($"No payroll run found for {month}/{year}.");
@@ -64,41 +68,42 @@ public class EFilingService
     /// <summary>Generate GRA annual return CSV for a full year.</summary>
     public async Task<byte[]> GenerateGRAAnnualEFileAsync(int year)
     {
-        var runs = await _db.PayrollRuns
-            .Where(r => r.PayPeriodYear == year)
-            .Include(r => r.PayrollItems).ThenInclude(i => i.Employee)
-            .OrderBy(r => r.PayPeriodMonth)
-            .ToListAsync();
+        // Wave 2L performance: pre-aggregate at the SQL layer using GroupBy +
+        // SUM rather than pulling every PayrollItem into memory and looping.
+        // Joins PayrollItems → Employee in a single query; Postgres returns one
+        // row per employee with the totals already computed.
+        //
+        // Note: we still need the Year filter joined through PayrollRun, hence
+        // the join on PayrollRunId.
 
-        if (!runs.Any())
+        var anyRun = await _db.PayrollRuns
+            .AsNoTracking()
+            .AnyAsync(r => r.PayPeriodYear == year);
+        if (!anyRun)
             throw new InvalidOperationException($"No payroll runs found for year {year}.");
 
-        // Aggregate by employee across all months
-        var employeeAgg = new Dictionary<int, (string TIN, string Name, decimal TotalGross, decimal TotalTaxable, decimal TotalTax)>();
-
-        foreach (var run in runs)
-        {
-            foreach (var item in run.PayrollItems)
+        var aggregated = await (
+            from item in _db.PayrollItems.AsNoTracking()
+            join run in _db.PayrollRuns.AsNoTracking() on item.PayrollRunId equals run.Id
+            join emp in _db.Employees.AsNoTracking() on item.EmployeeId equals emp.Id
+            where run.PayPeriodYear == year
+            group new { item, emp } by new { emp.Id, emp.TIN, emp.FirstName, emp.LastName } into g
+            select new
             {
-                var emp = item.Employee;
-                if (!employeeAgg.ContainsKey(emp.Id))
-                    employeeAgg[emp.Id] = (emp.TIN ?? "", $"{emp.LastName} {emp.FirstName}", 0, 0, 0);
-
-                var agg = employeeAgg[emp.Id];
-                employeeAgg[emp.Id] = (agg.TIN, agg.Name,
-                    agg.TotalGross + item.GrossPay,
-                    agg.TotalTaxable + item.TaxableIncome,
-                    agg.TotalTax + item.PAYE);
+                g.Key.TIN,
+                Name = g.Key.LastName + " " + g.Key.FirstName,
+                TotalGross = g.Sum(x => x.item.GrossPay),
+                TotalTaxable = g.Sum(x => x.item.TaxableIncome),
+                TotalTax = g.Sum(x => x.item.PAYE)
             }
-        }
+        ).OrderBy(x => x.Name).ToListAsync();
 
         var sb = new StringBuilder();
         sb.AppendLine("TIN,EmployeeName,AnnualGrossIncome,AnnualTaxableIncome,AnnualTAXDeducted");
 
-        foreach (var kvp in employeeAgg.OrderBy(k => k.Value.Name))
+        foreach (var v in aggregated)
         {
-            var v = kvp.Value;
-            sb.AppendLine($"{v.TIN},{v.Name},{v.TotalGross:F2},{v.TotalTaxable:F2},{v.TotalTax:F2}");
+            sb.AppendLine($"{v.TIN ?? ""},{v.Name},{v.TotalGross:F2},{v.TotalTaxable:F2},{v.TotalTax:F2}");
         }
 
         return Encoding.UTF8.GetBytes(sb.ToString());

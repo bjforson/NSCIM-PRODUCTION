@@ -1,5 +1,5 @@
 @page "/payroll/reports"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 @rendermode InteractiveServer
 
 @using Microsoft.AspNetCore.Authorization
@@ -11,6 +11,7 @@
 @using NickHR.Services.Payroll.Models
 @using NickHR.Services.Payroll.EFiling
 @using System.Text
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject NickHR.Services.Payroll.IPayrollProcessingService PayrollService

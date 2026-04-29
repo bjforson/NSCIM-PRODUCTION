@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -13,12 +14,19 @@ public class MedicalClaimController : ControllerBase
 {
     private readonly IMedicalClaimService _service;
     private readonly ICurrentUserService _currentUser;
+    private readonly IAuditService _audit;
 
-    public MedicalClaimController(IMedicalClaimService service, ICurrentUserService currentUser)
+    public MedicalClaimController(
+        IMedicalClaimService service,
+        ICurrentUserService currentUser,
+        IAuditService audit)
     {
         _service = service;
         _currentUser = currentUser;
+        _audit = audit;
     }
+
+    private string? RemoteIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
     // POST /api/medical-claims/submit
     [HttpPost("submit")]
@@ -45,6 +53,18 @@ public class MedicalClaimController : ControllerBase
         {
             var employeeId = RequireEmployeeId();
             var (claims, balance) = await _service.GetMyClaimsAsync(employeeId, year);
+
+            // PHI access — log self-views so a later anomaly (e.g. someone querying
+            // medical history minutes before a hostile termination) is reconstructable.
+            await _audit.LogAsync(
+                userId: _currentUser.UserId,
+                action: "MedicalClaims.ViewSelf",
+                entityType: "MedicalClaims",
+                entityId: employeeId.ToString(),
+                oldValues: null,
+                newValues: $"year={year}, claimCount={claims?.Count ?? 0}",
+                ipAddress: RemoteIp);
+
             return Ok(ApiResponse<MyMedicalClaimsResponse>.Ok(new MyMedicalClaimsResponse(claims, balance)));
         }
         catch (Exception ex) { return BadRequest(ApiResponse<MyMedicalClaimsResponse>.Fail(ex.Message)); }
@@ -66,12 +86,24 @@ public class MedicalClaimController : ControllerBase
 
     // GET /api/medical-claims/review?status=
     [HttpGet("review")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<List<MedicalClaimDto>>>> GetForReview([FromQuery] MedicalClaimStatus? status)
     {
         try
         {
             var result = await _service.GetClaimsForReviewAsync(status);
+
+            // PHI access by HR/admin — every list view is recorded so misuse can be
+            // reviewed (e.g. an HR officer scanning sensitive claims unrelated to a case).
+            await _audit.LogAsync(
+                userId: _currentUser.UserId,
+                action: "MedicalClaims.ViewForReview",
+                entityType: "MedicalClaims",
+                entityId: status?.ToString() ?? "all",
+                oldValues: null,
+                newValues: $"resultCount={result?.Count ?? 0}",
+                ipAddress: RemoteIp);
+
             return Ok(ApiResponse<List<MedicalClaimDto>>.Ok(result));
         }
         catch (Exception ex) { return BadRequest(ApiResponse<List<MedicalClaimDto>>.Fail(ex.Message)); }
@@ -79,7 +111,7 @@ public class MedicalClaimController : ControllerBase
 
     // POST /api/medical-claims/{id}/review
     [HttpPost("{id:int}/review")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<MedicalClaimDto>>> Review(int id)
     {
         try
@@ -95,7 +127,7 @@ public class MedicalClaimController : ControllerBase
 
     // POST /api/medical-claims/{id}/approve
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<MedicalClaimDto>>> Approve(int id, [FromBody] ApproveMedicalClaimRequest body)
     {
         try
@@ -112,7 +144,7 @@ public class MedicalClaimController : ControllerBase
 
     // POST /api/medical-claims/{id}/reject
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<MedicalClaimDto>>> Reject(int id, [FromBody] ReasonRequest body)
     {
         try
@@ -128,7 +160,7 @@ public class MedicalClaimController : ControllerBase
 
     // POST /api/medical-claims/{id}/paid
     [HttpPost("{id:int}/paid")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.HRStaffOrFinance)]
     public async Task<ActionResult<ApiResponse<MedicalClaimDto>>> MarkPaid(int id, [FromBody] ReferenceRequest body)
     {
         try
@@ -155,7 +187,7 @@ public class MedicalClaimController : ControllerBase
 
     // PUT /api/medical-claims/policy
     [HttpPut("policy")]
-    [Authorize(Roles = "SuperAdmin")]
+    [Authorize(Roles = RoleSets.SuperAdminOnly)]
     public async Task<ActionResult<ApiResponse<MedicalBenefitDto>>> UpdatePolicy([FromBody] UpdateMedicalPolicyRequest req)
     {
         try

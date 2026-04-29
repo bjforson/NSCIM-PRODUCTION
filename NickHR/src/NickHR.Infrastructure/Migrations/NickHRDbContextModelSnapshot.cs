@@ -17,7 +17,7 @@ namespace NickHR.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.0")
+                .HasAnnotation("ProductVersion", "10.0.7")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -2067,7 +2067,7 @@ namespace NickHR.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<int>("EmployeeId")
+                    b.Property<int?>("EmployeeId")
                         .HasColumnType("integer");
 
                     b.Property<DateTime>("FiledDate")
@@ -2815,9 +2815,9 @@ namespace NickHR.Infrastructure.Migrations
 
                     b.HasIndex("ApprovedById");
 
-                    b.HasIndex("EmployeeId");
-
                     b.HasIndex("LeavePolicyId");
+
+                    b.HasIndex("EmployeeId", "Status");
 
                     b.ToTable("LeaveRequests");
                 });
@@ -5939,6 +5939,9 @@ namespace NickHR.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid>("CurrentSessionId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Email")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
@@ -6548,8 +6551,7 @@ namespace NickHR.Infrastructure.Migrations
                     b.HasOne("NickHR.Core.Entities.Core.Employee", "Employee")
                         .WithMany()
                         .HasForeignKey("EmployeeId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("AssignedTo");
 

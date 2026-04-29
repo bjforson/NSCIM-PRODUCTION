@@ -1,6 +1,7 @@
 @using NickHR.Services.Common
 @inject LocalizationService Localization
 @inject Blazored.LocalStorage.ILocalStorageService LocalStorage
+@inject ILogger<LanguageSelector> Logger
 
 <MudMenu Icon="@Icons.Material.Filled.Language" Color="Color.Inherit" Dense="true"
          AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
@@ -30,7 +31,11 @@
                     StateHasChanged();
                 }
             }
-            catch { /* localStorage not available during prerender */ }
+            catch (Exception ex)
+            {
+                // localStorage not available during prerender — expected on first render.
+                Logger.LogDebug(ex, "Language localStorage read failed (likely prerender)");
+            }
         }
     }
 
@@ -41,7 +46,10 @@
         {
             await LocalStorage.SetItemAsStringAsync("nickhr_language", lang);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to persist language selection to localStorage");
+        }
         StateHasChanged();
     }
 }

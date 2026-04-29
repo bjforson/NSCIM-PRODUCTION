@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Payroll;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+[Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 public class PayrollController : ControllerBase
 {
     private readonly IPayrollProcessingService _payrollService;
@@ -60,6 +61,15 @@ public class PayrollController : ControllerBase
     [HttpGet("preview/{employeeId}")]
     public async Task<IActionResult> PreviewPayroll(int employeeId, [FromQuery] int month, [FromQuery] int year)
     {
+        // IDOR guard: even though the controller [Authorize] limits this action to
+        // privileged roles, the per-employee scope must still be confirmed so a
+        // future relaxation of the class-level policy doesn't quietly leak data.
+        if (!await _currentUser.CanAccessEmployeeAsync(employeeId,
+                "SuperAdmin", "HRManager", "HROfficer", "PayrollAdmin"))
+        {
+            return Forbid();
+        }
+
         try
         {
             var result = await _payrollService.PreviewEmployeePayrollAsync(employeeId, month, year);
@@ -119,10 +129,21 @@ public class PayrollController : ControllerBase
     }
 
     /// <summary>Get payslip data for an employee.</summary>
+    /// <remarks>
+    /// Self-access OR privileged role. Without this guard ANY authenticated user
+    /// (including the requesting employee) could fetch any other employee's
+    /// payslip by changing the URL — classic IDOR.
+    /// </remarks>
     [HttpGet("payslip/{payrollRunId}/{employeeId}")]
     [Authorize]
     public async Task<IActionResult> GetPayslip(int payrollRunId, int employeeId)
     {
+        if (!await _currentUser.CanAccessEmployeeAsync(employeeId,
+                "SuperAdmin", "HRManager", "HROfficer", "PayrollAdmin"))
+        {
+            return Forbid();
+        }
+
         var payslip = await _payrollService.GetPayslipAsync(payrollRunId, employeeId);
         if (payslip == null) return NotFound(ApiResponse<object>.Fail("Payslip not found."));
         return Ok(ApiResponse<object>.Ok(payslip));
@@ -133,6 +154,12 @@ public class PayrollController : ControllerBase
     [Authorize]
     public async Task<IActionResult> DownloadPayslipPdf(int payrollRunId, int employeeId)
     {
+        if (!await _currentUser.CanAccessEmployeeAsync(employeeId,
+                "SuperAdmin", "HRManager", "HROfficer", "PayrollAdmin"))
+        {
+            return Forbid();
+        }
+
         var run = await _payrollService.GetPayrollRunAsync(payrollRunId);
         if (run == null) return NotFound();
 

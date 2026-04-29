@@ -73,12 +73,13 @@ public class ProjectService
     public async Task SubmitWeekAsync(int employeeId, DateTime weekStart)
     {
         var weekEnd = weekStart.AddDays(7);
+        var draftStatus = nameof(TimesheetStatus.Draft);
         var entries = await _db.Set<TimesheetEntry>()
-            .Where(t => t.EmployeeId == employeeId && t.Date >= weekStart && t.Date < weekEnd && t.Status == "Draft")
+            .Where(t => t.EmployeeId == employeeId && t.Date >= weekStart && t.Date < weekEnd && t.Status == draftStatus)
             .ToListAsync();
 
         foreach (var entry in entries)
-            entry.Status = "Submitted";
+            entry.Status = nameof(TimesheetStatus.Submitted);
 
         await _db.SaveChangesAsync();
     }
@@ -88,7 +89,7 @@ public class ProjectService
         var entry = await _db.Set<TimesheetEntry>().FindAsync(entryId)
             ?? throw new KeyNotFoundException("Timesheet entry not found.");
 
-        entry.Status = "Approved";
+        entry.Status = nameof(TimesheetStatus.Approved);
         await _db.SaveChangesAsync();
     }
 }

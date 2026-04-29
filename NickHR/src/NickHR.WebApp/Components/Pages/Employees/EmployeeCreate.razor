@@ -1,11 +1,12 @@
 @page "/employees/create"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaff)]
 @inject IServiceProvider ServiceProvider
 @inject NavigationManager Navigation
 @inject ISnackbar Snackbar
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Core
+@using NickHR.Core.Constants
 
 <PageTitle>NICKSCAN ERP — NickHR — Add Employee</PageTitle>
 

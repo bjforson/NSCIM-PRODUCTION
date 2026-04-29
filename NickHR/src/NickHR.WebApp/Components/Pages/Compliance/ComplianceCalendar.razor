@@ -1,11 +1,12 @@
 @page "/compliance"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 @rendermode InteractiveServer
 
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.System
 @using NickHR.Services.Compliance
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

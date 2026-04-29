@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -53,7 +54,7 @@ public class ExcuseDutyController : ControllerBase
 
     // GET /api/excuse-duty/pending
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<List<ExcuseDutyDto>>>> GetPending()
     {
         try
@@ -66,7 +67,7 @@ public class ExcuseDutyController : ControllerBase
 
     // POST /api/excuse-duty/{id}/approve
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<ExcuseDutyDto>>> Approve(int id)
     {
         try
@@ -82,7 +83,7 @@ public class ExcuseDutyController : ControllerBase
 
     // POST /api/excuse-duty/{id}/reject
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<ExcuseDutyDto>>> Reject(int id, [FromBody] ReasonRequest body)
     {
         try
@@ -112,7 +113,7 @@ public class ExcuseDutyController : ControllerBase
 
     // GET /api/excuse-duty/report?departmentId=&month=&year=
     [HttpGet("report")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<List<ExcuseDutyMonthlyReportDto>>>> GetReport(
         [FromQuery] int? departmentId,
         [FromQuery] int? month,

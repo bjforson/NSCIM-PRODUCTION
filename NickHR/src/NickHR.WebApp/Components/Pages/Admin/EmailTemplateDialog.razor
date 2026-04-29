@@ -1,9 +1,11 @@
 @rendermode InteractiveServer
+@using Ganss.Xss
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.System
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
+@inject IHtmlSanitizer Sanitizer
 
 <MudDialog>
     <DialogContent>
@@ -45,6 +47,13 @@
                     <MudPaper Elevation="0" Class="pa-3" Style="border: 1px solid var(--mud-palette-lines-default); border-radius: 4px;">
                         <MudText Typo="Typo.subtitle2" Class="mb-1">Subject: @_subject</MudText>
                         <MudDivider Class="mb-2" />
+                        @* TRUST BOUNDARY (Wave 2J): _body is the in-progress draft of
+                           the privileged HR author. We sanitize on Save (see Save() below) so
+                           any pasted XSS payload from clipboard / WYSIWYG noise gets stripped
+                           before persistence. The preview here is rendered as raw markup so the
+                           author sees their structure faithfully — this dialog is page-level
+                           gated to HRManager / SuperAdmin so the live render trust boundary is
+                           bounded by who can open the editor at all. *@
                         @((MarkupString)_body)
                     </MudPaper>
                 </MudExpansionPanel>
@@ -99,9 +108,13 @@
             var db = scope.ServiceProvider.GetRequiredService<NickHRDbContext>();
             var entity = await db.EmailTemplates.FindAsync(Template.Id);
             if (entity == null) { _errorMessage = "Template not found."; return; }
+            // XSS HARDENING (Wave 2J): sanitize the body on save so any pasted
+            // <script>, javascript: URL, or on*-handler payload is stripped before
+            // it reaches the database. Preserves safe formatting (headings, <strong>,
+            // <em>, lists, etc.) the privileged HR author intentionally added.
             entity.Name = _name;
             entity.Subject = _subject;
-            entity.Body = _body;
+            entity.Body = Sanitizer.Sanitize(_body ?? string.Empty);
             entity.IsActive = _isActive;
             await db.SaveChangesAsync();
             Snackbar.Add("Email template saved.", Severity.Success);

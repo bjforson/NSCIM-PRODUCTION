@@ -90,7 +90,9 @@ public class TurnoverAnalyticsService
                 factors.Add("No promotion/transfer in 2+ years");
             }
 
-            var level = riskScore >= 50 ? "High" : riskScore >= 25 ? "Medium" : "Low";
+            var level = riskScore >= 50 ? RiskLevel.High
+                      : riskScore >= 25 ? RiskLevel.Medium
+                                        : RiskLevel.Low;
 
             results.Add(new TurnoverRiskResult
             {
@@ -100,7 +102,7 @@ public class TurnoverAnalyticsService
                 Department = emp.Department?.Name ?? "N/A",
                 Designation = emp.Designation?.Title ?? "N/A",
                 RiskScore = Math.Max(0, Math.Min(100, riskScore)),
-                RiskLevel = level,
+                RiskLevel = level.ToString(),
                 Factors = factors
             });
         }
@@ -118,9 +120,9 @@ public class TurnoverAnalyticsService
             {
                 Department = g.Key,
                 TotalEmployees = g.Count(),
-                HighRisk = g.Count(r => r.RiskLevel == "High"),
-                MediumRisk = g.Count(r => r.RiskLevel == "Medium"),
-                LowRisk = g.Count(r => r.RiskLevel == "Low"),
+                HighRisk = g.Count(r => r.RiskLevel == nameof(RiskLevel.High)),
+                MediumRisk = g.Count(r => r.RiskLevel == nameof(RiskLevel.Medium)),
+                LowRisk = g.Count(r => r.RiskLevel == nameof(RiskLevel.Low)),
                 AverageScore = g.Average(r => r.RiskScore)
             })
             .OrderByDescending(d => d.AverageScore)
@@ -136,7 +138,7 @@ public class TurnoverRiskResult
     public string Department { get; set; } = "";
     public string Designation { get; set; } = "";
     public double RiskScore { get; set; }
-    public string RiskLevel { get; set; } = "Low";
+    public string RiskLevel { get; set; } = nameof(NickHR.Core.Enums.RiskLevel.Low);
     public List<string> Factors { get; set; } = new();
 }
 

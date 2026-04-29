@@ -5,7 +5,12 @@ namespace NickHR.Core.Entities.Discipline;
 
 public class Grievance : BaseEntity
 {
-    public int EmployeeId { get; set; }
+    /// <summary>
+    /// Employee who filed the grievance. Nullable to support anonymous grievances
+    /// (PRIVACY: when IsAnonymous=true, this MUST be null so the row carries no
+    /// linkable identifier back to the filer).
+    /// </summary>
+    public int? EmployeeId { get; set; }
 
     [Required]
     [MaxLength(300)]
@@ -33,7 +38,7 @@ public class Grievance : BaseEntity
     public string Status { get; set; } = "Filed";
 
     // Navigation Properties
-    public Employee Employee { get; set; } = null!;
+    public Employee? Employee { get; set; }
 
     public Employee? AssignedTo { get; set; }
 }

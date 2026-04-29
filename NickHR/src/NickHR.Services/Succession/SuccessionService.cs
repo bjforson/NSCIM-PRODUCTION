@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NickHR.Core.Entities.Core;
+using NickHR.Core.Enums;
 using NickHR.Infrastructure.Data;
 
 namespace NickHR.Services.Succession;
@@ -15,12 +16,18 @@ public class SuccessionService
 
     public async Task<List<SuccessionPlan>> GetAllPlansAsync()
     {
-        return await _db.Set<SuccessionPlan>()
+        // Sort by SuccessionPriority enum value (Critical=0 first ... Low=3 last).
+        // Plans persist Priority as string; we order client-side after the query
+        // because EF can't translate Enum.Parse to SQL.
+        var plans = await _db.Set<SuccessionPlan>()
             .Include(s => s.Designation)
             .Include(s => s.IncumbentEmployee)
             .Include(s => s.Candidates).ThenInclude(c => c.CandidateEmployee)
-            .OrderBy(s => s.Priority == "Critical" ? 0 : s.Priority == "High" ? 1 : s.Priority == "Medium" ? 2 : 3)
             .ToListAsync();
+
+        return plans
+            .OrderBy(s => Enum.TryParse<SuccessionPriority>(s.Priority, out var p) ? (int)p : int.MaxValue)
+            .ToList();
     }
 
     public async Task<SuccessionPlan?> GetByIdAsync(int id)

@@ -1,5 +1,5 @@
 @page "/admin/bulk-operations"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @rendermode InteractiveServer
 
 @using Microsoft.EntityFrameworkCore
@@ -7,6 +7,7 @@
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
 @using System.Linq
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

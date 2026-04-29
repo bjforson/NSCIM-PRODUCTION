@@ -48,7 +48,7 @@ public class ProbationService : IProbationService
             ?? throw new KeyNotFoundException($"Reviewer employee {reviewedById} not found.");
 
         var existingPending = await _db.ProbationReviews.AnyAsync(p =>
-            p.EmployeeId == employeeId && p.Status == "Pending" && !p.IsDeleted);
+            p.EmployeeId == employeeId && p.Status == nameof(ProbationStatus.Pending) && !p.IsDeleted);
 
         if (existingPending)
             throw new InvalidOperationException("A pending probation review already exists for this employee.");
@@ -59,7 +59,7 @@ public class ProbationService : IProbationService
             ReviewDate = DateTime.UtcNow,
             ProbationEndDate = probationEndDate,
             ReviewedById = reviewedById,
-            Status = "Pending"
+            Status = nameof(ProbationStatus.Pending)
         };
 
         _db.ProbationReviews.Add(review);
@@ -79,14 +79,14 @@ public class ProbationService : IProbationService
             .FirstOrDefaultAsync(p => p.Id == reviewId && !p.IsDeleted)
             ?? throw new KeyNotFoundException($"Probation review {reviewId} not found.");
 
-        if (review.Status != "Pending")
+        if (review.Status != nameof(ProbationStatus.Pending))
             throw new InvalidOperationException("Only pending reviews can be completed.");
 
         review.Decision = decision;
         review.ManagerComments = managerComments;
         review.HRComments = hrComments;
         review.ReviewedAt = DateTime.UtcNow;
-        review.Status = "Completed";
+        review.Status = nameof(ProbationStatus.Completed);
 
         var employee = review.Employee;
 

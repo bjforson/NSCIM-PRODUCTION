@@ -1,8 +1,9 @@
 @page "/analytics/turnover"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @rendermode InteractiveServer
 
 @using NickHR.Services.Analytics
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

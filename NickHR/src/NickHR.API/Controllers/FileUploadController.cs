@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NickHR.Core.Entities.Core;
+using NickHR.Core.Interfaces;
 using NickHR.Infrastructure.Data;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -13,6 +15,7 @@ public class FileUploadController : ControllerBase
 {
     private readonly NickHRDbContext _db;
     private readonly ILogger<FileUploadController> _logger;
+    private readonly ICurrentUserService _currentUser;
     private const string UploadsRoot = @"C:/Shared/NSCIM_PRODUCTION/NickHR/uploads";
     private const long MaxFileSize = 10 * 1024 * 1024; // 10 MB
 
@@ -24,10 +27,14 @@ public class FileUploadController : ControllerBase
         ["certificate"] = new[] { ".pdf", ".jpg", ".jpeg", ".png" }
     };
 
-    public FileUploadController(NickHRDbContext db, ILogger<FileUploadController> logger)
+    public FileUploadController(
+        NickHRDbContext db,
+        ILogger<FileUploadController> logger,
+        ICurrentUserService currentUser)
     {
         _db = db;
         _logger = logger;
+        _currentUser = currentUser;
     }
 
     /// <summary>
@@ -114,6 +121,14 @@ public class FileUploadController : ControllerBase
     [HttpGet("photo/{employeeId:int}")]
     public async Task<IActionResult> GetPhoto(int employeeId)
     {
+        // IDOR guard: photos are personal data; only the employee themselves or
+        // HR/admin staff should be able to view them via this endpoint.
+        if (!await _currentUser.CanAccessEmployeeAsync(employeeId,
+                "SuperAdmin", "HRManager", "HROfficer"))
+        {
+            return Forbid();
+        }
+
         var employee = await _db.Employees
             .Where(e => e.Id == employeeId && !e.IsDeleted)
             .Select(e => new { e.PhotoData, e.PhotoContentType })
@@ -129,13 +144,22 @@ public class FileUploadController : ControllerBase
     [HttpGet("document/{documentId:int}")]
     public async Task<IActionResult> GetDocument(int documentId)
     {
+        // Documents (contracts, IDs, certs) belong to a specific employee. Load
+        // the document first so we can confirm the requester is either that
+        // employee or in an HR/admin role before streaming the bytes.
         var doc = await _db.EmployeeDocuments
             .Where(d => d.Id == documentId && !d.IsDeleted)
-            .Select(d => new { d.FileData, d.ContentType, d.FileName })
+            .Select(d => new { d.EmployeeId, d.FileData, d.ContentType, d.FileName })
             .FirstOrDefaultAsync();
 
         if (doc?.FileData == null)
             return NotFound();
+
+        if (!await _currentUser.CanAccessEmployeeAsync(doc.EmployeeId,
+                "SuperAdmin", "HRManager", "HROfficer"))
+        {
+            return Forbid();
+        }
 
         return File(doc.FileData, doc.ContentType ?? "application/octet-stream", doc.FileName);
     }
@@ -163,7 +187,7 @@ public class FileUploadController : ControllerBase
     /// Delete a file (admin only).
     /// </summary>
     [HttpDelete("{**filePath}")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public IActionResult DeleteFile(string filePath)
     {
         if (filePath.Contains(".."))

@@ -4,12 +4,13 @@ using Microsoft.EntityFrameworkCore;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.Core;
 using NickHR.Infrastructure.Data;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager")]
+[Authorize(Roles = RoleSets.SeniorHR)]
 public class GradesController : ControllerBase
 {
     private readonly NickHRDbContext _db;

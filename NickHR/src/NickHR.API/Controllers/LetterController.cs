@@ -2,20 +2,24 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.System;
+using NickHR.Core.Interfaces;
 using NickHR.Services.Letter;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+[Authorize(Roles = RoleSets.HRStaff)]
 public class LetterController : ControllerBase
 {
     private readonly LetterService _letterService;
+    private readonly ICurrentUserService _currentUser;
 
-    public LetterController(LetterService letterService)
+    public LetterController(LetterService letterService, ICurrentUserService currentUser)
     {
         _letterService = letterService;
+        _currentUser = currentUser;
     }
 
     [HttpGet("templates")]
@@ -35,6 +39,15 @@ public class LetterController : ControllerBase
     [HttpGet("preview/{templateId}/{employeeId}")]
     public async Task<IActionResult> Preview(int templateId, int employeeId)
     {
+        // Even though the controller-level [Authorize] limits this to HR roles,
+        // double-check the per-employee scope so future relaxations of the
+        // class policy can't quietly leak letter content (which embeds PII).
+        if (!await _currentUser.CanAccessEmployeeAsync(employeeId,
+                "SuperAdmin", "HRManager", "HROfficer"))
+        {
+            return Forbid();
+        }
+
         try
         {
             var html = await _letterService.GeneratePreviewAsync(templateId, employeeId);

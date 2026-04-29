@@ -2,12 +2,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Services.Payroll.EFiling;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/payroll/efile")]
-[Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+[Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 public class EFilingController : ControllerBase
 {
     private readonly EFilingService _eFilingService;

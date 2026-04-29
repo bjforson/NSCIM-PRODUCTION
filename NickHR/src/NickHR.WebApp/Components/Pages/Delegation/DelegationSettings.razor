@@ -1,5 +1,5 @@
 @page "/settings/delegation"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
 @rendermode InteractiveServer
 
 @using Microsoft.EntityFrameworkCore
@@ -8,6 +8,7 @@
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
 @using NickHR.Services.Common
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

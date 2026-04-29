@@ -2,6 +2,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize]
 @rendermode InteractiveServer
 @using NickHR.Core.Interfaces
+@using NickHR.Core.Constants
 @inject IPolicyDocumentService PolicyService
 @inject ICurrentUserService CurrentUser
 @inject ISnackbar Snackbar
@@ -16,7 +17,7 @@
 
 <div class="d-flex justify-space-between align-center mb-4">
     <MudText Typo="Typo.body1" Color="Color.Secondary">@_policies.Count active policy document(s)</MudText>
-    <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer">
+    <AuthorizeView Roles = RoleSets.HRStaff>
         <Authorized>
             <MudButton Variant="Variant.Filled" Color="Color.Primary"
                        StartIcon="@Icons.Material.Filled.Add"
@@ -93,7 +94,7 @@ else
                                     Acknowledge
                                 </MudButton>
                             }
-                            <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer">
+                            <AuthorizeView Roles = RoleSets.HRStaff>
                                 <Authorized>
                                     <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
                                                    Title="Edit" OnClick="() => OpenEditDialog(policy)" />

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.Core;
 using NickHR.Services.Project;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -34,7 +35,7 @@ public class ProjectController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager,DepartmentManager")]
+    [Authorize(Roles = RoleSets.SeniorHROrDeptManager)]
     public async Task<IActionResult> Create([FromBody] Core.Entities.Core.Project project)
     {
         var result = await _projectService.CreateProjectAsync(project);

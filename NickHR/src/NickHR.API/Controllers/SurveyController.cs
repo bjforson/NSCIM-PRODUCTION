@@ -4,6 +4,7 @@ using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Survey;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -23,7 +24,7 @@ public class SurveyController : ControllerBase
 
     /// <summary>Create a new survey (draft).</summary>
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> CreateSurvey([FromBody] CreateSurveyRequest request)
     {
         try
@@ -41,7 +42,7 @@ public class SurveyController : ControllerBase
 
     /// <summary>Add a question to a survey.</summary>
     [HttpPost("{surveyId}/questions")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> AddQuestion(int surveyId, [FromBody] AddQuestionRequest request)
     {
         try
@@ -63,7 +64,7 @@ public class SurveyController : ControllerBase
 
     /// <summary>Activate a survey (changes status from Draft to Active).</summary>
     [HttpPost("{surveyId}/activate")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Activate(int surveyId)
     {
         try
@@ -83,7 +84,7 @@ public class SurveyController : ControllerBase
 
     /// <summary>Close an active survey.</summary>
     [HttpPost("{surveyId}/close")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Close(int surveyId)
     {
         try
@@ -143,7 +144,7 @@ public class SurveyController : ControllerBase
 
     /// <summary>Get aggregated results for a survey (HR/Admin only).</summary>
     [HttpGet("{surveyId}/results")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> GetResults(int surveyId)
     {
         try

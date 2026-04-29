@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.Enums;
 using NickHR.Infrastructure.Data;
 using NickHR.Services.ProfileChange;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -93,7 +94,7 @@ public class ProfileChangeController : ControllerBase
     /// GET /api/profile-changes/pending
     /// </summary>
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> GetPending()
     {
         var requests = await _svc.GetPendingRequestsAsync();
@@ -118,7 +119,7 @@ public class ProfileChangeController : ControllerBase
     /// GET /api/profile-changes/all?status=Pending
     /// </summary>
     [HttpGet("all")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> GetAll([FromQuery] string? status)
     {
         ChangeRequestStatus? statusFilter = null;
@@ -151,7 +152,7 @@ public class ProfileChangeController : ControllerBase
     /// POST /api/profile-changes/{id}/approve
     /// </summary>
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Approve(int id)
     {
         var reviewer = await _userManager.GetUserAsync(User);
@@ -173,7 +174,7 @@ public class ProfileChangeController : ControllerBase
     /// POST /api/profile-changes/{id}/reject
     /// </summary>
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Reject(int id, [FromBody] RejectChangeDto dto)
     {
         var reviewer = await _userManager.GetUserAsync(User);

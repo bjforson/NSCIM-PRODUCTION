@@ -94,13 +94,11 @@
             using var scope = ServiceProvider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<NickHRDbContext>();
 
-            int employeeId = _model.IsAnonymous
-                ? (await db.Employees.Where(e => !e.IsDeleted).Select(e => e.Id).FirstOrDefaultAsync())
-                : _model.EmployeeId;
-
+            // PRIVACY: anonymous grievances carry a NULL EmployeeId so the row
+            // is unlinkable. EmployeeId is now `int?` on the entity.
             var entity = new Grievance
             {
-                EmployeeId = employeeId > 0 ? employeeId : 1,
+                EmployeeId = _model.IsAnonymous ? null : _model.EmployeeId,
                 Subject = _model.Subject,
                 Description = _model.Description,
                 IsAnonymous = _model.IsAnonymous,

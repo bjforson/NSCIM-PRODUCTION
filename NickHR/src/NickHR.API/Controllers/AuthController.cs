@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.DTOs.Auth;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -35,7 +36,7 @@ public class AuthController : ControllerBase
         }
     }
 
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     [HttpPost("register")]
     public async Task<ActionResult<ApiResponse<LoginResponse>>> Register([FromBody] RegisterRequest request)
     {

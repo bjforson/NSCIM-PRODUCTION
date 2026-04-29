@@ -7,6 +7,7 @@
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Core
+@using NickHR.Core.Constants
 
 <PageTitle>NICKSCAN ERP — NickHR — Announcements</PageTitle>
 
@@ -15,7 +16,7 @@
         <MudText Typo="Typo.h5" Class="mb-1">Announcements</MudText>
         <MudBreadcrumbs Items="_breadcrumbs" Class="pa-0" />
     </div>
-    <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer">
+    <AuthorizeView Roles = RoleSets.HRStaff>
         <Authorized>
             <MudButton Variant="Variant.Filled" Color="Color.Primary"
                        StartIcon="@Icons.Material.Filled.Add"
@@ -65,7 +66,7 @@ else
                             </div>
                         </CardHeaderContent>
                         <CardHeaderActions>
-                            <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer">
+                            <AuthorizeView Roles = RoleSets.HRStaff>
                                 <Authorized>
                                     <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
                                         <MudMenuItem OnClick="() => OpenEditDialog(ann)">Edit</MudMenuItem>

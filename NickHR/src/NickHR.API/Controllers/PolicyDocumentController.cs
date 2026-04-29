@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -58,7 +59,7 @@ public class PolicyDocumentController : ControllerBase
 
     // POST /api/policies
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<PolicyDocumentDto>>> Create([FromBody] CreatePolicyDocumentRequest req)
     {
         try
@@ -71,7 +72,7 @@ public class PolicyDocumentController : ControllerBase
 
     // PUT /api/policies/{id}
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<PolicyDocumentDto>>> Update(int id, [FromBody] UpdatePolicyDocumentRequest req)
     {
         try
@@ -98,7 +99,7 @@ public class PolicyDocumentController : ControllerBase
 
     // GET /api/policies/{id}/acknowledgements
     [HttpGet("{id:int}/acknowledgements")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<ActionResult<ApiResponse<List<PolicyAcknowledgementDto>>>> GetAcknowledgements(int id)
     {
         try

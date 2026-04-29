@@ -4,12 +4,13 @@ using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Asset;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+[Authorize(Roles = RoleSets.HRStaff)]
 public class AssetController : ControllerBase
 {
     private readonly IAssetService _assetService;

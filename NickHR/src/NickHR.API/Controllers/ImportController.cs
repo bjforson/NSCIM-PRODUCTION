@@ -5,21 +5,32 @@ using Microsoft.EntityFrameworkCore;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.Core;
 using NickHR.Core.Enums;
+using NickHR.Core.Interfaces;
 using NickHR.Infrastructure.Data;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "SuperAdmin,HRManager")]
+[Authorize(Roles = RoleSets.SeniorHR)]
 public class ImportController : ControllerBase
 {
     private readonly NickHRDbContext _db;
+    private readonly IAuditService _audit;
+    private readonly ICurrentUserService _currentUser;
 
-    public ImportController(NickHRDbContext db)
+    public ImportController(
+        NickHRDbContext db,
+        IAuditService audit,
+        ICurrentUserService currentUser)
     {
         _db = db;
+        _audit = audit;
+        _currentUser = currentUser;
     }
+
+    private string? RemoteIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
     /// <summary>Preview import - parse Excel and show what will be imported without saving.</summary>
     [HttpPost("preview")]
@@ -39,6 +50,15 @@ public class ImportController : ControllerBase
     }
 
     /// <summary>Execute import - parse Excel and save employees to database.</summary>
+    /// <remarks>
+    /// Wave 2I: each batch of imports is wrapped in an outer transaction so a
+    /// crash midway can't leave a half-applied import. Per-row failures are
+    /// collected into <c>errors</c> and the row is rolled back via SAVEPOINT
+    /// (so other rows still commit). If we hit a *systemic* failure (e.g. lost
+    /// DB connection) the outer transaction rolls back the entire batch.
+    /// Wave 2G: audit-log entry on each invocation captures who triggered the
+    /// import and the file's metadata.
+    /// </remarks>
     [HttpPost("execute")]
     public async Task<IActionResult> ExecuteImport(IFormFile file)
     {
@@ -54,60 +74,104 @@ public class ImportController : ControllerBase
         int imported = 0, skipped = 0;
         var errors = new List<string>();
 
-        foreach (var row in validRows)
+        // Outer transaction — committed only if the foreach completes without
+        // an outer-level exception. Per-row failures use a SAVEPOINT so one bad
+        // row doesn't abort the whole import.
+        await using var tx = await _db.Database.BeginTransactionAsync();
+
+        try
         {
-            try
+            foreach (var row in validRows)
             {
-                // Check for duplicate by EmployeeCode or Email
-                if (!string.IsNullOrEmpty(row.EmployeeCode))
+                var savepointName = $"row_{row.RowNumber}";
+                await tx.CreateSavepointAsync(savepointName);
+
+                try
                 {
-                    var exists = await _db.Employees.AnyAsync(e => e.EmployeeCode == row.EmployeeCode && !e.IsDeleted);
-                    if (exists) { skipped++; row.ImportNote = "Skipped: duplicate EmployeeCode"; continue; }
+                    // Check for duplicate by EmployeeCode or Email
+                    if (!string.IsNullOrEmpty(row.EmployeeCode))
+                    {
+                        var exists = await _db.Employees.AnyAsync(e => e.EmployeeCode == row.EmployeeCode && !e.IsDeleted);
+                        if (exists)
+                        {
+                            skipped++;
+                            row.ImportNote = "Skipped: duplicate EmployeeCode";
+                            await tx.ReleaseSavepointAsync(savepointName);
+                            continue;
+                        }
+                    }
+
+                    // Resolve Department (from Unit field)
+                    var department = await ResolveOrCreateDepartment(row.Unit);
+                    // Resolve Designation
+                    var designation = await ResolveOrCreateDesignation(row.JobPosition);
+                    // Resolve Location
+                    var location = await ResolveLocation(row.Location);
+                    // Resolve Grade by salary
+                    var grade = await ResolveGradeBySalary(row.BasicSalary);
+
+                    var employee = new Employee
+                    {
+                        FirstName = row.FirstName!.Trim(),
+                        LastName = row.LastName!.Trim(),
+                        EmployeeCode = row.EmployeeCode ?? await GenerateEmployeeCode(),
+                        BasicSalary = row.BasicSalary,
+                        SSNITNumber = NormalizeString(row.SSNITNumber),
+                        WorkEmail = NormalizeString(row.Email),
+                        PrimaryPhone = NormalizeString(row.Phone),
+                        Gender = ParseGender(row.Gender),
+                        MaritalStatus = ParseMaritalStatus(row.MaritalStatus),
+                        Nationality = row.Nationality ?? "Ghana",
+                        GhanaCardNumber = NormalizeString(row.NationalIdNumber),
+                        DepartmentId = department.Id,
+                        DesignationId = designation.Id,
+                        LocationId = location?.Id ?? 1,
+                        GradeId = grade.Id,
+                        EmploymentType = EmploymentType.FullTime,
+                        EmploymentStatus = EmploymentStatus.Active,
+                        HireDate = ParseDate(row.HireDate) ?? DateTime.UtcNow,
+                    };
+
+                    _db.Employees.Add(employee);
+                    await _db.SaveChangesAsync();
+                    imported++;
+                    row.ImportNote = $"Imported as {employee.EmployeeCode}";
+                    await tx.ReleaseSavepointAsync(savepointName);
                 }
-
-                // Resolve Department (from Unit field)
-                var department = await ResolveOrCreateDepartment(row.Unit);
-                // Resolve Designation
-                var designation = await ResolveOrCreateDesignation(row.JobPosition);
-                // Resolve Location
-                var location = await ResolveLocation(row.Location);
-                // Resolve Grade by salary
-                var grade = await ResolveGradeBySalary(row.BasicSalary);
-
-                var employee = new Employee
+                catch (Exception ex)
                 {
-                    FirstName = row.FirstName!.Trim(),
-                    LastName = row.LastName!.Trim(),
-                    EmployeeCode = row.EmployeeCode ?? await GenerateEmployeeCode(),
-                    BasicSalary = row.BasicSalary,
-                    SSNITNumber = NormalizeString(row.SSNITNumber),
-                    WorkEmail = NormalizeString(row.Email),
-                    PrimaryPhone = NormalizeString(row.Phone),
-                    Gender = ParseGender(row.Gender),
-                    MaritalStatus = ParseMaritalStatus(row.MaritalStatus),
-                    Nationality = row.Nationality ?? "Ghana",
-                    GhanaCardNumber = NormalizeString(row.NationalIdNumber),
-                    DepartmentId = department.Id,
-                    DesignationId = designation.Id,
-                    LocationId = location?.Id ?? 1,
-                    GradeId = grade.Id,
-                    EmploymentType = EmploymentType.FullTime,
-                    EmploymentStatus = EmploymentStatus.Active,
-                    HireDate = ParseDate(row.HireDate) ?? DateTime.UtcNow,
-                };
+                    // Single-row failure: roll back to the savepoint so the rest
+                    // of the batch survives. Detach the failed entity so it
+                    // doesn't get re-saved on the next iteration.
+                    await tx.RollbackToSavepointAsync(savepointName);
+                    foreach (var e in _db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged).ToList())
+                    {
+                        e.State = EntityState.Detached;
+                    }
 
-                _db.Employees.Add(employee);
-                await _db.SaveChangesAsync();
-                imported++;
-                row.ImportNote = $"Imported as {employee.EmployeeCode}";
+                    errors.Add($"Row {row.RowNumber}: {ex.Message}");
+                    row.ImportNote = $"Error: {ex.Message}";
+                    skipped++;
+                }
             }
-            catch (Exception ex)
-            {
-                errors.Add($"Row {row.RowNumber}: {ex.Message}");
-                row.ImportNote = $"Error: {ex.Message}";
-                skipped++;
-            }
+
+            await tx.CommitAsync();
         }
+        catch
+        {
+            // Outer-level failure (e.g. connection drop) — abandon everything.
+            await tx.RollbackAsync();
+            throw;
+        }
+
+        await _audit.LogAsync(
+            userId: _currentUser.UserId,
+            action: "Import.ExecuteEmployees",
+            entityType: "EmployeeImport",
+            entityId: file.FileName ?? "<inline>",
+            oldValues: null,
+            newValues: System.Text.Json.JsonSerializer.Serialize(new { imported, skipped, errorCount = errors.Count }),
+            ipAddress: RemoteIp);
 
         return Ok(ApiResponse<object>.Ok(new
         {
@@ -130,7 +194,6 @@ public class ImportController : ControllerBase
         var possiblePaths = new[]
         {
             filePath,
-            @"C:\Shared\NSCIM_PRODUCTION\.claude\worktrees\thirsty-merkle\NickHR\data\import\staff_payroll_data.xlsx",
             @"C:\Shared\NSCIM_PRODUCTION\NickHR\data\import\staff_payroll_data.xlsx"
         };
 

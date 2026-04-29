@@ -1,11 +1,12 @@
 @page "/excuse-duty/report"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Leave
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
+@using NickHR.Core.Constants
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject IJSRuntime JS

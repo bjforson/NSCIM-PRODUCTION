@@ -1,10 +1,11 @@
 @page "/reports/payroll"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Payroll
 @using NickHR.Core.Entities.Core
+@using NickHR.Core.Constants
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 

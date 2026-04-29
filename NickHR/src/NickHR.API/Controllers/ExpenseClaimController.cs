@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -49,7 +50,7 @@ public class ExpenseClaimController : ControllerBase
 
     // GET /api/expense-claims/review?status=
     [HttpGet("review")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.HRStaffOrFinance)]
     public async Task<ActionResult<ApiResponse<List<ExpenseClaimDto>>>> GetForReview([FromQuery] ExpenseClaimStatus? status)
     {
         try
@@ -62,7 +63,7 @@ public class ExpenseClaimController : ControllerBase
 
     // POST /api/expense-claims/{id}/approve
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.HRStaffOrFinance)]
     public async Task<ActionResult<ApiResponse<ExpenseClaimDto>>> Approve(int id, [FromBody] ApproveExpenseRequest req)
     {
         try
@@ -78,7 +79,7 @@ public class ExpenseClaimController : ControllerBase
 
     // POST /api/expense-claims/{id}/reject
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.HRStaffOrFinance)]
     public async Task<ActionResult<ApiResponse<ExpenseClaimDto>>> Reject(int id, [FromBody] ReasonRequest req)
     {
         try
@@ -94,7 +95,7 @@ public class ExpenseClaimController : ControllerBase
 
     // POST /api/expense-claims/{id}/paid
     [HttpPost("{id:int}/paid")]
-    [Authorize(Roles = "SuperAdmin,HRManager,FinanceOfficer")]
+    [Authorize(Roles = RoleSets.SeniorHROrFinance)]
     public async Task<ActionResult<ApiResponse<ExpenseClaimDto>>> MarkPaid(int id, [FromBody] ReferenceRequest req)
     {
         try

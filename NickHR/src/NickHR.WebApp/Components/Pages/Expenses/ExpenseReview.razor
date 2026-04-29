@@ -1,8 +1,9 @@
 @page "/expenses/review"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer,FinanceOfficer")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaffOrFinance)]
 @rendermode InteractiveServer
 @using NickHR.Core.Enums
 @using NickHR.Core.Interfaces
+@using NickHR.Core.Constants
 @inject IExpenseClaimService ExpenseService
 @inject ICurrentUserService CurrentUser
 @inject ISnackbar Snackbar

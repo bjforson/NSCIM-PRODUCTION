@@ -43,7 +43,10 @@ public class EmployeeService : IEmployeeService
 
     public async Task<PagedResult<EmployeeListDto>> GetListAsync(EmployeeSearchFilter filter)
     {
+        // Read-only path: AsNoTracking saves the change-tracker overhead and the
+        // identity-map allocations. Wave 2L performance fix.
         var query = _db.Employees
+            .AsNoTracking()
             .Include(e => e.Department)
             .Include(e => e.Designation)
             .Include(e => e.Grade)

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.DTOs.Department;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -36,7 +37,7 @@ public class DepartmentsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<ActionResult<ApiResponse<DepartmentDto>>> Create([FromBody] CreateDepartmentDto dto)
     {
         try
@@ -52,7 +53,7 @@ public class DepartmentsController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<ActionResult<ApiResponse<DepartmentDto>>> Update(int id, [FromBody] CreateDepartmentDto dto)
     {
         try
@@ -71,7 +72,7 @@ public class DepartmentsController : ControllerBase
     }
 
     [HttpDelete("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<ActionResult<ApiResponse<object>>> Delete(int id)
     {
         try

@@ -1,4 +1,5 @@
 @using Microsoft.AspNetCore.Components.Authorization
+@using NickHR.Core.Constants
 
 <MudNavMenu>
     <!-- ═══════════════════ DASHBOARD ═══════════════════ -->
@@ -60,7 +61,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ APPROVALS (Managers/HR) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer,DepartmentManager">
+    <AuthorizeView Roles = RoleSets.HRStaffOrDeptManager>
         <Authorized>
             <MudNavGroup Title="Approvals" Icon="@Icons.Material.Filled.Approval" Expanded="false">
                 <MudNavLink Href="/leave/approvals" Icon="@Icons.Material.Filled.EventAvailable">Leave</MudNavLink>
@@ -78,7 +79,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ PEOPLE (HR/Managers) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer,DepartmentManager">
+    <AuthorizeView Roles = RoleSets.HRStaffOrDeptManager>
         <Authorized>
             <MudNavGroup Title="People" Icon="@Icons.Material.Filled.People" Expanded="false">
                 <MudNavLink Href="/employees" Icon="@Icons.Material.Filled.List">Employee List</MudNavLink>
@@ -114,7 +115,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ DISCIPLINE & EXIT (HR Only) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin,HRManager,HROfficer">
+    <AuthorizeView Roles = RoleSets.HRStaff>
         <Authorized>
             <MudNavGroup Title="Discipline & Exit" Icon="@Icons.Material.Filled.Gavel" Expanded="false">
                 <MudNavLink Href="/discipline/cases" Icon="@Icons.Material.Filled.Report">Disciplinary Cases</MudNavLink>
@@ -126,7 +127,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ PAYROLL & FINANCE (Payroll/HR) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin,HRManager,PayrollAdmin">
+    <AuthorizeView Roles = RoleSets.SeniorHROrPayroll>
         <Authorized>
             <MudNavGroup Title="Payroll" Icon="@Icons.Material.Filled.Payments" Expanded="false">
                 <MudNavLink Href="/payroll/run" Icon="@Icons.Material.Filled.PlayCircle">Run Payroll</MudNavLink>
@@ -142,7 +143,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ REPORTS & ANALYTICS (HR/Managers) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin,HRManager">
+    <AuthorizeView Roles = RoleSets.SeniorHR>
         <Authorized>
             <MudNavGroup Title="Reports & Analytics" Icon="@Icons.Material.Filled.Assessment" Expanded="false">
                 <MudNavLink Href="/reports/headcount" Icon="@Icons.Material.Filled.PeopleAlt">Headcount</MudNavLink>
@@ -164,7 +165,7 @@
     </AuthorizeView>
 
     <!-- ═══════════════════ ADMIN (SuperAdmin Only) ═══════════════════ -->
-    <AuthorizeView Roles="SuperAdmin">
+    <AuthorizeView Roles = RoleSets.SuperAdminOnly>
         <Authorized>
             <MudNavGroup Title="Admin" Icon="@Icons.Material.Filled.AdminPanelSettings" Expanded="false">
                 <MudNavLink Href="/admin/users" Icon="@Icons.Material.Filled.ManageAccounts">Users & Roles</MudNavLink>

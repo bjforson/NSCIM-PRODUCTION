@@ -9,6 +9,7 @@
 @inject ISnackbar Snackbar
 @inject IJSRuntime JSRuntime
 @inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<ClockInOut> Logger
 
 <PageTitle>NICKSCAN ERP — NickHR — Clock In/Out</PageTitle>
 
@@ -259,7 +260,10 @@
                     accuracy = gps.Accuracy;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "GPS retrieval failed");
+            }
 
             if (!lat.HasValue || !lon.HasValue)
             {

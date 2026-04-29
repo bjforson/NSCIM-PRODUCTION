@@ -16,7 +16,10 @@ using NickHR.WebApp.Services;
 using var mutex = new Mutex(true, @"Global\NickHR_WebApp_SingleInstance", out var createdNew);
 if (!createdNew)
 {
-    Console.WriteLine("NickHR WebApp is already running. Exiting.");
+    // WebApp doesn't reference Serilog (unlike NickHR.API); Console.Error is
+    // captured by the Windows Service stderr stream so the warning still lands
+    // in the service event log instead of vanishing.
+    Console.Error.WriteLine("[WARN] NickHR WebApp is already running. Exiting.");
     return;
 }
 
@@ -72,6 +75,30 @@ if (smtpRequiresEnv)
             "Set the env var or remove the placeholder from appsettings.json.");
     }
     builder.Configuration["Email:Password"] = smtpPassword ?? string.Empty;
+}
+
+// Resolve Kestrel HTTPS certificate password from environment variable.
+// Same fail-fast pattern as JWT/DB/SMTP: if appsettings still carries the
+// "***USE_ENV_VAR_NICKHR_CERT_PASSWORD***" placeholder, require the env var
+// in production. Set machine-wide via:
+//   [Environment]::SetEnvironmentVariable('NICKHR_CERT_PASSWORD', <value>, 'Machine')
+var certPassword = Environment.GetEnvironmentVariable("NICKHR_CERT_PASSWORD");
+var certPwConfig = builder.Configuration["Kestrel:Endpoints:Https:Certificate:Password"];
+var certRequiresEnv = !string.IsNullOrEmpty(certPwConfig) && certPwConfig.Contains("***USE_ENV_VAR_");
+if (certRequiresEnv)
+{
+    if (string.IsNullOrEmpty(certPassword))
+    {
+        if (builder.Environment.IsProduction())
+        {
+            throw new InvalidOperationException(
+                "NICKHR_CERT_PASSWORD environment variable is not set but Kestrel HTTPS " +
+                "certificate config expects it. Set it via " +
+                "[Environment]::SetEnvironmentVariable('NICKHR_CERT_PASSWORD', <value>, 'Machine').");
+        }
+        Console.Error.WriteLine("[WARN] NICKHR_CERT_PASSWORD not set — HTTPS endpoint may fail to bind. Production startup would fail here.");
+    }
+    builder.Configuration["Kestrel:Endpoints:Https:Certificate:Password"] = certPassword ?? string.Empty;
 }
 
 // Add MudBlazor
@@ -150,8 +177,10 @@ if (!app.Environment.IsDevelopment())
 // Direct HTTPS available on port 5311 for LAN access
 app.UseStaticFiles();
 
-// Serve uploaded files (photos, documents) from the shared uploads directory
-var uploadsPath = @"C:\Shared\NSCIM_PRODUCTION\NickHR\uploads";
+// Serve uploaded files (photos, documents) from the shared uploads directory.
+// Configurable via NickHR:UploadsPath; default keeps existing prod path.
+var uploadsPath = builder.Configuration["NickHR:UploadsPath"]
+    ?? @"C:\Shared\NSCIM_PRODUCTION\NickHR\uploads";
 if (Directory.Exists(uploadsPath))
 {
     app.UseStaticFiles(new StaticFileOptions

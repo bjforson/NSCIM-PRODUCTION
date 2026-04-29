@@ -1,8 +1,9 @@
 @page "/admin/sms-settings"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SuperAdminOnly)]
 @rendermode InteractiveServer
 
 @using NickHR.Services.Communication
+@using NickHR.Core.Constants
 
 @inject ISmsService SmsService
 @inject ISnackbar Snackbar

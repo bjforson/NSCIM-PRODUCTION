@@ -1,5 +1,5 @@
 @page "/out-of-station/approvals"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager,PayrollAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaffPlusDeptAndPayroll)]
 @rendermode InteractiveServer
 
 @using Microsoft.EntityFrameworkCore
@@ -7,6 +7,7 @@
 @using NickHR.Core.Entities.Payroll
 @using NickHR.Core.Enums
 @using NickHR.Services.OutOfStation
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NickHR.Core.DTOs;
 using NickHR.Core.Entities.Leave;
 using NickHR.Core.Enums;
+using NickHR.Core.Interfaces;
 using NickHR.Infrastructure.Data;
 
 namespace NickHR.API.Controllers;
@@ -14,21 +15,35 @@ namespace NickHR.API.Controllers;
 public class BiometricController : ControllerBase
 {
     private readonly NickHRDbContext _db;
+    private readonly ICurrentUserService _currentUser;
 
-    public BiometricController(NickHRDbContext db)
+    public BiometricController(NickHRDbContext db, ICurrentUserService currentUser)
     {
         _db = db;
+        _currentUser = currentUser;
     }
 
     /// <summary>Clock in from a biometric device.</summary>
     [HttpPost("clock-in")]
     public async Task<IActionResult> ClockIn([FromBody] BiometricClockRequest request)
     {
-        var employee = await _db.Employees
-            .FirstOrDefaultAsync(e => e.EmployeeCode == request.EmployeeCode);
+        // FORGERY FIX (Wave 2H): the original lookup used request.EmployeeCode
+        // from the body — any authenticated user could clock in/out as anyone.
+        // Resolve the employee from the JWT instead, and only honour the body's
+        // EmployeeCode if it matches the authenticated user's own code (so legacy
+        // clients that still send it keep working without a security regression).
+        if (_currentUser.EmployeeId is not int callerId)
+            return Unauthorized(ApiResponse<object>.Fail("No employee profile linked to current user."));
 
+        var employee = await _db.Employees.FirstOrDefaultAsync(e => e.Id == callerId);
         if (employee == null)
             return NotFound(ApiResponse<object>.Fail("Employee not found."));
+
+        if (!string.IsNullOrEmpty(request.EmployeeCode) &&
+            !string.Equals(request.EmployeeCode, employee.EmployeeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return Forbid();
+        }
 
         var today = DateTime.UtcNow.Date;
         var existing = await _db.AttendanceRecords
@@ -63,11 +78,19 @@ public class BiometricController : ControllerBase
     [HttpPost("clock-out")]
     public async Task<IActionResult> ClockOut([FromBody] BiometricClockRequest request)
     {
-        var employee = await _db.Employees
-            .FirstOrDefaultAsync(e => e.EmployeeCode == request.EmployeeCode);
+        // FORGERY FIX (Wave 2H): same identity-from-claims pattern as ClockIn.
+        if (_currentUser.EmployeeId is not int callerId)
+            return Unauthorized(ApiResponse<object>.Fail("No employee profile linked to current user."));
 
+        var employee = await _db.Employees.FirstOrDefaultAsync(e => e.Id == callerId);
         if (employee == null)
             return NotFound(ApiResponse<object>.Fail("Employee not found."));
+
+        if (!string.IsNullOrEmpty(request.EmployeeCode) &&
+            !string.Equals(request.EmployeeCode, employee.EmployeeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return Forbid();
+        }
 
         var today = DateTime.UtcNow.Date;
         var existing = await _db.AttendanceRecords

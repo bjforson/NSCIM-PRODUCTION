@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Announcement;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -22,7 +23,7 @@ public class AnnouncementController : ControllerBase
 
     /// <summary>Create a new announcement.</summary>
     [HttpPost]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Create([FromBody] CreateAnnouncementDto dto)
     {
         try
@@ -65,7 +66,7 @@ public class AnnouncementController : ControllerBase
 
     /// <summary>Get all announcements (admin view).</summary>
     [HttpGet]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> GetAll()
     {
         var announcements = await _announcementService.GetAllAsync();
@@ -74,7 +75,7 @@ public class AnnouncementController : ControllerBase
 
     /// <summary>Update an announcement.</summary>
     [HttpPut("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateAnnouncementDto dto)
     {
         try
@@ -95,7 +96,7 @@ public class AnnouncementController : ControllerBase
 
     /// <summary>Delete (soft-delete) an announcement.</summary>
     [HttpDelete("{id:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+    [Authorize(Roles = RoleSets.HRStaff)]
     public async Task<IActionResult> Delete(int id)
     {
         try

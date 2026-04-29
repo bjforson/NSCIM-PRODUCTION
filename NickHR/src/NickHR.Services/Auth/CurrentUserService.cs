@@ -35,4 +35,24 @@ public class CurrentUserService : ICurrentUserService
 
     public bool IsAuthenticated =>
         Principal?.Identity?.IsAuthenticated ?? false;
+
+    public Task<bool> CanAccessEmployeeAsync(int employeeId, params string[] privilegedRoles)
+    {
+        // Self-access is always allowed.
+        if (EmployeeId is int self && self == employeeId)
+            return Task.FromResult(true);
+
+        // Privileged roles bypass the self check (HR/SuperAdmin/PayrollAdmin etc).
+        var principal = Principal;
+        if (principal != null && privilegedRoles is { Length: > 0 })
+        {
+            foreach (var role in privilegedRoles)
+            {
+                if (!string.IsNullOrEmpty(role) && principal.IsInRole(role))
+                    return Task.FromResult(true);
+            }
+        }
+
+        return Task.FromResult(false);
+    }
 }

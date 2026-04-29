@@ -12,12 +12,25 @@ using NickHR.Core.Entities.Discipline;
 using NickHR.Core.Entities.Exit;
 using NickHR.Core.Entities.Medical;
 using NickHR.Core.Entities.System;
+using NickHR.Core.Interfaces;
 
 namespace NickHR.Infrastructure.Data;
 
 public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRole, string>
 {
+    // Optional ICurrentUserService — null for design-time / migrations / non-HTTP
+    // contexts (where there is no signed-in user). When present, UpdateTimestamps
+    // also stamps CreatedBy / UpdatedBy on new + modified entities so audit
+    // trails finally show who, not just when.
+    private readonly ICurrentUserService? _currentUser;
+
     public NickHRDbContext(DbContextOptions<NickHRDbContext> options) : base(options) { }
+
+    public NickHRDbContext(DbContextOptions<NickHRDbContext> options, ICurrentUserService currentUser)
+        : base(options)
+    {
+        _currentUser = currentUser;
+    }
 
     // Core
     public DbSet<Employee> Employees => Set<Employee>();
@@ -197,6 +210,16 @@ public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRol
             entity.HasIndex(e => e.SSNITNumber).IsUnique().HasFilter("\"SSNITNumber\" IS NOT NULL");
             entity.HasIndex(e => e.TIN).IsUnique().HasFilter("\"TIN\" IS NOT NULL");
 
+            // Wave 2L: FK-column indexes. These columns are used in nearly every
+            // listing/dashboard query (`WHERE DepartmentId = X`, `JOIN Department`),
+            // and Postgres won't auto-create them just because they're FKs. Without
+            // these the planner does seq-scans on Employees once row count climbs.
+            entity.HasIndex(e => e.DepartmentId);
+            entity.HasIndex(e => e.DesignationId);
+            entity.HasIndex(e => e.GradeId);
+            entity.HasIndex(e => e.LocationId);
+            entity.HasIndex(e => e.ReportingManagerId);
+
             entity.HasOne(e => e.ReportingManager)
                 .WithMany(e => e.Subordinates)
                 .HasForeignKey(e => e.ReportingManagerId)
@@ -282,6 +305,10 @@ public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRol
         builder.Entity<PayrollItem>(entity =>
         {
             entity.HasIndex(p => new { p.PayrollRunId, p.EmployeeId }).IsUnique();
+            // Wave 2L: leading-EmployeeId index for "all payslips for an employee"
+            // queries — the (PayrollRunId, EmployeeId) unique index above can't
+            // serve EmployeeId-alone lookups.
+            entity.HasIndex(p => p.EmployeeId);
             entity.Property(p => p.BasicSalary).HasPrecision(18, 2);
             entity.Property(p => p.TotalAllowances).HasPrecision(18, 2);
             entity.Property(p => p.GrossPay).HasPrecision(18, 2);
@@ -377,6 +404,11 @@ public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRol
                 .WithMany()
                 .HasForeignKey(l => l.ApprovedById)
                 .OnDelete(DeleteBehavior.SetNull);
+
+            // Wave 2L: leading-EmployeeId index for the common "my leave history"
+            // and "leaves on date X" queries. Composite (EmployeeId, Status) makes
+            // the dashboard "approved leaves today" filter index-only.
+            entity.HasIndex(l => new { l.EmployeeId, l.Status });
         });
 
         builder.Entity<AttendanceRecord>(entity =>
@@ -443,6 +475,14 @@ public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRol
                 .WithMany()
                 .HasForeignKey(g => g.AssignedToId)
                 .OnDelete(DeleteBehavior.SetNull);
+
+            // EmployeeId is nullable to support anonymous grievances. When the
+            // filer is anonymous the row stores no linkable identifier.
+            entity.HasOne(g => g.Employee)
+                .WithMany()
+                .HasForeignKey(g => g.EmployeeId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .IsRequired(false);
         });
 
         // Exit
@@ -1024,16 +1064,31 @@ public class NickHRDbContext : IdentityDbContext<ApplicationUser, ApplicationRol
 
     private void UpdateTimestamps()
     {
+        // Best-effort identity capture. _currentUser is null for design-time and
+        // background workers; UserId may be empty if a code path saves before the
+        // user is fully authenticated. Falling back to null leaves the column
+        // untouched rather than blowing up the SaveChanges call.
+        var actor = !string.IsNullOrWhiteSpace(_currentUser?.UserId) ? _currentUser!.UserId : null;
+        var now = DateTime.UtcNow;
+
         var entries = ChangeTracker.Entries<BaseEntity>();
         foreach (var entry in entries)
         {
             if (entry.State == EntityState.Added)
             {
-                entry.Entity.CreatedAt = DateTime.UtcNow;
+                entry.Entity.CreatedAt = now;
+                if (actor != null && string.IsNullOrEmpty(entry.Entity.CreatedBy))
+                {
+                    entry.Entity.CreatedBy = actor;
+                }
             }
             else if (entry.State == EntityState.Modified)
             {
-                entry.Entity.UpdatedAt = DateTime.UtcNow;
+                entry.Entity.UpdatedAt = now;
+                if (actor != null)
+                {
+                    entry.Entity.UpdatedBy = actor;
+                }
             }
         }
     }

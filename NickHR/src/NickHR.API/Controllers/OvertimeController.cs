@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Interfaces;
 using NickHR.Services.Overtime;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -52,7 +53,7 @@ public class OvertimeController : ControllerBase
 
     /// <summary>Get pending overtime requests for approval.</summary>
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> GetPending()
     {
         var requests = await _overtimeService.GetPendingApprovalsAsync();
@@ -61,7 +62,7 @@ public class OvertimeController : ControllerBase
 
     /// <summary>Approve an overtime request.</summary>
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Approve(int id)
     {
         try
@@ -84,7 +85,7 @@ public class OvertimeController : ControllerBase
 
     /// <summary>Reject an overtime request.</summary>
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Reject(int id, [FromBody] RejectOvertimeDto dto)
     {
         try
@@ -107,7 +108,7 @@ public class OvertimeController : ControllerBase
 
     /// <summary>Mark overtime as completed with actual hours.</summary>
     [HttpPost("{id:int}/complete")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Complete(int id, [FromBody] CompleteOvertimeDto dto)
     {
         try
@@ -127,7 +128,7 @@ public class OvertimeController : ControllerBase
 
     /// <summary>Get overtime for payroll processing.</summary>
     [HttpGet("payroll/{employeeId:int}")]
-    [Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+    [Authorize(Roles = RoleSets.SeniorHROrPayroll)]
     public async Task<IActionResult> GetForPayroll(int employeeId, [FromQuery] int month, [FromQuery] int year)
     {
         var requests = await _overtimeService.GetOvertimeForPayrollAsync(employeeId, month, year);

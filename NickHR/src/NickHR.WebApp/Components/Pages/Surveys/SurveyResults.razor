@@ -1,5 +1,5 @@
 @page "/surveys/results/{Id:int}"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @rendermode InteractiveServer
 
 @using Microsoft.AspNetCore.Authorization
@@ -8,6 +8,7 @@
 @using NickHR.Core.Entities.System
 @using NickHR.Core.Enums
 @using System.Text.Json
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar

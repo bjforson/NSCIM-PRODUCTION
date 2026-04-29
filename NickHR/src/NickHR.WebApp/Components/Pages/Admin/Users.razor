@@ -1,5 +1,5 @@
 @page "/admin/users"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SuperAdminOnly)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.AspNetCore.Identity
@@ -7,6 +7,7 @@
 @using NickHR.Core.Interfaces
 @using NickHR.Services.Common
 @using NickHR.Services.SystemAccess
+@using NickHR.Core.Constants
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService

@@ -2,12 +2,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Services.Training;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/training")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+[Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
 public class TrainingController : ControllerBase
 {
     private readonly ITrainingService _training;

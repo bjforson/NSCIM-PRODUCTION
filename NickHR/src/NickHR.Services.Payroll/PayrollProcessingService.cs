@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickHR.Core.Constants;
 using NickHR.Core.Entities.Core;
 using NickHR.Core.Entities.Payroll;
 using NickHR.Core.Enums;
@@ -67,13 +68,26 @@ public class PayrollProcessingService : IPayrollProcessingService
 
         if (existing != null && existing.Status != PayrollStatus.Reversed)
         {
-            // Delete existing draft/completed run to reprocess
-            _context.PayrollItemDetails.RemoveRange(
-                _context.PayrollItemDetails.Where(d => d.PayrollItem.PayrollRunId == existing.Id));
-            _context.PayrollItems.RemoveRange(
-                _context.PayrollItems.Where(i => i.PayrollRunId == existing.Id));
-            _context.PayrollRuns.Remove(existing);
-            await _context.SaveChangesAsync();
+            // Wave 2I: wrap the three-step delete in a transaction so a crash
+            // mid-cleanup can't leave orphaned PayrollItem rows pointing at a
+            // PayrollRun that's been removed (or vice versa).
+            await using var tx = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                _context.PayrollItemDetails.RemoveRange(
+                    _context.PayrollItemDetails.Where(d => d.PayrollItem.PayrollRunId == existing.Id));
+                _context.PayrollItems.RemoveRange(
+                    _context.PayrollItems.Where(i => i.PayrollRunId == existing.Id));
+                _context.PayrollRuns.Remove(existing);
+                await _context.SaveChangesAsync();
+
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
         }
 
         // Get all active employees
@@ -130,7 +144,7 @@ public class PayrollProcessingService : IPayrollProcessingService
                 {
                     PayrollItemId = payrollItem.Id,
                     ComponentName = allowance.Name,
-                    ComponentType = "Earning",
+                    ComponentType = nameof(SalaryComponentType.Earning),
                     Amount = allowance.Amount
                 });
             }
@@ -139,16 +153,16 @@ public class PayrollProcessingService : IPayrollProcessingService
             _context.PayrollItemDetails.Add(new PayrollItemDetail
             {
                 PayrollItemId = payrollItem.Id,
-                ComponentName = "SSNIT Employee (5.5%)",
-                ComponentType = "Deduction",
+                ComponentName = PayrollComponents.SsnitEmployeeName,
+                ComponentType = nameof(SalaryComponentType.Deduction),
                 Amount = result.SSNITEmployee
             });
 
             _context.PayrollItemDetails.Add(new PayrollItemDetail
             {
                 PayrollItemId = payrollItem.Id,
-                ComponentName = "PAYE Tax",
-                ComponentType = "Deduction",
+                ComponentName = PayrollComponents.PayeTaxName,
+                ComponentType = nameof(SalaryComponentType.Deduction),
                 Amount = result.PAYE
             });
 
@@ -158,7 +172,7 @@ public class PayrollProcessingService : IPayrollProcessingService
                 {
                     PayrollItemId = payrollItem.Id,
                     ComponentName = deduction.Name,
-                    ComponentType = "Deduction",
+                    ComponentType = nameof(SalaryComponentType.Deduction),
                     Amount = deduction.Amount
                 });
             }
@@ -446,7 +460,7 @@ public class PayrollProcessingService : IPayrollProcessingService
 
         foreach (var detail in item.PayrollItemDetails)
         {
-            if (detail.ComponentType == "Earning")
+            if (detail.ComponentType == nameof(SalaryComponentType.Earning))
             {
                 result.Allowances.Add(new PayrollLineItem
                 {
@@ -454,9 +468,9 @@ public class PayrollProcessingService : IPayrollProcessingService
                     Amount = detail.Amount
                 });
             }
-            else if (detail.ComponentType == "Deduction" &&
-                     detail.ComponentName != "SSNIT Employee (5.5%)" &&
-                     detail.ComponentName != "PAYE Tax")
+            else if (detail.ComponentType == nameof(SalaryComponentType.Deduction) &&
+                     detail.ComponentName != PayrollComponents.SsnitEmployeeName &&
+                     detail.ComponentName != PayrollComponents.PayeTaxName)
             {
                 result.Deductions.Add(new PayrollLineItem
                 {

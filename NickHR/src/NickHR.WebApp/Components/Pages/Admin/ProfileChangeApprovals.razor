@@ -1,5 +1,5 @@
 @page "/admin/profile-changes"
-@attribute [Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+@attribute [Authorize(Roles = RoleSets.HRStaff)]
 @rendermode InteractiveServer
 
 @using Microsoft.AspNetCore.Authorization
@@ -8,6 +8,7 @@
 @using NickHR.Core.Enums
 @using NickHR.Infrastructure.Data
 @using NickHR.Services.ProfileChange
+@using NickHR.Core.Constants
 
 @inject ProfileChangeService ProfileChangeSvc
 @inject UserManager<ApplicationUser> UserManager

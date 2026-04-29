@@ -1,5 +1,5 @@
 @page "/payroll/history"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,PayrollAdmin")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHROrPayroll)]
 @rendermode InteractiveServer
 
 @using Microsoft.AspNetCore.Authorization
@@ -10,6 +10,7 @@
 @using NickHR.Core.Enums
 @using NickHR.Services.Payroll
 @using NickHR.Services.Payroll.Models
+@using NickHR.Core.Constants
 
 @inject IServiceProvider ServiceProvider
 @inject NickHR.Services.Payroll.IPayrollProcessingService PayrollService

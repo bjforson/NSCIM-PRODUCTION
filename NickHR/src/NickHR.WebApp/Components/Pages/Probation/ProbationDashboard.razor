@@ -1,5 +1,5 @@
 @page "/probation"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaff)]
 @rendermode InteractiveServer
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
@@ -8,6 +8,7 @@
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
+@using NickHR.Core.Constants
 
 <PageTitle>NICKSCAN ERP — NickHR — Probation Dashboard</PageTitle>
 

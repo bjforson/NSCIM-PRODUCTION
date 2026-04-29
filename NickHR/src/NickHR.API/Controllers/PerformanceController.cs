@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Services.Performance;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
 [ApiController]
 [Route("api/performance")]
-[Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+[Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
 public class PerformanceController : ControllerBase
 {
     private readonly IPerformanceService _performance;
@@ -262,7 +263,7 @@ public class PerformanceController : ControllerBase
 
     /// <summary>Submit manager rating to complete an appraisal.</summary>
     [HttpPut("appraisals/{appraisalId}/manager-rating")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> SubmitManagerRating(int appraisalId, [FromBody] ManagerRatingRequest req)
     {
         try

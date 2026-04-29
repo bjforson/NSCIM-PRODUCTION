@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NickHR.Core.DTOs;
 using NickHR.Core.Enums;
 using NickHR.Services.OutOfStation;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -28,7 +29,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("rates")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<IActionResult> CreateOrUpdateRate([FromBody] OutOfStationRateRequest req)
     {
         var rate = await _svc.CreateOrUpdateRateAsync(
@@ -40,7 +41,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("rates/seed")]
-    [Authorize(Roles = "SuperAdmin,HRManager")]
+    [Authorize(Roles = RoleSets.SeniorHR)]
     public async Task<IActionResult> SeedRates()
     {
         await _svc.SeedDefaultRatesAsync();
@@ -75,7 +76,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpGet("pending")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> GetPending()
     {
         var requests = await _svc.GetPendingApprovalsAsync();
@@ -83,7 +84,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("{id}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Approve(int id, [FromBody] OutOfStationApproveRequest req)
     {
         await _svc.ApproveAsync(id, req.ApproverId, req.AdvanceAmount);
@@ -91,7 +92,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("{id}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Reject(int id, [FromBody] OutOfStationRejectRequest req)
     {
         await _svc.RejectAsync(id, req.ApproverId, req.Reason);
@@ -99,7 +100,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("{id}/complete")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<IActionResult> Complete(int id)
     {
         await _svc.CompleteAsync(id);
@@ -107,7 +108,7 @@ public class OutOfStationController : ControllerBase
     }
 
     [HttpPost("{id}/settle")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,PayrollAdmin")]
+    [Authorize(Roles = RoleSets.HRStaffOrPayroll)]
     public async Task<IActionResult> Settle(int id, [FromBody] OutOfStationSettleRequest req)
     {
         await _svc.SettleAsync(id, req.ActualExpenses, req.ReceiptPaths);

@@ -4,6 +4,7 @@ using NickHR.Core.DTOs;
 using NickHR.Core.DTOs.Leave;
 using NickHR.Core.Enums;
 using NickHR.Core.Interfaces;
+using NickHR.Core.Constants;
 
 namespace NickHR.API.Controllers;
 
@@ -43,7 +44,7 @@ public class LeaveController : ControllerBase
     }
 
     [HttpPost("{id:int}/approve")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<LeaveRequestDto>>> ApproveLeave(int id)
     {
         try
@@ -65,7 +66,7 @@ public class LeaveController : ControllerBase
     }
 
     [HttpPost("{id:int}/reject")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<LeaveRequestDto>>> RejectLeave(
         int id, [FromBody] RejectLeaveRequest body)
     {
@@ -128,7 +129,7 @@ public class LeaveController : ControllerBase
 
     /// <summary>GET /api/leave/requests?employeeId=&amp;status=&amp;page=&amp;pageSize=</summary>
     [HttpGet("requests")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<PagedResult<LeaveRequestDto>>>> GetAllRequests(
         [FromQuery] int? employeeId,
         [FromQuery] LeaveRequestStatus? status,
@@ -148,7 +149,7 @@ public class LeaveController : ControllerBase
 
     /// <summary>GET /api/leave/pending-approvals?departmentId=</summary>
     [HttpGet("pending-approvals")]
-    [Authorize(Roles = "SuperAdmin,HRManager,HROfficer,DepartmentManager")]
+    [Authorize(Roles = RoleSets.HRStaffOrDeptManager)]
     public async Task<ActionResult<ApiResponse<List<LeaveRequestDto>>>> GetPendingApprovals(
         [FromQuery] int? departmentId)
     {

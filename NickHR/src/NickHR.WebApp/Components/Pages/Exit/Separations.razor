@@ -1,11 +1,12 @@
 @page "/exit/separations"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager,HROfficer")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaff)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Exit
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
+@using NickHR.Core.Constants
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService

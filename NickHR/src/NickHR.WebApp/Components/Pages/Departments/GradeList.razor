@@ -1,8 +1,9 @@
 @page "/grades"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @using Microsoft.EntityFrameworkCore
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Core
+@using NickHR.Core.Constants
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject IServiceProvider ServiceProvider

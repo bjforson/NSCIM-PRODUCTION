@@ -1,5 +1,6 @@
 @page "/admin/biometric"
-@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = "SuperAdmin,HRManager")]
+@using NickHR.Core.Constants
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SeniorHR)]
 @rendermode InteractiveServer
 
 <PageTitle>NICKSCAN ERP — NickHR — Biometric Integration</PageTitle>
