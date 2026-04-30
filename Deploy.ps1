@@ -291,6 +291,20 @@ function Set-NssmEnvPair($service, $name, $value) {
         Write-Host "    NSSM not found at $nssm, skipping NSSM env $name on $service" -ForegroundColor Gray
         return
     }
+    # Detect whether the service is actually managed by NSSM. NSCIM_API was migrated
+    # off NSSM at some point and is now sc.exe-managed (binPath points directly at
+    # the .exe, not at nssm.exe). Calling `nssm set ... AppEnvironmentExtra` on a
+    # non-NSSM service prints "Parameter ... is only valid for services managed by
+    # NSSM!" and exits 1, which under $ErrorActionPreference='Stop' poisons the
+    # final exit code even after "Deployment complete". `nssm get AppDirectory`
+    # exits 0 for NSSM-managed services and 1 otherwise - cheap, deterministic probe.
+    & $nssm get $service AppDirectory 2>&1 | Out-Null
+    $isNssm = ($LASTEXITCODE -eq 0)
+    $global:LASTEXITCODE = 0  # don't let the probe's non-zero bleed into the caller's exit code
+    if (-not $isNssm) {
+        Write-Host "    Service $service is not NSSM-managed (sc.exe-managed), skipping NSSM env $name" -ForegroundColor Gray
+        return
+    }
     if ($DryRun) {
         Write-Host "    [DryRun] Would set NSSM env ${name}=${value} on $service" -ForegroundColor Magenta
         return
