@@ -98,9 +98,39 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 return emptyResult;
             }
 
-            // Load containers for these groups - use NormalizedGroupIdentifier for joins with ContainerCompletenessStatus
+            // ── Pattern-A-aware join key resolution ─────────────────────────────
+            // Pattern A: when an RCS-anchored AG has a ContainerGroupKey, the CCS row is
+            // keyed by that CGK (the container number), not by the AG's own declaration.
+            // For non-Pattern-A groups CGK is null and we fall back to the historical
+            // NormalizedGroupIdentifier — preserving prior behaviour.
+            var rcsIds = eligibleGroups
+                .Where(g => g.RecordCompletenessStatusId.HasValue)
+                .Select(g => g.RecordCompletenessStatusId!.Value)
+                .Distinct()
+                .ToList();
+            var cgkByRcsId = rcsIds.Count > 0
+                ? await db.RecordCompletenessStatuses
+                    .AsNoTracking()
+                    .Where(r => rcsIds.Contains(r.Id) && !string.IsNullOrEmpty(r.ContainerGroupKey))
+                    .ToDictionaryAsync(r => r.Id, r => r.ContainerGroupKey!, cancellationToken)
+                : new Dictionary<int, string>();
+
+            string EffectiveJoinKey(AnalysisGroup g)
+            {
+                if (g.RecordCompletenessStatusId.HasValue
+                    && cgkByRcsId.TryGetValue(g.RecordCompletenessStatusId.Value, out var cgk)
+                    && !string.IsNullOrEmpty(cgk))
+                {
+                    return cgk;
+                }
+                return !string.IsNullOrEmpty(g.NormalizedGroupIdentifier)
+                    ? g.NormalizedGroupIdentifier
+                    : (GroupIdentifierHelper.GetNormalizedGroupIdentifier(g.GroupIdentifier) ?? g.GroupIdentifier ?? "");
+            }
+
+            // Load containers for these groups using the effective join key.
             var normalizedForCompleteness = eligibleGroups
-                .Select(g => !string.IsNullOrEmpty(g.NormalizedGroupIdentifier) ? g.NormalizedGroupIdentifier : (GroupIdentifierHelper.GetNormalizedGroupIdentifier(g.GroupIdentifier) ?? g.GroupIdentifier ?? ""))
+                .Select(EffectiveJoinKey)
                 .Where(g => !string.IsNullOrEmpty(g))
                 .Distinct()
                 .ToList();
@@ -129,13 +159,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 }
             }
 
-            // Group and aggregate in memory - join on NormalizedGroupIdentifier
+            // Group and aggregate in memory - join via EffectiveJoinKey (CGK for Pattern A,
+            // NormalizedGroupIdentifier otherwise). Use a small mutable holder so the
+            // second-chance pass below can replace stats in-place for orphan groups.
             var readyGroupsWithStats = eligibleGroups
                 .GroupJoin(
                     containers,
-                    g => !string.IsNullOrEmpty(g.NormalizedGroupIdentifier) ? g.NormalizedGroupIdentifier : (GroupIdentifierHelper.GetNormalizedGroupIdentifier(g.GroupIdentifier) ?? g.GroupIdentifier ?? ""),
+                    g => EffectiveJoinKey(g),
                     c => c.GroupIdentifier ?? "",
-                    (g, containerGroup) => new
+                    (g, containerGroup) => new ReadyGroupStats
                     {
                         Group = g,
                         TotalContainers = containerGroup.Count(),
@@ -145,6 +177,72 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         CompletedContainers = containerGroup.Count(c => c.WorkflowStage == "Completed")
                     })
                 .ToList();
+
+            // ── Second-chance pass: rescue groups whose primary join missed ─────
+            // For AGs whose key-based join produced zero containers, look up CCS rows
+            // by analysisrecords.containernumber. This is the canonical relationship
+            // and rescues groups whose CCS rows were keyed historically by a sibling
+            // declaration rather than the canonical ContainerGroupKey.
+            var orphanAgIds = readyGroupsWithStats
+                .Where(w => w.TotalContainers == 0)
+                .Select(w => w.Group.Id)
+                .ToList();
+
+            if (orphanAgIds.Count > 0)
+            {
+                var orphanRecords = await db.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(r => orphanAgIds.Contains(r.GroupId))
+                    .Select(r => new { r.GroupId, r.ContainerNumber })
+                    .ToListAsync(cancellationToken);
+
+                var distinctOrphanCns = orphanRecords
+                    .Select(x => x.ContainerNumber)
+                    .Where(cn => !string.IsNullOrEmpty(cn))
+                    .Distinct()
+                    .ToList();
+
+                var orphanCcs = distinctOrphanCns.Count > 0
+                    ? await db.ContainerCompletenessStatuses
+                        .AsNoTracking()
+                        .Where(c => distinctOrphanCns.Contains(c.ContainerNumber))
+                        .ToListAsync(cancellationToken)
+                    : new List<ContainerCompletenessStatus>();
+
+                // For each container number, take the most-recently-updated CCS row.
+                var ccsByCn = orphanCcs
+                    .GroupBy(c => c.ContainerNumber)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.UpdatedAt).First());
+
+                int rescuedCount = 0;
+                // Materialize the orphan list before mutating to avoid iterator
+                // re-evaluation as TotalContainers transitions from 0.
+                var orphans = readyGroupsWithStats.Where(x => x.TotalContainers == 0).ToList();
+                foreach (var w in orphans)
+                {
+                    var matched = orphanRecords
+                        .Where(x => x.GroupId == w.Group.Id)
+                        .Select(x => ccsByCn.TryGetValue(x.ContainerNumber, out var c) ? c : null)
+                        .Where(c => c != null)
+                        .Cast<ContainerCompletenessStatus>()
+                        .ToList();
+                    if (matched.Count == 0) continue;
+
+                    w.TotalContainers = matched.Count;
+                    w.ImageAnalysisContainers = matched.Count(c => c.WorkflowStage == "ImageAnalysis");
+                    w.PendingOrNullContainers = matched.Count(c => string.IsNullOrEmpty(c.WorkflowStage) || c.WorkflowStage == "Pending");
+                    w.AuditContainers = matched.Count(c => c.WorkflowStage == "Audit");
+                    w.CompletedContainers = matched.Count(c => c.WorkflowStage == "Completed");
+                    rescuedCount++;
+                }
+
+                if (rescuedCount > 0)
+                {
+                    _logger.LogInformation(
+                        "[CACHE-FILTER] Second-chance pass rescued {Rescued} of {Orphans} orphan groups via containernumber join",
+                        rescuedCount, orphanAgIds.Count);
+                }
+            }
 
             // ✅ DIAGNOSTIC: Log WorkflowStage distribution for first few groups
             var sampleGroups = readyGroupsWithStats.Take(5).ToList();
@@ -160,6 +258,10 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             if (roleName == "Analyst")
             {
                 var beforeFilter = readyGroupsWithStats.Count;
+                var excludedNoContainers = readyGroupsWithStats.Count(w => w.TotalContainers == 0);
+                var excludedAllAudit = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.AuditContainers == w.TotalContainers && w.PendingOrNullContainers == 0 && w.ImageAnalysisContainers == 0);
+                var excludedAllCompleted = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.CompletedContainers == w.TotalContainers);
+
                 readyGroupsWithStats = readyGroupsWithStats
                     .Where(w => w.ImageAnalysisContainers > 0 ||
                                 w.PendingOrNullContainers > 0 ||  // ✅ FIX: Explicitly include Pending/Null containers
@@ -171,14 +273,26 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 var afterFilter = readyGroupsWithStats.Count;
 
                 _logger.LogInformation(
-                    "[CACHE-FILTER] Analyst role filter: {Before} → {After} groups (excluded {Excluded})",
-                    beforeFilter, afterFilter, beforeFilter - afterFilter);
+                    "[CACHE-FILTER] Analyst role filter: {Before} → {After} groups (excluded {Excluded}: {NoContainers}=no-CCS-rows, {AllAudit}=all-Audit, {AllCompleted}=all-Completed)",
+                    beforeFilter, afterFilter, beforeFilter - afterFilter,
+                    excludedNoContainers, excludedAllAudit, excludedAllCompleted);
             }
             else if (roleName == "Audit")
             {
+                var beforeFilter = readyGroupsWithStats.Count;
+                var excludedNoContainers = readyGroupsWithStats.Count(w => w.TotalContainers == 0);
+                var excludedNoAudit = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.AuditContainers == 0);
+                var excludedAllCompleted = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.CompletedContainers == w.TotalContainers);
+
                 readyGroupsWithStats = readyGroupsWithStats
                     .Where(w => w.AuditContainers > 0 && w.CompletedContainers < w.TotalContainers)
                     .ToList();
+                var afterFilter = readyGroupsWithStats.Count;
+
+                _logger.LogInformation(
+                    "[CACHE-FILTER] Audit role filter: {Before} → {After} groups (excluded {Excluded}: {NoContainers}=no-CCS-rows, {NoAudit}=no-Audit-containers, {AllCompleted}=all-Completed)",
+                    beforeFilter, afterFilter, beforeFilter - afterFilter,
+                    excludedNoContainers, excludedNoAudit, excludedAllCompleted);
             }
 
             // Order and take top 50
@@ -474,6 +588,21 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             {
                 _logger.LogWarning(ex, "[QUEUE-RECONCILE] Reconciliation failed");
             }
+        }
+
+        /// <summary>
+        /// Mutable holder for per-group container stats — replaces the prior anonymous
+        /// type so the second-chance pass can update counters in-place when a group's
+        /// primary key-based join misses (e.g. CCS row keyed by sibling declaration).
+        /// </summary>
+        private sealed class ReadyGroupStats
+        {
+            public AnalysisGroup Group { get; set; } = null!;
+            public int TotalContainers { get; set; }
+            public int ImageAnalysisContainers { get; set; }
+            public int PendingOrNullContainers { get; set; }
+            public int AuditContainers { get; set; }
+            public int CompletedContainers { get; set; }
         }
     }
 }
