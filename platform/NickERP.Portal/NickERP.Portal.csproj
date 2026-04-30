@@ -22,4 +22,8 @@
     <PackageReference Include="Npgsql" Version="10.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\NickERP.Platform.Web.Shared\NickERP.Platform.Web.Shared.csproj" />
+  </ItemGroup>
+
 </Project>

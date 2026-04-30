@@ -18,6 +18,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Icon-only usage from MudBlazor — we intentionally do NOT pull in
+         MudThemeProvider, the brand uses our own nep-* CSS tokens.
+         Version pinned to match Portal so static assets line up. -->
+    <PackageReference Include="MudBlazor" Version="8.13.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\NickERP.Platform.Core\NickERP.Platform.Core.csproj" />
   </ItemGroup>
 

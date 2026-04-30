@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NickERP.Platform.Identity.Tests</RootNamespace>
+    <AssemblyName>NickERP.Platform.Identity.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NickERP.Platform.Identity\NickERP.Platform.Identity.csproj" />
+    <!-- Tenancy filter / kernel-side cross-tests still need the finance
+         kernel projects to instantiate Ledger + PettyCash contexts.
+         Once the tenancy filter is fully migrated to platform, these
+         drops out. -->
+    <ProjectReference Include="..\..\finance\NickFinance.Ledger\NickFinance.Ledger.csproj" />
+    <ProjectReference Include="..\..\finance\NickFinance.PettyCash\NickFinance.PettyCash.csproj" />
+    <ProjectReference Include="..\..\finance\NickFinance.WebApp\NickFinance.WebApp.csproj" />
+  </ItemGroup>
+
+</Project>

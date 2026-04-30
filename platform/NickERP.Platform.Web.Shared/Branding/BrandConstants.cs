@@ -33,7 +33,11 @@ public static class BrandConstants
 
     public static class Colors
     {
-        public const string Primary = "#1d4ed8";
+        /// <summary>Primary brand colour (indigo, matches Portal-shipped reality).</summary>
+        public const string Primary = "#4F46E5";
+        /// <summary>Slightly darker indigo for hover/active states on the primary.</summary>
+        public const string PrimaryHover = "#4338CA";
+
         public const string ModuleNscis = "#1d4ed8";
         public const string ModuleNickHr = "#7c3aed";
         public const string ModuleFinance = "#059669";

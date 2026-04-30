@@ -65,6 +65,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickFinance.Itaps", "financ
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickFinance.GlSync", "finance\NickFinance.GlSync\NickFinance.GlSync.csproj", "{B451AD37-F53D-4502-BB62-8EE84CEE89B5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NickFinance.Identity.Tests", "finance\NickFinance.Identity.Tests\NickFinance.Identity.Tests.csproj", "{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -411,6 +413,18 @@ Global
 		{B451AD37-F53D-4502-BB62-8EE84CEE89B5}.Release|x64.Build.0 = Release|Any CPU
 		{B451AD37-F53D-4502-BB62-8EE84CEE89B5}.Release|x86.ActiveCfg = Release|Any CPU
 		{B451AD37-F53D-4502-BB62-8EE84CEE89B5}.Release|x86.Build.0 = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|x64.Build.0 = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Debug|x86.Build.0 = Debug|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|x64.ActiveCfg = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|x64.Build.0 = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|x86.ActiveCfg = Release|Any CPU
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -444,5 +458,6 @@ Global
 		{E665BF88-4926-4B97-8339-E2992E5859DE} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
 		{7365634F-6633-41C3-9616-21AB34DB30E2} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
 		{B451AD37-F53D-4502-BB62-8EE84CEE89B5} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
+		{D5C4F1A1-3429-4E40-B3F2-9C72A1F1C5A1} = {B116B1B3-9AE8-BDA1-8853-C5505B0E90AE}
 	EndGlobalSection
 EndGlobal
