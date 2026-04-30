@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 using NickFinance.PettyCash.Approvals;
 using NickFinance.PettyCash.Budgets;
 using NickFinance.PettyCash.CashCounts;
@@ -18,7 +19,15 @@ public class PettyCashDbContext : DbContext
 {
     public const string SchemaName = "petty_cash";
 
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public PettyCashDbContext(DbContextOptions<PettyCashDbContext> options) : base(options) { }
+
+    public PettyCashDbContext(DbContextOptions<PettyCashDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
 
     public DbSet<Float> Floats => Set<Float>();
     public DbSet<Voucher> Vouchers => Set<Voucher>();
@@ -35,6 +44,8 @@ public class PettyCashDbContext : DbContext
         ArgumentNullException.ThrowIfNull(b);
 
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<Float>(e =>
         {
@@ -59,6 +70,8 @@ public class PettyCashDbContext : DbContext
              .HasFilter("\"is_active\" = TRUE")
              .IsUnique()
              .HasDatabaseName("ux_floats_active_per_site_currency");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<Voucher>(e =>
@@ -112,6 +125,8 @@ public class PettyCashDbContext : DbContext
              .WithOne()
              .HasForeignKey(l => l.VoucherId)
              .OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<VoucherLineItem>(e =>
@@ -170,6 +185,8 @@ public class PettyCashDbContext : DbContext
              .WithMany()
              .HasForeignKey(x => x.VoucherId)
              .OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         // -------------------------------------------------------------------
@@ -191,6 +208,8 @@ public class PettyCashDbContext : DbContext
 
             e.HasIndex(x => new { x.TenantId, x.UserId, x.ValidFromUtc, x.ValidUntilUtc })
              .HasDatabaseName("ix_approval_delegations_user_window");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         // -------------------------------------------------------------------
@@ -227,6 +246,8 @@ public class PettyCashDbContext : DbContext
             e.HasIndex(x => new { x.TenantId, x.ApproximateHash })
              .HasDatabaseName("ix_voucher_receipts_tenant_approx");
             e.HasOne<Voucher>().WithMany().HasForeignKey(x => x.VoucherId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         // -------------------------------------------------------------------
@@ -250,6 +271,8 @@ public class PettyCashDbContext : DbContext
 
             e.HasIndex(x => new { x.FloatId, x.CountedAt }).HasDatabaseName("ix_cash_counts_float_when");
             e.HasOne<Float>().WithMany().HasForeignKey(x => x.FloatId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         // -------------------------------------------------------------------
@@ -274,6 +297,8 @@ public class PettyCashDbContext : DbContext
 
             e.HasIndex(x => new { x.TenantId, x.Scope, x.ScopeKey, x.PeriodStart, x.PeriodEnd })
              .HasDatabaseName("ix_budgets_tenant_scope_period");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         // -------------------------------------------------------------------
@@ -302,6 +327,8 @@ public class PettyCashDbContext : DbContext
             e.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id").IsRequired();
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.IsActive, x.Frequency }).HasDatabaseName("ix_recurring_tenant_active_freq");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
     }
 }

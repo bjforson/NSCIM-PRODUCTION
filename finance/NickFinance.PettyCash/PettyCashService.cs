@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 using NickFinance.Ledger;
 using NickFinance.PettyCash.Approvals;
 using NickFinance.PettyCash.Disbursement;
@@ -111,6 +112,7 @@ public sealed class PettyCashService : IPettyCashService
     private readonly PettyCashDbContext _db;
     private readonly ILedgerWriter _ledger;
     private readonly IApprovalEngine _approvals;
+    private readonly ISecurityAuditService _audit;
     private readonly TimeProvider _clock;
 
     /// <summary>
@@ -123,7 +125,7 @@ public sealed class PettyCashService : IPettyCashService
         PettyCashDbContext db,
         ILedgerWriter ledger,
         TimeProvider? clock = null)
-        : this(db, ledger, new SingleStepApprovalEngine(clock), clock) { }
+        : this(db, ledger, new SingleStepApprovalEngine(clock), null, clock) { }
 
     /// <summary>v1.1 constructor — caller supplies the approval engine.</summary>
     public PettyCashService(
@@ -131,10 +133,24 @@ public sealed class PettyCashService : IPettyCashService
         ILedgerWriter ledger,
         IApprovalEngine approvals,
         TimeProvider? clock = null)
+        : this(db, ledger, approvals, null, clock) { }
+
+    /// <summary>
+    /// v1.3 constructor — caller supplies an audit hook. The WebApp
+    /// registers a real <see cref="ISecurityAuditService"/>; tests +
+    /// the bootstrap CLI pass <c>null</c> (we substitute a no-op).
+    /// </summary>
+    public PettyCashService(
+        PettyCashDbContext db,
+        ILedgerWriter ledger,
+        IApprovalEngine approvals,
+        ISecurityAuditService? audit,
+        TimeProvider? clock = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
         _approvals = approvals ?? throw new ArgumentNullException(nameof(approvals));
+        _audit = audit ?? new NoopSecurityAuditService();
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -312,6 +328,17 @@ public sealed class PettyCashService : IPettyCashService
             throw new InvalidVoucherTransitionException(v.Status, "approve");
         }
 
+        // SoD: a voucher's submitter cannot approve their own voucher.
+        // Mirrors the approver-vs-disburser check at the bottom of this
+        // method (see DisburseVoucherAsync). This is the use-time half of
+        // the SoD posture; the grant-time half lives in
+        // NickFinance.WebApp.Identity.SodService.
+        if (v.RequesterUserId == approverUserId)
+        {
+            throw new SeparationOfDutiesException(
+                "The voucher's submitter cannot approve their own voucher (SoD).");
+        }
+
         var approved = amountApprovedMinor ?? v.AmountRequestedMinor;
         if (approved <= 0)
         {
@@ -342,6 +369,14 @@ public sealed class PettyCashService : IPettyCashService
         // ignored by design (only the final approver locks it in for v1.1).
 
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: SecurityAuditAction.VoucherApproved,
+            targetType: "Voucher",
+            targetId: v.VoucherId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { voucherNo = v.VoucherNo, approvedMinor = approved, comment, terminal = advance.Outcome == ApprovalAdvanceOutcome.FullyApproved },
+            ct: ct);
         return v;
     }
 
@@ -455,6 +490,14 @@ public sealed class PettyCashService : IPettyCashService
         v.DisbursementChannel = channel.Channel;
         v.DisbursementReference = disbursement.RailReference;
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: SecurityAuditAction.VoucherDisbursed,
+            targetType: "Voucher",
+            targetId: v.VoucherId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { voucherNo = v.VoucherNo, ledgerEventId = eventId, channel = channel.Channel, railRef = disbursement.RailReference, amountMinor = v.AmountApprovedMinor },
+            ct: ct);
         return v;
     }
 

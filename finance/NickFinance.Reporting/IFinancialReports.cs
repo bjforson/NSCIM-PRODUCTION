@@ -22,6 +22,22 @@ public interface IFinancialReports
 
     /// <summary>Detailed list of every ledger line for a single account in a date range.</summary>
     Task<GlDetailReport> GlDetailAsync(string accountCode, string currencyCode, DateOnly from, DateOnly to, long tenantId = 1, CancellationToken ct = default);
+
+    /// <summary>
+    /// Trial balance with foreign-currency balances translated into
+    /// <paramref name="targetCurrency"/> at the rate as of <paramref name="asOf"/>.
+    /// Each account's per-currency net is converted via
+    /// <paramref name="converter"/> and summed; the result is one row per
+    /// account in the target currency. Wave 3A FX Phase 2 — pairs with
+    /// <c>IFxRevaluationService</c> as the read-side complement of the
+    /// revaluation write path.
+    /// </summary>
+    Task<TrialBalanceReport> RevaluedTrialBalanceAsync(
+        string targetCurrency,
+        DateOnly asOf,
+        IFxConverter converter,
+        long tenantId = 1,
+        CancellationToken ct = default);
 }
 
 // ---------------------------------------------------------------------------

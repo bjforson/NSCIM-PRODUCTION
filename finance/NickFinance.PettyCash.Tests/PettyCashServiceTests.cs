@@ -185,6 +185,32 @@ public class PettyCashServiceTests
             svc.ApproveVoucherAsync(v.VoucherId, requester, null, null));
     }
 
+    /// <summary>
+    /// Phase 1 of the role-overhaul wave (2026-04-29) added an explicit
+    /// service-level submitter==approver guard to
+    /// <see cref="PettyCashService.ApproveVoucherAsync"/>. The check sits
+    /// at the top of the method so the SoD violation surfaces before the
+    /// approval engine is consulted, regardless of which engine is
+    /// configured. The thrown type is the existing
+    /// <see cref="SeparationOfDutiesException"/> (consistent with the
+    /// approver-vs-disburser check at the bottom of
+    /// <c>DisburseVoucherAsync</c>).
+    /// </summary>
+    [Fact]
+    public async Task ApproveVoucher_RejectsSelfApproval()
+    {
+        var (svc, fl) = await PreparedFloat();
+        var sameUser = Guid.NewGuid();
+        var v = await svc.SubmitVoucherAsync(new SubmitVoucherRequest(
+            fl.FloatId, sameUser, VoucherCategory.Transport, "self-approval guard",
+            Ghs(12_345),
+            new[] { new VoucherLineInput("ride share", Ghs(12_345)) }));
+
+        var ex = await Assert.ThrowsAsync<SeparationOfDutiesException>(() =>
+            svc.ApproveVoucherAsync(v.VoucherId, sameUser, null, "approving my own voucher"));
+        Assert.Contains("submitter", ex.Message);
+    }
+
     [Fact]
     public async Task Approve_RejectsAlreadyApproved()
     {

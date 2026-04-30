@@ -1,4 +1,5 @@
 @page "/reports/cash-flow"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ReportsView)]
 @inject IFinancialReports Reports
 @inject LedgerDbContext Lg
 @inject CurrentUser User
@@ -6,50 +7,50 @@
 
 <PageTitle>NickFinance · Cash Flow</PageTitle>
 
-<h1>Cash flow · @_from to @_to</h1>
+<NepPageHeader Title="@($"Cash flow · {_from} to {_to}")" />
 
-<section class="card">
+<NepCard>
     <label>From <input type="date" @bind="_from" /></label>
     <label>To <input type="date" @bind="_to" /></label>
     <button class="primary" @onclick="ReloadAsync">Reload</button>
-</section>
+</NepCard>
 
 @if (_cfs is not null)
 {
-    <section class="card">
+    <NepCard>
         <h3>Operating activities</h3>
         <table>
             <tbody>
                 @foreach (var l in _cfs.Operating)
                 {
-                    <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr>
+                    <tr><td>@l.Heading</td><td class="right"><NepMoney Minor="@l.Amount.Minor" /></td></tr>
                 }
-                <tr class="total"><td>Net cash from operating</td><td class="right">@((_cfs.OperatingNet.Minor / 100m).ToString("N2"))</td></tr>
+                <tr class="total"><td>Net cash from operating</td><td class="right"><NepMoney Minor="@_cfs.OperatingNet.Minor" /></td></tr>
             </tbody>
         </table>
-    </section>
-    <section class="card">
+    </NepCard>
+    <NepCard>
         <h3>Investing activities</h3>
         <table>
             <tbody>
-                @foreach (var l in _cfs.Investing) { <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr> }
-                <tr class="total"><td>Net cash from investing</td><td class="right">@((_cfs.InvestingNet.Minor / 100m).ToString("N2"))</td></tr>
+                @foreach (var l in _cfs.Investing) { <tr><td>@l.Heading</td><td class="right"><NepMoney Minor="@l.Amount.Minor" /></td></tr> }
+                <tr class="total"><td>Net cash from investing</td><td class="right"><NepMoney Minor="@_cfs.InvestingNet.Minor" /></td></tr>
             </tbody>
         </table>
-    </section>
-    <section class="card">
+    </NepCard>
+    <NepCard>
         <h3>Financing activities</h3>
         <table>
             <tbody>
-                @foreach (var l in _cfs.Financing) { <tr><td>@l.Heading</td><td class="right">@((l.Amount.Minor / 100m).ToString("N2"))</td></tr> }
-                <tr class="total"><td>Net cash from financing</td><td class="right">@((_cfs.FinancingNet.Minor / 100m).ToString("N2"))</td></tr>
+                @foreach (var l in _cfs.Financing) { <tr><td>@l.Heading</td><td class="right"><NepMoney Minor="@l.Amount.Minor" /></td></tr> }
+                <tr class="total"><td>Net cash from financing</td><td class="right"><NepMoney Minor="@_cfs.FinancingNet.Minor" /></td></tr>
             </tbody>
         </table>
-    </section>
-    <section class="card">
-        <p>Opening cash: <strong>@((_cfs.OpeningCash.Minor / 100m).ToString("N2"))</strong></p>
-        <p>Closing cash: <strong>@((_cfs.ClosingCash.Minor / 100m).ToString("N2"))</strong></p>
-    </section>
+    </NepCard>
+    <NepCard>
+        <p>Opening cash: <strong><NepMoney Minor="@_cfs.OpeningCash.Minor" /></strong></p>
+        <p>Closing cash: <strong><NepMoney Minor="@_cfs.ClosingCash.Minor" /></strong></p>
+    </NepCard>
 }
 
 @code {

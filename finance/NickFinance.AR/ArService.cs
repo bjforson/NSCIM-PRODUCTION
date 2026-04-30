@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 using NickFinance.Ledger;
 using NickFinance.TaxEngine;
 
@@ -92,13 +93,18 @@ public sealed class ArService : IArService
     private readonly ArDbContext _db;
     private readonly ILedgerWriter _ledger;
     private readonly IEvatProvider _evat;
+    private readonly ISecurityAuditService _audit;
     private readonly TimeProvider _clock;
 
     public ArService(ArDbContext db, ILedgerWriter ledger, IEvatProvider? evat = null, TimeProvider? clock = null)
+        : this(db, ledger, evat, audit: null, clock) { }
+
+    public ArService(ArDbContext db, ILedgerWriter ledger, IEvatProvider? evat, ISecurityAuditService? audit, TimeProvider? clock = null)
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
         _evat = evat ?? new StubEvatProvider();
+        _audit = audit ?? new NoopSecurityAuditService();
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -312,6 +318,14 @@ public sealed class ArService : IArService
         inv.Status = ArInvoiceStatus.Issued;
         inv.IssuedAt = _clock.GetUtcNow();
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: SecurityAuditAction.InvoiceIssued,
+            targetType: "ArInvoice",
+            targetId: inv.ArInvoiceId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { invoiceNo = inv.InvoiceNo, customerId = inv.CustomerId, grossMinor = inv.GrossMinor, evatIrn = inv.EvatIrn },
+            ct: ct);
         return inv;
     }
 
@@ -393,6 +407,14 @@ public sealed class ArService : IArService
             : ArInvoiceStatus.PartiallyPaid;
 
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: SecurityAuditAction.ReceiptRecorded,
+            targetType: "ArInvoice",
+            targetId: inv.ArInvoiceId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { invoiceNo = inv.InvoiceNo, amountMinor = req.AmountMinor, ledgerEventId = eventId, cashAccount = req.CashAccount },
+            ct: ct);
         return receipt;
     }
 
@@ -417,6 +439,14 @@ public sealed class ArService : IArService
         inv.VoidReason = reason.Trim();
         _ = actorUserId;     // recorded via actor field on the reversal journal when caller posts it
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: SecurityAuditAction.InvoiceVoided,
+            targetType: "ArInvoice",
+            targetId: inv.ArInvoiceId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { invoiceNo = inv.InvoiceNo, reason = inv.VoidReason },
+            ct: ct);
         return inv;
     }
 

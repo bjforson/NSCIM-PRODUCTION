@@ -1,17 +1,30 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.FixedAssets;
 
 public class FixedAssetsDbContext : DbContext
 {
     public const string SchemaName = "fixed_assets";
+
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public FixedAssetsDbContext(DbContextOptions<FixedAssetsDbContext> options) : base(options) { }
+
+    public FixedAssetsDbContext(DbContextOptions<FixedAssetsDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
+
     public DbSet<FixedAsset> Assets => Set<FixedAsset>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         ArgumentNullException.ThrowIfNull(b);
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<FixedAsset>(e =>
         {
@@ -44,6 +57,8 @@ public class FixedAssetsDbContext : DbContext
             e.Ignore(x => x.NetBookValueMinor);
             e.HasIndex(x => new { x.TenantId, x.AssetTag }).IsUnique().HasDatabaseName("ux_assets_tenant_tag");
             e.HasIndex(x => new { x.TenantId, x.Status, x.Category }).HasDatabaseName("ix_assets_tenant_status_cat");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
     }
 }

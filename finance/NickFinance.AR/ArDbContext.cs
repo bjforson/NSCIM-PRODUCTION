@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.AR;
 
@@ -10,7 +11,15 @@ public class ArDbContext : DbContext
 {
     public const string SchemaName = "ar";
 
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public ArDbContext(DbContextOptions<ArDbContext> options) : base(options) { }
+
+    public ArDbContext(DbContextOptions<ArDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
 
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<ArInvoice> Invoices => Set<ArInvoice>();
@@ -21,6 +30,8 @@ public class ArDbContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(b);
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<Customer>(e =>
         {
@@ -40,6 +51,8 @@ public class ArDbContext : DbContext
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique().HasDatabaseName("ux_customers_tenant_code");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<ArInvoice>(e =>
@@ -76,6 +89,8 @@ public class ArDbContext : DbContext
 
             e.HasOne<Customer>().WithMany().HasForeignKey(x => x.CustomerId).OnDelete(DeleteBehavior.Restrict);
             e.HasMany(x => x.Lines).WithOne().HasForeignKey(l => l.ArInvoiceId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<ArInvoiceLine>(e =>
@@ -109,6 +124,8 @@ public class ArDbContext : DbContext
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.ArInvoiceId, x.ReceiptDate }).HasDatabaseName("ix_receipts_tenant_invoice_date");
             e.HasOne<ArInvoice>().WithMany().HasForeignKey(x => x.ArInvoiceId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
     }
 }

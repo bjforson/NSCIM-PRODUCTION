@@ -242,6 +242,126 @@ namespace NickFinance.Banking.Migrations
                     b.ToTable("transactions", "banking");
                 });
 
+            modelBuilder.Entity("NickFinance.Banking.FxRate", b =>
+                {
+                    b.Property<Guid>("FxRateId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("fx_rate_id");
+
+                    b.Property<DateOnly>("AsOfDate")
+                        .HasColumnType("date")
+                        .HasColumnName("as_of_date");
+
+                    b.Property<string>("FromCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("from_currency");
+
+                    b.Property<string>("ProviderPayloadJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("provider_payload_json");
+
+                    b.Property<decimal>("Rate")
+                        .HasColumnType("numeric(18,8)")
+                        .HasColumnName("rate");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<Guid>("RecordedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recorded_by_user_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("ToCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("to_currency");
+
+                    b.HasKey("FxRateId");
+
+                    b.HasIndex("TenantId", "FromCurrency", "ToCurrency", "AsOfDate")
+                        .IsUnique()
+                        .HasDatabaseName("ux_fx_rates_tenant_pair_date");
+
+                    b.HasIndex("TenantId", "FromCurrency", "ToCurrency", "AsOfDate", "Rate")
+                        .HasDatabaseName("ix_fx_rates_lookup");
+
+                    b.ToTable("fx_rates", "banking");
+                });
+
+            modelBuilder.Entity("NickFinance.Banking.FxRevaluationLog", b =>
+                {
+                    b.Property<Guid>("LogId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("log_id");
+
+                    b.Property<DateOnly>("AsOfDate")
+                        .HasColumnType("date")
+                        .HasColumnName("as_of_date");
+
+                    b.Property<long>("BalanceMinor")
+                        .HasColumnType("bigint")
+                        .HasColumnName("balance_minor");
+
+                    b.Property<string>("CurrencyCode")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency_code");
+
+                    b.Property<string>("GlAccount")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("gl_account");
+
+                    b.Property<Guid>("LedgerEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ledger_event_id");
+
+                    b.Property<Guid>("PeriodId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("period_id");
+
+                    b.Property<decimal>("RateUsed")
+                        .HasColumnType("numeric(18,8)")
+                        .HasColumnName("rate_used");
+
+                    b.Property<DateTimeOffset>("RevaluedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revalued_at");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("LogId");
+
+                    b.HasIndex("TenantId", "GlAccount", "CurrencyCode", "AsOfDate")
+                        .HasDatabaseName("ix_fx_revaluation_log_lookup");
+
+                    b.HasIndex("TenantId", "GlAccount", "CurrencyCode", "PeriodId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_fx_revaluation_log_tenant_account_ccy_period");
+
+                    b.ToTable("fx_revaluation_log", "banking");
+                });
+
             modelBuilder.Entity("NickFinance.Banking.ReconciliationSession", b =>
                 {
                     b.Property<Guid>("ReconciliationSessionId")

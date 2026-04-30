@@ -115,6 +115,11 @@ public static class GhanaStandardChart
             // -- FINANCE COSTS (7xxx) ---------------------------------------------
             ("7000", "Interest expense", AccountType.Expense, null, false, "Loan interest.", "GHS"),
             ("7010", "Loan fees", AccountType.Expense, null, false, "Facility fees, arrangement fees.", "GHS"),
+            // Wave 3A FX Phase 2 — period-end revaluation lands here. Distinct
+            // from 4200 / 6810 (realised FX on settled transactions) so the
+            // P&L breaks the two flavours apart for the auditor.
+            ("7100", "FX revaluation gain", AccountType.Income, null, true, "Unrealised gain from period-end FX revaluation; FxRevaluationService posts.", "GHS"),
+            ("7110", "FX revaluation loss", AccountType.Expense, null, true, "Unrealised loss from period-end FX revaluation; FxRevaluationService posts.", "GHS"),
 
             // -- TAX EXPENSE (8xxx) -----------------------------------------------
             ("8000", "Corporate income tax expense", AccountType.Expense, null, false, "Current-year corporate tax.", "GHS"),

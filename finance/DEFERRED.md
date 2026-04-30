@@ -1,258 +1,195 @@
-# NickFinance — pinned items awaiting external decisions
+# NickFinance — pinned items awaiting external credentials
 
-> Status (2026-04-26): the NickFinance suite is feature-complete. Six
-> production-cutover items are pinned because they need a decision or a
-> credential the engineering team can't provide on its own. Everything
-> below is wired with a sandbox / no-op default that keeps the system
-> functioning end-to-end; the swap-in for each is one DI registration
-> in `finance/NickFinance.WebApp/Program.cs` (or, for the WhatsApp /
-> mobile items, a separate workstream).
+> Status (2026-04-28): the NickFinance suite is feature-complete and
+> deployed to the live `nickhr` database. **All adapter code for the
+> external integrations now ships in the build.** Each integration uses
+> a *routing* DI registration that activates the real adapter the moment
+> its environment variable holds a non-`PLACEHOLDER` value — restart
+> the service and live calls flow. No code change required to flip any
+> integration on.
+>
+> The five rows below were previously pinned as "engineering can't
+> proceed without credentials". That's no longer accurate: engineering
+> shipped the adapters; only the credential rotation remains. The rows
+> are kept as a runbook for the operators who will land each credential.
+>
+> Item #6 (PWA-offline) is a different shape — it's a multi-week WebAssembly
+> port, not a credential swap. It is genuinely deferred until the border-site
+> network reliability becomes a hard business requirement.
 
 ---
 
-## 1. GRA e-VAT integration
+## 1. GRA e-VAT — adapter shipped, credential pending
 
-**Pin:** the certified-partner choice belongs to the CFO + CTO. Until
-the contract lands, AR invoices issue through `StubEvatProvider`,
-which mints visibly-sandbox IRNs prefixed `SANDBOX-IRN-`.
+**Status:** `HubtelEvatProvider` ships in `NickFinance.AR`. The DI
+registration in `Program.cs` is a `RoutingEvatProvider` that uses
+Hubtel when `NICKFINANCE_EVAT_API_KEY` is real, falls through to
+`StubEvatProvider` (sandbox IRN) when the env var holds a placeholder.
 
-**Risk if forgotten:** an invoice issued through the sandbox is **not
-submitted to GRA** and is not legally compliant. The UI surfaces this
-via a yellow `SANDBOX` pill on every affected invoice in `/ar` and a
-banner on the home page when the stub provider is registered. Tests
-explicitly assert `StubEvatProvider.IsSandbox(...)` rather than
-matching a real IRN format, so anyone reading the test suite sees the
-distinction.
+**Activation steps when the contract lands:**
 
-**To unpin:**
-
-1. Pick the partner — Hubtel, Persol Systems, or Blue Skies Solutions
-   (existing outreach drafts are at `docs/modules/spikes/02b-evat-outreach-emails.md`).
-2. Implement `IEvatProvider` against their sandbox. Sketch:
-   ```csharp
-   public sealed class HubtelEvatProvider : IEvatProvider
-   {
-       public string Provider => "hubtel";
-       public async Task<EvatIssueResult> IssueAsync(EvatIssueRequest req, CancellationToken ct)
-       {
-           // POST to https://evat.hubtel.com/api/invoices
-           // with X-Api-Key and the partner-required body shape.
-           // Map the response IRN + QR back to EvatIssueResult.
-       }
-   }
+1. Pick the partner — Hubtel is wired by default; Persol or Blue Skies
+   would be ~30 LoC to drop into `NickFinance.AR/<Partner>EvatProvider.cs`
+   following the `HubtelEvatProvider` shape (HTTP client + Issue mapping).
+2. Replace the placeholder env var with the real merchant key:
+   ```powershell
+   [Environment]::SetEnvironmentVariable('NICKFINANCE_EVAT_API_KEY', '<real>', 'Machine')
    ```
-3. Replace the registration in `Program.cs`:
-   ```diff
-   - builder.Services.AddSingleton<NickFinance.AR.IEvatProvider, NickFinance.AR.StubEvatProvider>();
-   + builder.Services.AddHttpClient<NickFinance.AR.IEvatProvider, HubtelEvatProvider>(http =>
-   +     http.BaseAddress = new Uri(builder.Configuration["NickFinance:Evat:BaseUrl"]!));
+3. If using a non-default base URL or a non-Hubtel partner, set
+   `NickFinance:Evat:BaseUrl` in `appsettings.json` (or via env var
+   `NickFinance__Evat__BaseUrl`).
+4. Restart `NickFinance_WebApp` Windows Service.
+5. Acceptance: issue a sandbox invoice, confirm IRN comes back without
+   the `SANDBOX-IRN-` prefix, GRA iTaPS view reflects the post.
+
+---
+
+## 2. MoMo disbursement — adapter shipped, gateway endpoint pending
+
+**Status:** `NickCommsMomoChannel` ships in `NickFinance.PettyCash.Disbursement`.
+The DI registration is conditional on `NICKCOMMS_API_KEY_NICKFINANCE`
+being non-placeholder; `OfflineCashChannel` is the fallback (custodian
+hands cash physically, journal posts immediately).
+
+**Activation steps when NickComms ships `/api/disburse/momo`:**
+
+1. Wait for NickComms team to deploy the endpoint and issue the per-app
+   key. Verify reachability: `curl -H "X-Api-Key: <key>" https://comms.nickerp.local/api/disburse/momo`.
+2. Replace the placeholder env var:
+   ```powershell
+   [Environment]::SetEnvironmentVariable('NICKCOMMS_API_KEY_NICKFINANCE', '<real>', 'Machine')
    ```
-4. Run an end-to-end sandbox-to-sandbox round-trip against the
-   partner's test environment before flipping production.
-5. Existing AR invoices issued under `SANDBOX-IRN-*` stay flagged
-   forever — they were never real. New invoices issue under the
-   partner's IRN format.
-
-**Acceptance:** an invoice issued in the live UI receives a real
-GRA-allocated IRN within 30 seconds; the SANDBOX pill goes away;
-end-of-month VAT return matches the iTaPS view.
+3. Optional: override `NickFinance:Momo:GatewayBaseUrl` if NickComms
+   moves off `http://localhost:5220`.
+4. Restart `NickFinance_WebApp`.
+5. Acceptance: a voucher with `PayeeMomoNumber + PayeeMomoNetwork` set
+   disburses to a sandbox MTN MoMo number, the rail reference returned
+   by Hubtel lands on `voucher.disbursement_reference`.
 
 ---
 
-## 2. Hubtel MoMo disbursement
+## 3. Receipt OCR — adapter shipped, Azure subscription pending
 
-**Pin:** NickComms.Gateway's `/api/disburse/momo` endpoint isn't yet
-live (it's specced in `services/NickComms.Gateway` but not built).
-Until it ships, voucher disbursement uses `OfflineCashChannel` — the
-custodian hands cash physically and the journal posts immediately.
+**Status:** `AzureFormRecognizerOcrEngine` ships in
+`NickFinance.PettyCash.Receipts`. Implemented as a thin REST client over
+Document Intelligence's 2024-11-30 API (no SDK dependency, keeps the
+image lean). The DI registration is a `RoutingOcrEngine` that activates
+on a non-placeholder `AZURE_DOCUMENT_INTELLIGENCE_KEY`.
 
-**To unpin:**
+**Activation steps when the Azure subscription lands:**
 
-1. Build the `/api/disburse/momo` endpoint in NickComms.Gateway. It
-   wraps Hubtel Merchant API and writes to its own outbox so retries
-   are idempotent on `clientReference`.
-2. Set `NICKCOMMS_API_KEY_NICKFINANCE` (machine env var) to the
-   per-app key issued by NickComms.
-3. Swap registration:
-   ```diff
-   - builder.Services.AddSingleton<IDisbursementChannel, OfflineCashChannel>();
-   + builder.Services.AddHttpClient<IDisbursementChannel, NickCommsMomoChannel>(http =>
-   +     {
-   +         http.BaseAddress = new Uri(builder.Configuration["NickFinance:Momo:GatewayBaseUrl"]!);
-   +         http.DefaultRequestHeaders.Add("X-Api-Key",
-   +             Environment.GetEnvironmentVariable("NICKCOMMS_API_KEY_NICKFINANCE")
-   +             ?? throw new InvalidOperationException("NICKCOMMS_API_KEY_NICKFINANCE not set"));
-   +     });
+1. Provision Azure AI Document Intelligence (S0 tier covers the
+   ~2,000 receipts/month projection).
+2. Replace placeholder env vars:
+   ```powershell
+   [Environment]::SetEnvironmentVariable('AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', '<your-resource-endpoint>', 'Machine')
+   [Environment]::SetEnvironmentVariable('AZURE_DOCUMENT_INTELLIGENCE_KEY',      '<primary-key>', 'Machine')
    ```
-4. The voucher detail page already routes through whichever channel
-   is registered — no UI change needed.
-
-**Acceptance:** a voucher with `PayeeMomoNumber + PayeeMomoNetwork` set
-disburses to a sandbox MTN MoMo number, the rail reference returned
-by Hubtel lands on `voucher.disbursement_reference`, and
-NickComms.Gateway's settlement webhook closes the loop on the
-banking side.
+3. Optional: override `NickFinance:Ocr:Endpoint` in `appsettings.json`.
+4. Restart `NickFinance_WebApp`.
+5. Acceptance: uploading a Ghana-format receipt photo populates
+   `OcrAmountMinor` and `OcrDate` with ≥80% confidence, dashboard
+   "Receipt OCR" pinned-item banner clears.
 
 ---
 
-## 3. Receipt OCR
+## 4. Production rollout against the live `nickhr` database — DONE 2026-04-28
 
-**Pin:** Azure AI Document Intelligence (formerly Form Recognizer)
-needs a subscription key. Until set, receipts upload + dedupe but the
-amount/date fields stay null.
+Cleared. Bootstrap CLI ran clean against the live `nickhr` database
+(10/10 steps green). WebApp listens on `http://localhost:5500`, public
+URL `https://finance.nickscan.net` gated by Cloudflare Access (Email-OTP,
+`@nickscan.com`). Windows Service `NickFinance_WebApp` runs as
+LocalSystem, AutoStart, with recovery actions configured. Identity
+retrofit (Track C.2) deployed: `Cf-Access-Jwt-Assertion` validated
+against CF's JWKS, claims map deterministically to the audit columns.
+Smoke runner ships in the bootstrap CLI for re-verification on every
+deploy: `NickFinance.Database.Bootstrap --conn "$conn" --skip-migrations --smoke-test`.
 
-**To unpin:**
+---
 
-1. Provision Azure AI Document Intelligence (S0 tier is fine for the
-   ~2,000 receipts/month projection). Capture
-   `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` + `..._KEY`.
-2. Add a new class:
-   ```csharp
-   public sealed class AzureFormRecognizerOcrEngine : IOcrEngine
-   {
-       public string Vendor => "azure-document-intelligence";
-       public async Task<OcrResult> RecogniseAsync(byte[] content, string contentType, CancellationToken ct)
-       {
-           // Use Azure.AI.DocumentIntelligence.DocumentIntelligenceClient
-           // with the prebuilt-receipt model. Map the strongest signals
-           // (Total field, Transaction date) back to OcrResult.
-       }
-   }
+## 5. WhatsApp approval flow — adapter shipped, Meta credentials pending
+
+**Status:** `IApprovalNotifier` interface + `WhatsAppApprovalNotifier`
+implementation ship in `NickFinance.PettyCash.Approvals`. Uses Meta's
+WhatsApp Business Cloud API (`graph.facebook.com/v20.0/.../messages`)
+with template messages; default template is `nickerp_voucher_approval`.
+The DI registration is a `RoutingApprovalNotifier` — activates when
+`WHATSAPP_CLOUD_API_TOKEN` is non-placeholder.
+
+**Activation steps when Meta Business assets land:**
+
+1. Complete Meta Business Verification for Nick TC-Scan Ltd.
+2. Provision a WhatsApp Cloud API phone number; capture the phone-number-id.
+3. Submit and get approval for the `nickerp_voucher_approval` template
+   in Meta Business Manager. Three body parameters (voucher_no,
+   amount_with_currency, purpose).
+4. Replace placeholder env vars:
+   ```powershell
+   [Environment]::SetEnvironmentVariable('WHATSAPP_CLOUD_API_TOKEN',  '<bearer>', 'Machine')
+   [Environment]::SetEnvironmentVariable('WHATSAPP_PHONE_NUMBER_ID', '<id>',     'Machine')
    ```
-   plus the `Azure.AI.DocumentIntelligence` package.
-3. Swap registration:
-   ```diff
-   - builder.Services.AddSingleton<IOcrEngine, NoopOcrEngine>();
-   + builder.Services.AddSingleton<IOcrEngine>(_ => new AzureFormRecognizerOcrEngine(
-   +     endpoint: builder.Configuration["NickFinance:Ocr:Endpoint"]!,
-   +     apiKey: Environment.GetEnvironmentVariable("AZURE_DOCUMENT_INTELLIGENCE_KEY")!));
-   ```
-
-**Acceptance:** uploading a Ghana-format receipt photo (typical
-thermal-printer JPEG) populates `OcrAmountMinor` and `OcrDate` with
-≥80% confidence, and the dashboard "Receipt OCR" pinned-item banner
-goes away.
+   - Webhook URL for Meta: `https://finance.nickscan.net/api/whatsapp/webhook`
+   - Also set `WHATSAPP_WEBHOOK_SECRET` (HMAC validation, any 32+ char random string) and `WHATSAPP_WEBHOOK_VERIFY_TOKEN` (any string you also paste in the Meta dashboard during webhook setup)
+5. Optional: override `NickFinance:WhatsApp:TemplateName` and
+   `:LanguageCode` in `appsettings.json`.
+6. Restart `NickFinance_WebApp`.
+7. _(done 2026-04-28: engine fires `IApprovalNotifier.NotifyAsync` for vouchers ≥ `NickFinance:WhatsApp:NotifyThresholdMinor`)_
+8. Acceptance: CFO receives a WhatsApp template message for any voucher
+   above the policy-defined threshold, can tap Approve in the chat,
+   webhook handler maps the reply back to `IPettyCashService.ApproveVoucherAsync`.
 
 ---
 
-## 4. Production rollout against the live `nickhr` database
-
-**Pin:** the bootstrap CLI is verified against a throwaway DB
-(commit `46f7336` — see `finance/NickFinance.Database.Bootstrap/BOOTSTRAP.md`).
-Running it against the live `nickhr` database is a DBA operation
-gated by an explicit go-ahead.
-
-**To unpin:** follow the §"Live nickhr DB rollout" steps in
-`BOOTSTRAP.md`:
-
-1. `pg_dump` of `nickhr` to `C:\Backups\nickhr-pre-finance-{ts}.dump`.
-2. Confirm no schema collisions on `finance` / `coa` / `petty_cash` / `ar`.
-3. Run the CLI with `--seed-coa`.
-4. Verify the 7 finance/petty_cash tables, 3 coa/ar tables, 2 trigger
-   functions land cleanly.
-5. Point the WebApp's connection string at `nickhr` and bring it up.
-
-**Acceptance:** the WebApp's home page renders against the live DB
-with all four metric tiles populated, and a sandbox-IRN-tagged test
-invoice survives a round-trip from create → issue → receipt without
-touching any NickHR table.
-
----
-
-## Status surfaces
-
-The web UI raises this list automatically:
-
-* `/` (home) shows a yellow card listing all currently-pinned items.
-  Each item resolves to a one-line explanation of the swap.
-* `/ar` shows a `SANDBOX` pill next to every IRN minted by the stub
-  provider, plus the IRN itself in muted text for traceability.
-* The home-page card disappears item-by-item as each registration
-  swaps in `Program.cs`. When the card is gone, the suite is fully
-  in-cutover state.
-
----
-
-## 5. WhatsApp approval flow
-
-**Pin:** Meta WhatsApp Business Cloud API requires a verified Meta
-business account, a Cloud API access token, a phone-number id, and a
-publicly-reachable webhook (HTTPS) for delivery callbacks. None of
-these exist for Nick TC-Scan yet.
-
-Until they do, AP payment runs and large petty-cash vouchers route
-approvals through the in-UI approvals queue (`/petty-cash` + the
-upcoming `/approvals` page); CFO approves on-screen rather than via
-WhatsApp.
-
-**To unpin:**
-
-1. Provision the Meta Business assets and capture
-   `WHATSAPP_CLOUD_API_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`.
-2. Implement `IWhatsAppApprovalChannel` (sketch — not in tree yet) on
-   top of NickComms.Gateway's `/api/whatsapp/template-message`
-   endpoint (which itself needs to ship at NickComms first).
-3. Wire it into the approval engine via a new `IApprovalNotifier` hook:
-   ```csharp
-   builder.Services.AddSingleton<IApprovalNotifier, WhatsAppApprovalNotifier>();
-   ```
-4. Webhook handler maps the user's reply ("APPROVE INV-2026-04-00012")
-   back to `IPettyCashService.ApproveVoucherAsync` with a token-derived
-   actor user id.
-
-**Acceptance:** CFO receives a WhatsApp template message for any
-voucher >GHS 100k or any AP payment run, taps Approve in the chat,
-the voucher transitions to Approved, and the WhatsApp delivery
-metadata lands on the `voucher_approvals.comment` for audit.
-
----
-
-## 6. Mobile / PWA offline mode (border sites)
+## 6. Mobile / PWA offline mode (border sites) — pinned by design
 
 **Pin:** Aflao + Paga + Elubo lose Starlink frequently. The Blazor
 Server UI requires a live SignalR connection, so it goes down with the
 network. A true offline-first PWA needs Blazor WebAssembly with
-IndexedDB-backed queueing — that's a non-trivial port (server-side
-DI / DbContext don't transfer to WASM directly).
+IndexedDB-backed queueing — that's a multi-week port (server-side DI /
+DbContext don't transfer to WASM directly, the auth path needs reworking
+for token-bearer, the disbursement service needs a queue interface).
 
-**Workaround in the meantime:** custodians at border sites use the
-WebApp during the daily Starlink window (typically 2-3 hours);
-voucher submissions outside that window are recorded on paper and
-entered the next online morning.
+**Why not "ship adapter + flip env var" like the others:** because
+there is no adapter — it's a different rendering host. The work needed
+is a new project (`NickFinance.WebApp.Wasm`), a service worker, a
+separate API surface (`NickFinance.WebApp.Api`), a JS-side IndexedDB
+queue, and a sync protocol. Realistic estimate: 3-4 weeks of
+engineering, contingent on the WASM render-mode story being settled
+in the .NET runtime we ship on (.NET 10 has it; we'd be exercising it).
 
-**To unpin (when offline becomes a hard requirement):**
+**Workaround in place:** custodians at border sites use the WebApp
+during the daily Starlink window (typically 2-3 hours); voucher
+submissions outside that window are recorded on paper and entered the
+next online morning.
 
-1. Stand up a `NickFinance.WebApp.Wasm` companion project with
-   per-page Blazor Render Modes set to `InteractiveAuto` (server +
-   WASM hybrid). The shell stays Blazor Server; only the
-   submit/approve pages flip to Auto so they keep working when the
-   circuit drops.
-2. Build a service worker (`wwwroot/service-worker.js`) caching the
-   submit page assets + a JS-side queue in IndexedDB.
-3. Implement `IPettyCashOfflineQueue` that POSTs to a
-   `NickFinance.WebApp.Api` endpoint when online, queues otherwise.
-4. Voucher carries a `queued_offline=true` flag on submit when from
-   the queue, so audit can see which vouchers came in via the
-   offline path.
+**To kick this off when the business decides it's worth the spend:**
 
-**Acceptance:** custodian submits a voucher mid-network-blackout,
-the page UI confirms "queued, will submit when online", Starlink
-returns 40 minutes later, the queued voucher posts automatically,
-and a Submitted status lands on the server-side row with
-`queued_offline=true`.
+1. Stand up `finance/NickFinance.WebApp.Wasm` companion project.
+2. Tag the Submit and Approve pages with `@rendermode InteractiveAuto`
+   so they survive a SignalR disconnect.
+3. Service worker (`wwwroot/service-worker.js`) caches submit-page assets.
+4. `IPettyCashOfflineQueue` interface — POST to `NickFinance.WebApp.Api`
+   when online, IndexedDB-queue otherwise.
+5. Voucher carries a `queued_offline=true` flag for audit.
+6. Acceptance: custodian submits a voucher mid-blackout, page confirms
+   "queued, will submit when online", queued voucher posts on next
+   online window with the `queued_offline=true` audit flag.
 
 ---
 
 ## Tracker
 
-| # | Item | Owner | Decision needed by | Status |
-|---|---|---|---|---|
-| 1 | e-VAT partner choice | CFO + CTO | Before first real customer invoice | Pinned |
-| 2 | NickComms /api/disburse/momo build | NickComms team | Before first MoMo-rail voucher | Pinned |
-| 3 | Azure Document Intelligence subscription | CTO | Before fraud signal F3 (duplicate-receipt) goes live for production audit | Pinned (low urgency) |
-| 4 | Live `nickhr` rollout window | DBA + ops | When 1 + 2 are in place | Pinned |
-| 5 | WhatsApp approval flow (Meta Cloud API) | CFO + CTO | Quality-of-life — defer to Phase 2 | Pinned |
-| 6 | Mobile / PWA offline (border sites) | CTO | When border-site network drops cause real loss | Pinned (low urgency) |
+| # | Item | Owner | Status |
+|---|---|---|---|
+| 1 | GRA e-VAT | CFO + CTO (partner contract) | **Adapter shipped 2026-04-28** — set `NICKFINANCE_EVAT_API_KEY` to activate |
+| 2 | MoMo disbursement | NickComms team | **Adapter shipped 2026-04-28** — set `NICKCOMMS_API_KEY_NICKFINANCE` to activate |
+| 3 | Receipt OCR | CTO (Azure subscription) | **Adapter shipped 2026-04-28** — set `AZURE_DOCUMENT_INTELLIGENCE_KEY` to activate |
+| 4 | Live `nickhr` rollout | DBA + ops | **Done 2026-04-28** |
+| 5 | WhatsApp approvals | CFO + CTO (Meta verification) | **Adapter shipped 2026-04-28** — set `WHATSAPP_CLOUD_API_TOKEN` to activate; webhook URL `/api/whatsapp/webhook` ready for Meta config |
+| 6 | PWA offline (border sites) | CTO greenlight | **Deferred by design** — multi-week WASM port, see §6 |
 
-Update the table when each pin lifts. Delete this file when zero rows
-remain.
+When rows 1–3, 5 activate (env var swap), the system is in full
+production-cutover state with one residual eng task on row 5
+(approval-engine hook + inbound WhatsApp webhook handler).
+
+Delete this file when row 6 is the only remaining row.

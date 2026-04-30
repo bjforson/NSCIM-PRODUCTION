@@ -1,4 +1,5 @@
 @page "/ar"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ReportsView)]
 @using Microsoft.EntityFrameworkCore
 @inject ArDbContext Db
 @inject CurrentUser User
@@ -6,49 +7,54 @@
 
 <PageTitle>NickFinance · Receivables</PageTitle>
 
-<h1>Accounts receivable</h1>
-<p class="lede">All AR invoices for tenant @User.TenantId. Most recent first.</p>
+<NepPageHeader Title="Accounts receivable"
+               Lede="@($"All AR invoices for tenant {User.TenantId}. Most recent first.")">
+    <Actions>
+        <a href="/ar/new" class="primary">New invoice</a>
+        <a href="/ar/customers" class="secondary">Customers</a>
+    </Actions>
+</NepPageHeader>
 
-<section class="card">
-    <table>
-        <thead>
-            <tr><th>No.</th><th>Date</th><th>Customer</th><th>Reference</th><th class="right">Gross (GHS)</th><th class="right">Outstanding</th><th>Status</th><th>IRN</th></tr>
-        </thead>
-        <tbody>
-            @foreach (var i in _invoices)
-            {
-                <tr>
-                    <td><code>@(string.IsNullOrEmpty(i.InvoiceNo) ? "(unissued)" : i.InvoiceNo)</code></td>
-                    <td>@i.InvoiceDate.ToString("yyyy-MM-dd")</td>
-                    <td>@(_customers.TryGetValue(i.CustomerId, out var c) ? c : i.CustomerId.ToString("N")[..8])</td>
-                    <td>@i.Reference</td>
-                    <td class="right">@((i.GrossMinor / 100m).ToString("N2"))</td>
-                    <td class="right">@(((i.GrossMinor - i.PaidMinor) / 100m).ToString("N2"))</td>
-                    <td><StatusPill Status="@i.Status.ToString()" /></td>
-                    <td>
-                        @if (string.IsNullOrEmpty(i.EvatIrn))
-                        {
-                            <span class="muted">—</span>
-                        }
-                        else if (StubEvatProvider.IsSandbox(i.EvatIrn))
-                        {
-                            <span class="pill warn" title="Issued via the stub e-VAT provider; not submitted to GRA. See finance/DEFERRED.md.">SANDBOX</span>
-                            <code class="muted-code">@i.EvatIrn</code>
-                        }
-                        else
-                        {
-                            <code>@i.EvatIrn</code>
-                        }
-                    </td>
-                </tr>
-            }
-            @if (_invoices.Count == 0)
-            {
-                <tr><td colspan="8" class="muted">No invoices yet.</td></tr>
-            }
-        </tbody>
-    </table>
-</section>
+<NepCard>
+    <NepTable TItem="ArInvoice" Items="_invoices">
+        <Header>
+            <th>No.</th><th>Date</th><th>Customer</th><th>Reference</th>
+            <th class="right">Gross</th><th class="right">Outstanding</th>
+            <th>Status</th><th>IRN</th>
+        </Header>
+        <Row Context="i">
+            <td><code>@(string.IsNullOrEmpty(i.InvoiceNo) ? "(unissued)" : i.InvoiceNo)</code></td>
+            <td>@i.InvoiceDate.ToString("yyyy-MM-dd")</td>
+            <td>@(_customers.TryGetValue(i.CustomerId, out var c) ? c : i.CustomerId.ToString("N")[..8])</td>
+            <td>@i.Reference</td>
+            <td class="right"><NepMoney Minor="@i.GrossMinor" Currency="GHS" /></td>
+            <td class="right"><NepMoney Minor="@(i.GrossMinor - i.PaidMinor)" Currency="GHS" /></td>
+            <td><NepPill Tone="@PillTone(i.Status.ToString())">@i.Status</NepPill></td>
+            <td>
+                @if (string.IsNullOrEmpty(i.EvatIrn))
+                {
+                    <span class="muted">—</span>
+                }
+                else if (StubEvatProvider.IsSandbox(i.EvatIrn))
+                {
+                    <NepPill Tone="sandbox">SANDBOX</NepPill>
+                    <code class="muted-code">@i.EvatIrn</code>
+                }
+                else
+                {
+                    <code>@i.EvatIrn</code>
+                }
+            </td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="No invoices yet"
+                      Hint="Issued AR invoices will appear here. Add a customer first, then draft an invoice."
+                      Icon="@Icons.Material.Filled.RequestQuote">
+                <Action><a class="primary" href="/ar/new">New invoice</a></Action>
+            </NepEmpty>
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
 @code {
     private List<ArInvoice> _invoices = new();
@@ -66,4 +72,12 @@
             .Where(c => ids.Contains(c.CustomerId))
             .ToDictionaryAsync(c => c.CustomerId, c => c.Name);
     }
+
+    private static string PillTone(string status) => status switch
+    {
+        "Issued" or "PartiallyPaid" => "warn",
+        "Paid"                       => "ok",
+        "Void"                       => "bad",
+        _                            => "default"
+    };
 }

@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace NickFinance.PettyCash.Approvals;
 
 /// <summary>
@@ -31,21 +34,61 @@ namespace NickFinance.PettyCash.Approvals;
 /// <see cref="IPettyCashService.EscalateOverdueApprovalsAsync"/> —
 /// the engine itself stays stateless about wall-clock.
 /// </para>
+/// <para>
+/// <b>Out-of-band notify</b>: the engine fires
+/// <see cref="IApprovalNotifier.NotifyAsync"/> for vouchers at-or-above
+/// <see cref="_notifyThresholdMinor"/> as a side effect of <see cref="Plan"/>.
+/// The on-screen approval queue is the source of truth — notify failures
+/// are logged and swallowed; <see cref="Plan"/> never throws because of a
+/// notifier hiccup. The default threshold is GHS 100,000.00; the host can
+/// pass a smaller value (e.g. for AP payment runs) via the
+/// constructor.
+/// </para>
 /// </remarks>
 public sealed class PolicyApprovalEngine : IApprovalEngine
 {
     private readonly ApprovalPolicy _policy;
     private readonly IApproverResolver _resolver;
     private readonly TimeProvider _clock;
+    private readonly IApprovalNotifier _notifier;
+    private readonly IApproverPhoneResolver _phoneResolver;
+    private readonly ILogger<PolicyApprovalEngine> _logger;
+    private readonly long _notifyThresholdMinor;
 
     public PolicyApprovalEngine(
         ApprovalPolicy policy,
         IApproverResolver resolver,
         TimeProvider? clock = null)
+        : this(policy, resolver, clock,
+            new NoopApprovalNotifier(),
+            new NoopApproverPhoneResolver(),
+            NullLogger<PolicyApprovalEngine>.Instance,
+            10_000_000L)
+    {
+    }
+
+    /// <summary>
+    /// Notifier-aware overload. <paramref name="notifyThresholdMinor"/>
+    /// defaults to <c>10_000_000</c> (GHS 100,000.00) — vouchers at-or-above
+    /// that figure trigger an out-of-band notify on each step's resolved
+    /// approver. Pass a smaller value to widen the net.
+    /// </summary>
+    public PolicyApprovalEngine(
+        ApprovalPolicy policy,
+        IApproverResolver resolver,
+        TimeProvider? clock,
+        IApprovalNotifier notifier,
+        IApproverPhoneResolver phoneResolver,
+        ILogger<PolicyApprovalEngine> logger,
+        long notifyThresholdMinor = 10_000_000L)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _clock = clock ?? TimeProvider.System;
+        _notifier = notifier ?? new NoopApprovalNotifier();
+        _phoneResolver = phoneResolver ?? new NoopApproverPhoneResolver();
+        _logger = logger ?? NullLogger<PolicyApprovalEngine>.Instance;
+        _notifyThresholdMinor = notifyThresholdMinor;
     }
 
     public IReadOnlyList<VoucherApproval> Plan(Voucher voucher)
@@ -90,6 +133,51 @@ public sealed class PolicyApprovalEngine : IApprovalEngine
             }
             stepNo++;
         }
+
+        // OUT-OF-BAND NOTIFY: high-value vouchers wake their approvers via
+        // WhatsApp (or whatever channel the host wired). Failures are
+        // swallowed — the on-screen approval queue is the source of truth.
+        if (voucher.AmountRequestedMinor >= _notifyThresholdMinor)
+        {
+            foreach (var row in rows)
+            {
+                if (row.Decision != ApprovalDecision.Pending) continue;
+                if (row.AssignedToUserId == Guid.Empty) continue;
+
+                string? phone = null;
+                try
+                {
+                    phone = _phoneResolver.ResolvePhoneByUserIdAsync(row.AssignedToUserId).GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Phone resolve failed for approver {UserId} on voucher {VoucherNo}", row.AssignedToUserId, voucher.VoucherNo);
+                }
+                if (string.IsNullOrWhiteSpace(phone)) continue;
+
+                var msg = new ApprovalNotification(
+                    VoucherId: voucher.VoucherId,
+                    VoucherNo: voucher.VoucherNo,
+                    AmountMinor: voucher.AmountRequestedMinor,
+                    CurrencyCode: voucher.CurrencyCode,
+                    ApproverIdentifier: phone,
+                    Purpose: voucher.Purpose,
+                    TenantId: voucher.TenantId);
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _notifier.NotifyAsync(msg);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "WhatsApp notify failed for voucher {VoucherNo}", voucher.VoucherNo);
+                    }
+                });
+            }
+        }
+
         return rows;
     }
 

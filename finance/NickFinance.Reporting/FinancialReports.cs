@@ -171,6 +171,70 @@ public sealed class FinancialReports : IFinancialReports
     }
 
     // -----------------------------------------------------------------
+    // Revalued trial balance
+    // -----------------------------------------------------------------
+
+    public async Task<TrialBalanceReport> RevaluedTrialBalanceAsync(
+        string targetCurrency,
+        DateOnly asOf,
+        IFxConverter converter,
+        long tenantId = 1,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetCurrency);
+        ArgumentNullException.ThrowIfNull(converter);
+
+        // Pull every (account, currency, dr, cr) tuple — one row per
+        // currency the account has activity in. We translate each into the
+        // target currency, then group by account.
+        var raw = await _ledger.EventLines
+            .AsNoTracking()
+            .Where(l => l.Event.TenantId == tenantId && l.Event.EffectiveDate <= asOf)
+            .GroupBy(l => new { l.AccountCode, l.CurrencyCode })
+            .Select(g => new
+            {
+                g.Key.AccountCode,
+                g.Key.CurrencyCode,
+                Debits = g.Sum(x => (long?)x.DebitMinor) ?? 0L,
+                Credits = g.Sum(x => (long?)x.CreditMinor) ?? 0L
+            })
+            .ToListAsync(ct);
+
+        var meta = await LookupMetaAsync(raw.Select(r => r.AccountCode).Distinct().ToList(), tenantId, ct);
+
+        // Translate every per-currency total into the target currency.
+        // ConvertAsync returns the target-currency Money; banker's rounding
+        // is consistent with the rest of the FX pipeline.
+        var byAccount = new Dictionary<string, (long Debits, long Credits)>(StringComparer.Ordinal);
+        foreach (var r in raw)
+        {
+            var dr = await converter.ConvertAsync(new Money(r.Debits, r.CurrencyCode), targetCurrency, asOf, tenantId, ct);
+            var cr = await converter.ConvertAsync(new Money(r.Credits, r.CurrencyCode), targetCurrency, asOf, tenantId, ct);
+            if (!byAccount.TryGetValue(r.AccountCode, out var existing)) existing = (0L, 0L);
+            byAccount[r.AccountCode] = (existing.Debits + dr.Minor, existing.Credits + cr.Minor);
+        }
+
+        var rows = byAccount
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv =>
+            {
+                meta.TryGetValue(kv.Key, out var m);
+                return new TrialBalanceRow(
+                    AccountCode: kv.Key,
+                    AccountName: m?.Name,
+                    AccountType: m?.Type,
+                    Debits: new Money(kv.Value.Debits, targetCurrency),
+                    Credits: new Money(kv.Value.Credits, targetCurrency),
+                    Balance: new Money(kv.Value.Debits - kv.Value.Credits, targetCurrency));
+            })
+            .ToList();
+
+        var totalDr = new Money(byAccount.Values.Sum(v => v.Debits), targetCurrency);
+        var totalCr = new Money(byAccount.Values.Sum(v => v.Credits), targetCurrency);
+        return new TrialBalanceReport(asOf, targetCurrency, rows, totalDr, totalCr);
+    }
+
+    // -----------------------------------------------------------------
     // GL detail
     // -----------------------------------------------------------------
 

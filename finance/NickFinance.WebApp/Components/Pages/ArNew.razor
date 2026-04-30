@@ -1,4 +1,5 @@
 @page "/ar/new"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ArInvoiceIssue)]
 @using Microsoft.EntityFrameworkCore
 @inject ArDbContext Db
 @inject IArService Svc
@@ -8,18 +9,18 @@
 
 <PageTitle>NickFinance · New invoice</PageTitle>
 
-<h1>New AR invoice</h1>
+<NepPageHeader Title="New AR invoice" />
 
 @if (_customers.Count == 0)
 {
-    <div class="card warning">
+    <NepCard Variant="warning">
         <p>No customers yet. Add one at <a href="/ar/customers">Customers</a>.</p>
-    </div>
+    </NepCard>
 }
 else
 {
     <EditForm Model="_form" OnValidSubmit="SubmitAsync" FormName="newInvoice">
-        <section class="card">
+        <NepCard>
             <label>
                 Customer
                 <select @bind="_form.CustomerId">
@@ -58,7 +59,7 @@ else
             {
                 <div class="error">@_error</div>
             }
-        </section>
+        </NepCard>
     </EditForm>
 }
 

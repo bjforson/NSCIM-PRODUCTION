@@ -24,4 +24,11 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- ITenantAccessor + ISecurityAuditService live in Identity. The
+         kernel calls audit on each post; the no-op implementation makes
+         tests + the bootstrap CLI compile without an HTTP context. -->
+    <ProjectReference Include="..\NickFinance.Identity\NickFinance.Identity.csproj" />
+  </ItemGroup>
+
 </Project>

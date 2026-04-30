@@ -13,6 +13,15 @@ public interface ICustomerStatementService
 {
     Task<CustomerStatement> BuildAsync(Guid customerId, DateOnly from, DateOnly to, long tenantId = 1, CancellationToken ct = default);
     Task<byte[]> RenderCsvAsync(CustomerStatement statement);
+
+    /// <summary>
+    /// Compute the standard 0/30/60/90/120+ ageing buckets for a customer
+    /// as of <paramref name="asOf"/>, using each invoice's outstanding
+    /// balance and its invoice date as the age anchor. Returned tuple is
+    /// in minor units, in the customer's billing currency.
+    /// </summary>
+    Task<(long CurrentMinor, long Days30Minor, long Days60Minor, long Days90Minor, long Days120PlusMinor)>
+        ComputeAgeingAsync(Guid customerId, DateOnly asOf, long tenantId = 1, CancellationToken ct = default);
 }
 
 public sealed record CustomerStatement(
@@ -127,4 +136,43 @@ public sealed class CustomerStatementService : ICustomerStatementService
     private static string Quote(string s) =>
         s.Contains(',') || s.Contains('"') || s.Contains('\n')
             ? $"\"{s.Replace("\"", "\"\"")}\"" : s;
+
+    /// <inheritdoc />
+    public async Task<(long CurrentMinor, long Days30Minor, long Days60Minor, long Days90Minor, long Days120PlusMinor)>
+        ComputeAgeingAsync(Guid customerId, DateOnly asOf, long tenantId = 1, CancellationToken ct = default)
+    {
+        // Pull every non-void / non-draft invoice for the customer; the
+        // outstanding-minor we care about is gross less paid as of `asOf`.
+        // Receipts dated AFTER `asOf` shouldn't reduce the bucket — we
+        // recompute paid-as-of-date by clamping receipts to that date.
+        var invoices = await _db.Invoices.AsNoTracking()
+            .Where(i => i.TenantId == tenantId && i.CustomerId == customerId
+                     && i.Status != ArInvoiceStatus.Draft && i.Status != ArInvoiceStatus.Void
+                     && i.InvoiceDate <= asOf)
+            .Select(i => new { i.ArInvoiceId, i.InvoiceDate, i.GrossMinor })
+            .ToListAsync(ct);
+        if (invoices.Count == 0) return (0, 0, 0, 0, 0);
+
+        var ids = invoices.Select(i => i.ArInvoiceId).ToList();
+        var paid = await _db.Receipts.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && ids.Contains(r.ArInvoiceId) && r.ReceiptDate <= asOf)
+            .GroupBy(r => r.ArInvoiceId)
+            .Select(g => new { Id = g.Key, Paid = g.Sum(r => (long?)r.AmountMinor) ?? 0L })
+            .ToDictionaryAsync(x => x.Id, x => x.Paid, ct);
+
+        long b0 = 0, b30 = 0, b60 = 0, b90 = 0, b120 = 0;
+        foreach (var inv in invoices)
+        {
+            paid.TryGetValue(inv.ArInvoiceId, out var p);
+            var outstanding = inv.GrossMinor - p;
+            if (outstanding <= 0) continue;
+            var days = asOf.DayNumber - inv.InvoiceDate.DayNumber;
+            if      (days <= 30)  b0 += outstanding;
+            else if (days <= 60)  b30 += outstanding;
+            else if (days <= 90)  b60 += outstanding;
+            else if (days <= 120) b90 += outstanding;
+            else                  b120 += outstanding;
+        }
+        return (b0, b30, b60, b90, b120);
+    }
 }

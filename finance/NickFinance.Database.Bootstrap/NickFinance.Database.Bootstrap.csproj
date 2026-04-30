@@ -32,6 +32,7 @@
     <ProjectReference Include="..\NickFinance.Banking\NickFinance.Banking.csproj" />
     <ProjectReference Include="..\NickFinance.FixedAssets\NickFinance.FixedAssets.csproj" />
     <ProjectReference Include="..\NickFinance.Budgeting\NickFinance.Budgeting.csproj" />
+    <ProjectReference Include="..\NickFinance.Identity\NickFinance.Identity.csproj" />
   </ItemGroup>
 
 </Project>

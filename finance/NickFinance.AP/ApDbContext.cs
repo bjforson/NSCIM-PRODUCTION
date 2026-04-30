@@ -1,11 +1,21 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.AP;
 
 public class ApDbContext : DbContext
 {
     public const string SchemaName = "ap";
+
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public ApDbContext(DbContextOptions<ApDbContext> options) : base(options) { }
+
+    public ApDbContext(DbContextOptions<ApDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
 
     public DbSet<Vendor> Vendors => Set<Vendor>();
     public DbSet<ApBill> Bills => Set<ApBill>();
@@ -17,6 +27,8 @@ public class ApDbContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(b);
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<Vendor>(e =>
         {
@@ -42,6 +54,8 @@ public class ApDbContext : DbContext
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at").IsRequired();
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique().HasDatabaseName("ux_vendors_tenant_code");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<ApBill>(e =>
@@ -77,6 +91,8 @@ public class ApDbContext : DbContext
             e.HasIndex(x => new { x.TenantId, x.VendorId, x.Status }).HasDatabaseName("ix_bills_tenant_vendor_status");
             e.HasOne<Vendor>().WithMany().HasForeignKey(x => x.VendorId).OnDelete(DeleteBehavior.Restrict);
             e.HasMany(x => x.Lines).WithOne().HasForeignKey(l => l.ApBillId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<ApBillLine>(e =>
@@ -112,6 +128,8 @@ public class ApDbContext : DbContext
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.PaymentRunId }).HasDatabaseName("ix_payments_tenant_run");
             e.HasOne<ApBill>().WithMany().HasForeignKey(x => x.ApBillId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<WhtCertificate>(e =>
@@ -133,6 +151,8 @@ public class ApDbContext : DbContext
             e.Property(x => x.TenantId).HasColumnName("tenant_id").IsRequired();
             e.HasIndex(x => new { x.TenantId, x.CertificateNo }).IsUnique().HasDatabaseName("ux_wht_certs_tenant_no");
             e.HasIndex(x => new { x.TenantId, x.VendorId, x.IssueDate }).HasDatabaseName("ix_wht_certs_vendor_date");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
     }
 }

@@ -1,4 +1,5 @@
 @page "/petty-cash/new"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.PettyVoucherSubmit)]
 @using Microsoft.EntityFrameworkCore
 @inject PettyCashDbContext Db
 @inject IPettyCashService Svc
@@ -8,19 +9,19 @@
 
 <PageTitle>NickFinance · New voucher</PageTitle>
 
-<h1>New petty-cash voucher</h1>
+<NepPageHeader Title="New petty-cash voucher" />
 
 @if (_floats.Count == 0)
 {
-    <div class="card warning">
-        <p>No active floats found for tenant @User.TenantId. Create a float first via the bootstrap CLI or
-           by running <code>dotnet run --project finance/NickFinance.WebApp</code> against a tenant that has one.</p>
-    </div>
+    <NepCard Variant="warning">
+        <p>No active floats yet for tenant @User.TenantId. Provision one first:</p>
+        <p><a href="/petty-cash/floats/new" class="primary">Create float</a></p>
+    </NepCard>
 }
 else
 {
     <EditForm Model="_form" OnValidSubmit="SubmitAsync" FormName="newVoucher">
-        <section class="card">
+        <NepCard>
             <label>
                 Float
                 <select @bind="_form.FloatId">
@@ -60,7 +61,7 @@ else
             {
                 <div class="error">@_error</div>
             }
-        </section>
+        </NepCard>
     </EditForm>
 }
 

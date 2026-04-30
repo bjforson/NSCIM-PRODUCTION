@@ -1,4 +1,5 @@
 @page "/budgets"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.BudgetManage)]
 @using Microsoft.EntityFrameworkCore
 @inject BudgetingDbContext Db
 @inject IBudgetingService Svc
@@ -7,32 +8,30 @@
 
 <PageTitle>NickFinance · Budgets</PageTitle>
 
-<h1>Annual budgets</h1>
+<NepPageHeader Title="Annual budgets"
+               Lede="Department-level annual budgets. Variance analysis lives under Reports → P&L." />
 
-<section class="card">
-    <table>
-        <thead>
-            <tr><th>Year</th><th>Department</th><th>Name</th><th>Currency</th><th>Status</th><th class="right">Lines</th></tr>
-        </thead>
-        <tbody>
-            @foreach (var b in _budgets)
-            {
-                <tr>
-                    <td>@b.FiscalYear</td>
-                    <td>@(b.DepartmentCode ?? "(entity)")</td>
-                    <td>@b.Name</td>
-                    <td>@b.CurrencyCode</td>
-                    <td><StatusPill Status="@b.Status.ToString()" /></td>
-                    <td class="right">@b.Lines.Count</td>
-                </tr>
-            }
-            @if (_budgets.Count == 0)
-            {
-                <tr><td colspan="6" class="muted">No budgets yet.</td></tr>
-            }
-        </tbody>
-    </table>
-</section>
+<NepCard>
+    <NepTable TItem="AnnualBudget" Items="_budgets">
+        <Header>
+            <th>Year</th><th>Department</th><th>Name</th><th>Currency</th>
+            <th>Status</th><th class="right">Lines</th>
+        </Header>
+        <Row Context="b">
+            <td>@b.FiscalYear</td>
+            <td>@(b.DepartmentCode ?? "(entity)")</td>
+            <td>@b.Name</td>
+            <td>@b.CurrencyCode</td>
+            <td><NepPill Tone="@PillTone(b.Status.ToString())">@b.Status</NepPill></td>
+            <td class="right">@b.Lines.Count</td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="No budgets yet"
+                      Hint="Budget creation UI is part of v1.3. Today, budgets are seeded via the IBudgetingService API."
+                      Icon="@Icons.Material.Filled.Insights" />
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
 @code {
     private List<AnnualBudget> _budgets = new();
@@ -44,4 +43,12 @@
             .Where(b => b.TenantId == User.TenantId)
             .OrderByDescending(b => b.FiscalYear).ToListAsync();
     }
+
+    private static string PillTone(string status) => status switch
+    {
+        "Active" or "Approved" => "ok",
+        "Draft" or "Pending"   => "warn",
+        "Archived"             => "default",
+        _                      => "default"
+    };
 }

@@ -6,6 +6,7 @@ using NickFinance.Banking;
 using NickFinance.Budgeting;
 using NickFinance.FixedAssets;
 using NickFinance.Coa;
+using NickERP.Platform.Identity;
 using NickFinance.Ledger;
 using NickFinance.PettyCash;
 
@@ -110,5 +111,19 @@ public sealed class BudgetingDesignTimeFactory : IDesignTimeDbContextFactory<Bud
             ?? "Host=localhost;Port=5432;Database=nickerp_design_only;Username=postgres;Password=design";
         var opts = new DbContextOptionsBuilder<BudgetingDbContext>().UseNpgsql(conn).Options;
         return new BudgetingDbContext(opts);
+    }
+}
+
+/// <inheritdoc cref="LedgerDesignTimeFactory"/>
+public sealed class IdentityDesignTimeFactory : IDesignTimeDbContextFactory<IdentityDbContext>
+{
+    public IdentityDbContext CreateDbContext(string[] args)
+    {
+        var conn = Environment.GetEnvironmentVariable("NICKERP_FINANCE_DB_CONNECTION")
+            ?? "Host=localhost;Port=5432;Database=nickerp_design_only;Username=postgres;Password=design";
+        var opts = new DbContextOptionsBuilder<IdentityDbContext>().UseNpgsql(conn).Options;
+        // No tenant accessor at design time — query filters disabled; the
+        // generated migration shape is the same either way.
+        return new IdentityDbContext(opts);
     }
 }

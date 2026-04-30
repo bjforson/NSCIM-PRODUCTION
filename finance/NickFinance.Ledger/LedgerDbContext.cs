@@ -1,10 +1,19 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.Ledger;
 
 public class LedgerDbContext : DbContext
 {
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public LedgerDbContext(DbContextOptions<LedgerDbContext> options) : base(options) { }
+
+    public LedgerDbContext(DbContextOptions<LedgerDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
 
     public DbSet<LedgerEvent> Events => Set<LedgerEvent>();
     public DbSet<LedgerEventLine> EventLines => Set<LedgerEventLine>();
@@ -13,6 +22,12 @@ public class LedgerDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder mb)
     {
         mb.HasDefaultSchema("finance");
+
+        // Multi-tenant query filter wired conditionally so the bootstrap
+        // CLI / smoke runner / tests (which construct the context without
+        // an accessor) see every row, while the live WebApp scopes to the
+        // current circuit's tenant.
+        var filterEnabled = _tenantAccessor is not null;
 
         mb.Entity<LedgerEvent>(e =>
         {
@@ -46,6 +61,11 @@ public class LedgerDbContext : DbContext
                 .WithOne(l => l.Event)
                 .HasForeignKey(l => l.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled)
+            {
+                e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
+            }
         });
 
         mb.Entity<LedgerEventLine>(e =>
@@ -83,6 +103,14 @@ public class LedgerDbContext : DbContext
             e.Property(x => x.TenantId).HasColumnName("tenant_id");
 
             e.HasIndex(x => new { x.TenantId, x.FiscalYear, x.MonthNumber }).IsUnique();
+
+            if (filterEnabled)
+            {
+                e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
+            }
         });
+
+        // LedgerEventLine inherits its tenant scoping through the parent
+        // event's filter (EF cascades the predicate via the relationship).
     }
 }

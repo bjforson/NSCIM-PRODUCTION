@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.Coa;
 
@@ -12,7 +13,15 @@ public class CoaDbContext : DbContext
 {
     public const string SchemaName = "coa";
 
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public CoaDbContext(DbContextOptions<CoaDbContext> options) : base(options) { }
+
+    public CoaDbContext(DbContextOptions<CoaDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
 
     public DbSet<Account> Accounts => Set<Account>();
 
@@ -20,6 +29,8 @@ public class CoaDbContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(b);
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<Account>(e =>
         {
@@ -40,6 +51,8 @@ public class CoaDbContext : DbContext
 
             e.HasIndex(x => new { x.TenantId, x.Code }).IsUnique().HasDatabaseName("ux_accounts_tenant_code");
             e.HasIndex(x => new { x.TenantId, x.Type, x.IsActive }).HasDatabaseName("ix_accounts_tenant_type_active");
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
     }
 }

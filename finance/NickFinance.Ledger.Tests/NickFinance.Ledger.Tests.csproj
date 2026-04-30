@@ -17,6 +17,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NickFinance.Ledger\NickFinance.Ledger.csproj" />
+    <!-- FxRevaluationServiceTests exercises the Banking-side implementation
+         of IFxRevaluationService against a real Postgres schema. The
+         interface lives in the kernel so the test project file lives here;
+         the dependency is one-way (Banking → Ledger), so the reference is
+         safe. -->
+    <ProjectReference Include="..\NickFinance.Banking\NickFinance.Banking.csproj" />
   </ItemGroup>
 
 </Project>

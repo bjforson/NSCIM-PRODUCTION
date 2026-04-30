@@ -26,6 +26,18 @@ public interface ILedgerReader
         DateOnly asOf,
         long tenantId = 1,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Per-currency net balance (DR-CR) for a single account up to <paramref name="asOf"/>.
+    /// Returns one row per non-zero currency the account has activity in. The list
+    /// excludes currencies that net to zero. Used by <c>IFxRevaluationService</c>
+    /// to find every foreign-currency exposure that needs translating.
+    /// </summary>
+    Task<IReadOnlyList<(string CurrencyCode, long BalanceMinor)>> GetAccountBalancesByCurrencyAsync(
+        string accountCode,
+        DateOnly asOf,
+        long tenantId = 1,
+        CancellationToken ct = default);
 }
 
 public record TrialBalanceRow(
@@ -66,6 +78,33 @@ public class LedgerReader : ILedgerReader
         var debits = result?.Debits ?? 0L;
         var credits = result?.Credits ?? 0L;
         return new Money(debits - credits, currencyCode);
+    }
+
+    public async Task<IReadOnlyList<(string CurrencyCode, long BalanceMinor)>> GetAccountBalancesByCurrencyAsync(
+        string accountCode,
+        DateOnly asOf,
+        long tenantId = 1,
+        CancellationToken ct = default)
+    {
+        var rows = await _db.EventLines
+            .AsNoTracking()
+            .Where(l => l.AccountCode == accountCode
+                     && l.Event.TenantId == tenantId
+                     && l.Event.EffectiveDate <= asOf)
+            .GroupBy(l => l.CurrencyCode)
+            .Select(g => new
+            {
+                Currency = g.Key,
+                Debits = g.Sum(x => (long?)x.DebitMinor) ?? 0L,
+                Credits = g.Sum(x => (long?)x.CreditMinor) ?? 0L
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => (CurrencyCode: r.Currency, BalanceMinor: r.Debits - r.Credits))
+            .Where(x => x.BalanceMinor != 0)
+            .OrderBy(x => x.CurrencyCode, StringComparer.Ordinal)
+            .ToList();
     }
 
     public async Task<IReadOnlyList<TrialBalanceRow>> GetTrialBalanceAsync(

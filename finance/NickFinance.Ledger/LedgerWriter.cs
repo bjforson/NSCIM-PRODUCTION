@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.Ledger;
 
@@ -42,11 +43,16 @@ public interface ILedgerWriter
 public class LedgerWriter : ILedgerWriter
 {
     private readonly LedgerDbContext _db;
+    private readonly ISecurityAuditService _audit;
     private readonly TimeProvider _clock;
 
     public LedgerWriter(LedgerDbContext db, TimeProvider? clock = null)
+        : this(db, audit: null, clock) { }
+
+    public LedgerWriter(LedgerDbContext db, ISecurityAuditService? audit, TimeProvider? clock = null)
     {
         _db = db;
+        _audit = audit ?? new NoopSecurityAuditService();
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -77,6 +83,16 @@ public class LedgerWriter : ILedgerWriter
 
         _db.Events.Add(evt);
         await _db.SaveChangesAsync(ct);
+
+        await _audit.RecordAsync(
+            action: evt.EventType == LedgerEventType.Reversal
+                ? SecurityAuditAction.JournalReversed
+                : SecurityAuditAction.JournalPosted,
+            targetType: "LedgerEvent",
+            targetId: evt.EventId.ToString(),
+            result: SecurityAuditResult.Allowed,
+            details: new { module = evt.SourceModule, entityType = evt.SourceEntityType, entityId = evt.SourceEntityId, idempotency = evt.IdempotencyKey, lineCount = evt.Lines.Count },
+            ct: ct);
         return evt.EventId;
     }
 

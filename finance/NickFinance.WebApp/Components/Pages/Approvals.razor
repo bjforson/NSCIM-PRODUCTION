@@ -1,4 +1,5 @@
 @page "/approvals"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.PettyVoucherApprove)]
 @using Microsoft.EntityFrameworkCore
 @inject PettyCashDbContext Pc
 @inject IPettyCashService Svc
@@ -7,34 +8,31 @@
 
 <PageTitle>NickFinance · Approvals</PageTitle>
 
-<h1>Approvals queue</h1>
-<p class="lede">Vouchers awaiting your decision (assigned to <code>@User.UserId.ToString("N")[..8]</code>).</p>
+<NepPageHeader Title="Approvals queue"
+               Lede="@($"Vouchers awaiting your decision (assigned to {User.UserId.ToString("N")[..8]}).")" />
 
-<section class="card">
-    <table>
-        <thead>
-            <tr><th>No.</th><th>Requester</th><th>Category</th><th>Purpose</th><th class="right">Amount</th><th>Step</th><th></th></tr>
-        </thead>
-        <tbody>
-            @foreach (var row in _rows)
-            {
-                <tr>
-                    <td><code>@row.VoucherNo</code></td>
-                    <td><code>@row.Requester.ToString("N")[..8]</code></td>
-                    <td>@row.Category</td>
-                    <td>@row.Purpose</td>
-                    <td class="right">@((row.AmountMinor / 100m).ToString("N2"))</td>
-                    <td>@row.StepNo · @row.Role</td>
-                    <td><a href="@($"/petty-cash/{row.VoucherId}")">decide</a></td>
-                </tr>
-            }
-            @if (_rows.Count == 0)
-            {
-                <tr><td colspan="7" class="muted">Nothing awaiting your decision.</td></tr>
-            }
-        </tbody>
-    </table>
-</section>
+<NepCard>
+    <NepTable TItem="Row" Items="_rows">
+        <Header>
+            <th>No.</th><th>Requester</th><th>Category</th><th>Purpose</th>
+            <th class="right">Amount</th><th>Step</th><th></th>
+        </Header>
+        <Row Context="row">
+            <td><code>@row.VoucherNo</code></td>
+            <td><code>@row.Requester.ToString("N")[..8]</code></td>
+            <td>@row.Category</td>
+            <td>@row.Purpose</td>
+            <td class="right"><NepMoney Minor="@row.AmountMinor" Currency="GHS" /></td>
+            <td>@row.StepNo · @row.Role</td>
+            <td><a href="@($"/petty-cash/{row.VoucherId}")">decide</a></td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="Nothing awaiting your decision"
+                      Hint="When a voucher's policy assigns an approval step to you, it'll show up here."
+                      Icon="@Icons.Material.Filled.TaskAlt" />
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
 @code {
     private record Row(Guid VoucherId, string VoucherNo, Guid Requester, VoucherCategory Category, string Purpose, long AmountMinor, short StepNo, string Role);

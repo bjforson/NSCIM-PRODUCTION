@@ -1,4 +1,5 @@
 @page "/petty-cash/{VoucherId:guid}"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ReportsView)]
 @using Microsoft.EntityFrameworkCore
 @inject PettyCashDbContext Db
 @inject IPettyCashService Svc
@@ -15,14 +16,18 @@
 }
 else
 {
-    <h1>Voucher <code>@_voucher.VoucherNo</code></h1>
-    <p class="lede">
-        <StatusPill Status="@_voucher.Status.ToString()" /> ·
-        @_voucher.Category · GHS @((_voucher.AmountRequestedMinor / 100m).ToString("N2"))
-        · requester <code>@_voucher.RequesterUserId.ToString("N")[..8]</code>
-    </p>
+    <NepPageHeader>
+        <ChildContent>
+            <h1 class="nep-page-header-title">Voucher <code>@_voucher.VoucherNo</code></h1>
+            <p class="nep-page-header-lede">
+                <NepPill Tone="@PillTone(_voucher.Status.ToString())">@_voucher.Status</NepPill> ·
+                @_voucher.Category · <NepMoney Minor="@_voucher.AmountRequestedMinor" Currency="GHS" />
+                · requester <code>@_voucher.RequesterUserId.ToString("N")[..8]</code>
+            </p>
+        </ChildContent>
+    </NepPageHeader>
 
-    <section class="card">
+    <NepCard>
         <dl>
             <dt>Purpose</dt><dd>@_voucher.Purpose</dd>
             <dt>Payee</dt><dd>@(_voucher.PayeeName ?? "(self)")</dd>
@@ -37,12 +42,12 @@ else
                 <dt>Ledger event</dt><dd><code>@_voucher.LedgerEventId</code></dd>
             }
         </dl>
-    </section>
+    </NepCard>
 
-    <section class="card">
+    <NepCard>
         <h3>Lines</h3>
         <table>
-            <thead><tr><th>#</th><th>Description</th><th>GL</th><th class="right">Amount (GHS)</th></tr></thead>
+            <thead><tr><th>#</th><th>Description</th><th>GL</th><th class="right">Amount</th></tr></thead>
             <tbody>
                 @foreach (var l in _voucher.Lines.OrderBy(l => l.LineNo))
                 {
@@ -50,16 +55,16 @@ else
                         <td>@l.LineNo</td>
                         <td>@l.Description</td>
                         <td><code>@l.GlAccount</code></td>
-                        <td class="right">@((l.GrossAmountMinor / 100m).ToString("N2"))</td>
+                        <td class="right"><NepMoney Minor="@l.GrossAmountMinor" Currency="GHS" /></td>
                     </tr>
                 }
             </tbody>
         </table>
-    </section>
+    </NepCard>
 
     @if (_voucher.Status == VoucherStatus.Submitted)
     {
-        <section class="card">
+        <NepCard>
             <h3>Decide</h3>
             @if (_voucher.RequesterUserId == User.UserId)
             {
@@ -67,22 +72,26 @@ else
             }
             else
             {
-                <button class="primary" disabled="@_busy" @onclick="ApproveAsync">Approve</button>
+                <ConfirmButton Class="primary" Disabled="@_busy"
+                               Confirm="@($"Approve voucher {_voucher.VoucherNo} for GHS {(_voucher.AmountRequestedMinor / 100m):N2}? This cannot be undone.")"
+                               OnConfirmed="ApproveAsync">Approve</ConfirmButton>
                 <button class="secondary" disabled="@_busy" @onclick="ToggleReject">Reject…</button>
                 @if (_showRejectInput)
                 {
                     <div class="reject-row">
                         <input type="text" @bind="_rejectReason" placeholder="Reason (required)" maxlength="1000" />
-                        <button class="secondary" disabled="@_busy" @onclick="RejectAsync">Confirm reject</button>
+                        <ConfirmButton Class="secondary" Disabled="@_busy"
+                                       Confirm="@($"Reject voucher {_voucher.VoucherNo}? Custodian will need to resubmit.")"
+                                       OnConfirmed="RejectAsync">Confirm reject</ConfirmButton>
                     </div>
                 }
             }
-        </section>
+        </NepCard>
     }
 
     @if (_voucher.Status == VoucherStatus.Approved)
     {
-        <section class="card">
+        <NepCard>
             <h3>Disburse</h3>
             @if (_voucher.DecidedByUserId == User.UserId)
             {
@@ -90,9 +99,18 @@ else
             }
             else
             {
-                <button class="primary" disabled="@_busy" @onclick="DisburseAsync">Disburse (cash)</button>
+                <ConfirmButton Class="primary" Disabled="@_busy"
+                               Confirm="@($"Disburse voucher {_voucher.VoucherNo} for GHS {(_voucher.AmountRequestedMinor / 100m):N2}? This posts the journal entry to the GL — irreversible without a reversing entry.")"
+                               OnConfirmed="DisburseAsync">Disburse (cash)</ConfirmButton>
             }
-        </section>
+        </NepCard>
+    }
+
+    @if (_voucher.Status is VoucherStatus.Approved or VoucherStatus.Disbursed or VoucherStatus.Rejected)
+    {
+        <NepCard>
+            <a class="secondary" href="@($"/pdf/voucher/{VoucherId}")" target="_blank">Download PDF</a>
+        </NepCard>
     }
 
     @if (!string.IsNullOrEmpty(_error))
@@ -150,4 +168,12 @@ else
         catch (Exception ex) { _error = ex.Message; }
         finally { _busy = false; }
     }
+
+    private static string PillTone(string status) => status switch
+    {
+        "Submitted" => "warn",
+        "Approved" or "Disbursed" => "ok",
+        "Rejected" or "Void" => "bad",
+        _ => "default"
+    };
 }

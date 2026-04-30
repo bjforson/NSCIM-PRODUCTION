@@ -9,7 +9,7 @@
 
 <PageTitle>NickFinance · Record receipt</PageTitle>
 
-<h1>Record receipt</h1>
+<NepPageHeader Title="Record receipt" />
 
 @if (_invoice is null)
 {
@@ -19,10 +19,10 @@ else
 {
     <p class="lede">
         Invoice <code>@_invoice.InvoiceNo</code> · Outstanding
-        @((_invoice.OutstandingMinor / 100m).ToString("N2")) GHS
+        <NepMoney Minor="@_invoice.OutstandingMinor" Currency="GHS" />
     </p>
     <EditForm Model="_form" OnValidSubmit="SaveAsync" FormName="recordReceipt">
-        <section class="card">
+        <NepCard>
             <label>
                 Receipt date
                 <input type="date" @bind="_form.ReceiptDate" />
@@ -47,7 +47,7 @@ else
             </label>
             <button type="submit" class="primary" disabled="@_busy">@(_busy ? "Saving…" : "Save receipt")</button>
             @if (!string.IsNullOrEmpty(_error)) { <div class="error">@_error</div> }
-        </section>
+        </NepCard>
     </EditForm>
 }
 

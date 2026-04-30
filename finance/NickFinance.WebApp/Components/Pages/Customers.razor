@@ -1,4 +1,5 @@
 @page "/ar/customers"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ArCustomerManage)]
 @using Microsoft.EntityFrameworkCore
 @inject ArDbContext Db
 @inject IArService Svc
@@ -7,9 +8,9 @@
 
 <PageTitle>NickFinance · Customers</PageTitle>
 
-<h1>Customers</h1>
+<NepPageHeader Title="Customers" />
 
-<section class="card">
+<NepCard>
     <h3>Add customer</h3>
     <EditForm Model="_form" OnValidSubmit="AddAsync" FormName="newCustomer">
         <label>Code <input type="text" @bind="_form.Code" required /></label>
@@ -20,25 +21,27 @@
         <button type="submit" class="primary" disabled="@_busy">Add</button>
         @if (!string.IsNullOrEmpty(_error)) { <div class="error">@_error</div> }
     </EditForm>
-</section>
+</NepCard>
 
-<section class="card">
-    <table>
-        <thead><tr><th>Code</th><th>Name</th><th>TIN</th><th>VAT</th><th>Active</th></tr></thead>
-        <tbody>
-            @foreach (var c in _customers)
-            {
-                <tr>
-                    <td><code>@c.Code</code></td>
-                    <td>@c.Name</td>
-                    <td>@c.Tin</td>
-                    <td>@(c.IsVatRegistered ? "yes" : "no")</td>
-                    <td>@(c.IsActive ? "active" : "inactive")</td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</section>
+<NepCard>
+    <NepTable TItem="Customer" Items="_customers">
+        <Header>
+            <th>Code</th><th>Name</th><th>TIN</th><th>VAT</th><th>Active</th>
+        </Header>
+        <Row Context="c">
+            <td><code>@c.Code</code></td>
+            <td>@c.Name</td>
+            <td>@c.Tin</td>
+            <td>@(c.IsVatRegistered ? "yes" : "no")</td>
+            <td>@(c.IsActive ? "active" : "inactive")</td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="No customers yet"
+                      Hint="Add a customer in the form above to start drafting AR invoices."
+                      Icon="@Icons.Material.Filled.PersonAdd" />
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
 @code {
     private List<Customer> _customers = new();

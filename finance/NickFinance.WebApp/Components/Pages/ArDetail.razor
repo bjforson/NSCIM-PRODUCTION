@@ -1,4 +1,5 @@
 @page "/ar/{InvoiceId:guid}"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ReportsView)]
 @using Microsoft.EntityFrameworkCore
 @inject ArDbContext Db
 @inject IArService Svc
@@ -15,23 +16,27 @@
 }
 else
 {
-    <h1>Invoice @(_invoice.InvoiceNo ?? "(unissued)")</h1>
-    <p class="lede">
-        <StatusPill Status="@_invoice.Status.ToString()" />
-        · @_customerName
-        · @_invoice.InvoiceDate.ToString("yyyy-MM-dd")
-    </p>
+    <NepPageHeader>
+        <ChildContent>
+            <h1 class="nep-page-header-title">Invoice @(_invoice.InvoiceNo ?? "(unissued)")</h1>
+            <p class="nep-page-header-lede">
+                <NepPill Tone="@PillTone(_invoice.Status.ToString())">@_invoice.Status</NepPill>
+                · @_customerName
+                · @_invoice.InvoiceDate.ToString("yyyy-MM-dd")
+            </p>
+        </ChildContent>
+    </NepPageHeader>
 
-    <section class="card">
+    <NepCard>
         <dl>
             <dt>Customer</dt><dd>@_customerName</dd>
             <dt>Reference</dt><dd>@_invoice.Reference</dd>
-            <dt>Net</dt><dd>@((_invoice.SubtotalNetMinor / 100m).ToString("N2"))</dd>
-            <dt>Levies</dt><dd>@((_invoice.LeviesMinor / 100m).ToString("N2"))</dd>
-            <dt>VAT</dt><dd>@((_invoice.VatMinor / 100m).ToString("N2"))</dd>
-            <dt>Gross</dt><dd>@((_invoice.GrossMinor / 100m).ToString("N2"))</dd>
-            <dt>Paid</dt><dd>@((_invoice.PaidMinor / 100m).ToString("N2"))</dd>
-            <dt>Outstanding</dt><dd>@((_invoice.OutstandingMinor / 100m).ToString("N2"))</dd>
+            <dt>Net</dt><dd><NepMoney Minor="@_invoice.SubtotalNetMinor" Currency="GHS" /></dd>
+            <dt>Levies</dt><dd><NepMoney Minor="@_invoice.LeviesMinor" Currency="GHS" /></dd>
+            <dt>VAT</dt><dd><NepMoney Minor="@_invoice.VatMinor" Currency="GHS" /></dd>
+            <dt>Gross</dt><dd><NepMoney Minor="@_invoice.GrossMinor" Currency="GHS" /></dd>
+            <dt>Paid</dt><dd><NepMoney Minor="@_invoice.PaidMinor" Currency="GHS" /></dd>
+            <dt>Outstanding</dt><dd><NepMoney Minor="@_invoice.OutstandingMinor" Currency="GHS" /></dd>
             <dt>e-VAT IRN</dt>
             <dd>
                 @if (string.IsNullOrEmpty(_invoice.EvatIrn))
@@ -40,7 +45,7 @@ else
                 }
                 else if (StubEvatProvider.IsSandbox(_invoice.EvatIrn))
                 {
-                    <span class="pill warn">SANDBOX</span> <code class="muted-code">@_invoice.EvatIrn</code>
+                    <NepPill Tone="sandbox">SANDBOX</NepPill> <code class="muted-code">@_invoice.EvatIrn</code>
                 }
                 else
                 {
@@ -48,21 +53,30 @@ else
                 }
             </dd>
         </dl>
-    </section>
+    </NepCard>
 
     @if (_invoice.Status == ArInvoiceStatus.Draft)
     {
-        <section class="card">
-            <button class="primary" disabled="@_busy" @onclick="IssueAsync">Issue (compute taxes + IRN + post journal)</button>
+        <NepCard>
+            <ConfirmButton Class="primary" Disabled="@_busy"
+                           Confirm="@($"Issue invoice {_invoice.InvoiceNo}? This computes Ghana taxes, mints a real GRA IRN, and posts the journal entry to the ledger. Cannot be undone via the UI — reversing requires a credit note.")"
+                           OnConfirmed="IssueAsync">Issue (compute taxes + IRN + post journal)</ConfirmButton>
             @if (!string.IsNullOrEmpty(_error)) { <div class="error">@_error</div> }
-        </section>
+        </NepCard>
     }
 
     @if (_invoice.Status is ArInvoiceStatus.Issued or ArInvoiceStatus.PartiallyPaid)
     {
-        <section class="card">
+        <NepCard>
             <a class="primary" href="@($"/ar/{InvoiceId}/receipt")">Record receipt</a>
-        </section>
+            <a class="secondary" href="@($"/pdf/invoice/{InvoiceId}")" target="_blank">Download PDF</a>
+        </NepCard>
+    }
+    else if (_invoice.Status is ArInvoiceStatus.Paid)
+    {
+        <NepCard>
+            <a class="secondary" href="@($"/pdf/invoice/{InvoiceId}")" target="_blank">Download PDF</a>
+        </NepCard>
     }
 }
 
@@ -100,4 +114,12 @@ else
         catch (Exception ex) { _error = ex.Message; }
         finally { _busy = false; }
     }
+
+    private static string PillTone(string status) => status switch
+    {
+        "Issued" or "PartiallyPaid" => "warn",
+        "Paid" => "ok",
+        "Void" => "bad",
+        _ => "default"
+    };
 }

@@ -1,4 +1,5 @@
 @page "/reports/aging"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = NickFinance.WebApp.Identity.Permissions.ReportsView)]
 @inject IArService Ar
 @inject IApService Ap
 @inject CurrentUser User
@@ -6,34 +7,42 @@
 
 <PageTitle>NickFinance · Aging</PageTitle>
 
-<h1>Aging</h1>
-<p class="lede">Receivables and payables, bucketed by days overdue from due date.</p>
+<NepPageHeader Title="Aging"
+               Lede="Receivables and payables, bucketed by days overdue from due date." />
 
-<section class="card">
+<NepCard>
     <h3>Accounts receivable</h3>
-    <table>
-        <thead><tr><th>Bucket</th><th class="right"># invoices</th><th class="right">Outstanding</th></tr></thead>
-        <tbody>
-            @foreach (var b in _ar)
-            {
-                <tr><td>@b.Bucket</td><td class="right">@b.InvoiceCount</td><td class="right">@((b.OutstandingTotal.Minor / 100m).ToString("N2")) @b.OutstandingTotal.CurrencyCode</td></tr>
-            }
-        </tbody>
-    </table>
-</section>
+    <NepTable TItem="NickFinance.AR.AgingBucket" Items="_ar">
+        <Header>
+            <th>Bucket</th><th class="right"># invoices</th><th class="right">Outstanding</th>
+        </Header>
+        <Row Context="b">
+            <td>@b.Bucket</td>
+            <td class="right">@b.InvoiceCount</td>
+            <td class="right"><NepMoney Minor="@b.OutstandingTotal.Minor" Currency="@b.OutstandingTotal.CurrencyCode" /></td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="No outstanding receivables" Hint="All issued invoices have been paid in full." />
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
-<section class="card">
+<NepCard>
     <h3>Accounts payable</h3>
-    <table>
-        <thead><tr><th>Bucket</th><th class="right"># bills</th><th class="right">Outstanding</th></tr></thead>
-        <tbody>
-            @foreach (var b in _ap)
-            {
-                <tr><td>@b.Bucket</td><td class="right">@b.BillCount</td><td class="right">@((b.OutstandingTotal.Minor / 100m).ToString("N2")) @b.OutstandingTotal.CurrencyCode</td></tr>
-            }
-        </tbody>
-    </table>
-</section>
+    <NepTable TItem="NickFinance.AP.AgingBucket" Items="_ap">
+        <Header>
+            <th>Bucket</th><th class="right"># bills</th><th class="right">Outstanding</th>
+        </Header>
+        <Row Context="b">
+            <td>@b.Bucket</td>
+            <td class="right">@b.BillCount</td>
+            <td class="right"><NepMoney Minor="@b.OutstandingTotal.Minor" Currency="@b.OutstandingTotal.CurrencyCode" /></td>
+        </Row>
+        <EmptyState>
+            <NepEmpty Title="No outstanding payables" Hint="No vendor bills are open." />
+        </EmptyState>
+    </NepTable>
+</NepCard>
 
 @code {
     private IReadOnlyList<NickFinance.AR.AgingBucket> _ar = Array.Empty<NickFinance.AR.AgingBucket>();

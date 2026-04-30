@@ -1,11 +1,22 @@
 using Microsoft.EntityFrameworkCore;
+using NickERP.Platform.Identity;
 
 namespace NickFinance.Budgeting;
 
 public class BudgetingDbContext : DbContext
 {
     public const string SchemaName = "budgeting";
+
+    private readonly ITenantAccessor? _tenantAccessor;
+
     public BudgetingDbContext(DbContextOptions<BudgetingDbContext> options) : base(options) { }
+
+    public BudgetingDbContext(DbContextOptions<BudgetingDbContext> options, ITenantAccessor? tenantAccessor)
+        : base(options)
+    {
+        _tenantAccessor = tenantAccessor;
+    }
+
     public DbSet<AnnualBudget> Budgets => Set<AnnualBudget>();
     public DbSet<BudgetLine> Lines => Set<BudgetLine>();
 
@@ -13,6 +24,8 @@ public class BudgetingDbContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(b);
         b.HasDefaultSchema(SchemaName);
+
+        var filterEnabled = _tenantAccessor is not null;
 
         b.Entity<AnnualBudget>(e =>
         {
@@ -32,6 +45,8 @@ public class BudgetingDbContext : DbContext
             e.HasIndex(x => new { x.TenantId, x.FiscalYear, x.DepartmentCode })
              .IsUnique().HasDatabaseName("ux_annual_budgets_tenant_year_dept");
             e.HasMany(x => x.Lines).WithOne().HasForeignKey(l => l.AnnualBudgetId).OnDelete(DeleteBehavior.Cascade);
+
+            if (filterEnabled) e.HasQueryFilter(x => x.TenantId == _tenantAccessor!.Current);
         });
 
         b.Entity<BudgetLine>(e =>
