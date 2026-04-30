@@ -2,17 +2,22 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.HRStaff)]
 @rendermode InteractiveServer
 
+@using Microsoft.AspNetCore.Identity
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.AspNetCore.Authorization
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Entities.Core
 @using NickHR.Core.Enums
 @using NickHR.Core.Constants
+@using NickHR.WebApp.Components.Shared
+@using NickHR.WebApp.Services
 
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject NavigationManager Nav
 @inject IJSRuntime JS
+@inject AuthStateProvider AuthStateProvider
+@inject IIdentityProvisioningService Provisioning
 
 <PageTitle>NICKSCAN ERP — NickHR — Edit Employee</PageTitle>
 
@@ -647,11 +652,43 @@ else
             }
         </MudTabPanel>
 
+        @* W3B Phase 2 (2026-04-29) — NickFinance access (15-role catalog).
+           Pre-populated from existing identity.user_roles for this employee.
+           Apply runs on form Save. The wave-4 fast-path (ModuleAccessPanel
+           on EmployeeDetail) continues to coexist for "manage existing"
+           scenarios. *@
+        <MudTabPanel Text="Module access" Icon="@Icons.Material.Filled.Security">
+            @if (string.IsNullOrWhiteSpace(_employee?.WorkEmail))
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                    Add a work email under <strong>Contact</strong> before granting NickFinance access. Identity rows
+                    are keyed by lower-cased work email.
+                </MudAlert>
+            }
+            else
+            {
+                <NickFinanceAccessSection @ref="_nickFinanceAccessSection"
+                                          Email="@_employee.WorkEmail"
+                                          DisplayName="@($"{_employee.FirstName} {_employee.LastName}".Trim())"
+                                          UserId="@_identityUserId"
+                                          OnStateChanged="OnNickFinanceStateChanged" />
+            }
+        </MudTabPanel>
+
     </MudTabs>
+
+    @if (_nickFinanceState is not null && !_nickFinanceState.IsValid)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mt-3">
+            NickFinance access tab has invalid grants — pick a site for every site-required role and
+            fill ExpiresAt + audit firm for ExternalAuditor before saving.
+        </MudAlert>
+    }
 
     <div class="d-flex gap-3 mt-4">
         <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
-                   OnClick="SaveAsync" Disabled="_saving">
+                   OnClick="SaveAsync"
+                   Disabled="@(_saving || (_nickFinanceState is not null && !_nickFinanceState.IsValid))">
             @if (_saving) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
             Save Changes
         </MudButton>
@@ -665,6 +702,24 @@ else
     private bool _loading = true;
     private bool _saving = false;
     private bool _photoUploading = false;
+
+    // W3B Phase 2 — NickFinance access section.
+    private NickFinanceAccessSection? _nickFinanceAccessSection;
+    private NickFinanceAccessSectionState? _nickFinanceState;
+    /// <summary>
+    /// The identity.users.internal_user_id resolved from the employee's
+    /// work email. Null until the employee has been provisioned into the
+    /// shared identity store (the wave-4 fast-path on EmployeeDetail can
+    /// also do this). The section copes with null by rendering in
+    /// "intent capture" mode and Save then provisions before applying.
+    /// </summary>
+    private Guid? _identityUserId;
+
+    private Task OnNickFinanceStateChanged(NickFinanceAccessSectionState state)
+    {
+        _nickFinanceState = state;
+        return Task.CompletedTask;
+    }
 
     // Qualification form
     private bool _showQualForm = false;
@@ -843,6 +898,16 @@ else
                     ))
                 .OrderBy(e => e.Grade!.Level).ThenBy(e => e.FirstName).ThenBy(e => e.LastName)
                 .ToListAsync();
+
+            // W3B Phase 2: pre-resolve the identity uuid so the
+            // NickFinanceAccessSection can pre-populate existing grants
+            // on render. Returns null if the employee hasn't been
+            // provisioned into identity.users yet — the section then
+            // renders in "intent capture" mode.
+            if (_employee is not null && !string.IsNullOrWhiteSpace(_employee.WorkEmail))
+            {
+                _identityUserId = await Provisioning.GetUserIdByEmailAsync(_employee.WorkEmail, tenantId: 1L);
+            }
         }
         catch (Exception ex)
         {
@@ -894,6 +959,36 @@ else
             var db = scope.ServiceProvider.GetRequiredService<NickHRDbContext>();
             db.Employees.Update(_employee);
             await db.SaveChangesAsync();
+
+            // W3B Phase 2: apply NickFinance access changes after the
+            // employee row commits. Resolve / upsert the identity row
+            // first so the section has a real uuid to attach grants to.
+            if (_nickFinanceAccessSection is not null && !string.IsNullOrWhiteSpace(_employee.WorkEmail))
+            {
+                try
+                {
+                    var displayName = $"{_employee.FirstName} {_employee.LastName}".Trim();
+                    var identityUserId = _identityUserId
+                        ?? await Provisioning.ProvisionEmployeeAsync(_employee.WorkEmail, displayName, tenantId: 1L);
+                    _identityUserId = identityUserId;
+
+                    var grantedBy = await ResolveGrantedByUserIdAsync(scope.ServiceProvider);
+                    var ok = await _nickFinanceAccessSection.ApplyAsync(identityUserId, grantedBy);
+                    if (!ok)
+                    {
+                        Snackbar.Add(
+                            "Employee saved but a NickFinance role grant was blocked by an SoD violation — see banner above.",
+                            Severity.Warning);
+                        _saving = false;
+                        return; // Stay on the page so HR can adjust.
+                    }
+                }
+                catch (Exception nfx)
+                {
+                    Snackbar.Add($"Employee saved but NickFinance role grants failed: {nfx.Message}", Severity.Warning);
+                }
+            }
+
             Snackbar.Add("Employee updated successfully.", Severity.Success);
             Nav.NavigateTo($"/employees/{Id}");
         }
@@ -904,6 +999,39 @@ else
         finally
         {
             _saving = false;
+        }
+    }
+
+    /// <summary>
+    /// Resolve the cookie-authenticated admin's identity.users id, auto-
+    /// provisioning a row if needed. Used as <c>granted_by_user_id</c> on
+    /// every NickFinance role grant created from this form.
+    /// </summary>
+    private async Task<Guid> ResolveGrantedByUserIdAsync(IServiceProvider sp)
+    {
+        try
+        {
+            var state = await AuthStateProvider.GetAuthenticationStateAsync();
+            var email = state.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? state.User.FindFirst("email")?.Value
+                       ?? state.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(email)) return Guid.Empty;
+
+            var existing = await Provisioning.GetUserIdByEmailAsync(email, tenantId: 1L);
+            if (existing is not null) return existing.Value;
+
+            var userManager = sp.GetService<UserManager<ApplicationUser>>();
+            var displayName = email;
+            if (userManager is not null)
+            {
+                var u = await userManager.FindByEmailAsync(email);
+                if (u is not null) displayName = $"{u.FirstName} {u.LastName}".Trim();
+            }
+            return await Provisioning.ProvisionEmployeeAsync(email, displayName, tenantId: 1L);
+        }
+        catch
+        {
+            return Guid.Empty;
         }
     }
 

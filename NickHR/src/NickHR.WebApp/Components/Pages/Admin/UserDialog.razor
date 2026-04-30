@@ -7,9 +7,13 @@
 @using NickHR.Core.Interfaces
 @using NickHR.Services.Common
 @using NickHR.Services.SystemAccess
+@using NickHR.WebApp.Components.Shared
+@using NickHR.WebApp.Services
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
+@inject AuthStateProvider AuthStateProvider
+@inject IIdentityProvisioningService Provisioning
 
 <MudDialog>
     <DialogContent>
@@ -98,17 +102,35 @@
                         }
                     }
                 </MudPaper>
+
+                @* W3B Phase 2 (2026-04-29) — NickFinance access section. Mirrors
+                   the NSCIS block above. The 15-role catalog is multi-select; SoD
+                   warnings + ExternalAuditor expiry / firm fields render inline.
+                   ApplyAsync is called from Save() AFTER the user row commits. *@
+                <NickFinanceAccessSection @ref="_nickFinanceAccessSection"
+                                          Email="@_email"
+                                          DisplayName="@($"{_firstName} {_lastName}".Trim())"
+                                          UserId="@_identityUserId"
+                                          OnStateChanged="OnNickFinanceStateChanged" />
             </MudForm>
 
             @if (!string.IsNullOrEmpty(_errorMessage))
             {
                 <MudAlert Severity="Severity.Error" Class="mt-2">@_errorMessage</MudAlert>
             }
+            @if (_nickFinanceState is not null && !_nickFinanceState.IsValid)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mt-2">
+                    NickFinance access section has invalid grants — pick a site for every site-required role and
+                    fill ExpiresAt + audit firm for ExternalAuditor.
+                </MudAlert>
+            }
         }
     </DialogContent>
     <DialogActions>
         <MudButton OnClick="Cancel" Disabled="@_isSaving">Cancel</MudButton>
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@(_isSaving || _isLoading)">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save"
+                   Disabled="@(_isSaving || _isLoading || (_nickFinanceState is not null && !_nickFinanceState.IsValid))">
             @if (_isSaving) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> }
             @(_isEdit ? "Save Changes" : "Create User")
         </MudButton>
@@ -144,6 +166,23 @@
     private bool _originalNscisAccessGranted; // Track initial state to detect changes
     private int? _originalNscisRoleId;
 
+    // W3B Phase 2 — NickFinance access section.
+    private NickFinanceAccessSection? _nickFinanceAccessSection;
+    private NickFinanceAccessSectionState? _nickFinanceState;
+    /// <summary>
+    /// The identity.users.internal_user_id for the user being edited (null
+    /// in create mode until after the row commits). The section uses this
+    /// to pre-populate existing grants on edit; on create it is filled in
+    /// post-commit and ApplyAsync runs at that point.
+    /// </summary>
+    private Guid? _identityUserId;
+
+    private Task OnNickFinanceStateChanged(NickFinanceAccessSectionState state)
+    {
+        _nickFinanceState = state;
+        return Task.CompletedTask;
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -169,6 +208,17 @@
                     _isActive = user.IsActive;
                     var roles = await userManager.GetRolesAsync(user);
                     _selectedRole = roles.FirstOrDefault() ?? string.Empty;
+
+                    // W3B Phase 2: resolve the canonical identity.users id for
+                    // this email so the NickFinance section can pre-populate
+                    // existing grants. Returns null if the user hasn't been
+                    // provisioned into identity.users yet — section then
+                    // renders in "intent capture" mode and ApplyAsync runs
+                    // after the post-save provisioning step.
+                    if (!string.IsNullOrWhiteSpace(_email))
+                    {
+                        _identityUserId = await Provisioning.GetUserIdByEmailAsync(_email, tenantId: 1L);
+                    }
                 }
 
                 // Load existing external system access
@@ -335,6 +385,52 @@
                 await ApplySystemAccessChangesAsync(sysAccessSvc, savedUserId);
             }
 
+            // W3B Phase 2: apply NickFinance access changes. Runs AFTER the
+            // user row commits so we can pass the section a real identity
+            // uuid. On create flows the user has no identity row yet — we
+            // upsert one via ProvisionEmployeeAsync (idempotent) and use
+            // the returned id.
+            if (_nickFinanceAccessSection is not null)
+            {
+                try
+                {
+                    Guid identityUserId;
+                    if (_identityUserId is Guid existingId)
+                    {
+                        identityUserId = existingId;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(_email))
+                    {
+                        identityUserId = await Provisioning.ProvisionEmployeeAsync(
+                            _email,
+                            $"{_firstName} {_lastName}".Trim(),
+                            tenantId: 1L);
+                        _identityUserId = identityUserId;
+                    }
+                    else
+                    {
+                        identityUserId = Guid.Empty;
+                    }
+
+                    if (identityUserId != Guid.Empty)
+                    {
+                        var grantedBy = await ResolveGrantedByUserIdAsync();
+                        var ok = await _nickFinanceAccessSection.ApplyAsync(identityUserId, grantedBy);
+                        if (!ok)
+                        {
+                            // The section already surfaces the SoD error inline; do not close.
+                            Snackbar.Add("NickFinance access save was blocked by an SoD violation.", Severity.Error);
+                            _isSaving = false;
+                            return;
+                        }
+                    }
+                }
+                catch (Exception nfx)
+                {
+                    Snackbar.Add($"NickFinance access save failed: {nfx.Message}", Severity.Warning);
+                }
+            }
+
             MudDialog.Close(DialogResult.Ok(true));
         }
         catch (Exception ex)
@@ -344,6 +440,40 @@
         finally
         {
             _isSaving = false;
+        }
+    }
+
+    /// <summary>
+    /// Resolve the cookie-authenticated admin's identity.users id (auto-
+    /// provisioning a row if needed) so role grants stamp granted_by_user_id
+    /// with a real FK target.
+    /// </summary>
+    private async Task<Guid> ResolveGrantedByUserIdAsync()
+    {
+        try
+        {
+            var state = await AuthStateProvider.GetAuthenticationStateAsync();
+            var email = state.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? state.User.FindFirst("email")?.Value
+                       ?? state.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(email)) return Guid.Empty;
+
+            var existing = await Provisioning.GetUserIdByEmailAsync(email, tenantId: 1L);
+            if (existing is not null) return existing.Value;
+
+            using var scope = ServiceProvider.CreateScope();
+            var userManager = scope.ServiceProvider.GetService<UserManager<ApplicationUser>>();
+            var displayName = email;
+            if (userManager is not null)
+            {
+                var u = await userManager.FindByEmailAsync(email);
+                if (u is not null) displayName = $"{u.FirstName} {u.LastName}".Trim();
+            }
+            return await Provisioning.ProvisionEmployeeAsync(email, displayName, tenantId: 1L);
+        }
+        catch
+        {
+            return Guid.Empty;
         }
     }
 

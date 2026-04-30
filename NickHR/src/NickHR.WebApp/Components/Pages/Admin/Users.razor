@@ -2,16 +2,20 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Roles = RoleSets.SuperAdminOnly)]
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.Identity
 @using NickHR.Infrastructure.Data
 @using NickHR.Core.Interfaces
 @using NickHR.Services.Common
 @using NickHR.Services.SystemAccess
 @using NickHR.Core.Constants
+@using NickHR.WebApp.Services
 @inject IServiceProvider ServiceProvider
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
+@inject IIdentityProvisioningService Provisioning
+@inject AuthenticationStateProvider AuthStateProvider
 
 <PageTitle>NICKSCAN ERP — NickHR — Users & Roles</PageTitle>
 
@@ -97,6 +101,8 @@ else
                     <MudTd>
                         <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Warning"
                                        title="Edit" OnClick="@(() => OpenEditDialog(context.Id))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Security" Size="Size.Small" Color="Color.Primary"
+                                       title="Module access (NickFinance roles)" OnClick="@(() => OpenModuleAccessDialog(context))" />
                         <MudIconButton Icon="@Icons.Material.Filled.LockReset" Size="Size.Small" Color="Color.Info"
                                        title="Reset Password" OnClick="@(() => ResetPassword(context))" />
                         @if (context.LastLogin == null)
@@ -197,6 +203,70 @@ else
         var parameters = new DialogParameters<UserDialog> { { x => x.UserId, null } };
         var dialog = await DialogService.ShowAsync<UserDialog>("Create User", parameters, options);
         if (!(await dialog.Result)?.Canceled ?? false) await LoadUsers();
+    }
+
+    /// <summary>
+    /// W3B (2026-04-29): opens the shared <c>ModuleAccessPanel</c> for this
+    /// user. Even non-employee admins (auditors, finance leads not on the
+    /// payroll) get a row in <c>identity.users</c> via this flow, so HR
+    /// is the system-of-record for every NickERP-app user.
+    /// </summary>
+    private async Task OpenModuleAccessDialog(UserRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.Email))
+        {
+            Snackbar.Add("This user has no email; module access cannot be provisioned.", Severity.Warning);
+            return;
+        }
+
+        var grantedBy = await ResolveCurrentAdminUserIdAsync();
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var parameters = new DialogParameters<ModuleAccessDialog>
+        {
+            { x => x.Email, row.Email },
+            { x => x.DisplayName, string.IsNullOrWhiteSpace(row.FullName) ? row.Email : row.FullName },
+            { x => x.GrantedByUserId, grantedBy },
+        };
+        var dialog = await DialogService.ShowAsync<ModuleAccessDialog>("Module access — NickFinance", parameters, options);
+        await dialog.Result;
+        await LoadUsers();
+    }
+
+    /// <summary>
+    /// Resolve the current cookie-authenticated admin's identity.users id.
+    /// Auto-provisions a row for the admin if one doesn't already exist
+    /// — the admin is themselves a NickERP-platform user.
+    /// </summary>
+    private async Task<Guid> ResolveCurrentAdminUserIdAsync()
+    {
+        try
+        {
+            var state = await AuthStateProvider.GetAuthenticationStateAsync();
+            var email = state.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                       ?? state.User.FindFirst("email")?.Value
+                       ?? state.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(email)) return Guid.Empty;
+
+            var existing = await Provisioning.GetUserIdByEmailAsync(email, tenantId: 1L);
+            if (existing is not null) return existing.Value;
+
+            using var scope = ServiceProvider.CreateScope();
+            var userManager = scope.ServiceProvider.GetService<UserManager<ApplicationUser>>();
+            var displayName = email;
+            if (userManager is not null)
+            {
+                var u = await userManager.FindByEmailAsync(email);
+                if (u is not null && !string.IsNullOrWhiteSpace(u.FullName))
+                {
+                    displayName = u.FullName;
+                }
+            }
+            return await Provisioning.ProvisionEmployeeAsync(email, displayName, tenantId: 1L);
+        }
+        catch
+        {
+            return Guid.Empty;
+        }
     }
 
     private async Task OpenEditDialog(string id)

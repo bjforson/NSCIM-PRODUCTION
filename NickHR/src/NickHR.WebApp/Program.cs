@@ -165,6 +165,29 @@ builder.Services.AddScoped<CurrentEmployeeService>();
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthorization();
 
+// W3B (2026-04-29): NickHR is now system-of-record for users that consume
+// any NickERP app (NickFinance today; NickScan tomorrow). The shared
+// identity schema lives in the same Postgres `nickhr` database, so we
+// reuse the existing connection. NickHR is a CONSUMER of the schema —
+// the migration owner is NickFinance.Database.Bootstrap. We don't run
+// EF migrations from this app.
+builder.Services.AddDbContext<NickERP.Platform.Identity.IdentityDbContext>((sp, opts) =>
+{
+    opts.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+});
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<NickHR.WebApp.Services.IIdentityProvisioningService,
+                          NickHR.WebApp.Services.IdentityProvisioningService>();
+
+// W3B Phase 2 (2026-04-29): NickFinance access section needs an ISodService
+// to surface segregation-of-duties warnings inline. Phase 1 (parallel) is
+// shipping a real DB-backed implementation; until that lands we register
+// the no-op fallback so the form never crashes on a missing service. When
+// Phase 1's registration is added to this file it should REPLACE this line
+// (TryAddScoped would silently keep the null impl, which is wrong).
+builder.Services.AddScoped<NickHR.WebApp.Identity.ISodService,
+                          NickHR.WebApp.Identity.NullSodService>();
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
