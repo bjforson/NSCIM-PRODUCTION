@@ -115,3 +115,8 @@ docs/migration/set-secrets-on-target.ps1
 # - operational_outputs/ contains one-off reports + draft emails with live BOE data
 _archive/
 operational_outputs/
+
+# ASP.NET Core Data Protection key rings — runtime per-host secrets, never source-tracked.
+# Each host generates its own keys; committing them across hosts defeats key isolation.
+Data/NickFinance.WebApp/dp-keys/
+Data/**/dp-keys/
