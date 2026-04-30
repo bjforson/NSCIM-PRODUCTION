@@ -1,8 +1,13 @@
 @inherits LayoutComponentBase
 @using NickScanWebApp.New.Components.Authentication
+@using System.Security.Claims
 @inject NavigationManager NavigationManager
 @inject NickScanWebApp.New.Services.ThemeService ThemeService
 @inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ILogger<MainLayout> Logger
 @implements IDisposable
 
 <MudThemeProvider Theme="@_theme" IsDarkMode="@ThemeService.IsDarkMode" />
@@ -76,7 +81,8 @@
     private ICUMSTheme _theme = new ICUMSTheme();
     private bool _drawerOpen = true;
     private List<BreadcrumbItem> _breadcrumbs = new();
-    
+    private bool _hasNudgedReadiness = false;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -91,7 +97,79 @@
                 }
             }
             catch { /* JS not available during prerender */ }
+
+            // T5 readiness UX nudge — fire once per session for Audit/Analyst users
+            // who aren't currently flagged ready (or have a stale heartbeat).
+            // Server-side never auto-flips IsReady; the user must navigate to
+            // AuditReview/Workbench to do that explicitly.
+            if (!_hasNudgedReadiness)
+            {
+                _hasNudgedReadiness = true;
+                _ = TryShowReadinessNudgeAsync();
+            }
         }
+    }
+
+    private async Task TryShowReadinessNudgeAsync()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            if (user.Identity?.IsAuthenticated != true) return;
+
+            var roleClaim = user.FindFirst(ClaimTypes.Role) ?? user.FindFirst("role");
+            var role = roleClaim?.Value;
+            if (role is not ("Audit" or "Analyst")) return;
+
+            var snap = await ApiService.GetAsync<UserReadinessSnapshot>(
+                $"/api/image-analysis/user/readiness?role={role}");
+
+            var stale = snap?.LastHeartbeat is null
+                || (DateTime.UtcNow - snap.LastHeartbeat.Value).TotalMinutes > 60;
+            var notReady = !(snap?.IsReady ?? false);
+
+            if (notReady || stale)
+            {
+                var targetPage = role == "Audit" ? "Audit Review" : "Workbench";
+                var targetRoute = role == "Audit" ? "/image-analysis/audit" : "/image-analysis/workbench";
+                var message =
+                    $"You're not currently flagged ready for {role} work. " +
+                    $"Open the {targetPage} page to start receiving assignments.";
+
+                await InvokeAsync(() =>
+                {
+                    Snackbar.Add(message, Severity.Info, cfg =>
+                    {
+                        cfg.Action = "Go";
+                        cfg.ActionColor = Color.Primary;
+                        cfg.OnClick = snackbar =>
+                        {
+                            NavigationManager.NavigateTo(targetRoute);
+                            return Task.CompletedTask;
+                        };
+                        cfg.RequireInteraction = false;
+                        cfg.VisibleStateDuration = 10000;
+                    });
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            // Silently degrade — the nudge is non-critical UX. Log at debug
+            // so a missing readiness record / API hiccup doesn't spam errors.
+            Logger.LogDebug(ex, "Readiness nudge skipped (non-fatal)");
+        }
+    }
+
+    private class UserReadinessSnapshot
+    {
+        public string Username { get; set; } = "";
+        public string Role { get; set; } = "";
+        public bool IsReady { get; set; }
+        public DateTime? LastHeartbeat { get; set; }
+        public DateTime? LastChangedAt { get; set; }
+        public string? Message { get; set; }
     }
 
     protected override async Task OnInitializedAsync()
