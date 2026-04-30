@@ -3766,6 +3766,31 @@ RETURNING (xmax = 0)::int;";
                             }
                             await db.SaveChangesAsync(ct);
 
+                            // Back-stamp containercompletenessstatuses.groupidentifier for the
+                            // containers we just attached. Completeness rows can be created
+                            // before any group exists (CMR-clearance arrival, pre-BOE scan)
+                            // with groupidentifier=NULL. Without this stamp,
+                            // ReadyGroupsCacheService.GetReadyGroupsForRoleAsync joins on
+                            // groupidentifier and sees zero containers, so its Analyst-role
+                            // filter excludes the group and analyst auto-assignment never
+                            // fires — group sits in Ready forever. Only stamps NULL rows so
+                            // we never overwrite a competing/consolidated group's identifier.
+                            var containerNumbersToStamp = readyChildren
+                                .Select(c => c.ContainerNumber)
+                                .ToArray();
+                            var stamped = await db.Database.ExecuteSqlInterpolatedAsync($@"
+                                UPDATE containercompletenessstatuses
+                                SET groupidentifier = {record.DeclarationNumber},
+                                    updatedat = now() AT TIME ZONE 'UTC'
+                                WHERE containernumber = ANY({containerNumbersToStamp})
+                                  AND groupidentifier IS NULL", ct);
+                            if (stamped > 0)
+                            {
+                                _logger.LogInformation(
+                                    "[INTAKE-RECORD] Back-stamped groupidentifier={Decl} on {Count} completeness row(s) for record {RecordId}",
+                                    record.DeclarationNumber, stamped, record.Id);
+                            }
+
                             // ALWAYS create wave tracking (AnalysisParentGroup) — even for "Ready"
                             // records. This ensures that if new containers arrive later (BOE amendment,
                             // late scan), the wave mechanism can create Wave N for them.
