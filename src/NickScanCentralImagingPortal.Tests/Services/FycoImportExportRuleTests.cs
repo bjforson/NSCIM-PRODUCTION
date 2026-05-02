@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace NickScanCentralImagingPortal.Tests.Services
@@ -10,6 +11,7 @@ namespace NickScanCentralImagingPortal.Tests.Services
     public class FycoImportExportRuleTests
     {
         [Theory]
+        // Legacy boolean-ish markers (the original spec)
         [InlineData("1",      true)]
         [InlineData("true",   true)]
         [InlineData("TRUE",   true)]
@@ -23,6 +25,24 @@ namespace NickScanCentralImagingPortal.Tests.Services
         [InlineData("",       false)]
         [InlineData(null,     false)]
         [InlineData("unknown",false)]
+        // Typed-verbiage markers — what FS6000 operators actually enter (see
+        // memory reference_port_match_rules_enabled_2026_05_02.md). The regex
+        // \bex(p)?ort\b catches the dominant forms.
+        [InlineData("WAYBILL/EXPORT",   true)]
+        [InlineData("waybill/export",   true)]
+        [InlineData("EXPORT",           true)]
+        [InlineData("export",           true)]
+        [InlineData("WAY-BILL/EXPORT",  true)]
+        [InlineData("WAYBILL/EXORT",    true)]
+        [InlineData("WWAYBILL/EXPORT",  true)]
+        // Import-side typed values must NOT be treated as export
+        [InlineData("IMPORT",           false)]
+        [InlineData("import",           false)]
+        // Deeper typos that still slip through — documented residue
+        [InlineData("WAYBILL/EPORT",    false)]   // missing 'x'
+        [InlineData("WAYBILL/EXPORRT",  false)]   // doubled 'r'
+        [InlineData("WAYBILL/EXPROT",   false)]   // letter swap
+        [InlineData("WAYBILL/EXPOR",    false)]   // truncated
         public void IsExportFlag_RecognisesExportMarkers(string? raw, bool expected)
         {
             Assert.Equal(expected, IsExportFlag(raw));
@@ -42,6 +62,14 @@ namespace NickScanCentralImagingPortal.Tests.Services
         [InlineData("YES",   null,  FycoOutcome.Skip)]
         [InlineData("YES",   "",    FycoOutcome.Skip)]
         [InlineData(null,    "EX",  FycoOutcome.Skip)]
+        // Typed-verbiage — production data shape (60% of real FycoPresent values)
+        [InlineData("WAYBILL/EXPORT", "EX", FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "IM", FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // 70326214329 case
+        [InlineData("WAY-BILL/EXPORT","IM", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("EXPORT",         "IM", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("IMPORT",         "EX", FycoOutcome.FailFycoSaysImportButBoeIsExport)]
+        [InlineData("IMPORT",         "IM", FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "CMR",FycoOutcome.Skip)]                                // CMR always skips
         [InlineData("",      "IM",  FycoOutcome.Skip)]
         public void EvaluateFyco_DecisionTable(string? fycoPresent, string? clearanceType, FycoOutcome expected)
         {
@@ -50,6 +78,11 @@ namespace NickScanCentralImagingPortal.Tests.Services
 
         public enum FycoOutcome { Pass, FailFycoSaysExportButBoeIsImport, FailFycoSaysImportButBoeIsExport, Skip }
 
+        // Mirrors ContainerValidationService.IsExportFlag — kept in sync deliberately
+        // (no shared production helper to avoid pulling EF + DI deps into the test asm).
+        private static readonly Regex ExportTokenRegex =
+            new(@"\bex(p)?ort\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         private static bool IsExportFlag(string? raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -57,7 +90,8 @@ namespace NickScanCentralImagingPortal.Tests.Services
             return t.Equals("1")
                 || t.Equals("true", System.StringComparison.OrdinalIgnoreCase)
                 || t.Equals("Y",    System.StringComparison.OrdinalIgnoreCase)
-                || t.Equals("YES",  System.StringComparison.OrdinalIgnoreCase);
+                || t.Equals("YES",  System.StringComparison.OrdinalIgnoreCase)
+                || ExportTokenRegex.IsMatch(t);
         }
 
         private static FycoOutcome Evaluate(string? fycoPresent, string? clearanceType)

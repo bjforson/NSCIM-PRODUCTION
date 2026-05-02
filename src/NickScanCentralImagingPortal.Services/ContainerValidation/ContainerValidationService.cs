@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -866,8 +867,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                 }
 
                 var raw = fs.FycoPresent.Trim();
-                var isExportFlag = raw.Equals("1") || raw.Equals("true", StringComparison.OrdinalIgnoreCase)
-                                || raw.Equals("Y", StringComparison.OrdinalIgnoreCase) || raw.Equals("YES", StringComparison.OrdinalIgnoreCase);
+                var isExportFlag = IsExportFlag(raw);
                 var isBoeExport = boeClearance.Equals("EX", StringComparison.OrdinalIgnoreCase);
 
                 if (isExportFlag == isBoeExport)
@@ -883,6 +883,27 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
             {
                 _logger.LogWarning(ex, "FycoPresent check failed for {Container}; skipping rule", containerNumber);
             }
+        }
+
+        // Recognises FS6000 fyco-as-export markers. FycoPresent was specced as a boolean-ish
+        // flag (1/true/Y/YES) but operators in practice type free-text waybill verbiage —
+        // 60% of real records hold "WAYBILL/EXPORT", another 4% "WAY-BILL/EXPORT", plus
+        // "EXPORT" and assorted typos (see memory reference_port_match_rules_enabled_2026_05_02.md).
+        // The regex catches the dominant typed forms; ~14 records / 0.7% with deeper typos
+        // (EXPOR, EXPORR, EXPROT, EPORT, EXPORTSTC TI) still slip through and are best
+        // addressed at FS6000-ingest validation time.
+        private static readonly Regex ExportTokenRegex =
+            new(@"\bex(p)?ort\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static bool IsExportFlag(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            var t = raw.Trim();
+            return t.Equals("1")
+                || t.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("Y",    StringComparison.OrdinalIgnoreCase)
+                || t.Equals("YES",  StringComparison.OrdinalIgnoreCase)
+                || ExportTokenRegex.IsMatch(t);
         }
 
         /// <summary>
