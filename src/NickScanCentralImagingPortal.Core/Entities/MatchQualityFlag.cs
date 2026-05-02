@@ -50,7 +50,8 @@ namespace NickScanCentralImagingPortal.Core.Entities
         /// Anomaly category. Stable string code, not enum, so future flag types
         /// can be added without a migration. Current set:
         ///   - "NullDeliveryPlace"  — BOE has no DeliveryPlace; location gate cannot verify
-        ///   - "FycoMismatch"       — scan FycoPresent contradicts BOE ClearanceType
+        ///   - "PortMismatch"       — scanner type's home port (FS6000=TKD, ASE=TMA) disagrees with BOE.DeliveryPlace port code
+        ///   - "FycoMismatch"       — scan FycoPresent contradicts BOE ClearanceType (i.e. direction mismatch — export scan vs import BOE or vice versa)
         ///   - "DuplicateImage"     — multiple containers share the same FS6000Image filename
         ///   - "ManualFlag"         — admin manually flagged a match for review
         /// </summary>

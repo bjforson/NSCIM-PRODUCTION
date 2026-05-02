@@ -407,6 +407,16 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                         _logger.LogWarning("{ServiceId} LOCATION MISMATCH: {Container} scanned at {ScannerType} (expected {Expected}) but BOE DeliveryPlace={DeliveryPlace} (port={Actual}). Blocking match.",
                                             SERVICE_ID, queueItem.ContainerNumber, queueItem.ScannerType, expectedPort, primaryBOE.DeliveryPlace, actualPort);
 
+                                        await WriteMatchQualityFlagAsync(
+                                            dbContext,
+                                            queueItem.ContainerNumber,
+                                            queueItem.ScannerType,
+                                            primaryBOE.Id,
+                                            flagType: "PortMismatch",
+                                            severity: "Critical",
+                                            description: $"Scanned at {queueItem.ScannerType} (expected port {expectedPort}) but BOE.DeliveryPlace='{primaryBOE.DeliveryPlace}' (port {actualPort}). Match blocked pending admin review.",
+                                            stoppingToken);
+
                                         hasICUMSData = false;
                                         primaryBOEId = null;
                                         primaryBOE = null;
