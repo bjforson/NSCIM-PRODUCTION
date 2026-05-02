@@ -43,7 +43,13 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(20)]
         public string? ClearanceType { get; set; }
 
-        /// <summary>WCO regime code (40 = home use, 70 = warehousing, 80 = inward processing, 90 = other, 10/21 = export).</summary>
+        /// <summary>
+        /// WCO regime code. Direction map (operator-validated against live data 2026-05-01):
+        /// import = 40 (home use), 50 (re-import), 61, 62, 70 (warehousing), 90 (other / temp admission);
+        /// export = 10, 19, 20, 34, 39;
+        /// transit = 80 (NOT inward processing — operator guidance, see memory feedback_regime80_cmr_is_transit.md);
+        /// blank = half-state CMR (BOE not yet linked).
+        /// </summary>
         [StringLength(20)]
         public string? RegimeCode { get; set; }
 
