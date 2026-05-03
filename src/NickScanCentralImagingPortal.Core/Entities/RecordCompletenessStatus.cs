@@ -44,11 +44,33 @@ namespace NickScanCentralImagingPortal.Core.Entities
         public string? ClearanceType { get; set; }
 
         /// <summary>
-        /// WCO regime code. Direction map (operator-validated against live data 2026-05-01):
-        /// import = 40 (home use), 50 (re-import), 61, 62, 70 (warehousing), 90 (other / temp admission);
-        /// export = 10, 19, 20, 34, 39;
-        /// transit = 80 (NOT inward processing — operator guidance, see memory feedback_regime80_cmr_is_transit.md);
-        /// blank = half-state CMR (BOE not yet linked).
+        /// WCO regime code. Canonical Ghana Customs map per the official ICUMS
+        /// list at https://external.unipassghana.com/co/code/popup/selectRegimeCode.do
+        /// (verified 2026-05-03; 34 codes total).
+        ///
+        /// Direction (for fyco-vs-clearance and submission-routing decisions):
+        ///   Export        : 10 (Direct Export), 19 (petroleum), 20 (Direct Temp Export),
+        ///                  24 (Temp Export following Home Use), 27 (Temp Export following Warehousing)
+        ///   Re-export     : 30, 34, 35, 37, 39  (export-direction)
+        ///   Import        : 40 (Direct Import / Home Consumption), 45, 47, 48, 49
+        ///                 + 50 (Temp Admission), 57, 59  (suspense, import-side)
+        ///                 + 61, 62  (re-import)
+        ///                 + 70 (Bonded Warehouse), 72, 75, 77, 79  (suspense, import-side)
+        ///                 + 90 (Free Zones), 94, 95, 97, 99  (suspense, import-side)
+        ///   Transit       : 80, 88, 89  (true transit — Ghana → Mali/Burkina Faso/Niger
+        ///                  per GRA Transit Unit. Cargo physically leaves Ghana but isn't
+        ///                  an export from Ghana's perspective. NOT inward processing.
+        ///                  Transit cargo legitimately carries fyco=EXPORT even when
+        ///                  clearancetype=IM; the fyco rule MUST skip these — see
+        ///                  RegimeDirectionMap.IsTransit().)
+        ///   Reserved      : 00
+        ///   blank         : half-state CMR (BOE not yet linked)
+        ///
+        /// Per the ICUMS External User Guide, transit cargo is technically declared
+        /// via a Bonded Transportation (BT) Declaration, NOT a regular BOE. If our
+        /// ingestion is conflating BT with BOE, that's the upstream source of
+        /// regime-80 records appearing with clearancetype=IM/CMR — investigation in
+        /// progress.
         /// </summary>
         [StringLength(20)]
         public string? RegimeCode { get; set; }

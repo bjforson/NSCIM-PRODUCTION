@@ -78,6 +78,40 @@ namespace NickScanCentralImagingPortal.Tests.Services
 
         public enum FycoOutcome { Pass, FailFycoSaysExportButBoeIsImport, FailFycoSaysImportButBoeIsExport, Skip }
 
+        // Transit regimes (80/88/89) must be skipped — transit cargo legitimately
+        // carries fyco=EXPORT (cargo leaves Ghana for Mali/Burkina Faso/Niger) even
+        // when ICUMS stamps clearancetype=IM. Mirrors RegimeDirectionMap.IsTransit
+        // + the production rule's transit early-return.
+        [Theory]
+        [InlineData("WAYBILL/EXPORT", "IM", "80", FycoOutcome.Skip)]
+        [InlineData("WAYBILL/EXPORT", "IM", "88", FycoOutcome.Skip)]
+        [InlineData("WAYBILL/EXPORT", "IM", "89", FycoOutcome.Skip)]
+        [InlineData("EXPORT",         "IM", "80", FycoOutcome.Skip)]
+        [InlineData("1",              "IM", "80", FycoOutcome.Skip)]
+        // Non-transit regimes still flow through the regular rule
+        [InlineData("WAYBILL/EXPORT", "IM", "40", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "IM", "70", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "IM", null, FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // unknown regime — don't skip
+        [InlineData("WAYBILL/EXPORT", "IM", "",   FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // empty regime — don't skip
+        [InlineData("WAYBILL/EXPORT", "EX", "10", FycoOutcome.Pass)]                                // export regime, agreed clearance
+        [InlineData("0",              "IM", "40", FycoOutcome.Pass)]                                // import-flagged on import BOE — fine
+        public void EvaluateFyco_TransitSkipsRule(string? fyco, string? clearance, string? regime, FycoOutcome expected)
+        {
+            Assert.Equal(expected, EvaluateWithRegime(fyco, clearance, regime));
+        }
+
+        private static readonly System.Collections.Generic.HashSet<string> TransitRegimes =
+            new(System.StringComparer.OrdinalIgnoreCase) { "80", "88", "89" };
+
+        // Mirrors ContainerValidationService.ValidateFycoImportExportAsync's transit
+        // early-return + the underlying RegimeDirectionMap.IsTransit() helper.
+        private static FycoOutcome EvaluateWithRegime(string? fyco, string? clearance, string? regime)
+        {
+            if (!string.IsNullOrWhiteSpace(regime) && TransitRegimes.Contains(regime.Trim()))
+                return FycoOutcome.Skip;
+            return Evaluate(fyco, clearance);
+        }
+
         // Mirrors ContainerValidationService.IsExportFlag — kept in sync deliberately
         // (no shared production helper to avoid pulling EF + DI deps into the test asm).
         private static readonly Regex ExportTokenRegex =

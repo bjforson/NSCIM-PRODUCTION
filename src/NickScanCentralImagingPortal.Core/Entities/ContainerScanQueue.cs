@@ -184,5 +184,39 @@ namespace NickScanCentralImagingPortal.Core.Entities
         Import,
         Export
     }
+
+    /// <summary>
+    /// Maps WCO regime codes to their direction (import / export / transit) per the
+    /// canonical Ghana Customs ICUMS list at
+    /// https://external.unipassghana.com/co/code/popup/selectRegimeCode.do
+    /// (verified 2026-05-03; 34 codes total).
+    ///
+    /// The ICUMS Manual also documents that **transit cargo is declared via a
+    /// Bonded Transportation (BT) Declaration, NOT a regular BOE** — see the
+    /// "BONDED TRANSPORTATION (BT) DECLARATION PROCESS" section of the External
+    /// User Guide. So strictly speaking transit shouldn't be appearing as
+    /// regime-80 BOE rows at all; that we see them is a v1 ingestion-side
+    /// quirk. The IsTransit() check here is a defensive belt for the fyco
+    /// rule: transit cargo legitimately carries `fyco=EXPORT` (it's leaving
+    /// Ghana en route to Mali / Burkina Faso / Niger per the GRA Transit
+    /// Unit) even when clearancetype gets stamped IM. Skipping the rule for
+    /// transit avoids false-positive Export-vs-Import mismatches.
+    /// </summary>
+    public static class RegimeDirectionMap
+    {
+        // Transit / Transhipment / CoastWise Removal — Ghana Customs codes 80/88/89.
+        private static readonly HashSet<string> TransitRegimes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "80", // Transit / Transhipment / CoastWise Removal
+            "88", // Transit / Transhipment following Transit / Transhipment
+            "89", // Transit of petroleum products from Bond
+        };
+
+        public static bool IsTransit(string? regimeCode)
+        {
+            if (string.IsNullOrWhiteSpace(regimeCode)) return false;
+            return TransitRegimes.Contains(regimeCode.Trim());
+        }
+    }
 }
 

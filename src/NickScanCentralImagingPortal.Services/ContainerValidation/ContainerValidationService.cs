@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -854,16 +855,28 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                     return; // No FS6000 scan or flag missing → rule not applicable.
                 }
 
-                var boeClearance = await _icumDownloadsDbContext.BOEDocuments
+                var boe = await _icumDownloadsDbContext.BOEDocuments
                     .AsNoTracking()
                     .Where(b => b.ContainerNumber == containerNumber)
                     .OrderByDescending(b => b.Id)
-                    .Select(b => b.ClearanceType)
+                    .Select(b => new { b.ClearanceType, b.RegimeCode })
                     .FirstOrDefaultAsync();
 
+                var boeClearance = boe?.ClearanceType;
                 if (string.IsNullOrWhiteSpace(boeClearance) || boeClearance.Equals("CMR", StringComparison.OrdinalIgnoreCase))
                 {
                     return; // CMR is pre-BOE; direction not yet defined.
+                }
+
+                // Skip transit regimes (80 / 88 / 89). Transit cargo legitimately carries
+                // fyco=EXPORT (cargo is leaving Ghana en route to inland West African
+                // countries) even when clearancetype is stamped IM by the upstream feed.
+                // See ContainerScanQueue.cs::RegimeDirectionMap and memory entry
+                // reference_port_match_rules_enabled_2026_05_02.md for the full picture.
+                if (RegimeDirectionMap.IsTransit(boe?.RegimeCode))
+                {
+                    result.PassedRules.Add($"Fyco direction check skipped — transit regime {boe?.RegimeCode}");
+                    return;
                 }
 
                 var raw = fs.FycoPresent.Trim();

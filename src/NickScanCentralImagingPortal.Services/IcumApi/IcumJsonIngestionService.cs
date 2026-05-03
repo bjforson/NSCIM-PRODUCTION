@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NickScanCentralImagingPortal.Core.Configuration;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Core.Utilities;
@@ -702,15 +703,25 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                             && !string.IsNullOrWhiteSpace(boeDocument.DeclarationNumber)
                             && !string.IsNullOrWhiteSpace(boeDocument.RegimeCode))
                         {
-                            // Regime codes 40/70/80/90 are import-side; 10/21/etc. are export-side.
-                            // The 998 rows audited in production are 100% import-side. Defensive
-                            // check on the prefix anyway: anything starting with a 4/7/8/9 is IM,
-                            // anything starting with a 1/2 is EX, otherwise leave as CMR.
-                            var firstChar = boeDocument.RegimeCode.Trim().FirstOrDefault();
+                            // Per the canonical Ghana Customs ICUMS regime map (verified
+                            // 2026-05-03 against external.unipassghana.com):
+                            //   Export    : 10, 19, 20, 24, 27 (1*) + 30, 34, 35, 37, 39 (3*)
+                            //   Import    : 40s, 50s, 61, 62, 70s, 90s
+                            //   TRANSIT   : 80, 88, 89 — must NOT upgrade. Transit cargo is
+                            //               legitimately CMR-typed; flipping it to IM mis-
+                            //               classifies 943 historical rows (audit 2026-05-03)
+                            //               and propagates the wrong direction downstream
+                            //               (false-positive fyco mismatches, wrong submission
+                            //               routing). See memory reference_port_match_rules_
+                            //               enabled_2026_05_02.md.
+                            var trimmedRegime = boeDocument.RegimeCode.Trim();
+                            var firstChar = trimmedRegime.FirstOrDefault();
                             string? upgradedTo = firstChar switch
                             {
-                                '4' or '7' or '8' or '9' => "IM",
-                                '1' or '2' => "EX",
+                                _ when RegimeDirectionMap.IsTransit(trimmedRegime) => null, // transit stays CMR
+                                '4' or '7' or '9' => "IM",                                  // 4* home use, 7* warehousing, 9* free zones
+                                '1' or '3' => "EX",                                          // 1* export, 3* re-export
+                                '2' or '5' or '6' => "IM",                                   // 2* contains both EX/IM (24/27 EX vs others IM); 5* temp admission; 6* re-import — practical safety: IM
                                 _ => null
                             };
 
