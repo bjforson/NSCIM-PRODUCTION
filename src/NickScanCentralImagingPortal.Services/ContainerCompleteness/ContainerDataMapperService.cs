@@ -233,6 +233,58 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 return null;
             }
 
+            // ── 3-LAYER FYCO RULE (mapper belt-and-braces, layers 2 + 3) ──
+            // The cardinal port rule above SKIPS when DeliveryPlace is null/short
+            // (matches IsLocationMatch semantics) — but a fyco-direction conflict
+            // can still slip through that gap. MEDU7718311 (sweep 2026-05-04) was
+            // exactly this case: regime-40 IM BOE with null DP + FS6000 fyco=
+            // WAYBILL/EXPORT — port rule skipped, mapper had no fyco check, CBR
+            // got rebuilt after the morning unmatch. Mirror the queue-side fyco
+            // gate (ContainerCompletenessService.cs:474-518) here so the mapper
+            // independently enforces direction-correctness regardless of port.
+            if (boeDocument != null && scannerType == CommonScannerTypes.FS6000)
+            {
+                var fs6000Scan = await dbContext.FS6000Scans
+                    .AsNoTracking()
+                    .Where(s => s.ContainerNumber == containerNumber)
+                    .OrderByDescending(s => s.ScanTime)
+                    .Select(s => new { s.FycoPresent })
+                    .FirstOrDefaultAsync();
+
+                var scanFyco = FycoClassifier.Classify(fs6000Scan?.FycoPresent);
+                if (scanFyco == FycoCategory.Export)
+                {
+                    var clearance = (boeDocument.ClearanceType ?? string.Empty).Trim().ToUpperInvariant();
+                    var boeIsImport = clearance.StartsWith("IM");
+                    var boeIsExport = clearance.StartsWith("EX");
+                    var boeIsCmr = clearance == "CMR";
+
+                    string? rejectionReason = null;
+
+                    // Layer 2: fyco=Export vs clearancetype=IM is the strongest mismatch.
+                    if (boeIsImport)
+                    {
+                        rejectionReason =
+                            $"Mapper-side fyco rule (layer 2): scan FycoPresent='{fs6000Scan?.FycoPresent}' classifies Export but BOE.ClearanceType='{boeDocument.ClearanceType}' (Import). Cargo physically departing TKD cannot be an import.";
+                    }
+                    // Layer 3: fyco=Export + EX or CMR clearance + non-empty regime that's NOT in the export set.
+                    else if ((boeIsExport || boeIsCmr)
+                             && !string.IsNullOrWhiteSpace(boeDocument.RegimeCode)
+                             && !RegimeDirectionMap.IsExport(boeDocument.RegimeCode))
+                    {
+                        rejectionReason =
+                            $"Mapper-side fyco rule (layer 3): scan FycoPresent='{fs6000Scan?.FycoPresent}' classifies Export but BOE.RegimeCode='{boeDocument.RegimeCode}' is not an export regime (clearance={boeDocument.ClearanceType}). Export set: 10/19/20/24/27/30/34/35/37/39.";
+                    }
+
+                    if (rejectionReason != null)
+                    {
+                        _logger.LogError("FYCO MISMATCH (mapper, layer 2/3): {Container} -> {Reason}", containerNumber, rejectionReason);
+                        await UpsertFycoMismatchFlagAsync(dbContext, containerNumber, scannerType, boeDocument.Id, rejectionReason);
+                        return null;
+                    }
+                }
+            }
+
             // Create new mapping
             var mapping = new ContainerBOERelation
             {
@@ -292,6 +344,53 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     ScannerType = scannerType,
                     BOEDocumentId = boeDocumentId,
                     FlagType = "PortMismatch",
+                    Severity = "Critical",
+                    Description = description,
+                    IsResolved = false,
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+            catch
+            {
+                // Best-effort flag write — never let it block the rejection path.
+            }
+        }
+
+        // Same idempotent-upsert shape as UpsertPortMismatchFlagAsync, for the
+        // mapper-side fyco-direction rejection. Belt-and-braces flag visible in
+        // /validation/match-corrections under FlagType=FycoMismatch.
+        private static async Task UpsertFycoMismatchFlagAsync(
+            ApplicationDbContext db,
+            string containerNumber,
+            string? scannerType,
+            int boeDocumentId,
+            string description)
+        {
+            try
+            {
+                var existing = await db.MatchQualityFlags
+                    .Where(f => f.ContainerNumber == containerNumber
+                                && f.FlagType == "FycoMismatch"
+                                && !f.IsResolved)
+                    .FirstOrDefaultAsync();
+
+                if (existing != null)
+                {
+                    existing.Description = description;
+                    existing.Severity = "Critical";
+                    existing.BOEDocumentId = boeDocumentId;
+                    existing.ScannerType = scannerType;
+                    await db.SaveChangesAsync();
+                    return;
+                }
+
+                db.MatchQualityFlags.Add(new MatchQualityFlag
+                {
+                    ContainerNumber = containerNumber,
+                    ScannerType = scannerType,
+                    BOEDocumentId = boeDocumentId,
+                    FlagType = "FycoMismatch",
                     Severity = "Critical",
                     Description = description,
                     IsResolved = false,
