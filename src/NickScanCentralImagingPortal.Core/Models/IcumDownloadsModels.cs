@@ -163,6 +163,17 @@ namespace NickScanCentralImagingPortal.Core.Models
         public bool HasIngestionWarnings { get; set; }
         public string? IngestionWarnings { get; set; }
 
+        // ── Document type, tagged from regimecode at ingest (audit option (b),
+        // 2026-05-03). Values: 'BOE' (regular import/export), 'Transit'
+        // (Bonded Transportation, regimes 80/88/89), 'Free Zone' (regimes
+        // 90/94/95/97/99), or NULL (unknown / pre-declaration CMR with no
+        // regime yet). Lets downstream consumers scope on documenttype
+        // instead of hard-coding regime-set membership in every rule.
+        // Populated by RegimeDirectionMap.ClassifyDocumentType — do not
+        // hand-roll the mapping in callers.
+        [System.ComponentModel.DataAnnotations.StringLength(20)]
+        public string? DocumentType { get; set; }
+
         // Navigation properties
         public virtual DownloadedFile DownloadedFile { get; set; } = null!;
     }

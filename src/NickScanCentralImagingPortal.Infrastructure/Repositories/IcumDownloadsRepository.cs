@@ -273,6 +273,10 @@ UPDATE boedocuments SET
     -- 1.13.0: CMR upgrade provenance — set ONCE, never overwritten on subsequent updates.
     originalclearancetype = COALESCE(originalclearancetype, $47),
     cmrupgradedat = COALESCE(cmrupgradedat, $48),
+    -- documenttype tagging (audit option (b), 2026-05-03) — stamped from regimecode at
+    -- ingest by RegimeDirectionMap.ClassifyDocumentType. Always overwrite: regimecode
+    -- itself is overwritten above, and documenttype must stay consistent with it.
+    documenttype = $49,
     updatedat = now()
 WHERE id = $45;";
 
@@ -325,6 +329,8 @@ WHERE id = $45;";
                 // 1.13.0: provenance params (positions 47, 48 in the SQL above).
                 cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.OriginalClearanceType ?? DBNull.Value });
                 cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.CmrUpgradedAt ?? DBNull.Value });
+                // documenttype tagging param (position 49 in the SQL above).
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.DocumentType ?? DBNull.Value });
 
                 await cmd.ExecuteNonQueryAsync();
                 _context.ChangeTracker.Clear();

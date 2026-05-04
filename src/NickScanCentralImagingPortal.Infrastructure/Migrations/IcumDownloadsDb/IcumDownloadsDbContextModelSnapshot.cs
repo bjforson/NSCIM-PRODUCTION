@@ -561,6 +561,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.IcumDownloadsDb
                         .HasColumnType("integer")
                         .HasColumnName("documentindex");
 
+                    b.Property<string>("DocumentType")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("documenttype");
+
                     b.Property<int>("DownloadedFileId")
                         .HasColumnType("integer")
                         .HasColumnName("downloadedfileid");
@@ -923,6 +928,9 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.IcumDownloadsDb
 
                     b.HasIndex("DeclarationNumber")
                         .HasDatabaseName("ix_boedocuments_declarationnumber");
+
+                    b.HasIndex("DocumentType")
+                        .HasDatabaseName("ix_boedocuments_documenttype");
 
                     b.HasIndex("DownloadedFileId")
                         .HasDatabaseName("ix_boedocuments_downloadedfileid");

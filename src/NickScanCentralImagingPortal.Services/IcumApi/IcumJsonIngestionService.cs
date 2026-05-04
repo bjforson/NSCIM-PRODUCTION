@@ -742,6 +742,15 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                             }
                         }
 
+                        // ── documenttype tagging (audit option (b), 2026-05-03) ─────────────
+                        // Stamp documenttype from the now-final regimecode so downstream
+                        // consumers can scope on documenttype = 'Transit' / 'BOE' /
+                        // 'Free Zone' instead of hard-coding regime-set membership in
+                        // every rule. ClassifyDocumentType returns null for blank /
+                        // unknown regimes — those land NULL and surface in the
+                        // unmapped-regime audit query.
+                        boeDocument.DocumentType = RegimeDirectionMap.ClassifyDocumentType(boeDocument.RegimeCode);
+
                         // ✅ CMR→BOE LIFECYCLE: Check if this IM/EX record upgrades an existing CMR
                         bool cmrUpgraded = false;
                         if (!string.IsNullOrWhiteSpace(boeDocument.DeclarationNumber)

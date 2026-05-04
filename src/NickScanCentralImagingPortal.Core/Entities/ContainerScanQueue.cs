@@ -235,6 +235,41 @@ namespace NickScanCentralImagingPortal.Core.Entities
             "39", // Other Re-export
         };
 
+        // Free-Zone regimes — Ghana Customs codes 90/94/95/97/99 per the canonical
+        // ICUMS list (verified 2026-05-03). Free-zone cargo follows a separate
+        // workflow from regular import (warehousing in a Free Zone Enclave) and
+        // shouldn't be lumped under the generic 'BOE' bucket.
+        private static readonly HashSet<string> FreeZoneRegimes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "90", // Free Zone Direct Import
+            "94",
+            "95",
+            "97",
+            "99",
+        };
+
+        // Standard BOE regimes — everything that is neither transit nor free-zone.
+        // Listed explicitly (verified 2026-05-03) so an unknown / new regime code
+        // lands in the NULL documenttype bucket instead of being silently bucketed
+        // as 'BOE'. The canonical map has 34 codes total: 10 export + 5 free-zone +
+        // 3 transit + these 25 "regular BOE" codes (home use, warehousing,
+        // temporary admission, etc.).
+        private static readonly HashSet<string> BoeRegimes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // 1* + 3* exports (also accepted as BOE-typed documents — fyco rule
+            // distinguishes direction separately via IsExport).
+            "10", "19", "20", "24", "27",
+            "30", "34", "35", "37", "39",
+            // 4* home use family.
+            "40", "45", "47", "48", "49",
+            // 5* temporary admission family.
+            "50", "57", "59",
+            // 6* re-importation.
+            "61", "62",
+            // 7* warehousing family.
+            "70", "72", "75", "77", "79",
+        };
+
         public static bool IsTransit(string? regimeCode)
         {
             if (string.IsNullOrWhiteSpace(regimeCode)) return false;
@@ -245,6 +280,31 @@ namespace NickScanCentralImagingPortal.Core.Entities
         {
             if (string.IsNullOrWhiteSpace(regimeCode)) return false;
             return ExportRegimes.Contains(regimeCode.Trim());
+        }
+
+        /// <summary>
+        /// Classifies a regime code into a coarse documenttype bucket so downstream
+        /// consumers can filter on documenttype = 'Transit' / 'BOE' / 'Free Zone'
+        /// instead of hard-coding regime-set membership in every rule.
+        ///
+        /// Returns null for blank input or for any regime code not present in the
+        /// canonical Ghana Customs ICUMS list (verified 2026-05-03). NULL input
+        /// is the normal case for pre-declaration CMR rows that arrive before any
+        /// IM/EX upgrade brings a regimecode along.
+        ///
+        /// Stamped at ingest by IcumJsonIngestionService and persisted to
+        /// boedocuments.documenttype. Mirrors the SQL backfill in
+        /// tools/migrations/documenttype-tagging/01-add-documenttype-column.sql —
+        /// keep in lockstep.
+        /// </summary>
+        public static string? ClassifyDocumentType(string? regimeCode)
+        {
+            if (string.IsNullOrWhiteSpace(regimeCode)) return null;
+            var trimmed = regimeCode.Trim();
+            if (TransitRegimes.Contains(trimmed)) return "Transit";
+            if (FreeZoneRegimes.Contains(trimmed)) return "Free Zone";
+            if (BoeRegimes.Contains(trimmed)) return "BOE";
+            return null; // unknown regime — leave NULL so it surfaces in audit query
         }
     }
 }
