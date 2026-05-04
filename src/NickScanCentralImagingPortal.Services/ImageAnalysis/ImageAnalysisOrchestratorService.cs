@@ -66,6 +66,11 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
         // Throttle "no ready users" log to once per 5 minutes per role
         private readonly Dictionary<string, DateTime> _lastNoUsersLogByRole = new();
+        // Same shape for "no ready groups" — added 2026-05-04 so Audit-role polling
+        // is visible at Information level even when there are zero AnalystCompleted
+        // groups (otherwise the early-return at AutoAssignByRoleAsync logs Debug
+        // and gets filtered out by the default Information log level).
+        private readonly Dictionary<string, DateTime> _lastNoGroupsLogByRole = new();
         private DateTime _lastDisabledLogTime = DateTime.MinValue;
         private static readonly TimeSpan _logThrottleInterval = TimeSpan.FromMinutes(5);
 
@@ -1102,7 +1107,20 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             if (!readyGroups.Any())
             {
-                _logger.LogDebug("[ASSIGNMENT] No ready groups for {Role} role", roleName);
+                // Throttled Information log so Audit-role polling is visible even
+                // when there are zero AnalystCompleted groups (otherwise this branch
+                // is silent at Information level and operators can't tell whether
+                // the orchestrator is polling Audit at all).
+                var nowFlag = DateTime.UtcNow;
+                var shouldLog = !_lastNoGroupsLogByRole.TryGetValue(roleName, out var lastLog)
+                    || (nowFlag - lastLog) >= _logThrottleInterval;
+                if (shouldLog)
+                {
+                    _logger.LogInformation(
+                        "[ASSIGNMENT] No ready groups for {Role} role (eligibleStatus={EligibleStatus}) - polling alive but eligible pool is empty (this message repeats every 5 min)",
+                        roleName, eligibleStatus);
+                    _lastNoGroupsLogByRole[roleName] = nowFlag;
+                }
                 return;
             }
 
