@@ -858,13 +858,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
                 else if (!string.IsNullOrEmpty(declarationNumber))
                 {
-                    // ✅ NEW: For non-consolidated cargo, query by declaration number to get ALL BOE documents
-                    // ✅ FIX: Filter by !IsConsolidated to ensure we only get non-consolidated cargo BOE documents
+                    // 2026-05-04 (2.16.2): dropped `!b.IsConsolidated` filter — same fix as the
+                    // cargo-group commit `4c4931c` but in the parallel ContainerDetails path that
+                    // I'd missed. When the dialog passes ?declarationNumber=X (e.g. for declaration
+                    // 41225848361), the BOE rows for that declaration may carry IsConsolidated=true
+                    // despite MasterBlNumber=NULL (mis-tagged at ingest). The previous filter
+                    // rejected them and rendered an empty ICUMS tab. DeclarationNumber == X is
+                    // the unambiguous discriminator on a declaration-keyed lookup; IsConsolidated
+                    // is orthogonal here.
                     boeDocuments = await _icumDownloadsDbContext.BOEDocuments
-                        .Where(b => b.DeclarationNumber == declarationNumber && !b.IsConsolidated)
+                        .Where(b => b.DeclarationNumber == declarationNumber)
                         .OrderByDescending(b => b.CreatedAt)
                         .ToListAsync(cts.Token);
-                    _logger.LogInfo("GetICUMSData", "Querying by declaration number {DeclarationNumber} (non-consolidated only), found {Count} BOE document(s)",
+                    _logger.LogInfo("GetICUMSData", "Querying by declaration number {DeclarationNumber}, found {Count} BOE document(s)",
                         new { DeclarationNumber = declarationNumber, Count = boeDocuments.Count });
                 }
                 else

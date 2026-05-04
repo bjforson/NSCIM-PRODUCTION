@@ -22,6 +22,40 @@ For each release, this file records:
 
 ---
 
+## [2.16.2] — 2026-05-04 — Follow-up to 2.16.1 cargo-group fix: ContainerDetails ICUMS path
+
+Patch follow-up to `4c4931c` (cargo-group fix in 2.16.1). That commit dropped
+`!b.IsConsolidated` from 5 callsites in `ConsolidatedCargoQueries` /
+`CargoGroupService`, but I missed the parallel filter in
+`ContainerDetailsController.GetICUMSData` line 864 (the endpoint
+`GET /api/containerdetails/icums/{containerNumber}?declarationNumber=...`
+that the analyst review dialog calls to populate its **ICUMS Data tab**).
+
+**Symptom:** for the 8 mis-tagged-consolidated declarations (`IsConsolidated=true`,
+`MasterBlNumber=NULL`) the cargo-group summary panel loaded after `4c4931c`,
+but the ICUMS Data tab inside the dialog was still empty. User-reported case:
+`41225848361`.
+
+**Fix:** dropped `!b.IsConsolidated` from the declaration-keyed query at
+`ContainerDetailsController.cs:864`. Same predicate-shape rationale as
+`4c4931c` — when the lookup key is a declaration number,
+`DeclarationNumber == X` is the unambiguous discriminator; `IsConsolidated`
+is orthogonal.
+
+### Out of scope
+
+Scanner Data tab queries `AseScans`/`Fs6000Scans`/etc. directly by container
+number (independent of `IsConsolidated`). For `41225848361`'s containers
+(`BEAU4758594`, `TLLU7667054`) ASE scan rows exist (1 each), so the Scanner
+tab should populate. If it still doesn't after this deploy, investigate
+separately. Image tab endpoint not yet traced — likely same independence.
+
+### Commits
+
+- (this commit) — `fix(api): drop !IsConsolidated on ContainerDetails ICUMS declaration lookup`
+
+---
+
 ## [2.16.1] — 2026-05-04 — Orchestrator orphan-AG guard + ergonomics fixes
 
 Patch release rolling up post-2.16.0 fixes from later in the same day:
