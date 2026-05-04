@@ -821,9 +821,24 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             if (groupToUpdate != null &&
                                 (groupToUpdate.Status == AnalysisStatuses.AnalystAssigned || groupToUpdate.Status == AnalysisStatuses.AuditAssigned))
                             {
-                                groupToUpdate.Status = assignment.Role == "Audit"
-                                    ? AnalysisStatuses.AnalystCompleted
-                                    : AnalysisStatuses.Ready;
+                                // 2026-05-04 (2.16.1): orphan-AG guard. If every container
+                                // in this AG has no boedocumentid + no active CBR, the AG
+                                // has no actionable work — transition to Cancelled instead
+                                // of bouncing back to Ready/AnalystCompleted, otherwise the
+                                // lease cycle re-issues the assignment every ~10 minutes.
+                                if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, ct))
+                                {
+                                    groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                                    _logger.LogInformation(
+                                        "[CLEANUP] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR; lease sweeper would otherwise re-issue assignment)",
+                                        groupToUpdate.Id, groupToUpdate.GroupIdentifier);
+                                }
+                                else
+                                {
+                                    groupToUpdate.Status = assignment.Role == "Audit"
+                                        ? AnalysisStatuses.AnalystCompleted
+                                        : AnalysisStatuses.Ready;
+                                }
                                 groupToUpdate.UpdatedAtUtc = now;
                             }
                         }
@@ -1126,6 +1141,36 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         }
 
         /// <summary>
+        /// Orphan-AG predicate (2026-05-04, 2.16.1): an AG is "orphan" when every
+        /// container in it has NULL <c>BOEDocumentId</c> on its CCS row AND zero
+        /// active <c>ContainerBOERelations</c>. These AGs have no actionable match
+        /// data; the lease sweeper should not keep cycling them through analyst
+        /// assignment.
+        ///
+        /// Mirrors the SQL predicate in <c>tools/.../OrphanAgSweep.cs</c> manual
+        /// cleanup. Pushed down to SQL via EF Core (single round-trip per call).
+        /// </summary>
+        private static async Task<bool> IsOrphanAnalysisGroupAsync(
+            ApplicationDbContext db,
+            Guid groupId,
+            CancellationToken ct)
+        {
+            var hasMatch = await db.AnalysisGroups
+                .AsNoTracking()
+                .Where(g => g.Id == groupId && (
+                    db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                        db.ContainerCompletenessStatuses.Any(c =>
+                            c.ContainerNumber == r.ContainerNumber && c.BOEDocumentId != null))
+                    ||
+                    db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                        db.ContainerBOERelations.Any(cbr =>
+                            cbr.ContainerNumber == r.ContainerNumber && cbr.IsActive))
+                ))
+                .AnyAsync(ct);
+            return !hasMatch;
+        }
+
+        /// <summary>
         /// Helper method to expire assignments in batches using EF Core
         /// </summary>
         private async Task ExpireAssignmentsInBatchesAsync(
@@ -1173,9 +1218,23 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                 (groupToUpdate.Status == AnalysisStatuses.AnalystAssigned ||
                                  groupToUpdate.Status == AnalysisStatuses.AuditAssigned))
                             {
-                                groupToUpdate.Status = originalAssignment.Role == "Audit"
-                                    ? AnalysisStatuses.AnalystCompleted
-                                    : AnalysisStatuses.Ready;
+                                // 2026-05-04 (2.16.1): mirror the orphan-AG guard from
+                                // ReclaimExpiredAssignmentsAsync. Same predicate, same goal —
+                                // break the lease cycle for orphan AGs so the workbench
+                                // doesn't keep showing phantom assignments.
+                                if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, ct))
+                                {
+                                    groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                                    _logger.LogInformation(
+                                        "[VALIDATION] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR)",
+                                        groupToUpdate.Id, groupToUpdate.GroupIdentifier);
+                                }
+                                else
+                                {
+                                    groupToUpdate.Status = originalAssignment.Role == "Audit"
+                                        ? AnalysisStatuses.AnalystCompleted
+                                        : AnalysisStatuses.Ready;
+                                }
                                 groupToUpdate.UpdatedAtUtc = now;
                             }
                         }

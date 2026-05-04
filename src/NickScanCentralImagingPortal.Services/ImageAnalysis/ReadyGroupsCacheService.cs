@@ -295,6 +295,55 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     excludedNoContainers, excludedNoAudit, excludedAllCompleted);
             }
 
+            // ── Orphan-AG guard ─────────────────────────────────────────────
+            // 2026-05-04 (2.16.1): exclude AGs whose every container has NULL
+            // BOEDocumentId AND zero active ContainerBOERelations. Those AGs
+            // are FS6000 export-pending scans that are correctly held in
+            // Export-Hold pending an ICUMS export-feed extension; the orchestrator
+            // should not keep cycling them through analyst assignment. Without
+            // this guard the lease sweeper re-issues an assignment every cycle,
+            // surfacing a "phantom" 10-container assignment on the analyst's
+            // workbench (declaration 70326214329 was the user-reported case).
+            if (readyGroupsWithStats.Count > 0)
+            {
+                var candidateAgIds = readyGroupsWithStats.Select(w => w.Group.Id).ToList();
+                var nonOrphanAgIds = new HashSet<Guid>();
+
+                const int agBatchSize = 200;
+                for (int i = 0; i < candidateAgIds.Count; i += agBatchSize)
+                {
+                    var batch = candidateAgIds.Skip(i).Take(agBatchSize).ToList();
+                    // EF Core translates this to a single SQL with two NOT EXISTS subqueries —
+                    // mirrors the predicate in tools/.../OrphanAgSweep manual cleanup.
+                    var batchNonOrphans = await db.AnalysisGroups
+                        .AsNoTracking()
+                        .Where(g => batch.Contains(g.Id) && (
+                            db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                                db.ContainerCompletenessStatuses.Any(c =>
+                                    c.ContainerNumber == r.ContainerNumber && c.BOEDocumentId != null))
+                            ||
+                            db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                                db.ContainerBOERelations.Any(cbr =>
+                                    cbr.ContainerNumber == r.ContainerNumber && cbr.IsActive))
+                        ))
+                        .Select(g => g.Id)
+                        .ToListAsync(cancellationToken);
+
+                    foreach (var id in batchNonOrphans) nonOrphanAgIds.Add(id);
+                }
+
+                var orphanCount = readyGroupsWithStats.Count - nonOrphanAgIds.Count;
+                if (orphanCount > 0)
+                {
+                    readyGroupsWithStats = readyGroupsWithStats
+                        .Where(w => nonOrphanAgIds.Contains(w.Group.Id))
+                        .ToList();
+                    _logger.LogInformation(
+                        "[CACHE-FILTER] Orphan-AG guard for {Role}: excluded {Excluded} AGs (every container has no boedocumentid + no active CBR), {Remaining} AGs remain",
+                        roleName, orphanCount, readyGroupsWithStats.Count);
+                }
+            }
+
             // Order and take top 50
             var readyGroups = readyGroupsWithStats
                 .OrderByDescending(x => x.Group.Priority)

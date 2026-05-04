@@ -22,6 +22,35 @@ For each release, this file records:
 
 ---
 
+## [2.16.1] — 2026-05-04 — Orchestrator orphan-AG guard + ergonomics fixes
+
+Patch release rolling up post-2.16.0 fixes from later in the same day:
+
+### Behaviour changes
+
+- **Lease sweeper no longer re-issues assignments to orphan AGs.** An AG is now considered "orphan" when every container on its `analysisrecords` has `containercompletenessstatuses.boedocumentid = NULL` AND zero active `containerboerelations`. The match-correctness rules correctly refuse to bind these to import BOEs (mostly FS6000 export-pending scans awaiting an ICUMS export-feed extension), so they have no actionable work. Two paths now skip them:
+  - `ReadyGroupsCacheService.GetReadyGroupsForRoleAsync` filters orphan AGs out of the assignment-eligibility set (per-role, per cache miss). Logged as `[CACHE-FILTER] Orphan-AG guard for {Role}: excluded N AGs …`.
+  - `AssignmentWorker.ReclaimExpiredAssignmentsAsync` and `ExpireAssignmentsInBatchesAsync` transition orphan AGs to `AnalysisStatuses.Cancelled` instead of bouncing back to `Ready`/`AnalystCompleted`. Breaks the ~10-minute lease cycle that was surfacing phantom 10-container assignments on `pimage`'s workbench (declaration `70326214329` was the user-reported case).
+- **Cargo-group lookup ignores `IsConsolidated` flag on declaration-number key.** 5 callsites in `ConsolidatedCargoQueries`/`CargoGroupService` had a stale `!b.IsConsolidated` filter that rejected ~13.5% of declaration-keyed AGs whose BOE rows were mis-tagged at ingest. Affected: `40126071857`, `40126071880`, `40126071902`, `40126071924`, `40426263388`, `40426283984`, `40426309706`, `41225848361`. Summary panel now loads for these.
+- **`AnalysisStatuses.Cancelled = "Cancelled"`** added as a constant. Already used by today's manual sweep + the new orchestrator guard. Distinct from `Archived` (zombie sweep target — `AnalystCompleted` + zero CCS rows).
+
+### Deploy.ps1 ergonomics
+
+- **NSSM probe wrapped in try/catch.** Under PowerShell 7.3+ with `$PSNativeCommandUseErrorActionPreference`, `nssm get <svc> AppDirectory`'s UTF-16 stderr complaint on `sc.exe`-managed services was promoted to a script-killing `NativeCommandError`. Deploy stopped Phase 1 services then died before Phase 4 (start). Fixed in `Set-NssmEnvPair`.
+- **SCM dependency dropped on `NSCIM_WebApp` and `NickHR_WebApp`.** Both had a hard SCM dependency on their `*_API` counterpart, which meant `Stop-Service NSCIM_API -Force` silently cascade-stopped the WebApp first. Phase 4 only iterates `$selected`, so `-ApiOnly` cycles left the WebApp Stopped — operators were manually starting it after every deploy for weeks. Cleared via one-time `sc.exe config <svc> depend= /` (separate runtime change, not in this commit). `Deploy.ps1`'s `$SERVICES` array already orders API-then-WebApp on full deploys, so script owns ordering correctly without the SCM coupling.
+
+### Data ops applied 2026-05-04 (post-2.16.0)
+
+- **Orphan-AG sweep** via `tools/probe/OrphanAgSweep.cs` (now lives under `C:\temp\nscim-probe\` in the dev environment). 4 sweep iterations across ~10 minutes drained the pre-existing population: **10 AGs Cancelled, 108 assignments Cancelled, 10 queue entries deleted**. Affected declarations: `30326191779`, `40326191103_W1`, `40226146461_W1`, `40226138139_W1`, `30326228281`, `40226107152`, `40326179422`, `70326214329`, `40326183804`, `40126037723`. CCS rows correctly left untouched in `Export-Hold` pending real export-feed.
+
+### Commits
+
+- `cbed9f4` — `fix(deploy): wrap NSSM probe in try/catch to survive UTF-16 stderr under PS 7.3+`
+- `4c4931c` — `fix(cargogroup): drop !IsConsolidated filter on declaration-number lookups`
+- (this commit) — `fix(orchestrator): skip orphan AGs in assignment loop + Cancel-on-expire`
+
+---
+
 ## [2.16.0] — 2026-05-04 — Match-correctness arc + 91-commit backlog catch-up
 
 Catch-up release covering everything since 2.15.5 (2026-04-23) — 91 commits across 11 days. Headlined by the **6-layer match-correctness model** that ended 2026-05-04, but also rolls up the Week-1/Week-2 security batches, RLS fail-closed rollout, .NET 10 retarget, NickFinance Phase 6, NickHR W3B identity integration, and platform identity scaffold.
