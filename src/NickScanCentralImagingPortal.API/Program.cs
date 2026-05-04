@@ -265,7 +265,14 @@ builder.Services.AddAuthentication(options =>
         },
         OnRedirectToLogin = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api"))
+            // Return clean 401 for both /api and /hubs paths instead of redirecting to /login.
+            // SignalR clients (negotiate POST) refuse to follow 302 to /login — they need a
+            // proper auth-failure status to surface a useful error to the JS client. Without
+            // the /hubs branch, the WebApp's Workbench / AuditReview pages emit
+            // "Warning: Could not connect to readiness service" because the negotiate
+            // gets a 302→/login that the client treats as a failed handshake.
+            if (context.Request.Path.StartsWithSegments("/api") ||
+                context.Request.Path.StartsWithSegments("/hubs"))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return Task.CompletedTask;
@@ -276,7 +283,8 @@ builder.Services.AddAuthentication(options =>
         },
         OnRedirectToAccessDenied = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api"))
+            if (context.Request.Path.StartsWithSegments("/api") ||
+                context.Request.Path.StartsWithSegments("/hubs"))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return Task.CompletedTask;
@@ -307,6 +315,25 @@ builder.Services.AddAuthentication(options =>
     // JWT event handlers for logging
     options.Events = new JwtBearerEvents
     {
+        OnMessageReceived = context =>
+        {
+            // SignalR access-token extraction. The JS SignalR client passes the JWT
+            // via `?access_token=...` on `/hubs/*/negotiate` and on the WebSocket
+            // upgrade — Authorization headers can't be set on WebSocket handshakes
+            // in the browser. Without this hook, the JWT scheme never sees the token
+            // for hub requests and falls through to cookie auth, which (per the
+            // OnRedirectToLogin handler above) returns 401 — surfacing as the
+            // "Warning: Could not connect to readiness service" toast.
+            if (context.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+            {
+                var accessToken = context.Request.Query["access_token"].ToString();
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    context.Token = accessToken;
+                }
+            }
+            return Task.CompletedTask;
+        },
         OnAuthenticationFailed = context =>
         {
             Log.Warning("JWT Authentication failed: {Error}", context.Exception.Message);
