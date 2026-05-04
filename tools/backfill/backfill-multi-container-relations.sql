@@ -72,10 +72,10 @@ BEGIN;
 CREATE TEMP TABLE _boedocs ON COMMIT DROP AS
 SELECT * FROM dblink(
   'host=localhost port=5432 dbname=nickscan_downloads user=postgres password=' || quote_literal(:'pw'),
-  'SELECT containernumber::text, id::integer, declarationnumber::text
+  'SELECT containernumber::text, id::integer, declarationnumber::text, deliveryplace::text
      FROM boedocuments
     WHERE processingstatus = ''Transferred'''
-) AS t(containernumber TEXT, id INTEGER, declarationnumber TEXT);
+) AS t(containernumber TEXT, id INTEGER, declarationnumber TEXT, deliveryplace TEXT);
 
 CREATE INDEX ON _boedocs(containernumber);
 
@@ -106,8 +106,73 @@ SELECT
   (SELECT id FROM _boedocs WHERE containernumber = s.c1 ORDER BY id DESC LIMIT 1) AS boe1,
   (SELECT id FROM _boedocs WHERE containernumber = s.c2 ORDER BY id DESC LIMIT 1) AS boe2,
   (SELECT declarationnumber FROM _boedocs WHERE containernumber = s.c1 ORDER BY id DESC LIMIT 1) AS decl1,
-  (SELECT declarationnumber FROM _boedocs WHERE containernumber = s.c2 ORDER BY id DESC LIMIT 1) AS decl2
+  (SELECT declarationnumber FROM _boedocs WHERE containernumber = s.c2 ORDER BY id DESC LIMIT 1) AS decl2,
+  (SELECT deliveryplace FROM _boedocs WHERE containernumber = s.c1 ORDER BY id DESC LIMIT 1) AS dp1,
+  (SELECT deliveryplace FROM _boedocs WHERE containernumber = s.c2 ORDER BY id DESC LIMIT 1) AS dp2
 FROM _source s;
+
+-- ----------------------------------------------------------------------------
+-- CARDINAL PORT-RULE FILTER (added 2026-05-04 — see commit 243613e).
+--
+-- The cardinal port rule (enforced inline at every CBR INSERT path in code):
+--     scannertype = 'FS6000'  =>  BOE.deliveryplace must contain 'TKD' (Takoradi)
+--     scannertype = 'ASE'     =>  BOE.deliveryplace must contain 'TMA' (Tema)
+--
+-- Null/blank deliveryplace is allowed — matches ScannerLocationMap.IsLocationMatch
+-- semantics (an upstream gap, flagged separately, but not blocking).
+--
+-- ContainerDataMapperService.MapContainerDataAsync (commit 243613e) now refuses
+-- to INSERT a CBR row when scanner port disagrees with the BOE deliveryplace.
+-- IcumJsonIngestionService.UpdateContainerCompletenessOnCmrUpgradeAsync (same
+-- commit) skips the HasICUMSData=true cascade on mismatch. ContainerCompleteness-
+-- Service:395-454 zeroes HasICUMSData on mismatch.
+--
+-- This script bypasses every one of those gates — it INSERTs straight into
+-- containerboerelations from a containernumber-only join, with no port check.
+-- The clause below restores parity: each child row only flows through when its
+-- own boedoc.deliveryplace passes the port rule for the source row's scanner.
+-- ----------------------------------------------------------------------------
+CREATE TEMP VIEW _port_match AS
+SELECT
+  source_id,
+  -- A child INSERT for c1 is allowed when boedoc1.dp is null/blank OR contains
+  -- the scanner's expected port code. Same logic for c2.
+  (dp1 IS NULL OR btrim(dp1) = '' OR
+     (scannertype = 'FS6000' AND dp1 ILIKE '%TKD%') OR
+     (scannertype = 'ASE'    AND dp1 ILIKE '%TMA%') OR
+     (scannertype NOT IN ('FS6000', 'ASE'))            -- unknown scanner: no gate
+  ) AS port_ok_1,
+  (dp2 IS NULL OR btrim(dp2) = '' OR
+     (scannertype = 'FS6000' AND dp2 ILIKE '%TKD%') OR
+     (scannertype = 'ASE'    AND dp2 ILIKE '%TMA%') OR
+     (scannertype NOT IN ('FS6000', 'ASE'))
+  ) AS port_ok_2
+FROM _resolved;
+
+\echo '--- PRE-CHECK: cardinal port-rule exclusion counts (rows the new filter would BLOCK) ---'
+SELECT
+  COUNT(*) FILTER (
+    WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+      AND (NOT pm.port_ok_1 OR NOT pm.port_ok_2)
+  )                                                    AS rows_blocked_by_port_rule,
+  COUNT(*) FILTER (
+    WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+      AND NOT pm.port_ok_1
+  )                                                    AS c1_blocked,
+  COUNT(*) FILTER (
+    WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+      AND NOT pm.port_ok_2
+  )                                                    AS c2_blocked
+FROM _resolved r
+JOIN _port_match pm ON pm.source_id = r.source_id;
+
+\echo '--- PRE-CHECK: blocked sample (up to 10 rows) ---'
+SELECT r.source_id, r.scannertype, r.c1, r.dp1, pm.port_ok_1, r.c2, r.dp2, pm.port_ok_2
+  FROM _resolved r
+  JOIN _port_match pm ON pm.source_id = r.source_id
+ WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+   AND (NOT pm.port_ok_1 OR NOT pm.port_ok_2)
+ LIMIT 10;
 
 \echo '--- PRE-CHECK: source row counts ---'
 SELECT COUNT(*) AS source_rows FROM _source;
@@ -134,26 +199,33 @@ SELECT source_id, merged, c1, c2, boe1, boe2
 --    resolved source row. Children inherit scannerdataid/type/createdat/tenant
 --    so the ASE scan image still resolves to both containers.
 -- ----------------------------------------------------------------------------
+-- Port-rule filter applied here. Each child only inserts when its own
+-- boedoc.deliveryplace clears the scanner's port gate. See _port_match view
+-- and the comment block above it (cardinal rule, commit 243613e).
 WITH ins AS (
   INSERT INTO containerboerelations (
       containernumber, scannerdataid, scannertype, icumsboeid,
       relationtype, createdat, notes, isactive, tenant_id
   )
-  SELECT c1, scannerdataid, scannertype, boe1,
-         relationtype, createdat,
-         COALESCE(notes, '') ||
-           ' [split from merged row id=' || source_id || ', pair=' || c2 || ']',
-         TRUE, tenant_id
-    FROM _resolved
-   WHERE boe1 IS NOT NULL AND boe2 IS NOT NULL
+  SELECT r.c1, r.scannerdataid, r.scannertype, r.boe1,
+         r.relationtype, r.createdat,
+         COALESCE(r.notes, '') ||
+           ' [split from merged row id=' || r.source_id || ', pair=' || r.c2 || ']',
+         TRUE, r.tenant_id
+    FROM _resolved r
+    JOIN _port_match pm ON pm.source_id = r.source_id
+   WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+     AND pm.port_ok_1 AND pm.port_ok_2
   UNION ALL
-  SELECT c2, scannerdataid, scannertype, boe2,
-         relationtype, createdat,
-         COALESCE(notes, '') ||
-           ' [split from merged row id=' || source_id || ', pair=' || c1 || ']',
-         TRUE, tenant_id
-    FROM _resolved
-   WHERE boe1 IS NOT NULL AND boe2 IS NOT NULL
+  SELECT r.c2, r.scannerdataid, r.scannertype, r.boe2,
+         r.relationtype, r.createdat,
+         COALESCE(r.notes, '') ||
+           ' [split from merged row id=' || r.source_id || ', pair=' || r.c1 || ']',
+         TRUE, r.tenant_id
+    FROM _resolved r
+    JOIN _port_match pm ON pm.source_id = r.source_id
+   WHERE r.boe1 IS NOT NULL AND r.boe2 IS NOT NULL
+     AND pm.port_ok_1 AND pm.port_ok_2
   RETURNING id
 )
 SELECT COUNT(*) AS inserted_children FROM ins
@@ -165,12 +237,17 @@ SELECT :inserted_children AS inserted_children;
 -- ----------------------------------------------------------------------------
 -- 4. DELETE the original merged rows that were successfully split
 -- ----------------------------------------------------------------------------
+-- DELETE only when both child INSERTs would have happened (i.e. both port_ok).
+-- A row that's blocked by the port rule is left in place as the merged record;
+-- it should be investigated manually rather than silently dropped.
 WITH del AS (
   DELETE FROM containerboerelations r
-   USING _resolved rs
+   USING _resolved rs, _port_match pm
    WHERE r.id = rs.source_id
+     AND pm.source_id = rs.source_id
      AND rs.boe1 IS NOT NULL
      AND rs.boe2 IS NOT NULL
+     AND pm.port_ok_1 AND pm.port_ok_2
   RETURNING r.id
 )
 SELECT COUNT(*) AS deleted_merged FROM del

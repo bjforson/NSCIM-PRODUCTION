@@ -58,16 +58,42 @@ BEGIN;
 -- this file. Do NOT commit a real password to git.
 --
 CREATE TEMP TABLE boe_resolved AS
-SELECT DISTINCT ON (containernumber) containernumber, id
+SELECT DISTINCT ON (containernumber) containernumber, id, deliveryplace
 FROM dblink(
   'host=localhost port=5432 dbname=nickscan_downloads user=postgres password=<PASSWORD>',
-  'SELECT containernumber, id, createdat
+  'SELECT containernumber, id, createdat, deliveryplace
      FROM boedocuments
     WHERE processingstatus = ''Transferred''
     ORDER BY containernumber, createdat DESC'
-) AS t(containernumber TEXT, id INTEGER, createdat TIMESTAMP);
+) AS t(containernumber TEXT, id INTEGER, createdat TIMESTAMP, deliveryplace TEXT);
 
 CREATE INDEX ON boe_resolved (containernumber);
+
+-- -----------------------------------------------------------------------------
+-- CARDINAL PORT-RULE FILTER (added 2026-05-04 — see commit 243613e).
+--
+-- The cardinal port rule (enforced inline at every CBR INSERT/UPDATE path):
+--     scannertype = 'FS6000'  =>  BOE.deliveryplace must contain 'TKD' (Takoradi)
+--     scannertype = 'ASE'     =>  BOE.deliveryplace must contain 'TMA' (Tema)
+--
+-- Null/blank deliveryplace is allowed — matches ScannerLocationMap.IsLocationMatch
+-- semantics (an upstream gap, flagged separately, but not blocking).
+--
+-- Today's runtime gates (commit 243613e):
+--   * ContainerDataMapperService.MapContainerDataAsync refuses CBR INSERT on
+--     mismatch and writes a Critical PortMismatch flag.
+--   * IcumJsonIngestionService.UpdateContainerCompletenessOnCmrUpgradeAsync
+--     skips HasICUMSData=true on mismatch.
+--   * ContainerCompletenessService:395-454 zeroes HasICUMSData on mismatch.
+--
+-- Without this filter, this UPDATE would match purely on containernumber and
+-- could overwrite icumsboeid with a port-mismatched BOE id, bypassing every
+-- runtime gate. The clause below makes the UPDATE refuse port-mismatched
+-- pairings even if re-run.
+--
+-- The bool-returning expression below is referenced by the diagnostic SELECT
+-- and the UPDATE's WHERE clause.
+-- -----------------------------------------------------------------------------
 
 \echo
 \echo === PRE-UPDATE VERIFICATION ===
@@ -98,9 +124,49 @@ WHERE cb.icumsboeid = 0
   AND br.id IS NULL
   AND cb.containernumber NOT LIKE '%,%';
 
+-- Cardinal port-rule diagnostic: count rows that WOULD be matched by container
+-- number alone but BLOCKED by the new port filter. See cardinal-rule comment
+-- block above (commit 243613e).
+\echo
+\echo === CARDINAL PORT-RULE DIAGNOSTIC (rows blocked from UPDATE) ===
+
+SELECT
+  COUNT(*) AS port_blocked_total,
+  COUNT(*) FILTER (WHERE cb.scannertype = 'FS6000') AS port_blocked_fs6000,
+  COUNT(*) FILTER (WHERE cb.scannertype = 'ASE')    AS port_blocked_ase
+FROM containerboerelations cb
+INNER JOIN boe_resolved br ON br.containernumber = cb.containernumber
+WHERE cb.icumsboeid = 0
+  AND br.deliveryplace IS NOT NULL
+  AND btrim(br.deliveryplace) <> ''
+  AND NOT (
+    (cb.scannertype = 'FS6000' AND br.deliveryplace ILIKE '%TKD%') OR
+    (cb.scannertype = 'ASE'    AND br.deliveryplace ILIKE '%TMA%') OR
+    (cb.scannertype NOT IN ('FS6000', 'ASE'))   -- unknown scanner: no gate
+  );
+
+\echo
+\echo === CARDINAL PORT-RULE DIAGNOSTIC sample (up to 10 blocked rows) ===
+
+SELECT cb.id, cb.containernumber, cb.scannertype, br.id AS boe_id, br.deliveryplace
+FROM containerboerelations cb
+INNER JOIN boe_resolved br ON br.containernumber = cb.containernumber
+WHERE cb.icumsboeid = 0
+  AND br.deliveryplace IS NOT NULL
+  AND btrim(br.deliveryplace) <> ''
+  AND NOT (
+    (cb.scannertype = 'FS6000' AND br.deliveryplace ILIKE '%TKD%') OR
+    (cb.scannertype = 'ASE'    AND br.deliveryplace ILIKE '%TMA%') OR
+    (cb.scannertype NOT IN ('FS6000', 'ASE'))
+  )
+LIMIT 10;
+
 -- -----------------------------------------------------------------------------
 -- Step 2: Perform the UPDATE. Only touches rows where a match exists.
 --         Multi-container strings and 'Unknown' rows are left alone.
+--         CARDINAL PORT-RULE FILTER (commit 243613e): refuse port-mismatched
+--         pairings — keep null/blank deliveryplace permissive (matches
+--         IsLocationMatch semantics).
 -- -----------------------------------------------------------------------------
 \echo
 \echo === APPLYING UPDATE ===
@@ -109,7 +175,16 @@ UPDATE containerboerelations cb
    SET icumsboeid = br.id
   FROM boe_resolved br
  WHERE cb.containernumber = br.containernumber
-   AND cb.icumsboeid = 0;
+   AND cb.icumsboeid = 0
+   -- Cardinal port rule: scanner port must agree with BOE.deliveryplace
+   -- (null/blank DP allowed). See commit 243613e and ScannerLocationMap.
+   AND (
+     br.deliveryplace IS NULL OR
+     btrim(br.deliveryplace) = '' OR
+     (cb.scannertype = 'FS6000' AND br.deliveryplace ILIKE '%TKD%') OR
+     (cb.scannertype = 'ASE'    AND br.deliveryplace ILIKE '%TMA%') OR
+     cb.scannertype NOT IN ('FS6000', 'ASE')   -- unknown scanner: no gate
+   );
 
 \echo
 \echo === POST-UPDATE VERIFICATION ===
