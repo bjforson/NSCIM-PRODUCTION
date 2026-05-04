@@ -91,9 +91,15 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
         /// </summary>
         public async Task<NonConsolidatedCargoGroup?> GetNonConsolidatedCargoGroupByDeclarationAsync(string declarationNumber)
         {
+            // 2026-05-04: Removed `!b.IsConsolidated` filter — see fix(cargogroup) commit. When the
+            // caller looks up by *declaration number* (not BL), `DeclarationNumber == declarationNumber`
+            // is the unambiguous discriminator. Some BOE rows are mis-tagged `IsConsolidated=true` at
+            // ingest despite `MasterBlNumber=NULL` and `BlNumber` being a per-BOE BL — keeping the
+            // filter caused the cargo-group lookup to miss those records and the analyst summary panel
+            // rendered empty for ~13.5% of declaration-keyed AGs. Consolidated path is keyed by BlNumber,
+            // so removing the flag here does not double-count.
             var query = _context.BOEDocuments
                 .AsNoTracking()
-                .Where(b => !b.IsConsolidated)  // Non-consolidated only
                 .Where(b => b.DeclarationNumber == declarationNumber);
 
             // ✅ FIX: Use First() instead of FirstOrDefault()! - GroupBy guarantees at least one element per group

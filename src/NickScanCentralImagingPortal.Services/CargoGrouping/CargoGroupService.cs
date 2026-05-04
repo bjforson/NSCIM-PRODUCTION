@@ -397,9 +397,11 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             }
 
             // Try non-consolidated (Declaration Number)
+            // 2026-05-04: Removed `!b.IsConsolidated` filter — declaration-number lookup ignores
+            // the consolidated flag because some BOE rows are mis-tagged at ingest (see ConsolidatedCargoQueries.cs).
             var nonConsolidated = await _icumDbContext.BOEDocuments
                 .AsNoTracking()
-                .Where(b => b.DeclarationNumber == groupIdentifier && !b.IsConsolidated)
+                .Where(b => b.DeclarationNumber == groupIdentifier)
                 .AnyAsync();
 
             if (nonConsolidated)
@@ -411,9 +413,11 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
             // Only check if column query failed and limit to recent documents to avoid loading all data
             if (!nonConsolidated)
             {
+                // 2026-05-04: Dropped `!b.IsConsolidated` filter for consistency with the column-based
+                // declaration lookup above. RawJsonData fallback now considers all BOEs.
                 var recentNonConsolidatedWithJson = await _icumDbContext.BOEDocuments
                     .AsNoTracking()
-                    .Where(b => !b.IsConsolidated && !string.IsNullOrWhiteSpace(b.RawJsonData))
+                    .Where(b => !string.IsNullOrWhiteSpace(b.RawJsonData))
                     .OrderByDescending(b => b.CreatedAt)
                     .Take(1000) // ✅ MEMORY FIX: Limit to 1000 most recent documents
                     .ToListAsync();
@@ -672,9 +676,11 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
 
                 // ✅ FALLBACK: Load BOE documents with RawJsonData and check in memory
                 // Limit to recent documents to avoid loading all data
+                // 2026-05-04: Dropped `!b.IsConsolidated` filter — declaration-number lookup is the
+                // unambiguous discriminator; RawJsonData fallback considers all BOEs.
                 var boeDocuments = await _icumDbContext.BOEDocuments
                     .AsNoTracking()
-                    .Where(b => !b.IsConsolidated && !string.IsNullOrWhiteSpace(b.RawJsonData))
+                    .Where(b => !string.IsNullOrWhiteSpace(b.RawJsonData))
                     .OrderByDescending(b => b.CreatedAt)
                     .Take(1000) // ✅ MEMORY FIX: Limit to 1000 most recent documents
                     .ToListAsync();
@@ -852,9 +858,12 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     // Query ALL BOE documents for this declaration (not filtered by container)
                     // Note: containerNumbers may be empty, so we query by declaration number only
                     boeQueryStopwatch.Restart();
+                    // 2026-05-04: Dropped `!b.IsConsolidated` filter — declaration-number lookup is
+                    // the unambiguous key; rows mis-tagged IsConsolidated=true at ingest must still
+                    // load their ICUMS data when accessed via declaration.
                     var allBOEDocuments = await _icumDbContext.BOEDocuments
                         .AsNoTracking()
-                        .Where(b => b.DeclarationNumber == groupIdentifier && !b.IsConsolidated)
+                        .Where(b => b.DeclarationNumber == groupIdentifier)
                         .OrderByDescending(b => b.CreatedAt)
                         .ToListAsync(cancellationToken);
                     boeQueryStopwatch.Stop();
