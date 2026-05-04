@@ -78,38 +78,23 @@ namespace NickScanCentralImagingPortal.Tests.Services
 
         public enum FycoOutcome { Pass, FailFycoSaysExportButBoeIsImport, FailFycoSaysImportButBoeIsExport, Skip }
 
-        // Transit regimes (80/88/89) must be skipped — transit cargo legitimately
-        // carries fyco=EXPORT (cargo leaves Ghana for Mali/Burkina Faso/Niger) even
-        // when ICUMS stamps clearancetype=IM. Mirrors RegimeDirectionMap.IsTransit
-        // + the production rule's transit early-return.
+        // Transit regimes (80/88/89) DO flow through the rule — clarified 2026-05-04.
+        // FS6000 lives at ATSL Takoradi sea terminal; fyco=EXPORT means cargo is
+        // physically departing TKD on a vessel. Transit cargo arrives at TKD by
+        // vessel and leaves Ghana by ROAD (overland to inland West Africa) — so a
+        // transit BOE matched to fyco=EXPORT IS a real anomaly the rule must catch.
+        // The rule's behaviour for transit is identical to non-transit; only the
+        // INGEST-side implicit CMR→IM upgrade carves transit out (different concern).
         [Theory]
-        [InlineData("WAYBILL/EXPORT", "IM", "80", FycoOutcome.Skip)]
-        [InlineData("WAYBILL/EXPORT", "IM", "88", FycoOutcome.Skip)]
-        [InlineData("WAYBILL/EXPORT", "IM", "89", FycoOutcome.Skip)]
-        [InlineData("EXPORT",         "IM", "80", FycoOutcome.Skip)]
-        [InlineData("1",              "IM", "80", FycoOutcome.Skip)]
-        // Non-transit regimes still flow through the regular rule
-        [InlineData("WAYBILL/EXPORT", "IM", "40", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
-        [InlineData("WAYBILL/EXPORT", "IM", "70", FycoOutcome.FailFycoSaysExportButBoeIsImport)]
-        [InlineData("WAYBILL/EXPORT", "IM", null, FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // unknown regime — don't skip
-        [InlineData("WAYBILL/EXPORT", "IM", "",   FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // empty regime — don't skip
-        [InlineData("WAYBILL/EXPORT", "EX", "10", FycoOutcome.Pass)]                                // export regime, agreed clearance
-        [InlineData("0",              "IM", "40", FycoOutcome.Pass)]                                // import-flagged on import BOE — fine
-        public void EvaluateFyco_TransitSkipsRule(string? fyco, string? clearance, string? regime, FycoOutcome expected)
+        [InlineData("WAYBILL/EXPORT", "IM", FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // transit + fyco=EXPORT = real anomaly
+        [InlineData("WAYBILL/EXPORT", "CMR", FycoOutcome.Skip)]                              // CMR-clearance still skips
+        [InlineData("IMPORT",         "IM", FycoOutcome.Pass)]                                // transit arrives by vessel — IMPORT marker = correct
+        [InlineData("EXPORT",         "EX", FycoOutcome.Pass)]                                // genuine export from TKD — agrees
+        public void EvaluateFyco_TransitFlowsThroughRule(string? fyco, string? clearance, FycoOutcome expected)
         {
-            Assert.Equal(expected, EvaluateWithRegime(fyco, clearance, regime));
-        }
-
-        private static readonly System.Collections.Generic.HashSet<string> TransitRegimes =
-            new(System.StringComparer.OrdinalIgnoreCase) { "80", "88", "89" };
-
-        // Mirrors ContainerValidationService.ValidateFycoImportExportAsync's transit
-        // early-return + the underlying RegimeDirectionMap.IsTransit() helper.
-        private static FycoOutcome EvaluateWithRegime(string? fyco, string? clearance, string? regime)
-        {
-            if (!string.IsNullOrWhiteSpace(regime) && TransitRegimes.Contains(regime.Trim()))
-                return FycoOutcome.Skip;
-            return Evaluate(fyco, clearance);
+            // Transit regimes are NOT skipped by the rule — semantics identical to
+            // non-transit (regime is irrelevant; rule looks at fyco vs clearancetype).
+            Assert.Equal(expected, Evaluate(fyco, clearance));
         }
 
         // Mirrors ContainerValidationService.IsExportFlag — kept in sync deliberately

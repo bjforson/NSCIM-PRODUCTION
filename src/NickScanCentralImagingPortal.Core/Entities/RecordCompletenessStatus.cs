@@ -58,11 +58,16 @@ namespace NickScanCentralImagingPortal.Core.Entities
         ///                 + 70 (Bonded Warehouse), 72, 75, 77, 79  (suspense, import-side)
         ///                 + 90 (Free Zones), 94, 95, 97, 99  (suspense, import-side)
         ///   Transit       : 80, 88, 89  (true transit — Ghana → Mali/Burkina Faso/Niger
-        ///                  per GRA Transit Unit. Cargo physically leaves Ghana but isn't
-        ///                  an export from Ghana's perspective. NOT inward processing.
-        ///                  Transit cargo legitimately carries fyco=EXPORT even when
-        ///                  clearancetype=IM; the fyco rule MUST skip these — see
-        ///                  RegimeDirectionMap.IsTransit().)
+        ///                  per GRA Transit Unit. Cargo arrives at TKD by vessel, leaves
+        ///                  Ghana by ROAD. NOT inward processing.
+        ///                  Important: FS6000 sits at ATSL Takoradi sea terminal; fyco=
+        ///                  EXPORT on FS6000 means cargo is physically departing TKD
+        ///                  on a vessel. Transit cargo never departs by sea — so a
+        ///                  regime-80 BOE matched to fyco=EXPORT is a REAL anomaly the
+        ///                  fyco rule must catch (do NOT skip transit in the rule).
+        ///                  RegimeDirectionMap.IsTransit() is used at INGEST only to
+        ///                  prevent the implicit CMR→IM upgrade from clobbering
+        ///                  transit declarations.)
         ///   Reserved      : 00
         ///   blank         : half-state CMR (BOE not yet linked)
         ///

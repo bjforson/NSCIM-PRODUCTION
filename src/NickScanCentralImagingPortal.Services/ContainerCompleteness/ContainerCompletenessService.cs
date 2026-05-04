@@ -476,19 +476,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 var boeIsImport = boeClearance.StartsWith("IM");
                                 var boeIsExport = boeClearance.StartsWith("EX");
 
-                                // Skip the fyco direction check for transit regimes (80/88/89).
-                                // Transit cargo legitimately carries fyco=EXPORT (it's leaving
-                                // Ghana en route to Mali/Burkina Faso/Niger per the GRA Transit
-                                // Unit) even when ICUMS stamps clearancetype=IM. See
-                                // RegimeDirectionMap and memory reference_port_match_rules_
-                                // enabled_2026_05_02.md.
-                                if (RegimeDirectionMap.IsTransit(primaryBOE.RegimeCode))
-                                {
-                                    _logger.LogDebug(
-                                        "{ServiceId} FYCO check skipped for transit regime {Regime}: {Container}",
-                                        SERVICE_ID, primaryBOE.RegimeCode, queueItem.ContainerNumber);
-                                }
-                                else if (scanFyco == FycoCategory.Export && boeIsImport)
+                                // Transit regimes (80/88/89) are NOT skipped — FS6000 lives at
+                                // ATSL Takoradi sea-port terminal, fyco=EXPORT means cargo is
+                                // physically departing TKD on a vessel. Transit cargo arrives
+                                // at TKD by vessel and leaves Ghana by ROAD (not sea), so a
+                                // regime-80 BOE matched to fyco=EXPORT is a real anomaly.
+                                if (scanFyco == FycoCategory.Export && boeIsImport)
                                 {
                                     // Critical mismatch: export scan against import BOE.
                                     _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.ClearanceType='{Clearance}' (Import). Blocking match.",

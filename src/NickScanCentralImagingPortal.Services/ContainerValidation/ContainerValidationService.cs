@@ -855,29 +855,24 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                     return; // No FS6000 scan or flag missing → rule not applicable.
                 }
 
-                var boe = await _icumDownloadsDbContext.BOEDocuments
+                var boeClearance = await _icumDownloadsDbContext.BOEDocuments
                     .AsNoTracking()
                     .Where(b => b.ContainerNumber == containerNumber)
                     .OrderByDescending(b => b.Id)
-                    .Select(b => new { b.ClearanceType, b.RegimeCode })
+                    .Select(b => b.ClearanceType)
                     .FirstOrDefaultAsync();
 
-                var boeClearance = boe?.ClearanceType;
                 if (string.IsNullOrWhiteSpace(boeClearance) || boeClearance.Equals("CMR", StringComparison.OrdinalIgnoreCase))
                 {
                     return; // CMR is pre-BOE; direction not yet defined.
                 }
 
-                // Skip transit regimes (80 / 88 / 89). Transit cargo legitimately carries
-                // fyco=EXPORT (cargo is leaving Ghana en route to inland West African
-                // countries) even when clearancetype is stamped IM by the upstream feed.
-                // See ContainerScanQueue.cs::RegimeDirectionMap and memory entry
-                // reference_port_match_rules_enabled_2026_05_02.md for the full picture.
-                if (RegimeDirectionMap.IsTransit(boe?.RegimeCode))
-                {
-                    result.PassedRules.Add($"Fyco direction check skipped — transit regime {boe?.RegimeCode}");
-                    return;
-                }
+                // Note: transit regimes (80/88/89) are NOT skipped here. The FS6000
+                // scanner sits at ATSL Takoradi sea-port terminal — fyco=EXPORT
+                // means cargo is physically departing TKD on a vessel. Transit cargo
+                // arrives at TKD by vessel and leaves Ghana by ROAD (overland to
+                // Mali/Burkina/Niger), so a transit BOE matched to fyco=EXPORT is a
+                // real anomaly worth catching. The rule already does the right thing.
 
                 var raw = fs.FycoPresent.Trim();
                 var isExportFlag = IsExportFlag(raw);

@@ -191,16 +191,19 @@ namespace NickScanCentralImagingPortal.Core.Entities
     /// https://external.unipassghana.com/co/code/popup/selectRegimeCode.do
     /// (verified 2026-05-03; 34 codes total).
     ///
-    /// The ICUMS Manual also documents that **transit cargo is declared via a
-    /// Bonded Transportation (BT) Declaration, NOT a regular BOE** — see the
-    /// "BONDED TRANSPORTATION (BT) DECLARATION PROCESS" section of the External
-    /// User Guide. So strictly speaking transit shouldn't be appearing as
-    /// regime-80 BOE rows at all; that we see them is a v1 ingestion-side
-    /// quirk. The IsTransit() check here is a defensive belt for the fyco
-    /// rule: transit cargo legitimately carries `fyco=EXPORT` (it's leaving
-    /// Ghana en route to Mali / Burkina Faso / Niger per the GRA Transit
-    /// Unit) even when clearancetype gets stamped IM. Skipping the rule for
-    /// transit avoids false-positive Export-vs-Import mismatches.
+    /// Per the ICUMS Manual, transit cargo is declared via a Bonded Transportation
+    /// (BT) Declaration, NOT a regular BOE — see "BONDED TRANSPORTATION (BT)
+    /// DECLARATION PROCESS" in the External User Guide. The fact we see regime-80
+    /// rows in `boedocuments` is a v1 ingestion-side conflation.
+    ///
+    /// IMPORTANT — fyco-rule semantics (clarified 2026-05-04):
+    /// FS6000 lives at ATSL Takoradi sea-port terminal; fyco=EXPORT means cargo
+    /// is physically departing TKD on a vessel. Transit cargo arrives at TKD by
+    /// vessel and leaves Ghana by ROAD (overland to Mali/Burkina/Niger), so a
+    /// transit BOE matched to fyco=EXPORT is a REAL anomaly the fyco rule must
+    /// catch. **Do NOT use IsTransit() to skip the fyco rule.** It is intended
+    /// for the INGEST-side implicit CMR→IM upgrade switch only — keeps regime-80
+    /// CMR-typed messages from being incorrectly auto-flipped to IM.
     /// </summary>
     public static class RegimeDirectionMap
     {
