@@ -298,8 +298,16 @@ function Set-NssmEnvPair($service, $name, $value) {
     # NSSM!" and exits 1, which under $ErrorActionPreference='Stop' poisons the
     # final exit code even after "Deployment complete". `nssm get AppDirectory`
     # exits 0 for NSSM-managed services and 1 otherwise - cheap, deterministic probe.
-    & $nssm get $service AppDirectory 2>&1 | Out-Null
-    $isNssm = ($LASTEXITCODE -eq 0)
+    # Wrapped in try/catch because under PS 7.3+ with $PSNativeCommandUseErrorActionPreference,
+    # nssm.exe's UTF-16 stderr complaint becomes a script-killing NativeCommandError
+    # that would abort Deploy.ps1 before Phase 4 (start). 2026-05-04.
+    $isNssm = $false
+    try {
+        & $nssm get $service AppDirectory 2>&1 | Out-Null
+        $isNssm = ($LASTEXITCODE -eq 0)
+    } catch {
+        $isNssm = $false
+    }
     $global:LASTEXITCODE = 0  # don't let the probe's non-zero bleed into the caller's exit code
     if (-not $isNssm) {
         Write-Host "    Service $service is not NSSM-managed (sc.exe-managed), skipping NSSM env $name" -ForegroundColor Gray
