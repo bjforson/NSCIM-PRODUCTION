@@ -22,6 +22,64 @@ For each release, this file records:
 
 ---
 
+## [2.16.3] — 2026-05-04 — Upstream fix for mis-tagged-consolidated → blank dialog tabs
+
+The actual upstream root cause behind 2.16.2's symptom (Scanner Data / ICUMS
+Data / Image tabs all blank for the 8 mis-tagged-consolidated declarations).
+
+### Symptom
+
+For the 8 declarations that 4c4931c targeted (`IsConsolidated=true` despite
+`MasterBlNumber=NULL`), the analyst review dialog rendered all three data
+tabs empty — Scanner Data, ICUMS Data, and Image. User-reported case:
+`41225848361`.
+
+### Root cause
+
+`ReadyGroupsCacheService.UpsertQueueEntryAsync` writes
+`analysisqueueentries.isconsolidated` from the matching BOE row's
+`IsConsolidated` flag (line 469-475). For mis-tagged BOEs that flag is
+`true` even though `MasterBlNumber` is NULL, so the queue entry inherits
+`isconsolidated=true`.
+
+The frontend then assumes `IsConsolidated => GroupIdentifier IS the
+container number` (`ImageAnalysisViewDialog.razor:194,1392,1707,1762` and
+`Workbench.razor:805`) and routes
+`GET /api/containerdetails/{scanner|icums|images}/{groupIdentifier}` —
+where `groupIdentifier` is actually a *declaration number* for our 8
+records. The path lookup 404s and all three tabs render empty.
+
+This was visible only after `4c4931c` because before that the Summary tab
+showed "Cargo group not found" and users backed out before clicking the
+data tabs.
+
+### Fix
+
+`ReadyGroupsCacheService.cs:469-475` — only treat a BOE as truly consolidated
+when `IsConsolidated AND MasterBlNumber != NULL`. Mis-tagged BOEs (no master
+BL) now correctly write `isconsolidated=false` to the queue entry, the
+frontend takes the non-consolidated path, and tabs populate.
+
+### Backfill
+
+Existing `analysisqueueentries.isconsolidated=true` rows for affected
+GroupIdentifiers were corrected via
+`tools/probe/QueueIsConsolidatedBackfill.cs` (now under
+`C:\temp\nscim-probe\` in the dev environment). One-shot, transactional,
+safety-capped at 200 rows. Mirrors the new cache-service predicate.
+
+### 2.16.2 holds
+
+The 2.16.2 fix at `ContainerDetailsController.cs:864` is still correct for
+the `?declarationNumber=X` query-param call path
+(`ImageAnalysisViewDialog.razor:1340/1783`) — independent of this issue.
+
+### Commits
+
+- (this commit) — `fix(orchestrator): only mark queue-entry isConsolidated when MasterBlNumber != NULL`
+
+---
+
 ## [2.16.2] — 2026-05-04 — Follow-up to 2.16.1 cargo-group fix: ContainerDetails ICUMS path
 
 Patch follow-up to `4c4931c` (cargo-group fix in 2.16.1). That commit dropped

@@ -459,7 +459,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     .CountAsync(d => d.GroupIdentifier == group.GroupIdentifier
                         || d.GroupIdentifier == group.NormalizedGroupIdentifier, ct);
 
-                // BOE consolidation (cross-DB, best-effort)
+                // BOE consolidation (cross-DB, best-effort).
+                // 2026-05-04 (2.16.3): require MasterBlNumber != NULL to consider a BOE truly
+                // consolidated. Some BOEs are mis-tagged at ingest with `IsConsolidated=true`
+                // despite `MasterBlNumber=NULL` — they don't actually have a master BL, so
+                // they're not really consolidated. The frontend dialog assumes
+                // `IsConsolidated => GroupIdentifier IS a container number` and routes
+                // `GET /api/containerdetails/{scanner|icums|images}/{groupIdentifier}` accordingly.
+                // For the 8+ mis-tagged declarations (e.g. 41225848361), GroupIdentifier was a
+                // declaration number — the path lookup 404'd, blanking Scanner/ICUMS/Image tabs.
                 bool isConsolidated = false;
                 try
                 {
@@ -470,9 +478,9 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         .AsNoTracking()
                         .Where(b => b.ContainerNumber == group.GroupIdentifier
                             || b.DeclarationNumber == group.GroupIdentifier)
-                        .Select(b => b.IsConsolidated)
+                        .Select(b => new { b.IsConsolidated, b.MasterBlNumber })
                         .FirstOrDefaultAsync(ct);
-                    isConsolidated = boe;
+                    isConsolidated = boe != null && boe.IsConsolidated && !string.IsNullOrEmpty(boe.MasterBlNumber);
                 }
                 catch (Exception ex)
                 {
