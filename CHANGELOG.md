@@ -22,6 +22,177 @@ For each release, this file records:
 
 ---
 
+## [2.16.0] — 2026-05-04 — Match-correctness arc + 91-commit backlog catch-up
+
+Catch-up release covering everything since 2.15.5 (2026-04-23) — 91 commits across 11 days. Headlined by the **6-layer match-correctness model** that ended 2026-05-04, but also rolls up the Week-1/Week-2 security batches, RLS fail-closed rollout, .NET 10 retarget, NickFinance Phase 6, NickHR W3B identity integration, and platform identity scaffold.
+
+The bulk of the work was incremental and deployed as it landed. This release entry exists to (a) reset the version-bump cadence — `2b65782` was the last bump — and (b) document the cumulative state for the next operator who needs to understand "why is this so different from what I last remembered."
+
+### ⚠️ Behaviour changes — read before next deploy
+
+- **Match validation is enforced in production.** The cardinal port-match rule (FS6000→TKD, ASE→TMA) and the 3-layer fyco direction rule (clearancetype layer + regime layer) now BLOCK wrong matches at multiple gates. Containers that fail any layer get a Critical `MatchQualityFlag` row visible at `/validation/match-corrections`. Mass-rejection of legacy bad matches occurred 2026-05-02 (29 containers) and 2026-05-04 (6 containers + MEDU7718311 re-unmatch); audit trail in `matchqualityflags.resolvedby` columns.
+- **Pipeline gates are belt-and-braces.** Cardinal port runs at queue time AND at mapper-INSERT time AND at submission-validation time. Fyco runs at queue time AND at mapper time AND at validation time. CMR-upgrade cascade is port-aware. Admin Rematch override writes a Critical `PortMismatch` audit-trail flag (resolution=Confirmed) when bypassing the rule.
+- **Transit BOEs (regime 80/88/89) keep CMR clearance.** The CMR→IM ingestion-time upgrade switch carves transit out — regime 80 stays CMR, fixing 943 historical mis-flips. ICUMS itself sends another 5,434 regime-80 rows with `ClearanceType:"IM"` natively (upstream BT-vs-BOE conflation we can't fix here); the rule layer correctly treats these as anomalies.
+- **`fyco=EXPORT` typed verbiage now recognised.** `IsExportFlag` regex extended to match `\bex(p)?ort\b` plus the legacy `1/Y/YES/true`. Catches `WAYBILL/EXPORT`, `EXPORT`, `WAY-BILL/EXPORT`, common typos. Operators no longer silently bypass the rule by typing instead of toggling.
+- **RLS now actually enforces.** `TenantConnectionInterceptor` pushes `app.tenant_id = '1'` on every connection; all `tenant_isolation_*` policies are `FORCE ROW LEVEL SECURITY` with `'0'` fail-closed default. Background services that bypass middleware no longer see all rows.
+- **Single-session enforcement live** on NSCIM_API + NickHR.API. JWT `sid` claim must match `users.CurrentSessionId`; logging in elsewhere invalidates prior tokens.
+- **`/hubs/*` paths return 401 instead of 302→/login.** Frontend `"Could not connect to readiness service"` toast is fixed. JwtBearer also reads `?access_token=` from query string for SignalR WebSocket upgrades.
+- **All v1 services run on .NET 10** (since 2026-04-24).
+- **`nscim_app` non-superuser DB role** handles all four NSCIM connections (`NICKSCAN_DB_PASSWORD` rotated 2026-04-26). NickHR JWT key moved to env var `NICKHR_JWT_KEY`.
+- **HMAC-signed short-lived URLs** for browser `<img src>` image endpoints. Server-side signing only; client cannot forge.
+- **Anonymous access removed** from `/api/Gateway/container/*` and `/api/attendance/biometric/*` (returned fake-zeros previously). 401 responses now mean expired session, not endpoint missing.
+
+### New migrations
+
+- `tools/migrations/phase1-tenancy/30-icums-add-tenant-id.sql` — tenant_id + RLS to 4 nickscan_icums tables
+- `tools/migrations/phase1-tenancy/31-downloads-add-tenant-id.sql` — same for 11 nickscan_downloads tables
+- `tools/migrations/documenttype-tagging/01-add-documenttype-column.sql` — adds `documenttype` to `boedocuments` (Transit / Free Zone / BOE / NULL) and backfills 32,903 rows. **Already applied 2026-05-04.**
+
+### Match-correctness arc — what landed
+
+- `b9c1314` — Intake worker now back-stamps `containercompletenessstatuses.groupidentifier` on group creation. Fixes 38 stuck Ready groups whose containers had NULL `groupidentifier`. (Live backfill covered 33 of the 38.)
+- `48191f0` — `ReadyGroupsCacheService` joins to CCS via `RCS.ContainerGroupKey` for Pattern-A (sibling-declaration) groups. Plus second-chance pass that loads CCS by `analysisrecords.containernumber` when the primary join yields zero containers — rescues groups with historically mis-keyed CCS rows.
+- `5fdc46d` — `ContainerCompletenessService` LOCATION-MISMATCH block now persists `PortMismatch` flags. UI dropdown extended with the new filter category. 356 historical PortMismatch flags backfilled.
+- `5de39d4` — Flipped `IcumIngestion:EnablePortAssignmentRule` and `EnableFycoImportExportRule` ON in production. Corrected `RecordCompletenessStatus.RegimeCode` doc comment with full operator-validated direction map.
+- `db8e889` — Broadened `IsExportFlag` to recognise `WAYBILL/EXPORT`, `EXPORT`, `WAY-BILL/EXPORT` etc. via regex.
+- `678a696` / `4f6f8bd` — Regime-80 transit handling. Initial commit added a fyco-rule transit-skip; reverted on 2026-05-04 after operator clarified that FS6000 sits at ATSL Takoradi sea terminal (so transit cargo with `fyco=EXPORT` IS a real anomaly the rule must catch). Implicit CMR→IM upgrade carve-out for regime 80/88/89 was kept.
+- `fa49d2b` — 3-layer fyco rule (cardinal port + clearancetype + regime).
+- `243613e` — Belt-and-braces port-rule check inside `ContainerDataMapperService.MapContainerDataAsync` (the actual CBR INSERT site). CMR-upgrade cascade gate refuses to flip `HasICUMSData=true` when ports disagree.
+- `34ed179` — Admin `Rematch` writes a Critical `PortMismatch` audit-trail flag when override creates a port-mismatched relation.
+- `ff584f0` — Cardinal port-rule filter clauses on `tools/backfill/backfill-multi-container-relations.sql` and `backfill-containerboerelations-icumsboeid.sql`.
+- `3c72ef4` — `documenttype` column at ingest from `regimecode` via `RegimeDirectionMap.ClassifyDocumentType()`.
+- `5d1808a` — `ImageAnalysisOrchestratorService` early-return on empty pool now logs throttled Information instead of Debug — Audit-role polling visible.
+- `5014989` — SignalR `/hubs/*` returns 401 (not 302→/login). JwtBearer reads `?access_token=` from query for WebSocket upgrades.
+- `6e3f194` — Mapper-side fyco rule belt-and-braces. Closes the null-DP hole that let MEDU7718311 re-bind after the 2026-05-04 morning bulk-unmatch.
+
+### Security batches — Week-1 + Week-2 + audit findings
+
+- `1e596bc` Week-1 critical: C-1 auth leaks, Python splitter security, DbContext race
+- `c6f9a33` NuGet vuln bumps + NickHR JWT key rotation
+- `a5067a2` Switch 4 services to nscim_app role + scrub Portal plaintext password
+- `acbd247` / `c0ca93f` HMAC-signed short-lived image URLs
+- `579c161` Single-session enforcement on NSCIM_API + NickHR.API
+- `d0331b5` Week-2 critical: auth rate-limit, FromSql, path-traversal, XXE, manifests, ProblemDetails
+- `f4ec289` Whole-app audit 2026-04-28 — 6 critical secrets fail-fast, Gateway `[Authorize]`, CSP `unsafe-eval` removed, ICUMS Outbox order-flip
+- `508fb28` Whole-app audit 2026-04-29 — NickHR hardening, IDOR, audit wiring, perf
+- `6a99898` / `e5e0600` / `acb2988` / `1a09361` Audit-finding sweeps (C/H/M severities)
+- `b3821fc` Pin two transitive vuln sources
+- `0bc281d` net10 package-version alignment + RollForward fixes
+
+### RLS rollout
+
+- `9d05726` `TenantConnectionInterceptor` activates dormant `tenant_isolation_*` policies
+- `c6298f2` `FORCE ROW LEVEL SECURITY` + `'0'` fail-closed COALESCE default — RLS finally enforces
+- `84d5f72` Tenancy on remaining 15 tables in `nickscan_icums` (4) + `nickscan_downloads` (11). All 5 platform DBs now have phase-1 tenancy
+
+### .NET 10 retarget
+
+- `d02450e` Retarget 28 projects to net10.0 + unify NuGet versions
+- `aa40de6` Source updates for Microsoft.OpenApi 2.x + MudBlazor 8.x
+- `1d9e02c` Pin Portal + WebApp.New to LatestMajor RollForward
+- `dcc6a8c` Bump `AnalysisLevel` and exclude `publish/` from compile globs
+- `0fedef9` Remove duplicate Kestrel HTTPS endpoint to avoid double-bind crash
+
+### NickFinance — Phase 6 (full module suite)
+
+The platform's first new module since image analysis. Lands as a v2 sibling under `finance/`, mirrored to v1 for the NSCIM-side deploy. Captured in v2 git too via the v1→v2 clone landed 2026-04-30.
+
+- `3e58fd4` Phase 6 de-risk spikes — Ledger kernel green, 33/33 tests passing
+- `7cf981f` NickFinance.Coa + GL kernel docs + sln wiring
+- `40180f9` NickFinance.PettyCash MVP-zero — first GL kernel consumer
+- `2d1a73e` Tax engine + multi-step approvals + DB bootstrap CLI
+- `46f7336` Persistent CoA + tax engine wired into petty-cash disbursement
+- `825113d` Parallel approvers + delegation + escalation
+- `5782362` Receipts pipeline + MoMo disbursement channel
+- `2b38252` Cash counts + budgets + 8-rule fraud detector
+- `948fada` Financial reporting module (TB, BS, P&L, GL detail)
+- `3ffc0ca` Accounts Receivable + scan-to-invoice (Phase 6.2)
+- `3789d89` WebApp Blazor UI — petty cash + AR + reports
+- `bfe0268` Pin e-VAT + OCR + MoMo with sandbox markers
+- `9290e4f` Accounts Payable module (Phase 6.3)
+- `4f215d3` Banking + reconciliation (Phase 6.4)
+- `1d1c25a` Fixed Assets module (Phase 6.6)
+- `72b2a79` Budgeting + Cash Flow + iTaPS + Tally sync + AR phase 2 + Petty Cash v1.2
+- `45aa994` WebApp UI — 13 new pages spanning every module
+- `68c1cb4` Mirror v2 NickFinance state for v1 deploy
+
+### NickHR — W3B identity integration
+
+- `3a35b2a` W3B identity integration with NickFinance access provisioning. NickHR is the system-of-record; new `IdentityProvisioningService` + `ModuleAccessPanel` UI.
+- `53f22fc` Repair AuthorizeView Roles= attribute regression (broke /change-password)
+
+### Platform — NickERP.Platform.Identity
+
+- `8bc37ea` Scaffold `NickERP.Platform.Identity` (ROADMAP A.2.1 + A.2.2)
+- `f9e6812` `IdentityDbContext` + CF JWT validation + resolver (A.2.3-A.2.7)
+- `2efac89` Mirror v2 platform layers for v1 deploy (Identity, Identity.Tests, Observability, Web.Shared updates)
+- (`0fc1ccf` merged to security/week-1, then `78a07cf` reverted as the work belongs to v2 not v1 origin)
+
+### Comms / module manifests
+
+- `beeb6a8` `/api/_module/manifest` per PLATFORM.md §6
+- `0d5d32f` Replace in-memory queue with Postgres outbox
+
+### WebApp UX + frontend
+
+- `2b2d2d5` Readiness UX nudge — login-time prompt for Audit/Analyst users to open their workbench so they're flagged Ready
+- `5014989` (already listed under match-correctness arc above, but note it's the fix that resolves the "Could not connect to readiness service" toast)
+
+### Operations / scripts
+
+- `ce68765` Deploy.ps1 skip nssm env-set on sc.exe-managed services
+- `728b235` Postgres-era diagnostic + readiness scripts under `scripts/postgres/` (port of SQL Server originals)
+- `a0c32a5` NickFinance + identity migration/admin scripts
+- `8af1319` Gitignore exclude ASP.NET Core data-protection key rings
+- `0b18334` Postgres password rotation runbook + helper
+- `d2e309d` Track-C quick wins — secret rotation + Postgres backup cron
+- `d205aad` PowerShell parser-bug fixes in pg-backup + rotate-nickcomms-key
+
+### Tests / EF / build
+
+- `f7d583f` `WebApplicationFactory` harness for platform contract endpoints
+- `f843d94` Unblock CriticalPathTests harness — 12/12 passing
+- `4a1335f` Fix `Render_KnownSamplePercentileJpeg` post-rotation dimensions
+- `4a7bbb1` Clear EF1002 warnings in `ImageAnalysisOrchestratorService` + refactor plan
+
+### Documentation
+
+- `8ea52d8` Platform ROADMAP.md
+- `8449f15` Petty Cash module plan
+- `67f8151` NickFinance suite plan + ROADMAP Phase 6 wiring
+- `abe5dab` ROADMAP.md on main with platform-first three-track shape
+- `611c98c` NickFinance design + 3 de-risk spike artifacts
+- `001c4fb` Correct §A.0 — new platform layers live in v2, not v1
+- `5a0c57b` / `31cc833` Payroll 2-stage approval design + decision-points
+- `35a830d` Planning + audit notes 2026-04-29 NickFinance/NickHR rollout
+- `748af48` Per-hostname Cloudflare Access app split
+- `ff514d7` NickHR V1_BANNER — v2 v1-clone/nickhr is now source-of-truth
+
+### Data ops in this release window (not git-tracked)
+
+- 2026-05-02 backfill: 48 `containercompletenessstatuses.groupidentifier` UPDATEs, 33 of 38 stuck Ready groups recovered
+- 2026-05-02 backfill: 356 `PortMismatch` flag rows across the historical FS6000-only ∩ TMA-port-BOE population
+- 2026-05-02 bulk unmatch: 29 active wrong matches broken (audit trail `resolvedby='system-bulk-unmatch-2026-05-03'`)
+- 2026-05-04 bulk unmatch: 6 layer-2 violations broken (`resolvedby='system-bulk-unmatch-2026-05-04'`); MEDU7718311 re-unmatched after re-bind
+- 2026-05-04 cleanup: 70326214329's 10 stale flags resolved (`resolvedby='system-cleanup-2026-05-04'`)
+- 2026-05-04 migration: `documenttype` column populated — 32,903 rows tagged Transit (6,413) / Free Zone (814) / BOE (25,676), 82,184 NULL (CMR pre-decs)
+- 2026-05-04 transit-NULL_DP surfacing: 5 regime-80 NULL_DP rows got `NullDeliveryPlace` flags; 2 audit-bearing got Critical re-review markers (`DFSU1568154`, `MSMU1095136`)
+
+### Ops note
+
+`tools/migrations/documenttype-tagging/01-add-documenttype-column.sql` was applied to live `nickscan_downloads` on 2026-05-04 via a one-off Npgsql script using `NICKHR_DB_PASSWORD` (postgres superuser). Idempotent — re-running is a no-op.
+
+### Operational reality at the time of this release
+
+The image-analysis pipeline is **functionally idle**: 0 active assignments, 0 ready users (Analysts and Auditors both — heartbeats stale 1.7 days to 38 days). 38 groups in `Ready`, no decisions in 4 days, no audit decisions in 7 days. The system is correct and gated; it will resume flow when users next log in and toggle Ready (the readiness UX nudge from `2b2d2d5` will help on next login).
+
+### Commits in this release
+
+Full list (91 commits, oldest first):
+`dcc6a8c` `d02450e` `aa40de6` `1e596bc` `1d9e02c` `c6f9a33` `a5067a2` `8ea52d8` `8449f15` `67f8151` `0bc281d` `3e58fd4` `acbd247` `c0ca93f` `d0331b5` `579c161` `beeb6a8` `0d5d32f` `f7d583f` `9d05726` `c6298f2` `f843d94` `abe5dab` `4a1335f` `611c98c` `8bc37ea` `d2e309d` `001c4fb` `f9e6812` `c7e809f` `dca6450` `0fc1ccf` `78a07cf` `d205aad` `6a99898` `e5e0600` `acb2988` `1a09361` `4a7bbb1` `b3821fc` `001f0fc` `7cf981f` `84d5f72` `40180f9` `0b18334` `5a0c57b` `31cc833` `0fedef9` `2d1a73e` `46f7336` `825113d` `5782362` `2b38252` `948fada` `3ffc0ca` `3789d89` `bfe0268` `9290e4f` `4f215d3` `1d1c25a` `72b2a79` `45aa994` `f4ec289` `508fb28` `53f22fc` `748af48` `b9c1314` `48191f0` `8af1319` `3a35b2a` `68c1cb4` `2efac89` `a0c32a5` `35a830d` `728b235` `ce68765` `2b2d2d5` `5de39d4` `db8e889` `5fdc46d` `678a696` `4f6f8bd` `fa49d2b` `243613e` `34ed179` `ff584f0` `3c72ef4` `ff514d7` `5d1808a` `5014989` `6e3f194`
+
+---
+
 ## [2.15.5] — 2026-04-23 — Cross-record split backfill endpoint
 
 Follow-up to 2.15.4. The auto-submit path now covers all new cross-record
