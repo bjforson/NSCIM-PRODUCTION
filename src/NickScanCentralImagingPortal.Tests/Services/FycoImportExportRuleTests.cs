@@ -78,23 +78,82 @@ namespace NickScanCentralImagingPortal.Tests.Services
 
         public enum FycoOutcome { Pass, FailFycoSaysExportButBoeIsImport, FailFycoSaysImportButBoeIsExport, Skip }
 
-        // Transit regimes (80/88/89) DO flow through the rule — clarified 2026-05-04.
-        // FS6000 lives at ATSL Takoradi sea terminal; fyco=EXPORT means cargo is
-        // physically departing TKD on a vessel. Transit cargo arrives at TKD by
-        // vessel and leaves Ghana by ROAD (overland to inland West Africa) — so a
-        // transit BOE matched to fyco=EXPORT IS a real anomaly the rule must catch.
-        // The rule's behaviour for transit is identical to non-transit; only the
-        // INGEST-side implicit CMR→IM upgrade carves transit out (different concern).
+        // ── 3-LAYER FYCO RULE (clarified 2026-05-04) ──
+        // FS6000 at ATSL Takoradi sea terminal. fyco=EXPORT = cargo physically
+        // departing TKD on a vessel. The matching BOE must:
+        //   layer 2 — clearancetype ∈ {EX, CMR}  (IM blocked)
+        //   layer 3 — regime ∈ export set {10,19,20,24,27,30,34,35,37,39}, OR
+        //             regime null/empty WITH clearancetype=CMR (defer)
         [Theory]
-        [InlineData("WAYBILL/EXPORT", "IM", FycoOutcome.FailFycoSaysExportButBoeIsImport)]   // transit + fyco=EXPORT = real anomaly
-        [InlineData("WAYBILL/EXPORT", "CMR", FycoOutcome.Skip)]                              // CMR-clearance still skips
-        [InlineData("IMPORT",         "IM", FycoOutcome.Pass)]                                // transit arrives by vessel — IMPORT marker = correct
-        [InlineData("EXPORT",         "EX", FycoOutcome.Pass)]                                // genuine export from TKD — agrees
-        public void EvaluateFyco_TransitFlowsThroughRule(string? fyco, string? clearance, FycoOutcome expected)
+        // Layer 2 — clearancetype IM blocks regardless of regime
+        [InlineData("WAYBILL/EXPORT", "IM",  "10",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "IM",  "40",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "IM",  "80",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "IM",  null,  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        // Layer 3 — clearancetype EX with non-export regime → fail (rare but caught)
+        [InlineData("WAYBILL/EXPORT", "EX",  "40",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "70",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "80",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "90",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        // Layer 3 — clearancetype CMR with non-export regime → fail (CMR with IM-side regime is suspicious)
+        [InlineData("WAYBILL/EXPORT", "CMR", "40",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        [InlineData("WAYBILL/EXPORT", "CMR", "80",  FycoOutcome.FailFycoSaysExportButBoeIsImport)]
+        // Pass — clearancetype EX or CMR with regime in export set
+        [InlineData("WAYBILL/EXPORT", "EX",  "10",  FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "19",  FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "20",  FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "30",  FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "EX",  "39",  FycoOutcome.Pass)]
+        [InlineData("WAYBILL/EXPORT", "CMR", "10",  FycoOutcome.Pass)]
+        // Pass — CMR with empty regime (pre-declaration; defer)
+        [InlineData("WAYBILL/EXPORT", "CMR", null,  FycoOutcome.Skip)]
+        [InlineData("WAYBILL/EXPORT", "CMR", "",    FycoOutcome.Skip)]
+        // fyco=IMPORT branch — existing semantics (regime irrelevant)
+        [InlineData("IMPORT",         "IM",  "40",  FycoOutcome.Pass)]
+        [InlineData("IMPORT",         "EX",  "10",  FycoOutcome.FailFycoSaysImportButBoeIsExport)]
+        [InlineData("IMPORT",         "CMR", "40",  FycoOutcome.Skip)]
+        public void EvaluateFyco_LayeredRule(string? fyco, string? clearance, string? regime, FycoOutcome expected)
         {
-            // Transit regimes are NOT skipped by the rule — semantics identical to
-            // non-transit (regime is irrelevant; rule looks at fyco vs clearancetype).
-            Assert.Equal(expected, Evaluate(fyco, clearance));
+            Assert.Equal(expected, EvaluateLayered(fyco, clearance, regime));
+        }
+
+        private static readonly System.Collections.Generic.HashSet<string> ExportRegimes =
+            new(System.StringComparer.OrdinalIgnoreCase)
+            { "10", "19", "20", "24", "27", "30", "34", "35", "37", "39" };
+
+        // Mirrors ContainerValidationService.ValidateFycoImportExportAsync's
+        // 3-layer logic for unit-test coverage.
+        private static FycoOutcome EvaluateLayered(string? fyco, string? clearance, string? regime)
+        {
+            if (string.IsNullOrWhiteSpace(fyco)) return FycoOutcome.Skip;
+            if (string.IsNullOrWhiteSpace(clearance)) return FycoOutcome.Skip;
+
+            var isFycoExport = IsExportFlag(fyco);
+            var c = clearance.Trim();
+            var isClearanceImport = c.StartsWith("IM", System.StringComparison.OrdinalIgnoreCase);
+            var isClearanceExport = c.StartsWith("EX", System.StringComparison.OrdinalIgnoreCase);
+            var isClearanceCmr = c.Equals("CMR", System.StringComparison.OrdinalIgnoreCase);
+
+            if (isFycoExport)
+            {
+                // Layer 2: clearance IM blocks
+                if (isClearanceImport) return FycoOutcome.FailFycoSaysExportButBoeIsImport;
+
+                // Layer 3: regime check
+                if (string.IsNullOrWhiteSpace(regime))
+                {
+                    return isClearanceCmr ? FycoOutcome.Skip : FycoOutcome.Pass; // CMR-no-regime defers; EX-no-regime passes
+                }
+                return ExportRegimes.Contains(regime.Trim())
+                    ? FycoOutcome.Pass
+                    : FycoOutcome.FailFycoSaysExportButBoeIsImport; // collapsed outcome — both layer 2 & 3 use same enum
+            }
+
+            // fyco=IMPORT/UNKNOWN — existing semantics
+            if (isClearanceCmr) return FycoOutcome.Skip;
+            return isClearanceExport
+                ? FycoOutcome.FailFycoSaysImportButBoeIsExport
+                : FycoOutcome.Pass;
         }
 
         // Mirrors ContainerValidationService.IsExportFlag — kept in sync deliberately

@@ -475,16 +475,23 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 var boeClearance = (primaryBOE.ClearanceType ?? string.Empty).Trim().ToUpperInvariant();
                                 var boeIsImport = boeClearance.StartsWith("IM");
                                 var boeIsExport = boeClearance.StartsWith("EX");
+                                var boeIsCmr = boeClearance.Equals("CMR");
 
-                                // Transit regimes (80/88/89) are NOT skipped — FS6000 lives at
-                                // ATSL Takoradi sea-port terminal, fyco=EXPORT means cargo is
-                                // physically departing TKD on a vessel. Transit cargo arrives
-                                // at TKD by vessel and leaves Ghana by ROAD (not sea), so a
-                                // regime-80 BOE matched to fyco=EXPORT is a real anomaly.
+                                // ── 3-LAYER FYCO RULE (clarified 2026-05-04) ──
+                                // FS6000 at ATSL Takoradi sea terminal. fyco=EXPORT means cargo
+                                // physically departing TKD on a vessel. So a fyco=EXPORT scan
+                                // can only legitimately match a BOE that's:
+                                //   - clearancetype = EX or CMR (NOT IM)  ← layer 2
+                                //   - regime in export set {10/19/20/24/27/30/34/35/37/39}
+                                //     (or no regime yet on a CMR pre-declaration)         ← layer 3
+                                // Transit (regime 80/88/89), home use (40), warehousing (70),
+                                // free zones (90), etc. all fail — transit cargo doesn't depart
+                                // by sea; import cargo doesn't depart at all.
+
+                                // Layer 2: fyco=EXPORT vs clearancetype=IM is the strongest mismatch.
                                 if (scanFyco == FycoCategory.Export && boeIsImport)
                                 {
-                                    // Critical mismatch: export scan against import BOE.
-                                    _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.ClearanceType='{Clearance}' (Import). Blocking match.",
+                                    _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL, layer 2): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.ClearanceType='{Clearance}' (Import). Blocking match.",
                                         SERVICE_ID, queueItem.ContainerNumber, fs6000ScanForFyco?.FycoPresent, primaryBOE.ClearanceType);
 
                                     await WriteMatchQualityFlagAsync(
@@ -494,7 +501,33 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                         primaryBOE.Id,
                                         flagType: "FycoMismatch",
                                         severity: "Critical",
-                                        description: $"Scan FycoPresent='{fs6000ScanForFyco?.FycoPresent}' classifies as Export, but BOE.ClearanceType='{primaryBOE.ClearanceType}' is Import. Likely wrong-direction match.",
+                                        description: $"Scan FycoPresent='{fs6000ScanForFyco?.FycoPresent}' classifies as Export, but BOE.ClearanceType='{primaryBOE.ClearanceType}' is Import. Cargo physically departing TKD cannot be an import.",
+                                        stoppingToken);
+
+                                    hasICUMSData = false;
+                                    primaryBOEId = null;
+                                    primaryBOE = null;
+                                    boeRecords.Clear();
+                                }
+                                // Layer 3: fyco=EXPORT vs non-export regime (with EX or CMR clearancetype).
+                                // EX and CMR pass layer 2; layer 3 narrows to the export-regime set.
+                                // Empty regime + CMR clearance is OK (defer to BOE arrival).
+                                else if (scanFyco == FycoCategory.Export
+                                         && (boeIsExport || boeIsCmr)
+                                         && !string.IsNullOrWhiteSpace(primaryBOE.RegimeCode)
+                                         && !RegimeDirectionMap.IsExport(primaryBOE.RegimeCode))
+                                {
+                                    _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL, layer 3): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.RegimeCode='{Regime}' is not an export regime (clearance={Clearance}). Blocking match.",
+                                        SERVICE_ID, queueItem.ContainerNumber, fs6000ScanForFyco?.FycoPresent, primaryBOE.RegimeCode, primaryBOE.ClearanceType);
+
+                                    await WriteMatchQualityFlagAsync(
+                                        dbContext,
+                                        queueItem.ContainerNumber,
+                                        queueItem.ScannerType,
+                                        primaryBOE.Id,
+                                        flagType: "FycoMismatch",
+                                        severity: "Critical",
+                                        description: $"Scan FycoPresent='{fs6000ScanForFyco?.FycoPresent}' (Export) but BOE.RegimeCode='{primaryBOE.RegimeCode}' is not an export regime (export set: 10,19,20,24,27,30,34,35,37,39). Clearance was '{primaryBOE.ClearanceType}'.",
                                         stoppingToken);
 
                                     hasICUMSData = false;

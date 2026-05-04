@@ -855,36 +855,81 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                     return; // No FS6000 scan or flag missing → rule not applicable.
                 }
 
-                var boeClearance = await _icumDownloadsDbContext.BOEDocuments
+                var boe = await _icumDownloadsDbContext.BOEDocuments
                     .AsNoTracking()
                     .Where(b => b.ContainerNumber == containerNumber)
                     .OrderByDescending(b => b.Id)
-                    .Select(b => b.ClearanceType)
+                    .Select(b => new { b.ClearanceType, b.RegimeCode })
                     .FirstOrDefaultAsync();
 
-                if (string.IsNullOrWhiteSpace(boeClearance) || boeClearance.Equals("CMR", StringComparison.OrdinalIgnoreCase))
+                if (boe == null || string.IsNullOrWhiteSpace(boe.ClearanceType))
                 {
-                    return; // CMR is pre-BOE; direction not yet defined.
+                    return; // No BOE → rule not applicable.
                 }
 
-                // Note: transit regimes (80/88/89) are NOT skipped here. The FS6000
-                // scanner sits at ATSL Takoradi sea-port terminal — fyco=EXPORT
-                // means cargo is physically departing TKD on a vessel. Transit cargo
-                // arrives at TKD by vessel and leaves Ghana by ROAD (overland to
-                // Mali/Burkina/Niger), so a transit BOE matched to fyco=EXPORT is a
-                // real anomaly worth catching. The rule already does the right thing.
-
                 var raw = fs.FycoPresent.Trim();
-                var isExportFlag = IsExportFlag(raw);
-                var isBoeExport = boeClearance.Equals("EX", StringComparison.OrdinalIgnoreCase);
+                var isFycoExport = IsExportFlag(raw);
+                var clearance = boe.ClearanceType.Trim();
+                var isClearanceImport = clearance.StartsWith("IM", StringComparison.OrdinalIgnoreCase);
+                var isClearanceExport = clearance.StartsWith("EX", StringComparison.OrdinalIgnoreCase);
+                var isClearanceCmr = clearance.Equals("CMR", StringComparison.OrdinalIgnoreCase);
 
-                if (isExportFlag == isBoeExport)
+                // ── 3-LAYER FYCO RULE (clarified 2026-05-04 against ATSL Takoradi reality) ──
+                // FS6000 sits at the ATSL terminal at Takoradi sea port. fyco=EXPORT means
+                // cargo is physically departing TKD on a vessel. The cargo cannot be both
+                // departing as export AND being imported into Ghana / warehoused / put in
+                // transit overland — so the BOE direction must be export (or pre-BOE CMR).
+                if (isFycoExport)
                 {
-                    result.PassedRules.Add($"Fyco export/import flag matches BOE clearance ({boeClearance})");
+                    // Layer 2 — clearancetype: fyco=EXPORT cannot match clearancetype=IM.
+                    // EX is fine; CMR is allowed (pre-BOE; defer until layer 3).
+                    if (isClearanceImport)
+                    {
+                        result.FailedRules.Add($"Fyco export/import mismatch (layer 2): FS6000 FycoPresent='{raw}' but BOE ClearanceType='{boe.ClearanceType}' (Import). Cargo physically departing TKD cannot be an import.");
+                        return;
+                    }
+
+                    // Layer 3 — regime: fyco=EXPORT requires the BOE to be an export-direction
+                    // regime ({10,19,20,24,27,30,34,35,37,39}). Null/empty regime is allowed
+                    // when clearancetype=CMR (pre-declaration; defer to BOE arrival).
+                    if (string.IsNullOrWhiteSpace(boe.RegimeCode))
+                    {
+                        if (isClearanceCmr)
+                        {
+                            result.PassedRules.Add($"Fyco direction OK at layer 3 — CMR pre-declaration (regime not yet stamped); deferred.");
+                            return;
+                        }
+                        // EX clearance with empty regime is unusual but not a mismatch.
+                        result.PassedRules.Add($"Fyco direction OK — clearancetype={boe.ClearanceType} with no regime; layer 3 cannot fail closed.");
+                        return;
+                    }
+
+                    if (RegimeDirectionMap.IsExport(boe.RegimeCode))
+                    {
+                        result.PassedRules.Add($"Fyco direction OK (3-layer): FycoPresent='{raw}' + clearance={boe.ClearanceType} + regime={boe.RegimeCode} (export).");
+                    }
+                    else
+                    {
+                        result.FailedRules.Add($"Fyco export/regime mismatch (layer 3): FS6000 FycoPresent='{raw}' but BOE.RegimeCode='{boe.RegimeCode}' is not an export regime. Export regimes are {{10,19,20,24,27,30,34,35,37,39}}; cargo physically departing TKD must declare under one of these.");
+                    }
+                    return;
+                }
+
+                // fyco is NOT export — direction-import / unknown branch (existing logic).
+                // CMR clearance is pre-BOE; direction not yet defined → skip.
+                if (isClearanceCmr)
+                {
+                    return;
+                }
+
+                // Existing symmetry: import-flagged scan vs export BOE = mismatch.
+                if (!isFycoExport && isClearanceExport)
+                {
+                    result.FailedRules.Add($"Fyco export/import mismatch: FS6000 FycoPresent='{raw}' (Import/Unknown) but BOE ClearanceType='{boe.ClearanceType}' (Export).");
                 }
                 else
                 {
-                    result.FailedRules.Add($"Fyco export/import mismatch: FS6000 FycoPresent='{raw}' vs BOE ClearanceType='{boeClearance}'");
+                    result.PassedRules.Add($"Fyco export/import flag matches BOE clearance ({boe.ClearanceType})");
                 }
             }
             catch (Exception ex)

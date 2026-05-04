@@ -215,10 +215,36 @@ namespace NickScanCentralImagingPortal.Core.Entities
             "89", // Transit of petroleum products from Bond
         };
 
+        // Export-direction regimes — Ghana Customs codes 1*/2*/3* per the canonical
+        // ICUMS list (verified 2026-05-03). Used by the fyco rule: an FS6000 scan
+        // tagged fyco=EXPORT (cargo physically departing ATSL Takoradi by vessel)
+        // can ONLY legitimately match a BOE whose regime is in this set. Any other
+        // regime (40 home use, 70 warehousing, 80 transit, 90 free zone, etc.)
+        // matched to fyco=EXPORT is a wrong match — block.
+        private static readonly HashSet<string> ExportRegimes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "10", // Direct Export
+            "19", // Petroleum export following Petroleum Operations
+            "20", // Direct Temporary Export
+            "24", // Temporary Export following Import into Home Use
+            "27", // Temporary Export Following Warehousing
+            "30", // Direct Re-export for Goods landed but not entered
+            "34", // Re-export following home consumption
+            "35", // Re-export following temporary Admission
+            "37", // Re-export following warehousing
+            "39", // Other Re-export
+        };
+
         public static bool IsTransit(string? regimeCode)
         {
             if (string.IsNullOrWhiteSpace(regimeCode)) return false;
             return TransitRegimes.Contains(regimeCode.Trim());
+        }
+
+        public static bool IsExport(string? regimeCode)
+        {
+            if (string.IsNullOrWhiteSpace(regimeCode)) return false;
+            return ExportRegimes.Contains(regimeCode.Trim());
         }
     }
 }
