@@ -186,7 +186,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             }
         }
 
-        public async Task<ContainerBOERelation> MapContainerDataAsync(string containerNumber, string scannerType, int scannerDataId, int icumsDataId)
+        public async Task<ContainerBOERelation?> MapContainerDataAsync(string containerNumber, string scannerType, int scannerDataId, int icumsDataId)
         {
             using var scope = _serviceProvider.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -210,6 +210,29 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 .AsNoTracking()
                 .FirstOrDefaultAsync(b => b.Id == icumsDataId);
 
+            // ── CARDINAL PORT RULE (belt-and-braces) ──
+            // The upstream queue-driven gate at ContainerCompletenessService.cs:395-454
+            // already zeroes CCS.HasICUMSData on port mismatch, which normally keeps
+            // the mapper from being called. But other writers (CMR-upgrade cascade at
+            // IcumJsonIngestionService.cs:1433, manual SQL, admin tools) can flip
+            // HasICUMSData back to true without consulting the port rule. So the
+            // mapper must independently enforce the cardinal rule before INSERTing
+            // a ContainerBOERelation row. FS6000 -> DP must contain TKD; ASE -> TMA.
+            // Null DP allowed (upstream gap) — matches IsLocationMatch semantics.
+            if (boeDocument != null && !ScannerLocationMap.IsLocationMatch(scannerType, boeDocument.DeliveryPlace))
+            {
+                var expectedPort = ScannerLocationMap.GetExpectedPortCode(scannerType);
+                var actualPort = ScannerLocationMap.ExtractPortCode(boeDocument.DeliveryPlace) ?? "UNKNOWN";
+                _logger.LogError(
+                    "PORT MISMATCH (mapper, cardinal): {Container} scanner={Scanner} (expected {Expected}) but BOE.DeliveryPlace='{Dp}' (port={Actual}). Rejecting CBR INSERT.",
+                    containerNumber, scannerType, expectedPort, boeDocument.DeliveryPlace, actualPort);
+
+                await UpsertPortMismatchFlagAsync(dbContext, containerNumber, scannerType, boeDocument.Id,
+                    description: $"Mapper-side cardinal port-rule rejection. Scanner={scannerType} (expected {expectedPort}) vs BOE.DeliveryPlace='{boeDocument.DeliveryPlace}' (port={actualPort}). Match suppressed at INSERT time.");
+
+                return null;
+            }
+
             // Create new mapping
             var mapping = new ContainerBOERelation
             {
@@ -232,6 +255,54 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 relationType, containerNumber, scannerType, icumsDataId);
 
             return mapping;
+        }
+
+        // Idempotent MatchQualityFlag upsert for the cardinal port-rejection path.
+        // Mirrors ContainerCompletenessService.WriteMatchQualityFlagAsync (private
+        // there) so the mapper-side rejection is visible in /validation/match-corrections
+        // alongside its sibling flags written by the matching pipeline.
+        private static async Task UpsertPortMismatchFlagAsync(
+            ApplicationDbContext db,
+            string containerNumber,
+            string? scannerType,
+            int boeDocumentId,
+            string description)
+        {
+            try
+            {
+                var existing = await db.MatchQualityFlags
+                    .Where(f => f.ContainerNumber == containerNumber
+                                && f.FlagType == "PortMismatch"
+                                && !f.IsResolved)
+                    .FirstOrDefaultAsync();
+
+                if (existing != null)
+                {
+                    existing.Description = description;
+                    existing.Severity = "Critical";
+                    existing.BOEDocumentId = boeDocumentId;
+                    existing.ScannerType = scannerType;
+                    await db.SaveChangesAsync();
+                    return;
+                }
+
+                db.MatchQualityFlags.Add(new MatchQualityFlag
+                {
+                    ContainerNumber = containerNumber,
+                    ScannerType = scannerType,
+                    BOEDocumentId = boeDocumentId,
+                    FlagType = "PortMismatch",
+                    Severity = "Critical",
+                    Description = description,
+                    IsResolved = false,
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+            catch
+            {
+                // Best-effort flag write — never let it block the rejection path.
+            }
         }
 
         public async Task<List<ContainerBOERelation>> GetContainerMappingsAsync(string containerNumber)

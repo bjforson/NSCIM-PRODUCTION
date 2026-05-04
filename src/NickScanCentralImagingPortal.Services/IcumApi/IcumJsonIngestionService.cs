@@ -1430,12 +1430,30 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             foreach (var record in completenessRecords)
             {
-                record.HasICUMSData = true;
-                if (!string.IsNullOrWhiteSpace(upgradedDocument.ClearanceType))
-                    record.ClearanceType = upgradedDocument.ClearanceType;
-                if (!string.IsNullOrWhiteSpace(upgradedDocument.DeclarationNumber) &&
-                    (string.IsNullOrWhiteSpace(record.GroupIdentifier) || record.GroupIdentifier == record.ContainerNumber))
-                    record.GroupIdentifier = upgradedDocument.DeclarationNumber;
+                // Cardinal port rule (audit 2026-05-04, Hole #2): the CMR-upgrade
+                // cascade must NOT flip HasICUMSData=true for a CCS row whose
+                // scanner port disagrees with the upgraded BOE's deliveryplace —
+                // that would silently re-arm the ContainerDataMapperService and
+                // produce a wrong CBR. Apply the same gate the queue-driven path
+                // uses (ContainerCompletenessService.cs:395-454).
+                var portsAgree = ScannerLocationMap.IsLocationMatch(record.ScannerType ?? "", upgradedDocument.DeliveryPlace);
+                if (portsAgree)
+                {
+                    record.HasICUMSData = true;
+                    if (!string.IsNullOrWhiteSpace(upgradedDocument.ClearanceType))
+                        record.ClearanceType = upgradedDocument.ClearanceType;
+                    if (!string.IsNullOrWhiteSpace(upgradedDocument.DeclarationNumber) &&
+                        (string.IsNullOrWhiteSpace(record.GroupIdentifier) || record.GroupIdentifier == record.ContainerNumber))
+                        record.GroupIdentifier = upgradedDocument.DeclarationNumber;
+                }
+                else
+                {
+                    var expectedPort = ScannerLocationMap.GetExpectedPortCode(record.ScannerType ?? "");
+                    var actualPort = ScannerLocationMap.ExtractPortCode(upgradedDocument.DeliveryPlace) ?? "UNKNOWN";
+                    _logger.LogWarning(
+                        "{ServiceId} CMR→BOE cascade skipped for {Container}: scanner={Scanner} (expected {Expected}) vs upgraded BOE.DeliveryPlace='{Dp}' (port={Actual}) — leaving HasICUMSData unchanged so the matching pipeline can re-evaluate cleanly.",
+                        SERVICE_ID, container, record.ScannerType, expectedPort, upgradedDocument.DeliveryPlace, actualPort);
+                }
                 record.UpdatedAt = DateTime.UtcNow;
             }
 

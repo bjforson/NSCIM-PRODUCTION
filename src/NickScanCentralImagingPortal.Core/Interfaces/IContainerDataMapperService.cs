@@ -15,8 +15,9 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         /// <param name="scannerType">Type of scanner (FS6000, ASE, etc.)</param>
         /// <param name="scannerDataId">ID of the scanner data record</param>
         /// <param name="icumsDataId">ID of the ICUMS BOE data record</param>
-        /// <returns>Created relation record</returns>
-        Task<ContainerBOERelation> MapContainerDataAsync(string containerNumber, string scannerType, int scannerDataId, int icumsDataId);
+        /// <returns>Created relation record, or null when the cardinal port rule
+        /// blocks the mapping (e.g. FS6000 scan against a TMA-port BOE).</returns>
+        Task<ContainerBOERelation?> MapContainerDataAsync(string containerNumber, string scannerType, int scannerDataId, int icumsDataId);
 
         /// <summary>
         /// Gets all mapped relations for a container
