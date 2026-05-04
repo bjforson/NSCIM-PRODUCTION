@@ -321,6 +321,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             var actor = User.Identity?.Name ?? "admin";
             var now = DateTime.UtcNow;
 
+            // Soft-warn audit: does the scanner's home port agree with the
+            // chosen BOE's DeliveryPlace? Admin override is by design — we do
+            // NOT block here. We only flag below so the override is visible in
+            // the audit trail. IsLocationMatch returns true for unknown
+            // scanner types and null delivery places, so this only triggers
+            // on a definite disagreement.
+            var portsAgree = ScannerLocationMap.IsLocationMatch(request.ScannerType ?? string.Empty, targetBoe.DeliveryPlace);
+
             await using var tx = await _context.Database.BeginTransactionAsync();
 
             // 1. Deactivate existing active relations.
@@ -401,6 +409,40 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     ResolutionNotes = request.Reason,
                     CreatedAtUtc = now,
                 });
+            }
+
+            // 6. Soft-warn: if the admin's chosen BOE port-mismatches the
+            //    scanner's home port, write a SEPARATE Critical audit-trail
+            //    flag. This is independent of the ManualFlag above — the
+            //    admin override IS the resolution (IsResolved=true,
+            //    Resolution="Confirmed"), but a future audit can still find
+            //    this row by FlagType="PortMismatch" and see exactly which
+            //    port disagreement was overridden and by whom.
+            if (!portsAgree)
+            {
+                var expectedPort = ScannerLocationMap.GetExpectedPortCode(request.ScannerType ?? string.Empty);
+                var actualPort = ScannerLocationMap.ExtractPortCode(targetBoe.DeliveryPlace) ?? "UNKNOWN";
+                var portMismatchDescription = $"Admin rematch override: scanner={request.ScannerType} (expected {expectedPort}) vs new BOE.DeliveryPlace='{targetBoe.DeliveryPlace}' (port={actualPort}). Override authorised by {actor}: {request.Reason}";
+
+                _context.MatchQualityFlags.Add(new MatchQualityFlag
+                {
+                    ContainerNumber = request.ContainerNumber,
+                    ScannerType = request.ScannerType,
+                    BOEDocumentId = request.NewBOEDocumentId,
+                    FlagType = "PortMismatch",
+                    Severity = "Critical",
+                    Description = portMismatchDescription,
+                    IsResolved = true,
+                    Resolution = "Confirmed",
+                    ResolvedBy = actor,
+                    ResolvedAt = now,
+                    ResolutionNotes = request.Reason,
+                    CreatedAtUtc = now,
+                });
+
+                _logger.LogWarning(
+                    "Admin rematch port-mismatch override: Container={Container} Scanner={Scanner} ExpectedPort={ExpectedPort} BOE.DeliveryPlace={DeliveryPlace} ActualPort={ActualPort} BOEDocumentId={Boe} Actor={Actor} Reason={Reason}",
+                    request.ContainerNumber, request.ScannerType, expectedPort, targetBoe.DeliveryPlace, actualPort, request.NewBOEDocumentId, actor, request.Reason);
             }
 
             await _context.SaveChangesAsync();
