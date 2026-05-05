@@ -22,6 +22,82 @@ For each release, this file records:
 
 ---
 
+## [2.16.5] — 2026-05-05 — Sprint 1 Group B: RLS structural floor (2.01)
+
+The highest-stakes single change in the audit's fix-it sprint plan. Restores
+the foundational invariant that background services in NSCIM_API can read
+the rows they're supposed to act on.
+
+### Behaviour change
+
+The three NSCIM PostgreSQL connection strings (`NS_CIS_Connection`,
+`ICUMS_Connection`, `ICUMS_Downloads_Connection`) now include the Npgsql
+startup option `Options=-c app.tenant_id=1`. PostgreSQL applies this GUC
+on physical connection establishment, **before any application code runs**
+and **regardless of whether the EF `TenantConnectionInterceptor` fires**.
+
+### Why this was needed
+
+Audit finding 2.01 captured the symptom: background services were silently
+seeing 0 rows from `containerscanqueues` (and other tenant-scoped tables)
+for 14+ hours despite 1,566 rows being present. The orchestrator's
+work-count probe and the inner `ContainerCompletenessService` saw
+divergent row counts in the same cycle — orchestrator: 1,566; inner: 0.
+
+The probe agent (Sprint 1 B-Probe — `docs/audit/2026-05-05/sprint1-B-probe.md`)
+established that the audit's headline hypothesis ("interceptor doesn't
+re-fire under retry") **does not reproduce** in a controlled environment.
+The interceptor IS firing reliably on every connection open, in every
+scope pattern that mimics production. But the symptom is real, and the
+exact divergence mechanism between orchestrator and inner-service
+scopes is not reproducible cold against the same DB.
+
+### Why this fix is the right call anyway
+
+Connection-string `Options=` provides a **floor** — a guarantee that
+EVERY physical connection in EVERY pool starts with the right GUC,
+independent of what any application code does. The same pattern shipped
+for the Serilog PG sink in 2.16.4 (commit `3f984f3`) and is verified
+working there. With this floor in place:
+
+- The proven raw-Npgsql divergence mechanism is closed (the symptom
+  Part 1 of the probe demonstrated).
+- The deeper unreproduced divergence between orchestrator and
+  inner-service scopes is papered over for the single-tenant case (which
+  is all we have in production today).
+- The `TenantConnectionInterceptor` remains in place to override the
+  floor for non-1 tenants in phase-2 multi-tenancy.
+
+The deeper bug is not solved. It's contained. Phase 2 follow-up adds
+diagnostic logging to verify the interceptor fires for every scope; if
+the divergence persists post-fix, the next investigation has narrower
+scope.
+
+### What this release does NOT do
+
+- Does not fix the orphan-AG `Cancel`-on-expire being in dead code
+  (4.01) — Sprint 2 Group C addresses this.
+- Does not fix BOE re-arrival dropping MasterBlNumber (5.01) — Sprint 2
+  Group D addresses this.
+- Does not add Layer 5 to the match-correctness model (3.01) — Sprint 3.
+
+### Risk and rollback
+
+Risk surface: tight. The `Options=` fragment is a Postgres startup
+parameter; mis-paired syntax produces a clear Npgsql error on connect
+(no silent failure, no data risk). Rollback: revert appsettings.json,
+redeploy. No DB state to undo.
+
+### Commits
+
+- (this commit) — `chore(release): bump to 2.16.5 + Sprint 1 Group B RLS floor (2.01)`
+
+### Audit findings closed
+
+- 2.01 (P0)
+
+---
+
 ## [2.16.4] — 2026-05-05 — Sprint 1 Group A: observability quick wins
 
 First fix-it sprint following the 2026-05-05 end-to-end cold audit. Group A
