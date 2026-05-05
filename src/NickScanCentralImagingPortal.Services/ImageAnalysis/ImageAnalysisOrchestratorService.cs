@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
+using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.Monitoring;
@@ -2280,12 +2281,33 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             }
 
             IHttpClientFactory? httpFactory = null;
+            // 2026-05-05 (audit 3.01, P0): LAYER 5 — submission-time port + fyco
+            // re-validation. Resolve the validator from a single scope shared with
+            // the http factory so each payload re-runs the cardinal port rule and
+            // the fyco-direction rule one last time before the HTTP POST. An
+            // upstream regression in queue / mapper / cascade can no longer slip
+            // through to ICUMS unchecked. Validator is feature-flag-aware (same
+            // flags as the queue and mapper layers); flags off → no-op pass.
+            //
+            // Composes ON TOP of 4ded1fe (Sprint 2D D1) which moved the file move
+            // BEFORE the DB update on success. Layer 5 sits BEFORE the HTTP POST
+            // — its skip path leaves the file in the live Outbox so the next
+            // submission sweep (or a re-validation after the underlying anomaly
+            // is resolved) can pick it up cleanly. CHANGELOG 2.16.0 line 155 has
+            // claimed this gate existed for 3+ days; this commit makes the claim
+            // true.
+            IContainerValidationService? submissionGate = null;
+            IServiceScope? gateScope = null;
             try
             {
-                using var httpScope = _scopeFactory.CreateScope();
-                httpFactory = httpScope.ServiceProvider.GetService<IHttpClientFactory>();
+                gateScope = _scopeFactory.CreateScope();
+                httpFactory = gateScope.ServiceProvider.GetService<IHttpClientFactory>();
+                submissionGate = gateScope.ServiceProvider.GetService<IContainerValidationService>();
             }
             catch { /* fall through */ }
+
+            try
+            {
 
             if (httpFactory == null)
             {
@@ -2296,6 +2318,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             var payloadFiles = Directory.GetFiles(icumsFolder, $"ICUMS_*_{group.Id}_*.json");
             var submitted = 0;
             var failed = 0;
+            var blockedByLayer5 = 0;
 
             foreach (var payloadFile in payloadFiles)
             {
@@ -2303,6 +2326,89 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 {
                     var json = await System.IO.File.ReadAllTextAsync(payloadFile, ct);
                     var containerNumber = ExtractContainerFromFileName(Path.GetFileName(payloadFile));
+
+                    // ── LAYER 5 GATE (audit 3.01, P0, 2026-05-05) ──────────────────
+                    // Re-run port-match + fyco-direction rules right before the HTTP
+                    // POST. On disagreement: skip the submission, write a Critical
+                    // MatchQualityFlag, log a Warning, leave the payload file in the
+                    // live Outbox so it can be picked up after the upstream anomaly
+                    // is resolved (or a manual unmatch / rematch from the admin tool
+                    // brings the data back into agreement). Validator failure itself
+                    // is treated as "no opinion" and falls through to submit (logged
+                    // by the validator) — better to under-block than to wrongly
+                    // block.
+                    if (submissionGate != null && !string.IsNullOrEmpty(containerNumber))
+                    {
+                        BusinessRuleValidationResult? gateResult = null;
+                        try
+                        {
+                            gateResult = await submissionGate.ValidateSubmissionGateAsync(containerNumber);
+                        }
+                        catch (Exception gateEx)
+                        {
+                            _logger.LogWarning(gateEx,
+                                "[ICUMS-SUBMIT-GATE] Submission gate threw for {Container}; falling through to submit",
+                                containerNumber);
+                        }
+
+                        if (gateResult != null && !gateResult.IsValid && gateResult.FailedRules.Count > 0)
+                        {
+                            var portFailures = gateResult.FailedRules
+                                .Where(r => r.StartsWith("Port mismatch", StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+                            var fycoFailures = gateResult.FailedRules
+                                .Where(r => r.StartsWith("Fyco", StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+
+                            var description = string.Join(" | ", gateResult.FailedRules);
+                            if (description.Length > 1000) description = description[..1000];
+
+                            _logger.LogWarning(
+                                "[ICUMS-SUBMIT-GATE] BLOCKED submission for {Container} — {FailureCount} rule failure(s): {Failures}. Payload file left in Outbox: {File}",
+                                containerNumber, gateResult.FailedRules.Count, description, Path.GetFileName(payloadFile));
+
+                            // Best-effort flag persistence. Upsert to avoid flooding the
+                            // table on repeat-validation cycles. Mirrors the contract used
+                            // by ContainerCompletenessService.WriteMatchQualityFlagAsync
+                            // (per-(container,flagtype) idempotency) but inlined here
+                            // because the helper is private to that service.
+                            try
+                            {
+                                if (portFailures.Count > 0)
+                                {
+                                    await UpsertMatchQualityFlagInlineAsync(
+                                        db, containerNumber, "PortMismatch", "Critical",
+                                        string.Join(" | ", portFailures), ct);
+                                }
+                                if (fycoFailures.Count > 0)
+                                {
+                                    await UpsertMatchQualityFlagInlineAsync(
+                                        db, containerNumber, "FycoMismatch", "Critical",
+                                        string.Join(" | ", fycoFailures), ct);
+                                }
+                                // If somehow neither bucket caught the failure (defensive),
+                                // fall back to a generic SubmissionGate flag so the admin
+                                // page surfaces it.
+                                if (portFailures.Count == 0 && fycoFailures.Count == 0)
+                                {
+                                    await UpsertMatchQualityFlagInlineAsync(
+                                        db, containerNumber, "SubmissionGate", "Critical",
+                                        description, ct);
+                                }
+                                await db.SaveChangesAsync(ct);
+                            }
+                            catch (Exception flagEx)
+                            {
+                                _logger.LogWarning(flagEx,
+                                    "[ICUMS-SUBMIT-GATE] Failed to persist MatchQualityFlag for {Container} — continuing (payload still skipped)",
+                                    containerNumber);
+                            }
+
+                            blockedByLayer5++;
+                            continue; // LEAVE FILE IN /ICUMS — do NOT POST, do NOT move to /Acknowledged.
+                        }
+                    }
+                    // ── END LAYER 5 GATE ───────────────────────────────────────────
 
                     using var httpClient = httpFactory.CreateClient();
                     httpClient.DefaultRequestHeaders.Clear();
@@ -2377,7 +2483,56 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 }
             }
 
-            _logger.LogInformation("[ICUMS-SUBMIT] Group {GroupId}: Submitted={Submitted}, Failed={Failed}", group.Id, submitted, failed);
+            _logger.LogInformation("[ICUMS-SUBMIT] Group {GroupId}: Submitted={Submitted}, Failed={Failed}, BlockedByLayer5={Blocked}",
+                group.Id, submitted, failed, blockedByLayer5);
+
+            }
+            finally
+            {
+                gateScope?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Layer-5 inline upsert helper (audit 3.01, 2026-05-05). Mirrors the
+        /// (container, flagtype) idempotency contract of
+        /// ContainerCompletenessService.WriteMatchQualityFlagAsync (which is
+        /// private to that service). Marks the flag unresolved + Critical and
+        /// refreshes the description on repeat. Caller is responsible for the
+        /// SaveChangesAsync (we batch all flag writes for a given payload).
+        /// </summary>
+        private async Task UpsertMatchQualityFlagInlineAsync(
+            ApplicationDbContext db,
+            string containerNumber,
+            string flagType,
+            string severity,
+            string description,
+            CancellationToken ct)
+        {
+            if (description.Length > 1000) description = description[..1000];
+
+            var existing = await db.MatchQualityFlags
+                .Where(f => f.ContainerNumber == containerNumber
+                            && f.FlagType == flagType
+                            && !f.IsResolved)
+                .FirstOrDefaultAsync(ct);
+
+            if (existing != null)
+            {
+                existing.Description = description;
+                existing.Severity = severity;
+                return;
+            }
+
+            db.MatchQualityFlags.Add(new MatchQualityFlag
+            {
+                ContainerNumber = containerNumber,
+                FlagType = flagType,
+                Severity = severity,
+                Description = description,
+                IsResolved = false,
+                CreatedAtUtc = DateTime.UtcNow,
+            });
         }
 
         private static string ExtractContainerFromFileName(string fileName)

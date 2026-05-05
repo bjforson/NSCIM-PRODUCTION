@@ -248,6 +248,30 @@ namespace NickScanCentralImagingPortal.Core.Entities
             "99",
         };
 
+        // Import-direction regimes — Ghana Customs codes 4*/5*/6*/7* + free-zone
+        // 9* per the canonical ICUMS list (verified 2026-05-03). Used by the
+        // ingest-side implicit CMR→IM upgrade switch (see audit 3.07,
+        // 2026-05-05): when an upgraded CMR row arrives with a regime in this
+        // set, the row is upgraded to ClearanceType="IM". Replaces the prior
+        // first-char heuristic that mis-bucketed regime 27 (export) as IM via
+        // first-char '2'. Free-zone codes are included because the legacy
+        // first-char '9' switch routed them to IM and the change is intended
+        // to be classification-preserving for known regimes.
+        private static readonly HashSet<string> ImportRegimes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // 4* home use family.
+            "40", "45", "47", "48", "49",
+            // 5* temporary admission family.
+            "50", "57", "59",
+            // 6* re-importation.
+            "61", "62",
+            // 7* warehousing family.
+            "70", "72", "75", "77", "79",
+            // 9* free zone (lumped with import for classification continuity;
+            // distinct documenttype bucket via ClassifyDocumentType).
+            "90", "94", "95", "97", "99",
+        };
+
         // Standard BOE regimes — everything that is neither transit nor free-zone.
         // Listed explicitly (verified 2026-05-03) so an unknown / new regime code
         // lands in the NULL documenttype bucket instead of being silently bucketed
@@ -280,6 +304,18 @@ namespace NickScanCentralImagingPortal.Core.Entities
         {
             if (string.IsNullOrWhiteSpace(regimeCode)) return false;
             return ExportRegimes.Contains(regimeCode.Trim());
+        }
+
+        /// <summary>
+        /// True when the regime code maps to import direction (4*/5*/6*/7* + free-zone 9*).
+        /// Added 2026-05-05 (audit 3.07) so the ingest-side implicit CMR→IM upgrade switch
+        /// in IcumJsonIngestionService.cs can replace its first-char heuristic with a
+        /// direct lookup. Fail-closed for blank / unknown codes.
+        /// </summary>
+        public static bool IsImport(string? regimeCode)
+        {
+            if (string.IsNullOrWhiteSpace(regimeCode)) return false;
+            return ImportRegimes.Contains(regimeCode.Trim());
         }
 
         /// <summary>

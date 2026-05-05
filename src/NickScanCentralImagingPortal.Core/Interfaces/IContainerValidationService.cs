@@ -31,6 +31,14 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         Task<BulkValidationResult> ValidateAllPendingContainersAsync();
         Task<BulkApprovalResult> ApproveBulkContainersAsync(List<string> containerNumbers, string approvedBy);
         Task<BulkRejectionResult> RejectBulkContainersAsync(List<string> containerNumbers, string rejectionReason, string rejectedBy);
+
+        // Layer 5 (submission gate, audit 3.01, 2026-05-05). Tight, side-effect-free
+        // wrapper that runs only the port-match + fyco-direction rules used by the
+        // submission-time gate in ImageAnalysisOrchestratorService.SubmitPayloadsToIcumsAsync.
+        // Returns FailedRules + PassedRules so the caller can decide skip-vs-submit
+        // and persist a MatchQualityFlag on disagreement. Honors the same feature
+        // flags as the full ValidateBusinessRulesAsync path.
+        Task<BusinessRuleValidationResult> ValidateSubmissionGateAsync(string containerNumber);
     }
 
     public class ContainerValidationResult

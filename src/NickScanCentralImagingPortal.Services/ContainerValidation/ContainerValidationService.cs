@@ -767,6 +767,62 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
         }
 
         /// <summary>
+        /// Layer 5 — submission-time gate. Audit 3.01 (P0), 2026-05-05.
+        ///
+        /// Tight, side-effect-free wrapper that runs only the port-match +
+        /// fyco-direction rules. Used by
+        /// <see cref="ImageAnalysisOrchestratorService.SubmitPayloadsToIcumsAsync"/>
+        /// to re-validate every payload immediately before the HTTP POST to ICUMS,
+        /// so an upstream regression in the queue or mapper can't slip through to
+        /// customs unchecked. Honors the same feature flags
+        /// (IcumIngestion:EnablePortAssignmentRule + EnableFycoImportExportRule)
+        /// as the full ValidateBusinessRulesAsync path — flags off → empty result
+        /// (treated as "pass" by the caller; nothing to gate against).
+        ///
+        /// Does NOT include the container-format / clearance-completeness rules
+        /// that ValidateBusinessRulesAsync runs — those would re-fail every CMR
+        /// payload on its way out and break the submission flow. The two rules
+        /// returned here are the ones whose disagreement at submission time
+        /// indicates a real upstream bug.
+        /// </summary>
+        public async Task<BusinessRuleValidationResult> ValidateSubmissionGateAsync(string containerNumber)
+        {
+            var result = new BusinessRuleValidationResult();
+
+            if (string.IsNullOrWhiteSpace(containerNumber))
+            {
+                result.IsValid = true;
+                return result;
+            }
+
+            try
+            {
+                if (_configuration.GetValue<bool>("IcumIngestion:EnablePortAssignmentRule", false))
+                {
+                    await ValidatePortMatchAsync(containerNumber, result);
+                }
+
+                if (_configuration.GetValue<bool>("IcumIngestion:EnableFycoImportExportRule", false))
+                {
+                    await ValidateFycoImportExportAsync(containerNumber, result);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: if the gate query itself blows up, treat as "no opinion"
+                // (not a fail). The submission worker logs and continues; the in-flight
+                // payload still passes Layer 5 by default. Better to under-block than to
+                // wrongly block a legitimate submission because of an EF context glitch.
+                _logger.LogWarning(ex,
+                    "[ICUMS-SUBMIT-GATE] ValidateSubmissionGateAsync failed for {Container}; treating as pass-through",
+                    containerNumber);
+            }
+
+            result.IsValid = result.FailedRules.Count == 0;
+            return result;
+        }
+
+        /// <summary>
         /// Port-match rule: FS6000 images come from Takoradi (TKD); ASE images come from Tema (TMA).
         /// BOE.DeliveryPlace format is 10 chars with port code at positions 3-5 (e.g. WTTMA1MPS3 → TMA).
         /// We fail if a container was scanned by a scanner that contradicts the BOE's declared port.

@@ -714,16 +714,35 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                             //               (false-positive fyco mismatches, wrong submission
                             //               routing). See memory reference_port_match_rules_
                             //               enabled_2026_05_02.md.
+                            //
+                            // 2026-05-05 (audit 3.07, P1): replaced the prior first-char
+                            // heuristic switch with a direct lookup against the canonical
+                            // RegimeDirectionMap. The first-char rule lumped regime 27
+                            // ("Temporary Export Following Warehousing", an export-direction
+                            // code) into '2' or '5' or '6' => "IM", silently mis-classifying
+                            // it as Import. Now: explicit IsTransit / IsExport / IsImport
+                            // lookups against the verified Ghana Customs list. Unknown
+                            // codes fall through to null (no upgrade) — fail-closed so a
+                            // future regime addition surfaces in the unmapped-regime audit
+                            // query instead of being silently force-routed to IM.
                             var trimmedRegime = boeDocument.RegimeCode.Trim();
-                            var firstChar = trimmedRegime.FirstOrDefault();
-                            string? upgradedTo = firstChar switch
+                            string? upgradedTo;
+                            if (RegimeDirectionMap.IsTransit(trimmedRegime))
                             {
-                                _ when RegimeDirectionMap.IsTransit(trimmedRegime) => null, // transit stays CMR
-                                '4' or '7' or '9' => "IM",                                  // 4* home use, 7* warehousing, 9* free zones
-                                '1' or '3' => "EX",                                          // 1* export, 3* re-export
-                                '2' or '5' or '6' => "IM",                                   // 2* contains both EX/IM (24/27 EX vs others IM); 5* temp admission; 6* re-import — practical safety: IM
-                                _ => null
-                            };
+                                upgradedTo = null; // transit stays CMR (BT declaration territory)
+                            }
+                            else if (RegimeDirectionMap.IsExport(trimmedRegime))
+                            {
+                                upgradedTo = "EX";
+                            }
+                            else if (RegimeDirectionMap.IsImport(trimmedRegime))
+                            {
+                                upgradedTo = "IM";
+                            }
+                            else
+                            {
+                                upgradedTo = null; // unknown regime — leave CMR, surface in audit query
+                            }
 
                             if (upgradedTo != null)
                             {
@@ -814,6 +833,27 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                                         manifestItemsToSave.Clear();
                                     }
                                 }
+                            }
+
+                            // 2026-05-05 (audit 3.05, P1): CASCADE THE IN-PLACE UPGRADE.
+                            // The "no existing doc" path below at the cmrRecord!=null branch
+                            // already calls CascadeCMRUpgradeAsync, but this in-place path
+                            // (where the CMR row was found via GetCMRByCompositeKeyAsync and
+                            // upgraded directly via UpgradeCMRToBOEAsync above) was NOT
+                            // calling it — so a CMR row that gets upgraded in place left
+                            // ContainerCompletenessStatuses with stale boedocumentid=null,
+                            // clearancetype=null, groupidentifier=null even though the BOE
+                            // arrived. Smoking-gun: 5 Export-Hold containers (MEDU7718311
+                            // + siblings) and 1,706 BOE rows with CmrUpgradedAt set.
+                            // Cascade: update ContainerCompletenessStatus if accessible
+                            try
+                            {
+                                await CascadeCMRUpgradeAsync(boeDocument);
+                            }
+                            catch (Exception cascadeEx)
+                            {
+                                _logger.LogWarning("{ServiceId} CMR→BOE cascade update failed for {Container}: {Error}",
+                                    SERVICE_ID, boeDocument.ContainerNumber, cascadeEx.Message);
                             }
 
                             continue; // Skip the normal insert/update path below
