@@ -863,7 +863,12 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     boeDocument.ContainerDescription = data.ContainerDetails.ContainerType;
                     boeDocument.ContainerISO = data.ContainerDetails.ContainerISO;
                     boeDocument.ContainerSize = data.ContainerDetails.ContainerSize;
-                    boeDocument.ContainerQuantity = 1;
+                    // 2026-05-05 (audit 5.02, P0): the previous `ContainerQuantity = 1`
+                    // hardcode silently overrode whatever the JSON carried. The strongly-
+                    // typed IcumApiContainerDetails model does not expose ContainerQuantity
+                    // today, so removing the assignment leaves the value null on this path
+                    // — which is honest about the gap and aligned with the JSON-file
+                    // ingestion path (IcumJsonIngestionService:1190 reads it from JSON).
                     boeDocument.ContainerWeight = data.ContainerDetails.ContainerWeight;
                     boeDocument.SealNumber = data.ContainerDetails.SealNumber;
                     boeDocument.TruckPlateNumber = data.ContainerDetails.TruckPlateNumber;
@@ -903,7 +908,19 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     boeDocument.MarksNumbers = data.ManifestDetails.MarksNumbers;
                     boeDocument.ShipperName = data.ManifestDetails.ShipperName;
                     boeDocument.ShipperAddress = data.ManifestDetails.ShipperAddress;
-                    boeDocument.BlNumber = data.ManifestDetails.MasterBlNumber;
+                    // 2026-05-05 (audit 5.02, P0): persist MasterBlNumber to its proper
+                    // column. Pre-fix this path copied MasterBlNumber → BlNumber and never
+                    // set MasterBlNumber, leaving every on-demand-fetched IsConsolidated
+                    // row with NULL MasterBlNumber. Now: master goes to MasterBlNumber, and
+                    // BlNumber is only filled from master as a fallback when no other
+                    // source supplied it (the strongly-typed model has only MasterBlNumber
+                    // at the manifest level today, but a future ingest path might split
+                    // master vs document BL — the fallback preserves the historic shape).
+                    boeDocument.MasterBlNumber = data.ManifestDetails.MasterBlNumber;
+                    if (string.IsNullOrWhiteSpace(boeDocument.BlNumber))
+                    {
+                        boeDocument.BlNumber = data.ManifestDetails.MasterBlNumber;
+                    }
                     boeDocument.DeliveryPlace = data.ManifestDetails.DeliveryPlace;
                     boeDocument.HouseBl = data.ManifestDetails.HouseBl;
                     boeDocument.ConsigneeAddress = data.ManifestDetails.ConsigneeAddress;

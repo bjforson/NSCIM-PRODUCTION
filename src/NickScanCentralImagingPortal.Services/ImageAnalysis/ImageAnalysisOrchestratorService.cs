@@ -2321,20 +2321,45 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             "[ICUMS-SUBMIT] SUCCESS for {Container} — HTTP {Status}, Response: {Response}",
                             containerNumber, (int)response.StatusCode, responseBody.Length > 500 ? responseBody[..500] : responseBody);
 
-                        // ICUMS acknowledged — mark as Submitted
-                        if (!string.IsNullOrEmpty(containerNumber))
-                        {
-                            var acked = await db.Database.ExecuteSqlRawAsync(
-                                "UPDATE ContainerCompletenessStatuses SET WorkflowStage = 'Submitted', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE ContainerNumber = {0} AND WorkflowStage = 'PendingSubmission'",
-                                containerNumber);
-                            if (acked > 0)
-                                _logger.LogInformation("[ICUMS-SUBMIT] Set WorkflowStage=Submitted for {Container} ({Count} record(s))", containerNumber, acked);
-                        }
-
-                        // Archive the payload file
+                        // 2026-05-05 (audit 5.03, P1): ARCHIVE-FIRST, MARK-SECOND.
+                        // Pre-fix order on this primary submission path was: DB UPDATE
+                        // → File.Move. A crash between the two left WorkflowStage='Submitted'
+                        // but the payload still in the live Outbox, so the next start
+                        // re-submitted to ICUMS — duplicate inserts on the customs side.
+                        // The retry path (RetryPendingIcumsSubmissionsAsync) already had
+                        // the correct order from f4ec289; this brings the primary path
+                        // into alignment. By moving the file first and marking the row
+                        // second, the worst-case is a one-time orphan in /Acknowledged
+                        // with no DB update (next pass treats the row as still
+                        // PendingSubmission, but the file is gone so RetryPending won't
+                        // re-fire — the orphan can be reconciled by a separate sweeper).
+                        // No more duplicate submissions.
                         var ackDir = Path.Combine(icumsFolder, "Acknowledged");
                         Directory.CreateDirectory(ackDir);
-                        System.IO.File.Move(payloadFile, Path.Combine(ackDir, Path.GetFileName(payloadFile)), overwrite: true);
+                        var ackPath = Path.Combine(ackDir, Path.GetFileName(payloadFile));
+                        System.IO.File.Move(payloadFile, ackPath, overwrite: true);
+
+                        if (!string.IsNullOrEmpty(containerNumber))
+                        {
+                            try
+                            {
+                                var acked = await db.Database.ExecuteSqlRawAsync(
+                                    "UPDATE ContainerCompletenessStatuses SET WorkflowStage = 'Submitted', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE ContainerNumber = {0} AND WorkflowStage = 'PendingSubmission'",
+                                    containerNumber);
+                                if (acked > 0)
+                                    _logger.LogInformation("[ICUMS-SUBMIT] Set WorkflowStage=Submitted for {Container} ({Count} record(s))", containerNumber, acked);
+                            }
+                            catch (Exception dbEx)
+                            {
+                                // File is already in /Acknowledged so we won't re-submit on
+                                // restart. The DB update will be retried next cycle when the
+                                // row is still PendingSubmission. Log loudly so ops can
+                                // reconcile if needed.
+                                _logger.LogError(dbEx,
+                                    "[ICUMS-SUBMIT] File archived to {AckPath} but DB update FAILED for {Container} — manual reconciliation may be required.",
+                                    ackPath, containerNumber);
+                            }
+                        }
                         submitted++;
                     }
                     else

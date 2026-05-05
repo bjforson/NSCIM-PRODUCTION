@@ -277,6 +277,29 @@ UPDATE boedocuments SET
     -- ingest by RegimeDirectionMap.ClassifyDocumentType. Always overwrite: regimecode
     -- itself is overwritten above, and documenttype must stay consistent with it.
     documenttype = $49,
+    -- 2026-05-05 (audit 5.01, P0): persist MasterBlNumber, the 20 unmapped-field
+    -- label/value pairs, the unmapped-field counters, and the ingestion-warnings
+    -- flags. Pre-fix these eight column groups (44 fields) were silently dropped on
+    -- every BOE re-arrival. Result: 0 of 119,669 rows had unmapped-field tracking,
+    -- only ~17% had MasterBlNumber populated, and 100% of IsConsolidated rows had
+    -- NULL MasterBlNumber (the symptom 2.16.3 had been chasing).
+    masterblnumber = $50,
+    unmappedfield1label = $51, unmappedfield2label = $52, unmappedfield3label = $53,
+    unmappedfield4label = $54, unmappedfield5label = $55, unmappedfield6label = $56,
+    unmappedfield7label = $57, unmappedfield8label = $58, unmappedfield9label = $59,
+    unmappedfield10label = $60, unmappedfield11label = $61, unmappedfield12label = $62,
+    unmappedfield13label = $63, unmappedfield14label = $64, unmappedfield15label = $65,
+    unmappedfield16label = $66, unmappedfield17label = $67, unmappedfield18label = $68,
+    unmappedfield19label = $69, unmappedfield20label = $70,
+    unmappedfield1value = $71, unmappedfield2value = $72, unmappedfield3value = $73,
+    unmappedfield4value = $74, unmappedfield5value = $75, unmappedfield6value = $76,
+    unmappedfield7value = $77, unmappedfield8value = $78, unmappedfield9value = $79,
+    unmappedfield10value = $80, unmappedfield11value = $81, unmappedfield12value = $82,
+    unmappedfield13value = $83, unmappedfield14value = $84, unmappedfield15value = $85,
+    unmappedfield16value = $86, unmappedfield17value = $87, unmappedfield18value = $88,
+    unmappedfield19value = $89, unmappedfield20value = $90,
+    unmappedfieldscount = $91, unmappedfieldsoverflow = $92,
+    hasingestionwarnings = $93, ingestionwarnings = $94,
     updatedat = now()
 WHERE id = $45;";
 
@@ -331,6 +354,53 @@ WHERE id = $45;";
                 cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.CmrUpgradedAt ?? DBNull.Value });
                 // documenttype tagging param (position 49 in the SQL above).
                 cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.DocumentType ?? DBNull.Value });
+                // 2026-05-05 (audit 5.01): MasterBlNumber + unmapped-field tracking + ingestion-warnings flags.
+                // Positions 50-94. Order matches the SET clause above; preserves the existing $1-$49 numbering.
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.MasterBlNumber ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField1Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField2Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField3Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField4Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField5Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField6Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField7Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField8Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField9Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField10Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField11Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField12Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField13Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField14Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField15Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField16Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField17Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField18Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField19Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField20Label ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField1Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField2Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField3Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField4Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField5Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField6Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField7Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField8Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField9Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField10Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField11Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField12Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField13Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField14Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField15Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField16Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField17Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField18Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField19Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedField20Value ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.UnmappedFieldsCount ?? DBNull.Value });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = document.UnmappedFieldsOverflow });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = document.HasIngestionWarnings });
+                cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)document.IngestionWarnings ?? DBNull.Value });
 
                 await cmd.ExecuteNonQueryAsync();
                 _context.ChangeTracker.Clear();
