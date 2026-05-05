@@ -22,6 +22,69 @@ For each release, this file records:
 
 ---
 
+## [2.16.4] — 2026-05-05 — Sprint 1 Group A: observability quick wins
+
+First fix-it sprint following the 2026-05-05 end-to-end cold audit. Group A
+restores production observability that has been silently broken since the
+2026-04-25 phase-1 RLS rollout. All seven changes are XS-effort and Low-risk.
+
+### Behaviour changes
+
+- **Application-logs PG sink writes again.** Serilog Postgres sink connection
+  string now includes `Options=-c app.tenant_id=1`, so every connection it
+  opens sets the tenancy session variable before attempting INSERT. The PG
+  sink had been silently rejecting every write since 2026-04-25 19:53:21 UTC
+  (RLS fail-closed default `'0'`); 9 days of warning+ logs were lost.
+- **Admin Log Management UI returns rows again.** `LogManagementController`'s
+  five raw-NpgsqlConnection methods now wrap their work in a transaction and
+  issue `SET LOCAL app.tenant_id = '1'` as the first command. Previously the
+  UI returned 0 rows for the same RLS reason — operators saw "no logs" and
+  assumed nothing was being logged.
+- **`ErrorMonitoringBackgroundService` detects errors again.** Same fix as
+  above for `GetNewErrorsFromLogsAsync`. The service had been blind for 9
+  days, finding 0 errors per cycle and starving the fix-proposal pipeline.
+- **`PORT MISMATCH` and `FYCO MISMATCH` log lines demoted to Warning.** These
+  are designed-to-fire match-quality rejections, not bugs. They had been
+  generating 1,828 ERR rows in 8 hours of today's errors log (99% of the
+  noise). Real exceptions are now visible again.
+- **HealthChecks UI loads.** Pinned `IdentityModel 5.2.0` package — the
+  exact strong-named version (`PublicKeyToken=e7877f4675df049f`) that the
+  HealthChecks.UI collector was trying to load. Was throwing
+  `FileNotFoundException` ~1,326 times per day since the .NET 10 retarget.
+- **NickHR.API logs to a discoverable location.** Serilog file path changed
+  from relative `Logs/nickhr-.log` (which under LocalSystem resolved to
+  `C:\Windows\System32\logs\`) to absolute `C:\Shared\NSCIM_PRODUCTION\Data\Logs\nickhr-.log`.
+  Existing files in `C:\Windows\System32\logs\` are not auto-migrated.
+- **`ConsolidatedCargoQueries.GetContainersByDeclarationAsync` (line 317)
+  no longer filters out `IsConsolidated=true`.** Companion fix to commit
+  `4c4931c` (2026-05-04) which dropped the same stale filter from 5 callsites
+  in `ConsolidatedCargoQueries` and `CargoGroupService`. Audit Agent 6
+  (finding 6.04) caught this 6th site that I missed.
+
+### What this release does NOT do
+
+This release fixes **visibility**. The structural breaks underneath remain:
+
+- `2.01` (P0) — `TenantConnectionInterceptor` doesn't fire on Npgsql pooled-
+  connection retries. Background services are still query-blind. Sprint 1
+  Group B addresses this.
+- `4.01` (P0) — `AssignmentWorker.cs` and friends are dead code; recent fixes
+  to them are runtime no-ops. Sprint 2 Group C addresses this.
+- All other P0/P1 audit findings remain open.
+
+After 2.16.4 we can SEE the production state again; subsequent sprints will
+fix what we can now see.
+
+### Commits
+
+- `79e3763` — `fix(cargogroup): drop !IsConsolidated on declaration query (6.04, missed in 4c4931c)`
+- `3f984f3` — `fix(observability): set app.tenant_id on raw-Npgsql callsites (8.01/8.02/8.03)`
+- `3ee8eec` — `fix(observability): demote port-mismatch noise + pin IdentityModel + NickHR log path (8.04/8.05/8.31)`
+- `b68cacc` — `docs(audit): land 2026-05-05 end-to-end cold audit`
+- (this commit) — `chore(release): bump to 2.16.4 + Sprint 1 Group A`
+
+---
+
 ## [2.16.3] — 2026-05-04 — Upstream fix for mis-tagged-consolidated → blank dialog tabs
 
 The actual upstream root cause behind 2.16.2's symptom (Scanner Data / ICUMS
