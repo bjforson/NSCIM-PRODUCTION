@@ -202,6 +202,8 @@ builder.Services.AddAuthorization(options =>
 // ✅ SINGLE AUTH PROVIDER: JWT-based authentication
 builder.Services.AddScoped<NickScanWebApp.New.Services.SimpleAuthStateProvider>();
 builder.Services.AddScoped<AuthenticationStateProvider>(sp => sp.GetRequiredService<NickScanWebApp.New.Services.SimpleAuthStateProvider>());
+// 6.07 (Sprint 4): typed token source so ApiService no longer needs reflection.
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IAuthTokenSource>(sp => sp.GetRequiredService<NickScanWebApp.New.Services.SimpleAuthStateProvider>());
 builder.Services.AddCascadingAuthenticationState();
 
 // ✅ Register CustomAuthStateProvider as a separate service for permission checks

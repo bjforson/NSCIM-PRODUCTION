@@ -784,7 +784,94 @@
         public CargoType Type { get; set; }
         public DateTime CachedAt { get; set; }
     }
-    
+
+    /// <summary>
+    /// 6.01 (Sprint 4 — frontend contract de-fragmentation): centralizes the
+    /// "IsConsolidated => GroupIdentifier IS the container number" routing
+    /// assumption that previously lived inline at every URL-construction site
+    /// in this dialog.
+    ///
+    /// For consolidated cargo, GroupIdentifier IS the container number — pass
+    /// it directly into the route. For non-consolidated cargo, GroupIdentifier
+    /// is a declaration number, so we pass the first scanned container as the
+    /// route key and tag the declaration via the ?declarationNumber query string.
+    ///
+    /// IMPORTANT: this helper does NOT fix the underlying assumption — it only
+    /// makes it single-source-of-truth so the next mistag-class bug
+    /// (e.g. 2026-05-04's MasterBlNumber regression) is a one-line fix here
+    /// instead of touching N callsites. The proper fix is server-side
+    /// disambiguation (one endpoint that takes (groupIdentifier, isConsolidated)
+    /// and dispatches), which is L-effort and scoped to a future sprint.
+    ///
+    /// **If `IsConsolidated` is wrong (e.g. mistag at ingest), this URL still
+    /// won't return correct data — fix the upstream tag, don't fight it
+    /// client-side.**
+    ///
+    /// Used by 3 callsites in this file (LoadBOEDetailsForConsolidated /
+    /// LoadBOEDetails / PreloadICUMSData) for the /api/containerdetails/{endpoint}
+    /// family. The /api/consolidatedcargo/* and /api/ImageAnalysisDecision/* sites
+    /// embody the same routing assumption but on different endpoint families;
+    /// they are documented at their callsites and gated by the same
+    /// IsConsolidated branch.
+    /// </summary>
+    /// <param name="endpoint">
+    /// The /api/containerdetails sub-route (e.g. "icums", "scanner").
+    /// </param>
+    /// <param name="groupIdentifier">
+    /// The dialog's GroupIdentifier — container number when consolidated,
+    /// declaration number when non-consolidated.
+    /// </param>
+    /// <param name="isConsolidated">
+    /// Routing flag from the assignment row. Drives whether the URL keys on
+    /// container-number or declaration-number+route-container.
+    /// </param>
+    /// <param name="declarationNumber">
+    /// Used in the non-consolidated branch as a query-string discriminator.
+    /// When null and !isConsolidated, falls back to groupIdentifier.
+    /// </param>
+    /// <param name="page">Pagination page (default 1).</param>
+    /// <param name="pageSize">Pagination size (default 1000).</param>
+    /// <param name="routeContainer">
+    /// Required for the non-consolidated branch — the container number to use as
+    /// the route key (typically Containers.First()). Throws if null on that path.
+    /// </param>
+    private string BuildContainerEndpointUrl(
+        string endpoint,
+        string groupIdentifier,
+        bool isConsolidated,
+        string? declarationNumber = null,
+        int page = 1,
+        int pageSize = 1000,
+        string? routeContainer = null)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            throw new ArgumentException("endpoint must be non-empty", nameof(endpoint));
+        }
+        if (string.IsNullOrWhiteSpace(groupIdentifier))
+        {
+            throw new ArgumentException("groupIdentifier must be non-empty", nameof(groupIdentifier));
+        }
+
+        if (isConsolidated)
+        {
+            // Consolidated: GroupIdentifier IS the container number. Hit the route
+            // directly; no declarationNumber discriminator needed.
+            return $"/api/containerdetails/{endpoint}/{Uri.EscapeDataString(groupIdentifier)}?page={page}&pageSize={pageSize}";
+        }
+
+        // Non-consolidated: GroupIdentifier is a declaration number. Use a
+        // representative container number as the route key, attach the declaration
+        // as a query-string discriminator. The controller's declaration-keyed
+        // branch then returns ALL BOE documents for that declaration regardless
+        // of which container's BOEs were originally hit.
+        var routeCn = routeContainer
+            ?? throw new InvalidOperationException(
+                "BuildContainerEndpointUrl: non-consolidated path requires a routeContainer (typically Containers.First()).");
+        var decl = declarationNumber ?? groupIdentifier;
+        return $"/api/containerdetails/{endpoint}/{Uri.EscapeDataString(routeCn)}?page={page}&pageSize={pageSize}&declarationNumber={Uri.EscapeDataString(decl)}";
+    }
+
     // ✅ FIX #2: Handle tab changes for lazy loading (CONSOLIDATED view)
     private async Task OnActiveTabChanged(int newIndex)
     {
@@ -1336,9 +1423,10 @@
             if (Containers?.Any() == true)
             {
                 var firstContainer = Containers.First();
+                // 6.01: routed through BuildContainerEndpointUrl helper
                 var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
-                    $"/api/containerdetails/icums/{firstContainer}?page=1&pageSize=1000&declarationNumber={Uri.EscapeDataString(GroupIdentifier)}");
-                
+                    BuildContainerEndpointUrl("icums", GroupIdentifier, IsConsolidated, routeContainer: firstContainer));
+
                 if (icumsResponse?.Data?.Any() == true)
                 {
                     _allBOEData = icumsResponse.Data.Select(r => new ICUMSDataRecordDto
@@ -1703,12 +1791,12 @@
         try
         {
             Console.WriteLine($"🔍 [LoadBOEDetailsForConsolidated] Loading all House BLs for container: {GroupIdentifier}");
-            
+
             // For consolidated cargo, GroupIdentifier = Container Number
             // Query by container to get ALL BOE records (all House BLs)
-            // ✅ FIX: Use shared model ICUMSDataRecord (not local DTO)
+            // 6.01: routed through BuildContainerEndpointUrl helper (consolidated branch)
             var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
-                $"/api/containerdetails/icums/{GroupIdentifier}?page=1&pageSize=1000");
+                BuildContainerEndpointUrl("icums", GroupIdentifier, isConsolidated: true));
             
             if (icumsResponse == null)
             {
@@ -1777,10 +1865,11 @@
                 {
                     var firstContainer = Containers.First();
                     Console.WriteLine($"🔍 [LoadBOEDetails] Querying via container {firstContainer} for declaration {GroupIdentifier}");
-                    
-                    // ✅ FIX: Pass declarationNumber as query parameter to get all BOE documents for this declaration
+
+                    // 6.01: routed through BuildContainerEndpointUrl helper (non-consolidated branch).
+                    // Pass declarationNumber as query parameter to get all BOE documents for this declaration.
                     var icumsResponse = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(
-                        $"/api/containerdetails/icums/{firstContainer}?page=1&pageSize=1000&declarationNumber={Uri.EscapeDataString(GroupIdentifier)}");
+                        BuildContainerEndpointUrl("icums", GroupIdentifier, IsConsolidated, routeContainer: firstContainer));
                     
                     if (icumsResponse == null)
                     {

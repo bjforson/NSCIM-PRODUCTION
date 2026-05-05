@@ -59,9 +59,27 @@
     }
     else
     {
-        <MudAlert Severity="Severity.Info" Variant="Variant.Text" Class="ma-4">
-            <MudText Typo="Typo.body1">No scanner data available for this container</MudText>
-        </MudAlert>
+        @* 6.02 (Sprint 4): distinguish "container exists but no scans yet" from
+           "container number unknown" using the Status field on PagedResult. *@
+        @if (string.Equals(scannerData?.Status, "ContainerUnknown", StringComparison.OrdinalIgnoreCase))
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="ma-4">
+                <MudText Typo="Typo.body1"><strong>Container number not found</strong></MudText>
+                <MudText Typo="Typo.body2">
+                    No record of container <strong>@ContainerNumber</strong> in the scanner pipeline.
+                    This may be a mistagged group identifier — check the assignment's IsConsolidated flag.
+                </MudText>
+            </MudAlert>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Text" Class="ma-4">
+                <MudText Typo="Typo.body1">No scanner data available for this container yet</MudText>
+                <MudText Typo="Typo.body2">
+                    Container <strong>@ContainerNumber</strong> is known to the system but has no scanner records.
+                </MudText>
+            </MudAlert>
+        }
     }
 </MudContainer>
 

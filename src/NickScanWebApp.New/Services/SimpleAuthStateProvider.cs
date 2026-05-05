@@ -2,13 +2,16 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services
 {
     /// <summary>
-    /// Simplified authentication state provider that uses JWT from session storage
+    /// Simplified authentication state provider that uses JWT from session storage.
+    /// 6.07 (Sprint 4): also implements IAuthTokenSource so ApiService can resolve
+    /// the token via DI typed interface instead of reflection.
     /// </summary>
-    public class SimpleAuthStateProvider : AuthenticationStateProvider
+    public class SimpleAuthStateProvider : AuthenticationStateProvider, IAuthTokenSource
     {
         private readonly ProtectedSessionStorage _sessionStorage;
         private readonly ILogger<SimpleAuthStateProvider> _logger;

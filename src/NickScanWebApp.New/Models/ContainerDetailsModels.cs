@@ -135,6 +135,12 @@ namespace NickScanWebApp.New.Models
         public int TotalPages { get; set; }
         public bool HasPreviousPage => Page > 1;
         public bool HasNextPage => Page < TotalPages;
+
+        /// <summary>
+        /// 6.02/6.03 (Sprint 4): empty-result disambiguation marker mirrored from
+        /// the API PagedResult. "Found" / "NoData" / "ContainerUnknown".
+        /// </summary>
+        public string Status { get; set; } = "Found";
     }
 
     /// <summary>

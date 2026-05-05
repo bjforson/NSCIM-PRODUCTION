@@ -40,6 +40,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
         public int TotalPages { get; set; }
         public bool HasPreviousPage => Page > 1;
         public bool HasNextPage => Page < TotalPages;
+
+        /// <summary>
+        /// 6.02/6.03 (Sprint 4): empty-result disambiguation marker so the frontend
+        /// can tell "container not found" from "container exists but has no data yet".
+        /// Values: "Found" (data present), "NoData" (container exists, no records yet),
+        /// "ContainerUnknown" (container number not in any data source).
+        /// Default "Found" preserves existing client behaviour for non-empty responses.
+        /// </summary>
+        public string Status { get; set; } = "Found";
     }
 
     // DTOs for Phase 2: Full record responses
@@ -703,9 +712,29 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 if (!scannerRecords.Any())
                 {
+                    // 6.02/6.03 (Sprint 4): distinguish "container unknown" from
+                    // "container exists but no scans yet" by checking CCS. Both the
+                    // paginated and full=true paths now return 200+Status so the
+                    // shapes are consistent (full=true used to return 404 — fixed).
+                    var ccsExists = await _context.ContainerCompletenessStatuses
+                        .AnyAsync(c => c.ContainerNumber == containerNumber, cts.Token);
+                    var status = ccsExists ? "NoData" : "ContainerUnknown";
+
+                    _logger.LogInfo("GetScannerData", "No scanner records for container {ContainerNumber} — Status={Status} (CCS exists: {CcsExists})",
+                        new { ContainerNumber = containerNumber, Status = status, CcsExists = ccsExists });
+
                     if (full)
                     {
-                        return NotFound(new { message = $"No scanner data found for container {containerNumber}" });
+                        // 6.03: return 200+Status instead of 404 for consistency with paginated path.
+                        return Ok(new FullScannerDataRecordDto
+                        {
+                            ContainerNumber = containerNumber,
+                            ScannerType = "Unknown",
+                            ScanTime = DateTime.UtcNow,
+                            AllFields = new Dictionary<string, object> { ["Status"] = status },
+                            AvailableFields = new List<string>(),
+                            MissingFields = new List<string>()
+                        });
                     }
                     return Ok(new PagedResult<ScannerDataRecord>
                     {
@@ -713,7 +742,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         TotalCount = 0,
                         Page = page,
                         PageSize = pageSize,
-                        TotalPages = 0
+                        TotalPages = 0,
+                        Status = status
                     });
                 }
 
@@ -930,11 +960,42 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 if (!boeDocuments.Any())
                 {
-                    _logger.LogWarning("GetICUMSData", "No BOE documents found for container {ContainerNumber}",
-                        new { ContainerNumber = containerNumber });
+                    // 6.02/6.03 (Sprint 4): same disambiguation as GetScannerData —
+                    // distinguish "container unknown" from "container exists but no
+                    // BOE yet" via CCS lookup, and reconcile full=true vs paginated
+                    // paths so both return 200+Status (full=true used to 404).
+                    // When the caller passed declarationNumber, treat that as the
+                    // primary key for the unknown-vs-no-data check.
+                    bool ccsExists;
+                    if (!string.IsNullOrEmpty(declarationNumber))
+                    {
+                        // Declaration-keyed lookup: presence is judged by any BOE
+                        // ever existing for this declaration, otherwise CCS for the
+                        // route container is the next-best signal.
+                        ccsExists = await _context.ContainerCompletenessStatuses
+                            .AnyAsync(c => c.ContainerNumber == containerNumber, cts.Token);
+                    }
+                    else
+                    {
+                        ccsExists = await _context.ContainerCompletenessStatuses
+                            .AnyAsync(c => c.ContainerNumber == containerNumber, cts.Token);
+                    }
+                    var status = ccsExists ? "NoData" : "ContainerUnknown";
+
+                    _logger.LogWarning("GetICUMSData", "No BOE documents for container {ContainerNumber} — Status={Status} (CCS exists: {CcsExists})",
+                        new { ContainerNumber = containerNumber, Status = status, CcsExists = ccsExists });
+
                     if (full)
                     {
-                        return NotFound(new { message = $"No ICUMS data found for container {containerNumber}" });
+                        // 6.03: return 200+Status instead of 404 for consistency.
+                        return Ok(new FullBOEDataRecordDto
+                        {
+                            ContainerNumber = containerNumber,
+                            DeclarationNumber = declarationNumber,
+                            AllFields = new Dictionary<string, object> { ["Status"] = status },
+                            AvailableFields = new List<string>(),
+                            MissingFields = new List<string>()
+                        });
                     }
                     return Ok(new PagedResult<ICUMSDataRecord>
                     {
@@ -942,7 +1003,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         TotalCount = 0,
                         Page = page,
                         PageSize = pageSize,
-                        TotalPages = 0
+                        TotalPages = 0,
+                        Status = status
                     });
                 }
 

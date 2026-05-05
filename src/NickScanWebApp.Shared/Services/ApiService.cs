@@ -14,6 +14,11 @@ namespace NickScanWebApp.Shared.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ApiService> _logger;
         private readonly AuthenticationStateProvider _authStateProvider;
+        // 6.07 (Sprint 4): direct typed interface replacement for the previous
+        // reflection-based GetTokenAsync probe. Falls back to the old reflection
+        // path when not registered (e.g. an out-of-tree consumer DI'ing only the
+        // base AuthenticationStateProvider) so existing behaviour is preserved.
+        private readonly IAuthTokenSource? _tokenSource;
         private const string API_CLIENT_NAME = "NickScanAPI";
 
         // Shared JSON options for enum string deserialization
@@ -26,22 +31,54 @@ namespace NickScanWebApp.Shared.Services
         public ApiService(
             IHttpClientFactory httpClientFactory,
             ILogger<ApiService> logger,
-            AuthenticationStateProvider authStateProvider)
+            AuthenticationStateProvider authStateProvider,
+            IAuthTokenSource? tokenSource = null)
         {
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _authStateProvider = authStateProvider;
+            // 6.07: prefer the typed token source. When the AuthenticationStateProvider
+            // also implements IAuthTokenSource (the common case for SimpleAuthStateProvider),
+            // resolve to that — keeps the single shared source of truth.
+            _tokenSource = tokenSource ?? authStateProvider as IAuthTokenSource;
         }
 
         /// <summary>
-        /// Get JWT token from auth state provider using reflection
-        /// Works with SimpleAuthStateProvider from both desktop and mobile apps
+        /// Get JWT token from the typed IAuthTokenSource interface (6.07).
+        /// Falls back to reflection-based lookup on AuthenticationStateProvider
+        /// for legacy DI configurations that haven't registered IAuthTokenSource.
         /// </summary>
         private async Task<string?> GetTokenFromProviderAsync()
         {
+            // 6.07: typed interface path
+            if (_tokenSource != null)
+            {
+                try
+                {
+                    var token = await _tokenSource.GetTokenAsync();
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        _logger.LogDebug("✅ Token retrieved from IAuthTokenSource: {ProviderType}", _tokenSource.GetType().Name);
+                        return token;
+                    }
+                    else
+                    {
+                        _logger.LogDebug("⚠️ IAuthTokenSource returned null/empty token: {ProviderType} (user not authenticated)", _tokenSource.GetType().Name);
+                        return null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "❌ Error retrieving token from IAuthTokenSource: {ProviderType}", _tokenSource.GetType().Name);
+                    return null;
+                }
+            }
+
+            // Legacy fallback: reflection on AuthenticationStateProvider for DI configs
+            // that haven't migrated to IAuthTokenSource. New code paths should not rely
+            // on this branch — register IAuthTokenSource explicitly.
             try
             {
-                // Use reflection to call GetTokenAsync() method if it exists
                 var method = _authStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                 if (method != null)
                 {
@@ -51,24 +88,24 @@ namespace NickScanWebApp.Shared.Services
                         var token = await task;
                         if (!string.IsNullOrEmpty(token))
                         {
-                            _logger.LogDebug("✅ Token retrieved successfully from auth provider: {ProviderType}", _authStateProvider.GetType().Name);
+                            _logger.LogDebug("✅ Token retrieved via legacy reflection fallback: {ProviderType}", _authStateProvider.GetType().Name);
                             return token;
                         }
                         else
                         {
-                            // ✅ FIX: Downgrade to Debug level - this is expected when user is not logged in
-                            _logger.LogDebug("⚠️ Auth provider returned null/empty token: {ProviderType} (user not authenticated)", _authStateProvider.GetType().Name);
+                            _logger.LogDebug("⚠️ Reflection fallback returned null/empty token: {ProviderType} (user not authenticated)", _authStateProvider.GetType().Name);
                         }
                     }
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ GetTokenAsync method not found on auth provider: {ProviderType}", _authStateProvider.GetType().Name);
+                    // 6.07: bumped to Warning so operators see DI misconfig rather than the silent unauthenticated request
+                    _logger.LogWarning("⚠️ Neither IAuthTokenSource nor a GetTokenAsync method is available on auth provider: {ProviderType} — request will be unauthenticated", _authStateProvider.GetType().Name);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "❌ Error retrieving token from auth provider: {ProviderType}", _authStateProvider.GetType().Name);
+                _logger.LogWarning(ex, "❌ Error retrieving token from auth provider via reflection: {ProviderType}", _authStateProvider.GetType().Name);
             }
             return null;
         }
@@ -116,8 +153,11 @@ namespace NickScanWebApp.Shared.Services
                     var status = (int)response.StatusCode;
                     if (status == 401 || status == 403)
                     {
-                        // 401/403 might be expected for unauthenticated requests or insufficient permissions
-                        _logger.LogDebug("HTTP {Status} GET {Endpoint} - authentication/authorization required", status, endpoint);
+                        // 6.07 (Sprint 4): bumped from Debug to Warning so operators
+                        // see session-expiry / permission-denied signals at default
+                        // log levels. Previously this was invisible at Information
+                        // and below, masking the symptom for "everything looks empty".
+                        _logger.LogWarning("HTTP {Status} GET {Endpoint} - authentication/authorization required", status, endpoint);
                     }
                     else
                     {
@@ -137,10 +177,10 @@ namespace NickScanWebApp.Shared.Services
             }
             catch (HttpRequestException ex)
             {
-                // Check if it's a 401/403 - log at debug level instead of error
+                // 6.07: bumped 401/403 path from Debug to Warning — operators must see session-expiry signals.
                 if (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized") || ex.Message.Contains("Forbidden"))
                 {
-                    _logger.LogDebug(ex, "HTTP 401/403 calling GET {Endpoint} - authentication/authorization required", endpoint);
+                    _logger.LogWarning(ex, "HTTP 401/403 calling GET {Endpoint} - authentication/authorization required", endpoint);
                 }
                 else
                 {
@@ -211,10 +251,10 @@ namespace NickScanWebApp.Shared.Services
                     {
                         _logger.LogWarning("HTTP {Status} POST {Endpoint}. Body: {Body}", status, endpoint, raw);
                     }
-                    // Log 401/403 as debug - authentication/authorization required
+                    // 6.07: bumped 401/403 from Debug to Warning so operators see auth signals
                     else if (status == 401 || status == 403)
                     {
-                        _logger.LogDebug("HTTP {Status} POST {Endpoint} - authentication/authorization required. Body: {Body}", status, endpoint, raw);
+                        _logger.LogWarning("HTTP {Status} POST {Endpoint} - authentication/authorization required. Body: {Body}", status, endpoint, raw);
                     }
                     else
                     {
@@ -236,10 +276,10 @@ namespace NickScanWebApp.Shared.Services
             }
             catch (HttpRequestException ex)
             {
-                // Check if it's a 401/403 - log at debug level instead of error
+                // 6.07: bumped 401/403 from Debug to Warning so operators see auth signals
                 if (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized") || ex.Message.Contains("Forbidden"))
                 {
-                    _logger.LogDebug(ex, "HTTP 401/403 calling POST {Endpoint} - authentication/authorization required", endpoint);
+                    _logger.LogWarning(ex, "HTTP 401/403 calling POST {Endpoint} - authentication/authorization required", endpoint);
                 }
                 else
                 {
