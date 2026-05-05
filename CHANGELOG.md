@@ -22,6 +22,65 @@ For each release, this file records:
 
 ---
 
+## [2.16.10] — 2026-05-05 — Team 1 + Team 2 follow-ups: routing endpoint Phase 1 + CCS dedup
+
+### What landed
+
+- `bfa3f82` Team 2 Agent 2.2 — Phase 1 of the server-side `IsConsolidated` disambiguation endpoint (RCS-keyed dispatch, 5-mode classifier, behind feature flag — frontend untouched)
+- `a3115da` Team 1 Agent 1.2 — Export-Hold NULL/NULL cleanup (26 rows) + CCS containernumber dedup (39 rows deleted) + composite UNIQUE constraint
+- `8e3e52a` audit follow-up reports (T1.1 7.07 investigation + T2.1 routing endpoint design)
+
+### Behaviour changes
+
+#### Routing endpoint (Phase 1)
+- New `GET /api/cargogroup/{groupIdentifier}/full?scannerType=…` action on the existing `CargoGroupController`. **Backend ships dark** — no frontend changes; frontend cutover is Phase 2 (T2.3).
+- New `IGroupResolver` walks 6 candidate identity sources before classifying the grouping mode by RCS shape (NOT by the lossy `BoeDocument.IsConsolidated` flag).
+- 5 modes: `SingleDeclarationSingleContainer`, `SingleDeclarationMultipleContainers`, `ConsolidatedMultiHouseBl`, `PatternAUsedCars` (NEW — 2,774 rows in prod previously squashed into "consolidated"), `LegacyOrUnknown`.
+- 4 status values: `Found`, `FoundButPartial`, `GroupIdentifierUnknown`, `AmbiguousNeedsHint` — closes findings 6.02/6.03 by distinguishing "no data" semantics at the contract layer.
+- Feature flag `CargoGroup:UseFullEndpoint` (default `false` prod, `true` dev) for Phase 2 rollout monitoring. Endpoint is unconditional in Phase 1; flag drives an Information log line per call.
+- Verification probe at `C:\temp\nscim-probe\TestCargoGroupFull.cs` discovered live representative GroupIdentifiers for each of the 5 modes:
+  - `PatternAUsedCars`: `80426309318`
+  - `SingleDeclarationMultipleContainers`: `70526332973`
+  - `SingleDeclarationSingleContainer`: `40526334476`
+  - `LegacyOrUnknown`: `40226147506_W1`
+  - `ConsolidatedMultiHouseBl`: `MRSU6042566` (8 distinct HBLs)
+
+#### Schema integrity (T1.1 + T1.2)
+
+- **The audit's "13:44:02Z mystery batch event" was a timezone transcription artifact** (Europe/London BST session). Per Agent 1.1's investigation, the real cause of the 30→181 jump in 7.07 candidates was Sprint 1B's RLS-floor deploy unblocking a legitimate long-standing orchestrator race window where `CCS.hasicumsdata=true` is set BEFORE the CBR INSERT. **Not a regression.** Race-window fix deferred to a dedicated future sprint.
+- 26 Export-Hold rows with `hasicumsdata=true` + NULL `boedocumentid` + NULL `clearancetype` + no active CBR cleaned up (flipped `hasicumsdata=false`). 7.07 candidate count: 180 → 154 (residual = 119 race-window + 35 bulk-unmatch, intentionally left).
+- 39 of 81 duplicate CCS containernumber rows deleted (38 same-scanner identical double-writes; 2 legitimate cross-scanner pairs preserved per audit 3.15).
+- **Composite UNIQUE constraint** `ix_ccs_containernumber_scannertype_unique` on `(containernumber, scannertype)`. Single-column UNIQUE was attempted but failed (cross-scanner cases). 0 composite dups remaining.
+
+### What this release does NOT do
+
+- **Frontend dialog migration.** Phase 2 (T2.3) is its own commit. Today's dialog still uses the 5-callsite `IsConsolidated` branch.
+- **MasterBlNumber backfill** (5,774 rows). Phase 3 (T2.4), only safe AFTER Phase 2 cuts the dialog over to the RCS-keyed endpoint.
+- **The 2 still-blocked FKs** (`cbr.containernumber → ccs` and `iad.containernumber → ccs`). Composite UNIQUE means the FKs need composite child references — that's a downstream sprint requiring entity edits on `containerboerelations` and `imageanalysisdecisions`.
+- **Race-window fix.** Long-standing orchestrator behavior; dedicated sprint.
+
+### Audit findings advanced
+
+- **6.02 / 6.03** — closed at the contract layer (Phase 1 endpoint returns `CargoGroupResolutionStatus`). Frontend rendering of the new field is Phase 2.
+- **7.07** — closed at the analysis + scoped-cleanup level. Race-window root cause documented.
+- **7.01** — same 3/5 FKs since 2.16.8; the remaining 2 are blocked on a different shape now (composite parent UNIQUE).
+
+### New audit follow-up items
+
+- **Composite FK on `containerboerelations` + `imageanalysisdecisions`** — needs `scannertype` columns on the child reference, then composite FK `(containernumber, scannertype) → ccs(containernumber, scannertype)`. Future sprint.
+- **Race-window orchestrator fix** — long-standing pattern surfaced by 7.07 investigation. Dedicated sprint.
+
+### Audit running totals (after 2.16.4 → 2.16.10)
+
+- **P0:** 6 of 6 closed
+- **Latent P0 disarmed:** 1 (5.04)
+- **P1:** ~37 of ~45 closed (~82%)
+- **P2/P3:** ~20 of ~120 closed (~17%)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
 ## [2.16.9] — 2026-05-05 — Team 3 follow-ups: HealthChecks UI replaced + heartbeat log rollout
 
 Two parallel agents covering the audit-follow-up "polish" surface.
