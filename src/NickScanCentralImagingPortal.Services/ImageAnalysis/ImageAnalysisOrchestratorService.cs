@@ -1268,6 +1268,22 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             assignment.Id, group.Id, group.GroupIdentifier, assignedUser, roleName, leaseUntil);
 
                         _readyGroupsCache.InvalidateCache(roleName, eligibleStatus);
+
+                        // 2026-05-05 (Sprint 2C, audit 4.02): materialize the queue entry
+                        // immediately after the assignment commit. Without this the user's
+                        // workbench has to wait for the next reconciliation pass (1-2 min)
+                        // before the just-created assignment shows up. Failures here are
+                        // best-effort — the periodic reconciler picks up misses.
+                        try
+                        {
+                            await _readyGroupsCache.UpsertQueueEntryAsync(db, assignment.Id, stoppingToken);
+                        }
+                        catch (Exception upsertEx)
+                        {
+                            _logger.LogWarning(upsertEx,
+                                "[ASSIGNMENT] UpsertQueueEntryAsync failed for AssignmentId={AssignmentId} (Group={GroupId}, User={User}); reconciler will catch up next cycle",
+                                assignment.Id, group.Id, assignedUser);
+                        }
                     }
                     else
                     {
@@ -1478,19 +1494,89 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             if (expired.Any())
             {
+                // 2026-05-05 (Sprint 2C, audit 4.03): ported from the now-deleted
+                // AssignmentWorker.cs. Walk every expired assignment and transition
+                // its parent AG back to Ready / AnalystCompleted — UNLESS the AG is
+                // an orphan (no boedocumentid + no active CBR), in which case it
+                // moves to Cancelled to break the lease re-issue cycle. Pre-2.16.1
+                // these orphans bounced through AnalystAssigned → Ready every
+                // 10 min, surfacing phantom assignments on the analyst workbench.
                 foreach (var assignment in expired)
                 {
                     assignment.State = "Expired";
                     assignment.UpdatedAtUtc = now;
                     _logger.LogDebug("[ASSIGNMENT] Expiring assignment {AssignmentId} for user {User} (LeaseUntil: {LeaseUntil}, LastAccessed: {LastAccessed})",
                         assignment.Id, assignment.AssignedTo, assignment.LeaseUntilUtc, assignment.LastAccessedAtUtc);
+
+                    var groupToUpdate = await db.AnalysisGroups
+                        .AsTracking()
+                        .FirstOrDefaultAsync(g => g.Id == assignment.GroupId, stoppingToken);
+                    if (groupToUpdate != null &&
+                        (groupToUpdate.Status == AnalysisStatuses.AnalystAssigned ||
+                         groupToUpdate.Status == AnalysisStatuses.AuditAssigned))
+                    {
+                        if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, stoppingToken))
+                        {
+                            groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                            _logger.LogInformation(
+                                "[CLEANUP] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR; lease sweeper would otherwise re-issue assignment)",
+                                groupToUpdate.Id, groupToUpdate.GroupIdentifier);
+                        }
+                        else
+                        {
+                            groupToUpdate.Status = assignment.Role == "Audit"
+                                ? AnalysisStatuses.AnalystCompleted
+                                : AnalysisStatuses.Ready;
+                        }
+                        groupToUpdate.UpdatedAtUtc = now;
+                    }
                 }
 
                 await db.SaveChangesAsync(stoppingToken);
+
+                // Remove expired assignments from the materialized ready-groups queue
+                // so dashboards stop showing them.
+                foreach (var assignment in expired)
+                {
+                    try { await _readyGroupsCache.RemoveQueueEntryAsync(db, assignment.Id, stoppingToken); }
+                    catch { /* reconciliation catches misses */ }
+                }
+
                 _logger.LogInformation("[ASSIGNMENT] Reclaimed {Count} expired assignments", expired.Count);
             }
 
             return expired.Count;
+        }
+
+        /// <summary>
+        /// 2026-05-05 (Sprint 2C, audit 4.03): orphan-AG predicate ported from the
+        /// now-deleted AssignmentWorker.cs. An AG is "orphan" iff every container
+        /// in it has NULL <c>BOEDocumentId</c> on its CCS row AND zero active
+        /// <c>ContainerBOERelations</c>. These AGs have no actionable match data;
+        /// the lease sweeper should not keep cycling them through analyst assignment.
+        ///
+        /// Mirrors the inline predicate already in
+        /// <see cref="ReadyGroupsCacheService.GetReadyGroupsForRoleAsync"/> — keep
+        /// the two in sync. Pushed down to SQL via EF Core (single round-trip).
+        /// </summary>
+        private static async Task<bool> IsOrphanAnalysisGroupAsync(
+            ApplicationDbContext db,
+            Guid groupId,
+            CancellationToken ct)
+        {
+            var hasMatch = await db.AnalysisGroups
+                .AsNoTracking()
+                .Where(g => g.Id == groupId && (
+                    db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                        db.ContainerCompletenessStatuses.Any(c =>
+                            c.ContainerNumber == r.ContainerNumber && c.BOEDocumentId != null))
+                    ||
+                    db.AnalysisRecords.Any(r => r.GroupId == g.Id &&
+                        db.ContainerBOERelations.Any(cbr =>
+                            cbr.ContainerNumber == r.ContainerNumber && cbr.IsActive))
+                ))
+                .AnyAsync(ct);
+            return !hasMatch;
         }
 
         private async Task CleanupExpiredUserReadinessAsync(
@@ -1531,10 +1617,39 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             if (invalidAssignments.Any())
             {
+                // 2026-05-05 (Sprint 2C, audit 4.03): mirror of ReclaimExpiredAssignmentsAsync —
+                // walk parent AGs of each invalid assignment and transition them to Cancelled
+                // (orphan) or Ready/AnalystCompleted. Most invalid assignments here have no
+                // matching AG (the predicate filters those whose group was deleted) so the
+                // group lookup returns null and the loop is a no-op for them, but the few
+                // that DO have a still-existing group are handled correctly.
                 foreach (var assignment in invalidAssignments)
                 {
                     assignment.State = "Released";
                     assignment.UpdatedAtUtc = now;
+
+                    var groupToUpdate = await db.AnalysisGroups
+                        .AsTracking()
+                        .FirstOrDefaultAsync(g => g.Id == assignment.GroupId, stoppingToken);
+                    if (groupToUpdate != null &&
+                        (groupToUpdate.Status == AnalysisStatuses.AnalystAssigned ||
+                         groupToUpdate.Status == AnalysisStatuses.AuditAssigned))
+                    {
+                        if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, stoppingToken))
+                        {
+                            groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                            _logger.LogInformation(
+                                "[VALIDATION] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR)",
+                                groupToUpdate.Id, groupToUpdate.GroupIdentifier);
+                        }
+                        else
+                        {
+                            groupToUpdate.Status = assignment.Role == "Audit"
+                                ? AnalysisStatuses.AnalystCompleted
+                                : AnalysisStatuses.Ready;
+                        }
+                        groupToUpdate.UpdatedAtUtc = now;
+                    }
                 }
 
                 await db.SaveChangesAsync(stoppingToken);

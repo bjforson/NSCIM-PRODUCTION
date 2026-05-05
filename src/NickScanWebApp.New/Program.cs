@@ -217,8 +217,10 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.ThemeService>();
 // Add inactivity timer service for auto-logout
 builder.Services.AddScoped<NickScanWebApp.New.Services.InactivityTimerService>();
 
-// Add SignalR service for real-time updates
-builder.Services.AddSingleton<NickScanWebApp.New.Services.SignalRService>();
+// 2026-05-05 (Sprint 2C, audit 6.05): removed SignalRService registration.
+// The service targeted /hubs/scanner which does not exist on the API; calls
+// silently swallowed exceptions in StartAsync (the catch block was empty).
+// No live consumers — only this DI line referenced the class. File deleted.
 
 // ✅ SECURITY: Server-side signer for image-serving URLs. The WebApp's Blazor
 // <img src> tags cannot carry a Bearer header, so we mint short-lived HMAC-

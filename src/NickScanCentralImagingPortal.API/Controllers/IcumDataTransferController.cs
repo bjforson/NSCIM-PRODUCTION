@@ -261,47 +261,24 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         /// <summary>
-        /// Manually trigger a transfer (for testing/admin purposes)
+        /// Manually trigger a transfer (for testing/admin purposes).
+        ///
+        /// 2026-05-05 (Sprint 2C, audit 5.18): the legacy
+        /// <c>IcumDataTransferService</c> hosted service has been removed —
+        /// transfers are handled by <c>IcumPipelineOrchestratorService.RunDataTransferWorkflowAsync</c>
+        /// on a fixed cadence. The endpoint is kept (route + auth) so any caller
+        /// gets a clear 503 instead of a build break or a misleading BadRequest.
         /// </summary>
         [HttpPost("trigger")]
         [Authorize(Policy = "AdminOnly")]
-        public async Task<ActionResult<TransferTriggerResultDto>> TriggerTransfer()
+        public ActionResult TriggerTransfer()
         {
-            try
+            _logger.LogWarning(
+                "Legacy /api/icums/transfer/trigger endpoint hit — IcumDataTransferService no longer exists; transfers run on the orchestrator's cadence.");
+            return StatusCode(503, new
             {
-                // Get the transfer service and trigger it manually
-                var transferService = _serviceProvider.GetServices<IHostedService>()
-                    .OfType<NickScanCentralImagingPortal.Services.IcumApi.IcumDataTransferService>()
-                    .FirstOrDefault();
-
-                if (transferService == null)
-                {
-                    return BadRequest(new { error = "Transfer service not found" });
-                }
-
-                // Note: This is a simplified trigger. In a production system, you'd want
-                // a more sophisticated mechanism to trigger the service on demand.
-                // For now, we'll just return the current pending count and let the service
-                // pick it up on its next cycle.
-
-                var pendingCount = await _downloadsContext.BOEDocuments
-                    .CountAsync(b => b.ProcessingStatus == "Completed");
-
-                _logger.LogInformation("Manual transfer trigger requested. {PendingCount} documents pending transfer.", pendingCount);
-
-                return Ok(new TransferTriggerResultDto
-                {
-                    Success = true,
-                    Message = $"Transfer service will process {pendingCount} pending documents on its next cycle.",
-                    PendingCount = pendingCount,
-                    TriggeredAt = DateTime.UtcNow
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error triggering manual transfer");
-                return StatusCode(500, new { error = ex.Message });
-            }
+                error = "Manual transfer endpoint not currently implemented. Use the orchestrator workflow at IcumPipelineOrchestratorService.RunDataTransferWorkflowAsync."
+            });
         }
     }
 

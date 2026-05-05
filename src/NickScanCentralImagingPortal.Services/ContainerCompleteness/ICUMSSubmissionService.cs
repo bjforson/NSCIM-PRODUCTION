@@ -12,7 +12,20 @@ using NickScanCentralImagingPortal.Services.ImageProcessing;
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
     /// <summary>
-    /// Service for submitting container data back to ICUMS
+    /// Service for submitting container data back to ICUMS.
+    ///
+    /// 2026-05-05 (Sprint 2C, audit 5.04): the IHostedService registration for
+    /// this class has been removed in <c>ServiceConfiguration.cs</c>. The class
+    /// inherits from <see cref="BackgroundService"/> for legacy reasons but its
+    /// <see cref="ExecuteAsync"/> loop is no longer started by the host, so
+    /// <see cref="SimulateICUMSSubmissionAsync"/> is now disarmed and cannot
+    /// fabricate fake success responses against the queue.
+    ///
+    /// The Singleton + IICUMSSubmissionService DI registrations are still wired so
+    /// <c>ContainerValidationController.ApproveContainer</c> can call
+    /// <see cref="QueueForSubmissionAsync"/> — the DB enqueue is real. A future
+    /// sprint will either add a real consumer or repoint the controller at the
+    /// file-based ICUMS Outbox used by <c>ImageAnalysisOrchestratorService.RunSubmissionWorkflowAsync</c>.
     /// </summary>
     public class ICUMSSubmissionService : BackgroundService, IICUMSSubmissionService
     {
@@ -112,7 +125,15 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
         public async Task<SubmissionResult> SubmitToICUMSAsync(ContainerSubmissionData submissionData)
         {
-            _logger.LogInformation("Submitting container {ContainerNumber} to ICUMS", submissionData.ContainerNumber);
+            // 2026-05-05 (Sprint 2C, audit 5.04): deprecation warning. This method
+            // routes through SimulateICUMSSubmissionAsync (line 404) which fabricates
+            // success responses. The hosted-service drainer that used to call it has
+            // been removed; this path remains only because IICUMSSubmissionService is
+            // still resolvable from DI. Anyone landing here directly is bypassing the
+            // real submission pipeline at ImageAnalysisOrchestratorService.RunSubmissionWorkflowAsync.
+            _logger.LogWarning(
+                "{ServiceId} DEPRECATED: SubmitToICUMSAsync called for {ContainerNumber} — this path is a simulator stub and does NOT submit to ICUMS. Use the orchestrator's RunSubmissionWorkflowAsync (file-based Outbox) instead.",
+                SERVICE_ID, submissionData.ContainerNumber);
 
             var result = new SubmissionResult();
 

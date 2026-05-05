@@ -324,9 +324,17 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<NickScanCentralImagingPortal.Services.Settings.CachingConfigurationProvider>();
 
             // ICUMS Submission Service
+            // 2026-05-05 (Sprint 2C, audit 5.04): the IHostedService background loop
+            // has been removed because its only sink was a SimulateICUMSSubmissionAsync
+            // stub (line 404 of ICUMSSubmissionService.cs) that fabricated success
+            // responses. Singleton + interface registrations remain so
+            // ContainerValidationController.ApproveContainer can still call
+            // QueueForSubmissionAsync — the DB write is real, the row simply sits in
+            // icumssubmissionqueues until a future sprint adds a real consumer (or the
+            // path is repointed to the file-based ICUMS Outbox used by the orchestrator's
+            // RunSubmissionWorkflowAsync).
             services.AddSingleton<ICUMSSubmissionService>();
             services.AddSingleton<IICUMSSubmissionService>(sp => sp.GetRequiredService<ICUMSSubmissionService>());
-            services.AddHostedService(sp => sp.GetRequiredService<ICUMSSubmissionService>());
 
             // Enhanced Container Validation Services
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IClearanceTypeDetectionService, NickScanCentralImagingPortal.Services.ContainerValidation.ClearanceTypeDetectionService>();

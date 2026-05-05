@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using NickScanCentralImagingPortal.Core.Models;
 
@@ -15,14 +16,20 @@ namespace NickScanCentralImagingPortal.Core.Helpers
         /// </summary>
         private static readonly Dictionary<string, HashSet<string>> ValidTransitions = new()
         {
-            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AnalystCompleted } }, // AnalystCompleted: Decision Agent bypasses assignment
-            { AnalysisStatuses.AnalystAssigned, new HashSet<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Ready } },
+            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AgentProcessing } }, // AnalystCompleted: Decision Agent bypasses assignment; AgentProcessing: Decision Agent claims group
+            { AnalysisStatuses.AgentProcessing, new HashSet<string> { AnalysisStatuses.Ready, AnalysisStatuses.AnalystCompleted } }, // 2026-05-05: Decision Agent releases (no decision) or completes (auto-decided)
+            { AnalysisStatuses.AnalystAssigned, new HashSet<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Ready, AnalysisStatuses.Cancelled } }, // 2026-05-05: orphan-AG path → Cancelled
             { AnalysisStatuses.AnalystCompleted, new HashSet<string> { AnalysisStatuses.AuditAssigned, AnalysisStatuses.AuditCompleted } }, // AuditCompleted: Decision Agent bypasses audit assignment
-            { AnalysisStatuses.AuditAssigned, new HashSet<string> { AnalysisStatuses.AuditCompleted, AnalysisStatuses.AnalystCompleted } },
+            { AnalysisStatuses.AuditAssigned, new HashSet<string> { AnalysisStatuses.AuditCompleted, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Cancelled } }, // 2026-05-05: orphan-AG path → Cancelled
             { AnalysisStatuses.AuditCompleted, new HashSet<string> { AnalysisStatuses.Submitted, AnalysisStatuses.Completed, AnalysisStatuses.PartiallyCompleted } }, // ✅ NEW: Can transition to PartiallyCompleted
             { AnalysisStatuses.Submitted, new HashSet<string> { AnalysisStatuses.Completed } },
             { AnalysisStatuses.PartiallyCompleted, new HashSet<string> { AnalysisStatuses.Ready, AnalysisStatuses.Completed } }, // ✅ NEW: Can reprocess (Ready) or auto-complete (Completed)
-            { AnalysisStatuses.Completed, new HashSet<string>() } // Terminal state - no transitions allowed
+            { AnalysisStatuses.Completed, new HashSet<string>() }, // Terminal state - no transitions allowed
+            // 2026-05-05 (Sprint 2C, audit 4.04): mark Cancelled + Archived as terminal so a stray
+            // transition out of either is rejected by the validator (was previously falling through
+            // to the unknown-from branch and silently allowed).
+            { AnalysisStatuses.Cancelled, new HashSet<string>() }, // Terminal - orphan-AG sweeper outcome
+            { AnalysisStatuses.Archived, new HashSet<string>() }   // Terminal - record reconciler / zombie sweeper outcome
         };
 
         /// <summary>
@@ -47,8 +54,15 @@ namespace NickScanCentralImagingPortal.Core.Helpers
             // Check if transition is in valid transitions dictionary
             if (!ValidTransitions.ContainsKey(fromStatus))
             {
-                // Unknown from status - allow transition but log warning
-                return true; // Allow unknown statuses for backward compatibility
+                // 2026-05-05 (Sprint 2C, audit 4.04): unknown-from used to silently
+                // return true ("backward compatibility"), which masked typos and let
+                // bogus transitions through. Now reject and emit a Trace.WriteLine —
+                // the validator has no logger of its own, but every caller logs
+                // LogWarning when IsValidTransition returns false (e.g. orchestrator
+                // SubmissionWorkflow), so the rejection is visible at the call site.
+                Trace.WriteLine(
+                    $"[AnalysisStatusValidator] Rejecting transition from unknown status '{fromStatus}' to '{toStatus}'. Add '{fromStatus}' to ValidTransitions if it is a real state.");
+                return false;
             }
 
             return ValidTransitions[fromStatus].Contains(toStatus);

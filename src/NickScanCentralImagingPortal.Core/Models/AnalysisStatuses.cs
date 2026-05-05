@@ -18,6 +18,12 @@ namespace NickScanCentralImagingPortal.Core.Models
         // export-feed extension. ZombieAnalysisGroupSweeperService writes "Archived"
         // for a different shape (AnalystCompleted + zero CCS); these are distinct.
         public const string Cancelled = "Cancelled";
+
+        // 2026-05-05 (Sprint 2C): terminal "Archived" state already written by
+        // RecordReconciliationWorker, ZombieAnalysisGroupSweeperService, and the
+        // orchestrator's empty-Ready-group sweep. Promoted to a named constant so
+        // AnalysisStatusValidator can mark it terminal (no outbound transitions).
+        public const string Archived = "Archived";
     }
 }
 
