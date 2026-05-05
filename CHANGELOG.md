@@ -22,6 +22,79 @@ For each release, this file records:
 
 ---
 
+## [2.16.8] — 2026-05-05 — Sprint 5G1 + 5G2: schema integrity + observability uplift
+
+Two parallel sprints landing the structural cleanup half of the audit.
+
+### What landed
+
+- `90712b7` Sprint 5G2 — CorrelationId enricher + per-iteration heartbeat log (8.10, 8.13)
+- `10a9f59` Sprint 5G1 — schema integrity, FK enforcement, RLS on remaining tables, orphan cleanup (7.01-7.07 with 2 partials)
+
+### Behaviour changes — read before deploy
+
+#### Schema integrity (Sprint 5G1)
+- **`analysisqueueentries` and `splitter_consensus_corpus` are now phase-1 tenanted.** Both had been created post-RLS-rollout and were the only two tables in `nickscan_production` without RLS (per audit 7.02/7.03). Now they have `tenant_id BIGINT NOT NULL DEFAULT … ENABLE … FORCE … POLICY` matching the canonical pattern. Required entity update in `AnalysisQueueEntry.cs` (added `TenantId` property) + `ApplicationDbContext.cs` mapping.
+- **3 in-DB FKs added** on the cargo-pipeline core: `analysisassignments.groupid → analysisgroups.id`, `analysisrecords.groupid → analysisgroups.id`, `analysisqueueentries.assignmentid → analysisassignments.id`. FK count goes from 1/6 to 4/6. Two FKs were skipped: `cbr.containernumber → ccs.containernumber` and `imageanalysisdecisions.containernumber → ccs.containernumber` — both blocked by `ccs.containernumber` having 41 duplicate rows (no UNIQUE constraint possible). Deferred to a follow-on sprint that addresses the duplication first.
+- **Partial unique index `ix_cbr_active_per_container`** added on `containerboerelations(containernumber) WHERE isactive = true`. Prevents recurrence of the triple-write bug from 2026-03 (audit 7.05). 44 excess active CBRs deactivated as part of the same migration.
+- **392 orphan `imageanalysisdecisions`** soft-deleted via new `archived_at TIMESTAMPTZ` column + partial index. No hard delete (audit/legal retention). Decisions for retired CCS rows now correctly excluded from new queries.
+- **CCS denorm backfill:** 12 active CCS rows had `hasicumsdata=true` + NULL `boedocumentid` + NULL `clearancetype`; backfilled from the active CBR row.
+
+#### Observability uplift (Sprint 5G2)
+- **`BackgroundCycleEnricher`** registered with Serilog. Each background-worker iteration scope now emits `CorrelationId={ServiceId}-{Guid}` on every log line. **Tracing a multi-worker sequence is now possible** ("scan in → matched → AG created → assigned → decided → submitted") via the shared CorrelationId in `{Properties:j}`.
+- **`WorkerHeartbeatLogger.LogIterationSummary`** wired into 5 load-bearing BackgroundServices: `ImageAnalysisOrchestratorService`, `ContainerCompletenessOrchestratorService`, `IcumPipelineOrchestratorService`, `ContainerCompletenessService`, `ZombieAnalysisGroupSweeperService`. Each iteration now emits `[{ServiceId}] iteration=N elapsed_ms=X processed=Y skipped=Z failed=W`. Operators can now distinguish alive-and-idle from alive-and-buggy from logs alone. Other 30+ BackgroundServices to be wired incrementally.
+- `ContainerCompletenessService` required exposing a raw MEL `ILogger` past the `EnhancedColorCodedLogger` wrapper (private `_rawLogger` field) — kept the wrapper untouched.
+
+### Migration files
+
+- `tools/migrations/sprint-5G1/01-cbr-active-dedup.sql` — applied
+- `tools/migrations/sprint-5G1/02-aqe-tenant-id-rls.sql` — applied
+- `tools/migrations/sprint-5G1/03-splitter-tenant-id-rls.sql` — applied
+- `tools/migrations/sprint-5G1/04-cargo-fk-enforcement.sql` — applied (3 of 5 FKs)
+
+### Deferred from Sprint 5G1 — needs follow-on investigation
+
+- **7.07 (181 candidates vs audit's 30 — 5.97× over threshold).** 166 rows updated in a single batch at 2026-05-04 13:44:02Z. The 5G1 agent correctly stopped at the 5× sanity cap. **Cause unknown** — could be recent ingestion + a different dynamic, or a bug. Worth a probe-only investigation before any cleanup.
+- **41 duplicate `containercompletenessstatuses.containernumber` rows.** This is a *new* finding the audit didn't anticipate. Blocks 2 of the 5 FKs from finding 7.01. Same shape as the CBR duplicate-active issue but for CCS. Needs dedup + UNIQUE constraint.
+
+### Risk and rollback
+
+Code: `git revert 10a9f59 90712b7` + redeploy.
+
+DB rollback paths if needed:
+- Re-add CBR rows: `UPDATE containerboerelations SET isactive = true WHERE id IN (...)` — IDs are auditable in the migration log; or re-run from probe history.
+- Re-undo `archived_at`: `UPDATE imageanalysisdecisions SET archived_at = NULL`.
+- Drop new FKs: `ALTER TABLE … DROP CONSTRAINT fk_…`.
+- Drop AQE/splitter tenant_id columns: documented but unlikely needed.
+
+### Audit findings closed in 2.16.8
+
+- 7.01 (3 of 5 FKs)
+- 7.02
+- 7.03
+- 7.04
+- 7.05
+- 7.06
+- 8.10
+- 8.13
+
+### Audit running totals (after 2.16.4 → 2.16.8)
+
+- **P0:** 6 of 6 closed
+- **Latent P0 disarmed:** 1 (5.04)
+- **P1:** ~33 of ~45 closed (12 deferred or partial)
+- **P2/P3:** ~15 of ~120 closed (rest in long backlog)
+
+### New audit follow-up items
+
+- 7.07-investigation: probe the 181-row 7.07 candidate population, especially the 2026-05-04 13:44:02Z batch event
+- CCS containernumber dedup + UNIQUE constraint (was not in the original audit; surfaced by 5G1's FK pre-check)
+- 30+ remaining BackgroundServices need WorkerHeartbeatLog wiring (incremental)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
 ## [2.16.7] — 2026-05-05 — Sprints 2D / 3 / 4 / 5G3: ICUMS persistence + Layer 5 + frontend de-fragmentation + alerting
 
 Five parallel sprints landed today, batched into one release. Closes
