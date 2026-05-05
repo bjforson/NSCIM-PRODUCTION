@@ -223,7 +223,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             {
                 var expectedPort = ScannerLocationMap.GetExpectedPortCode(scannerType);
                 var actualPort = ScannerLocationMap.ExtractPortCode(boeDocument.DeliveryPlace) ?? "UNKNOWN";
-                _logger.LogError(
+                _logger.LogWarning(
                     "PORT MISMATCH (mapper, cardinal): {Container} scanner={Scanner} (expected {Expected}) but BOE.DeliveryPlace='{Dp}' (port={Actual}). Rejecting CBR INSERT.",
                     containerNumber, scannerType, expectedPort, boeDocument.DeliveryPlace, actualPort);
 
@@ -278,7 +278,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                     if (rejectionReason != null)
                     {
-                        _logger.LogError("FYCO MISMATCH (mapper, layer 2/3): {Container} -> {Reason}", containerNumber, rejectionReason);
+                        _logger.LogWarning("FYCO MISMATCH (mapper, layer 2/3): {Container} -> {Reason}", containerNumber, rejectionReason);
                         await UpsertFycoMismatchFlagAsync(dbContext, containerNumber, scannerType, boeDocument.Id, rejectionReason);
                         return null;
                     }

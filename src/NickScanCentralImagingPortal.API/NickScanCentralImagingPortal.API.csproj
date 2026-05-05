@@ -38,6 +38,12 @@
          transitively, which calls methods that moved in EF Core 10's AbstractionsStrings
          (MissingMethodException at startup). Pin the transitive directly to align. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
+    <!-- HealthChecks.UI 8.0.1 has a strong-named dependency on IdentityModel 5.2.0.0
+         (Dominick Baier's standalone IdentityModel package, NOT Microsoft.IdentityModel).
+         The .NET 10 retarget dropped this transitive — HealthCheckCollectorHostedService
+         throws FileNotFoundException once per minute (audit 2026-05-05 finding 8.04).
+         Pin to 5.2.0 to satisfy the strong-name dependency exactly. -->
+    <PackageReference Include="IdentityModel" Version="5.2.0" />
     <PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="8.0.1" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.7">

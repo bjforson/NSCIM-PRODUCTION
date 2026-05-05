@@ -60,7 +60,7 @@ Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File("Logs/nickhr-.log", rollingInterval: RollingInterval.Day)
+    .WriteTo.File(@"C:\Shared\NSCIM_PRODUCTION\Data\Logs\nickhr-.log", rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 builder.Host.UseSerilog();
