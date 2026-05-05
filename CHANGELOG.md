@@ -22,6 +22,82 @@ For each release, this file records:
 
 ---
 
+## [2.16.7] — 2026-05-05 — Sprints 2D / 3 / 4 / 5G3: ICUMS persistence + Layer 5 + frontend de-fragmentation + alerting
+
+Five parallel sprints landed today, batched into one release. Closes
+**1 P0 + 13 P1 audit findings** + 1 latent-P0 disarmed earlier (5.04 in 2.16.6).
+
+### What landed (in commit order)
+
+- `4ded1fe` Sprint 2D D1 — ICUMS persistence (5.01 P0, 5.02 P0, 5.03 P1)
+- `9d13d3a` Sprint 4 — frontend contract de-fragmentation (6.01, 6.02, 6.03, 6.07, 6.13 — 5 findings)
+- `27567c1` Sprint 5G3 — dashboard alerts persisted + email-on-Critical (8.25)
+- `207e10f` Sprint 3A — submission Layer 5 + CMR cascade + regime-aware upgrade (3.01 P0, 3.05, 3.07)
+- `8dde489` Sprint 3B — CCS Step 2 symmetry + canonical BOE ordering + Fyco unify (3.02, 3.03, 3.06, 3.08)
+
+### Behaviour changes — read before deploy
+
+#### ICUMS data integrity
+- **`IcumDownloadsRepository.UpdateExistingDocumentAsync`** now persists the 8 columns it had been silently dropping on every BOE re-arrival (`masterblnumber` + 20 unmapped-field label/value pairs + 4 ingestion-warning columns). New ingest captures these correctly. **Historical rows still need backfill** — deferred to follow-up after Sprint 4's contract fix lets it run without temporary regression.
+- **`IcumPipelineOrchestratorService.ConvertICUMSResponseToBOEDocument`** now sets `MasterBlNumber` from the JSON's `MasterBlNumber` field (was copying it to `BlNumber` and never setting `MasterBlNumber`). Removed hardcoded `ContainerQuantity=1`. The on-demand fetch path now matches the JSON-file ingest path.
+- **`SubmitPayloadsToIcumsAsync`** primary path now does ARCHIVE-FIRST then MARK-SECOND, mirroring the retry path. Crash between move and DB update leaves a one-time orphan in `/Acknowledged` instead of `WorkflowStage='Submitted'` with file still in live Outbox.
+
+#### Layer 5 of the 6-layer match-correctness model EXISTS in code now
+- The CHANGELOG has been claiming Layer 5 exists for 3 days. As of `207e10f`, **it actually does**. `SubmitPayloadsToIcumsAsync` calls `IContainerValidationService.ValidateSubmissionGateAsync` per payload BEFORE HTTP POST and BEFORE file-move. On port-mismatch / fyco-mismatch: writes Critical `MatchQualityFlag`, logs `[ICUMS-SUBMIT-GATE] BLOCKED`, increments counter, payload **stays in live Outbox**, no HTTP POST. Composes cleanly with the order-flip fix from Sprint 2D.
+- `LiveSubmitEnabled=true` in production now has a real final port gate.
+
+#### Match-correctness pipeline tightened
+- `CascadeCMRUpgradeAsync` now fires on the `cmrUpgraded=true` in-place path (`IcumJsonIngestionService.cs:794`). 5 stuck Export-Hold containers (`MEDU7718311` + siblings) and 1,706 at-risk CMR-upgraded BOE rows will re-cascade on next BOE arrival.
+- Implicit CMR→IM upgrade switch now uses `RegimeDirectionMap.IsExport/IsTransit/IsImport` (added `IsImport`). Was a regime-blind first-char heuristic that would mis-classify regime 27 (export) as IM. Fail-closed for unknown regimes.
+- CCS Step 2 (re-check) now writes `MatchQualityFlag` on port mismatch / null-DP, mirroring Step 1's contract. 24 silent re-blocks/7d will now be visible.
+- Step 1's fyco-rule hoisted into `FycoRuleEvaluator` shared by Step 1 + Step 2 + mapper. One source of truth.
+- BOE selection across 4 sites now uses canonical `Where(b => b.ProcessingStatus == "Transferred").OrderByDescending(b => b.Id)`. Eliminates race-window inconsistency.
+- `FycoClassifier.IsExport` regex broadened to catch typos: `EXPOR/EXPOT/EXPROT/EPORT/EXORT/WAYBILL/EXPOT` etc. `ContainerValidationService.IsExportFlag` now delegates to it. One source of truth.
+
+#### Frontend contract de-fragmentation
+- `BuildContainerEndpointUrl` helper centralizes the dialog's 3 `/api/containerdetails/*` callsites. The `IsConsolidated => GroupIdentifier IS container number` assumption is now in one place + documented; future mistag-class bugs are a single-line fix.
+- `PagedResult<T>` adds a `Status` field so the API distinguishes `NoData` (CCS row exists but no scans/BOE yet) from `ContainerUnknown` (no CCS row). `ScannerDataTab` and `ICUMSDataTab` render distinct messages.
+- `ContainerDetailsController` reconciled the inconsistent 200-empty vs 404 patterns — both paginated and `full=true` paths now return 200 + `Status` marker.
+- `IAuthTokenSource` interface replaces reflection-based token retrieval in `ApiService`. 401/403 logging bumped Debug → Warning.
+- `AuthenticationCircuitHandler.OnConnectionUpAsync` now actually verifies JWT validity (was a stub).
+
+#### Dashboard alerts
+- New `dashboardalerts` table with proper phase-1 tenancy from day one (avoids the 7.02/7.03 mistake — `tenant_id BIGINT NOT NULL DEFAULT … ENABLE … FORCE … POLICY`).
+- `IDashboardAlertService` persists alerts, dedupes by `(Type, Title)` within 30-min window, broadcasts to SignalR (existing UX preserved), and emails on-call via `INickCommsClient` when `Severity = "Critical"` and the alert is new (not a 30-min duplicate).
+- New admin endpoint `POST /api/admin/alerts/{id}/acknowledge`.
+- Off-hours incidents now reach on-call.
+
+### New migrations
+
+- `Infrastructure/Migrations/Application/20260505180000_AddDashboardAlerts.cs` — applied to production at ~13:05 UTC via direct DDL (EF design-time tooling can't build the IHost in this codebase). Recorded in `__EFMigrationsHistory` to prevent re-application.
+
+### Rollback
+
+Code: `git revert 4ded1fe..8dde489` + redeploy.
+DB: `tools/migrations/observability-fixes/02-rollback-dashboardalerts.sql` does not exist yet; if needed, run `DROP TABLE dashboardalerts CASCADE; DELETE FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20260505180000_AddDashboardAlerts';` as postgres superuser.
+
+### Audit findings closed in 2.16.7
+
+- 3.01 (P0)
+- 3.02, 3.03, 3.05, 3.06, 3.07, 3.08
+- 5.01 (P0), 5.02 (P0), 5.03
+- 6.01, 6.02, 6.03, 6.07, 6.13
+- 8.25
+
+### Audit running totals (after 2.16.4 → 2.16.7)
+
+- **P0:** 6 of 6 closed (2.01, 2.02 partial via Sprint 2C, 3.01, 4.01, 5.01, 5.02). 1 latent P0 disarmed (5.04).
+- **P1:** ~25 of ~45 closed.
+- Sprint 5G1/G2 (schema cleanup + observability uplift) and the deferred MasterBlNumber backfill remain.
+
+### Commits
+
+- `4ded1fe`, `9d13d3a`, `27567c1`, `207e10f`, `8dde489`, (this commit) — 6 commits across 5 parallel sprints
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
 ## [2.16.6] — 2026-05-05 — Sprint 2C: dead code excision + orphan-AG relocation + queue materialization
 
 The largest single coordinated change in the audit's fix-it sprint plan.
