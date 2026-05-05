@@ -2,8 +2,11 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.CargoGrouping;
 using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.API.Controllers
@@ -23,6 +26,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<CargoGroupController> _logger;
         private readonly ThrottledLogger _throttledLogger;
+        private readonly IGroupResolver _groupResolver;
+        private readonly ApplicationDbContext _appDb;
+        private readonly IcumDownloadsDbContext _icumDb;
         private const string SERVICE_ID = "[CARGO-GROUP-API]";
 
         public CargoGroupController(
@@ -30,7 +36,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IIcumDownloadsRepository icumDownloadsRepo,
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ILogger<CargoGroupController> logger)
+            ILogger<CargoGroupController> logger,
+            IGroupResolver groupResolver,
+            ApplicationDbContext appDb,
+            IcumDownloadsDbContext icumDb)
         {
             _cargoGroupService = cargoGroupService;
             _icumDownloadsRepo = icumDownloadsRepo;
@@ -38,6 +47,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _configuration = configuration;
             _logger = logger;
             _throttledLogger = new ThrottledLogger(logger, SERVICE_ID);
+            _groupResolver = groupResolver;
+            _appDb = appDb;
+            _icumDb = icumDb;
         }
 
         /// <summary>
@@ -512,6 +524,288 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogError(ex, "Error getting cargo groups list");
                 return StatusCode(500, new { message = "Internal server error", error = ex.Message });
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Phase 1 — Server-side disambiguation endpoint (Theme E follow-up).
+        // See docs/audit/2026-05-05/follow-up-routing-endpoint-design.md
+        //
+        // Composes existing services (ICargoGroupService, IIcumDownloadsRepository,
+        // ApplicationDbContext.ImageAnalysisDecisions / FS6000Scans / AseScans) — no
+        // new SQL. Backend ships dark in Phase 1; the dialog still uses the legacy
+        // 5-callsite `IsConsolidated` branch. Phase 2 cuts over after this is
+        // verified.
+        // ─────────────────────────────────────────────────────────────────────
+        /// <summary>
+        /// Phase 1 — Single-round-trip aggregator that returns server-resolved
+        /// identity + 4 tab-shaped payloads for the Image Analysis dialog.
+        /// Replaces the dialog's frontend `IsConsolidated` branching.
+        /// </summary>
+        [HttpGet("{groupIdentifier}/full")]
+        [ProducesResponseType(typeof(CargoGroupFullDto), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(CargoGroupFullDto), StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<CargoGroupFullDto>> GetFull(
+            string groupIdentifier,
+            [FromQuery] string? scannerType = null,
+            [FromQuery] bool includeImages = true,
+            [FromQuery] bool includeScannerData = true,
+            [FromQuery] bool includeIcums = true,
+            [FromQuery] int pageSize = 1000,
+            CancellationToken ct = default)
+        {
+            // Phase 1 — Information-level log on every call so we can monitor rollout
+            // when CargoGroup:UseFullEndpoint is flipped to true.
+            _logger.LogInformation(
+                "[CARGO-GROUP-FULL] groupIdentifier={GroupIdentifier} scannerType={ScannerType} includeImages={IncludeImages} includeScanner={IncludeScanner} includeIcums={IncludeIcums} flag={FlagOn}",
+                groupIdentifier,
+                scannerType,
+                includeImages,
+                includeScannerData,
+                includeIcums,
+                _configuration.GetValue<bool>("CargoGroup:UseFullEndpoint", false));
+
+            try
+            {
+                // 1) Resolve identity (6-step dispatch from §3.1).
+                var resolution = await _groupResolver.ResolveAsync(groupIdentifier, scannerType, ct);
+
+                if (resolution.Status == CargoGroupResolutionStatus.GroupIdentifierUnknown)
+                {
+                    _logger.LogInformation("[CARGO-GROUP-FULL] groupIdentifier={GroupIdentifier} status=GroupIdentifierUnknown", groupIdentifier);
+                    return NotFound(new CargoGroupFullDto
+                    {
+                        Status = resolution.Status,
+                        Diagnostics = resolution.Diagnostics
+                    });
+                }
+
+                if (resolution.Status == CargoGroupResolutionStatus.AmbiguousNeedsHint)
+                {
+                    _logger.LogInformation("[CARGO-GROUP-FULL] groupIdentifier={GroupIdentifier} status=AmbiguousNeedsHint", groupIdentifier);
+                    return Ok(new CargoGroupFullDto
+                    {
+                        Status = resolution.Status,
+                        Diagnostics = resolution.Diagnostics
+                    });
+                }
+
+                // 2) Fan out to existing services in parallel.
+                //    Each branch uses _cargoGroupService / direct EF reads.
+
+                // The lookup key for ICargoGroupService: prefer DeclarationNumber,
+                // fall back to MasterBlNumber, finally to the ContainerGroupKey/CN
+                // from the resolution.
+                var primaryKey = !string.IsNullOrWhiteSpace(resolution.DeclarationNumber)
+                    ? resolution.DeclarationNumber
+                    : (resolution.MasterBlNumber
+                        ?? resolution.ContainerGroupKey
+                        ?? resolution.ContainerNumbers.FirstOrDefault()
+                        ?? groupIdentifier);
+
+                var cargoTypeHint = resolution.Mode switch
+                {
+                    CargoGroupingMode.ConsolidatedMultiHouseBl => (CargoType?)CargoType.Consolidated,
+                    CargoGroupingMode.SingleDeclarationSingleContainer => CargoType.NonConsolidated,
+                    CargoGroupingMode.SingleDeclarationMultipleContainers => CargoType.NonConsolidated,
+                    CargoGroupingMode.PatternAUsedCars => CargoType.NonConsolidated,
+                    _ => null
+                };
+
+                var summaryTask = _cargoGroupService.GetCargoGroupAsync(
+                    primaryKey!,
+                    cargoTypeHint,
+                    loadScannerData: includeScannerData,
+                    loadImageData: includeImages,
+                    loadICUMSData: includeIcums);
+
+                var aiSummaryTask = _cargoGroupService.GetAiCargoSummaryAsync(primaryKey!);
+
+                var imageDecisionsTask = LoadImageDecisionsAsync(resolution, scannerType, ct);
+
+                await Task.WhenAll(summaryTask, aiSummaryTask, imageDecisionsTask);
+
+                var cargoGroup = await summaryTask;
+                var aiSummary = await aiSummaryTask;
+                var imageDecisions = await imageDecisionsTask;
+
+                // 3) Build the unified response.
+                var containerNumbers = (cargoGroup?.ContainerNumbers?.Count > 0)
+                    ? (IReadOnlyList<string>)cargoGroup.ContainerNumbers
+                    : resolution.ContainerNumbers;
+
+                var hbls = (cargoGroup?.HouseBLGroups ?? new List<HouseBLGroupDto>())
+                    .SelectMany(hbg => (hbg.BOEDetails ?? new List<BOEDetailDto>())
+                        .Select(d => new HouseBLDetail
+                        {
+                            HouseBl = hbg.HouseBL ?? "",
+                            MasterBl = hbg.MasterBL,
+                            DeclarationNumber = hbg.DeclarationNumber ?? d.DeclarationNumber,
+                            ConsigneeName = hbg.ConsigneeName ?? d.ConsigneeName,
+                            ClearanceType = hbg.ClearanceType ?? d.ClearanceType,
+                            RotationNumber = d.RotationNumber,
+                            GoodsDescription = d.GoodsDescription,
+                            TotalDutyPaid = d.TotalDutyPaid,
+                            DeclarationDate = d.DeclarationDate,
+                            BoeId = d.BOEId,
+                            ContainerNumber = d.ContainerNumber
+                        }))
+                    .ToList();
+
+                var icumsGroups = cargoGroup?.Data?.ICUMSData ?? new List<ICUMSDataGroupDto>();
+                var scannerGroups = cargoGroup?.Data?.ScannerData ?? new List<ScannerDataGroupDto>();
+                var imageGroups = cargoGroup?.Data?.ImageData ?? new List<ImageDataGroupDto>();
+
+                var totalImagesFromGroups = imageGroups.Sum(g => g.ImageCount);
+                var totalIcumsRecords = icumsGroups.Sum(g => g.Records?.Count ?? 0);
+                var totalScannerRecords = scannerGroups.Sum(g => g.Records?.Count ?? 0);
+
+                // Compute final status — Found if cargoGroup populated, FoundButPartial otherwise.
+                var finalStatus = (cargoGroup != null)
+                    ? CargoGroupResolutionStatus.Found
+                    : CargoGroupResolutionStatus.FoundButPartial;
+
+                if (resolution.Status == CargoGroupResolutionStatus.FoundButPartial)
+                {
+                    // Honour the resolver's verdict if it had less information than us.
+                    finalStatus = CargoGroupResolutionStatus.FoundButPartial;
+                }
+
+                var dto = new CargoGroupFullDto
+                {
+                    AnalysisGroupId = resolution.AnalysisGroupId,
+                    RecordCompletenessStatusId = resolution.RecordCompletenessStatusId,
+                    DeclarationNumber = resolution.DeclarationNumber ?? primaryKey ?? "",
+                    MasterBlNumber = resolution.MasterBlNumber,
+                    ContainerGroupKey = resolution.ContainerGroupKey,
+                    GroupingMode = resolution.Mode,
+                    ScannerType = resolution.ScannerType ?? scannerType,
+                    ClearanceType = resolution.ClearanceType ?? cargoGroup?.ClearanceType,
+                    RegimeCode = resolution.RegimeCode,
+                    ContainerNumbers = containerNumbers,
+                    HouseBls = hbls,
+                    ScannerData = new ScannerDataPayload
+                    {
+                        Groups = scannerGroups,
+                        TotalRecords = totalScannerRecords
+                    },
+                    IcumsData = new IcumsDataPayload
+                    {
+                        Groups = icumsGroups,
+                        TotalRecords = totalIcumsRecords
+                    },
+                    ImageDecisions = imageDecisions,
+                    Summary = new CargoSummaryPayload
+                    {
+                        TotalContainers = cargoGroup?.TotalContainers ?? containerNumbers.Count,
+                        TotalHouseBls = cargoGroup?.TotalHouseBLs ?? hbls.Count,
+                        TotalBoes = cargoGroup?.TotalBOEs ?? 0,
+                        TotalIcumsRecords = totalIcumsRecords,
+                        TotalScannerRecords = totalScannerRecords,
+                        TotalImages = totalImagesFromGroups + imageDecisions.TotalImages,
+                        LatestUpdateDate = cargoGroup?.LatestUpdateDate,
+                        AiCargoSummary = aiSummary,
+                        ConsigneeName = cargoGroup?.ConsigneeName
+                    },
+                    Status = finalStatus,
+                    Diagnostics = resolution.Diagnostics
+                };
+
+                _logger.LogInformation(
+                    "[CARGO-GROUP-FULL] groupIdentifier={GroupIdentifier} resolved mode={Mode} ag={AnalysisGroupId} rcs={RcsId} containers={Containers} status={Status}",
+                    groupIdentifier,
+                    dto.GroupingMode,
+                    dto.AnalysisGroupId,
+                    dto.RecordCompletenessStatusId,
+                    dto.ContainerNumbers.Count,
+                    dto.Status);
+
+                return Ok(dto);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[CARGO-GROUP-FULL] error for groupIdentifier={GroupIdentifier}", groupIdentifier);
+                return StatusCode(500, new CargoGroupFullDto
+                {
+                    Status = CargoGroupResolutionStatus.FoundButPartial,
+                    Diagnostics = new[] { $"unhandled-error: {ex.GetType().Name}" }
+                });
+            }
+        }
+
+        /// <summary>
+        /// Builds the Image Decisions tab payload by reading
+        /// <see cref="ApplicationDbContext.ImageAnalysisDecisions"/> directly for the
+        /// resolved container set. Mirrors the existing dialog's RefreshOverallDecision logic.
+        /// </summary>
+        private async Task<ImageDecisionsPayload> LoadImageDecisionsAsync(
+            GroupResolution resolution,
+            string? scannerType,
+            CancellationToken ct)
+        {
+            var containers = resolution.ContainerNumbers;
+            if (containers == null || containers.Count == 0)
+            {
+                return new ImageDecisionsPayload();
+            }
+
+            var decisions = await _appDb.ImageAnalysisDecisions
+                .AsNoTracking()
+                .Where(d => containers.Contains(d.ContainerNumber))
+                .Where(d => scannerType == null || d.ScannerType == scannerType)
+                .OrderByDescending(d => d.ReviewedAt)
+                .ToListAsync(ct);
+
+            // Latest decision per container (per scanner if a hint was given).
+            var latestPerContainer = decisions
+                .GroupBy(d => $"{d.ContainerNumber}|{d.ScannerType}")
+                .Select(g => g.First())
+                .ToList();
+
+            var normal = latestPerContainer.Count(d => string.Equals(d.Decision, "Normal", StringComparison.OrdinalIgnoreCase));
+            var abnormal = latestPerContainer.Count(d => string.Equals(d.Decision, "Abnormal", StringComparison.OrdinalIgnoreCase));
+            var totalImages = latestPerContainer.Count;
+            var lastReviewedBy = latestPerContainer
+                .OrderByDescending(d => d.ReviewedAt)
+                .Select(d => d.ReviewedBy)
+                .FirstOrDefault();
+
+            string? overallDecision = null;
+            if (totalImages > 0)
+            {
+                if (abnormal > 0)
+                {
+                    overallDecision = "Abnormal";
+                }
+                else if (normal == totalImages)
+                {
+                    overallDecision = "Normal";
+                }
+                else
+                {
+                    overallDecision = "Mixed";
+                }
+            }
+
+            var rows = latestPerContainer.Select(d => new ContainerDecisionDto
+            {
+                ContainerNumber = d.ContainerNumber,
+                ScannerType = d.ScannerType,
+                Decision = d.Decision,
+                Comments = d.Comments,
+                Tags = d.Tags,
+                ReviewedBy = d.ReviewedBy,
+                ReviewedAt = d.ReviewedAt
+            }).ToList();
+
+            return new ImageDecisionsPayload
+            {
+                OverallDecision = overallDecision,
+                TotalImages = totalImages,
+                NormalCount = normal,
+                AbnormalCount = abnormal,
+                LastReviewedBy = lastReviewedBy,
+                ContainerDecisions = rows
+            };
         }
 
         /// <summary>

@@ -348,6 +348,11 @@ namespace NickScanCentralImagingPortal.Services
 
             // Cargo Summary Service (local template-based summarization)
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICargoSummaryService, NickScanCentralImagingPortal.Services.CargoGrouping.CargoSummaryService>();
+
+            // Phase 1 — RCS-keyed cargo group resolver (Theme E follow-up)
+            // See docs/audit/2026-05-05/follow-up-routing-endpoint-design.md §4.1
+            services.AddScoped<NickScanCentralImagingPortal.Services.CargoGrouping.IGroupResolver,
+                               NickScanCentralImagingPortal.Services.CargoGrouping.GroupResolver>();
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IImageValidationService, NickScanCentralImagingPortal.Services.ContainerValidation.ImageValidationService>();
             // ? MEMORY FIX: Changed from Singleton to Scoped to prevent memory leaks
             // Cache service should use IMemoryCache (which is already singleton) instead of holding data directly
