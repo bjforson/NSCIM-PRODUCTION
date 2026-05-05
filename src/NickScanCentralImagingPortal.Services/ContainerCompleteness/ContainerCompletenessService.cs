@@ -9,6 +9,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ContainerValidation;
 using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
@@ -100,6 +101,96 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 _logger.LogWarning(ex,
                     "{ServiceId} Failed to persist MatchQualityFlag for {Container} ({Type}) — continuing",
                     SERVICE_ID, containerNumber, flagType);
+            }
+        }
+
+        // ─── Audit 3.03 (2026-05-05): single fyco-rule entry point ─────────────
+        // Hoisted out of Step 1 (which had it inline) and Step 2 (which had no
+        // fyco rule at all — a previously-Complete container could keep
+        // hasICUMSData=true after a CMR→IM upgrade landed mid-flight). The pure
+        // rule logic lives in Core (FycoRuleEvaluator); this method does the
+        // surrounding I/O — fetch FS6000 scan, dispatch on outcome, write the
+        // MatchQualityFlag, log appropriately. Returns true when the rule blocked
+        // the match (caller must reset hasICUMSData / primaryBOE / boeRecords).
+        // ContainerDataMapperService has its own variant inlined for the same
+        // rule (different flag-writer signature) — they evaluate via the same
+        // FycoRuleEvaluator.
+        private async Task<bool> EvaluateAndApplyFycoRuleAsync(
+            ApplicationDbContext dbContext,
+            string containerNumber,
+            string scannerType,
+            NickScanCentralImagingPortal.Core.Models.BOEDocument primaryBOE,
+            CancellationToken cancellationToken)
+        {
+            string? fycoPresent = null;
+            if (string.Equals(scannerType, CommonScannerTypes.FS6000, StringComparison.OrdinalIgnoreCase))
+            {
+                var fs6000Scan = await dbContext.FS6000Scans
+                    .AsNoTracking()
+                    .Where(s => s.ContainerNumber == containerNumber)
+                    .OrderByDescending(s => s.ScanTime)
+                    .Select(s => new { s.FycoPresent })
+                    .FirstOrDefaultAsync(cancellationToken);
+                fycoPresent = fs6000Scan?.FycoPresent;
+            }
+
+            var result = FycoRuleEvaluator.Evaluate(
+                scannerType,
+                fycoPresent,
+                primaryBOE.ClearanceType,
+                primaryBOE.RegimeCode);
+
+            switch (result.Outcome)
+            {
+                case FycoRuleOutcome.FailLayer2_ClearanceTypeImport:
+                    _logger.LogError(
+                        "{ServiceId} FYCO MISMATCH (CRITICAL, layer 2): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.ClearanceType='{Clearance}' (Import). Blocking match.",
+                        SERVICE_ID, containerNumber, fycoPresent, primaryBOE.ClearanceType);
+                    await WriteMatchQualityFlagAsync(
+                        dbContext,
+                        containerNumber,
+                        scannerType,
+                        primaryBOE.Id,
+                        flagType: "FycoMismatch",
+                        severity: "Critical",
+                        description: result.FlagDescription!,
+                        cancellationToken);
+                    return true;
+
+                case FycoRuleOutcome.FailLayer3_NonExportRegime:
+                    _logger.LogError(
+                        "{ServiceId} FYCO MISMATCH (CRITICAL, layer 3): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.RegimeCode='{Regime}' is not an export regime (clearance={Clearance}). Blocking match.",
+                        SERVICE_ID, containerNumber, fycoPresent, primaryBOE.RegimeCode, primaryBOE.ClearanceType);
+                    await WriteMatchQualityFlagAsync(
+                        dbContext,
+                        containerNumber,
+                        scannerType,
+                        primaryBOE.Id,
+                        flagType: "FycoMismatch",
+                        severity: "Critical",
+                        description: result.FlagDescription!,
+                        cancellationToken);
+                    return true;
+
+                case FycoRuleOutcome.WarningSuspicious_UnknownFycoVsExportBoe:
+                    _logger.LogWarning(
+                        "{ServiceId} FYCO SUSPICIOUS: {Container} BOE.ClearanceType='{Clearance}' (Export) but scan FycoPresent='{Fyco}' (Unknown). Allowing with flag.",
+                        SERVICE_ID, containerNumber, primaryBOE.ClearanceType, fycoPresent ?? "(empty)");
+                    await WriteMatchQualityFlagAsync(
+                        dbContext,
+                        containerNumber,
+                        scannerType,
+                        primaryBOE.Id,
+                        flagType: "FycoMismatch",
+                        severity: "Warning",
+                        description: result.FlagDescription!,
+                        cancellationToken);
+                    return false;
+
+                case FycoRuleOutcome.NotApplicable:
+                case FycoRuleOutcome.Pass:
+                default:
+                    return false;
             }
         }
 
@@ -381,14 +472,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 hasICUMSData = await icumsDownloadsDbContext.BOEDocuments
                                     .AnyAsync(b => b.ContainerNumber == queueItem.ContainerNumber, stoppingToken);
 
+                                // Keep boeRecords as the FULL set (any ProcessingStatus) — it
+                                // feeds House-BL consolidation accounting downstream which must
+                                // count all BOE rows. The canonical helper is applied below for
+                                // primaryBOE selection only (audit 3.06).
                                 boeRecords = await icumsDownloadsDbContext.BOEDocuments
                                     .Where(b => b.ContainerNumber == queueItem.ContainerNumber)
-                                    .OrderByDescending(b => b.CreatedAt)
                                     .ToListAsync(stoppingToken);
                             }
 
-                            // ✅ Store the primary BOE document (most recent one)
-                            var primaryBOE = boeRecords.OrderByDescending(b => b.CreatedAt).FirstOrDefault();
+                            // ✅ Store the primary BOE document (canonical selection — audit 3.06)
+                            // Filter to ProcessingStatus="Transferred" + OrderByDescending Id so
+                            // the gate sees the same row Step 2, the mapper, and the validation
+                            // service do.
+                            var primaryBOE = boeRecords.CanonicalBoeQuery().FirstOrDefault();
                             int? primaryBOEId = primaryBOE?.Id;
 
                             // ═══════════════════════════════════════════════════════════════
@@ -454,105 +551,30 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             }
 
                             // ─── PREVENTION HARDENING: Fyco / ClearanceType cross-check ───
-                            // The trigger for this whole tool was record 80126035944 — export
-                            // scans that landed against an import BOE because the FycoPresent
-                            // field was empty. Add a defence in depth: even when location and
-                            // date proximity allow the match, cross-check the scanner's Fyco
-                            // signal against the BOE's clearance type.
+                            // 3-layer fyco rule. Trigger record 80126035944 — export scans
+                            // that landed against an import BOE because FycoPresent was
+                            // empty. Defence in depth: even if location and date proximity
+                            // allow the match, cross-check the scanner's fyco signal against
+                            // the BOE's clearance type and regime.
+                            //
+                            // Audit 3.03 (2026-05-05): hoisted into the shared
+                            // EvaluateAndApplyFycoRuleAsync helper above so Step 1, Step 2,
+                            // and the mapper all reach the same verdict via FycoRuleEvaluator.
                             if (hasICUMSData && primaryBOE != null)
                             {
-                                NickScanCentralImagingPortal.Core.Entities.FS6000.FS6000Scan? fs6000ScanForFyco = null;
-                                if (queueItem.ScannerType == "FS6000")
+                                var fycoBlocked = await EvaluateAndApplyFycoRuleAsync(
+                                    dbContext,
+                                    queueItem.ContainerNumber,
+                                    queueItem.ScannerType,
+                                    primaryBOE,
+                                    stoppingToken);
+
+                                if (fycoBlocked)
                                 {
-                                    fs6000ScanForFyco = await dbContext.FS6000Scans
-                                        .AsNoTracking()
-                                        .Where(s => s.ContainerNumber == queueItem.ContainerNumber)
-                                        .OrderByDescending(s => s.ScanTime)
-                                        .FirstOrDefaultAsync(stoppingToken);
-                                }
-
-                                var scanFyco = FycoClassifier.Classify(fs6000ScanForFyco?.FycoPresent);
-                                var boeClearance = (primaryBOE.ClearanceType ?? string.Empty).Trim().ToUpperInvariant();
-                                var boeIsImport = boeClearance.StartsWith("IM");
-                                var boeIsExport = boeClearance.StartsWith("EX");
-                                var boeIsCmr = boeClearance.Equals("CMR");
-
-                                // ── 3-LAYER FYCO RULE (clarified 2026-05-04) ──
-                                // FS6000 at ATSL Takoradi sea terminal. fyco=EXPORT means cargo
-                                // physically departing TKD on a vessel. So a fyco=EXPORT scan
-                                // can only legitimately match a BOE that's:
-                                //   - clearancetype = EX or CMR (NOT IM)  ← layer 2
-                                //   - regime in export set {10/19/20/24/27/30/34/35/37/39}
-                                //     (or no regime yet on a CMR pre-declaration)         ← layer 3
-                                // Transit (regime 80/88/89), home use (40), warehousing (70),
-                                // free zones (90), etc. all fail — transit cargo doesn't depart
-                                // by sea; import cargo doesn't depart at all.
-
-                                // Layer 2: fyco=EXPORT vs clearancetype=IM is the strongest mismatch.
-                                if (scanFyco == FycoCategory.Export && boeIsImport)
-                                {
-                                    _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL, layer 2): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.ClearanceType='{Clearance}' (Import). Blocking match.",
-                                        SERVICE_ID, queueItem.ContainerNumber, fs6000ScanForFyco?.FycoPresent, primaryBOE.ClearanceType);
-
-                                    await WriteMatchQualityFlagAsync(
-                                        dbContext,
-                                        queueItem.ContainerNumber,
-                                        queueItem.ScannerType,
-                                        primaryBOE.Id,
-                                        flagType: "FycoMismatch",
-                                        severity: "Critical",
-                                        description: $"Scan FycoPresent='{fs6000ScanForFyco?.FycoPresent}' classifies as Export, but BOE.ClearanceType='{primaryBOE.ClearanceType}' is Import. Cargo physically departing TKD cannot be an import.",
-                                        stoppingToken);
-
                                     hasICUMSData = false;
                                     primaryBOEId = null;
                                     primaryBOE = null;
                                     boeRecords.Clear();
-                                }
-                                // Layer 3: fyco=EXPORT vs non-export regime (with EX or CMR clearancetype).
-                                // EX and CMR pass layer 2; layer 3 narrows to the export-regime set.
-                                // Empty regime + CMR clearance is OK (defer to BOE arrival).
-                                else if (scanFyco == FycoCategory.Export
-                                         && (boeIsExport || boeIsCmr)
-                                         && !string.IsNullOrWhiteSpace(primaryBOE.RegimeCode)
-                                         && !RegimeDirectionMap.IsExport(primaryBOE.RegimeCode))
-                                {
-                                    _logger.LogError("{ServiceId} FYCO MISMATCH (CRITICAL, layer 3): {Container} scan FycoPresent='{Fyco}' (Export) but BOE.RegimeCode='{Regime}' is not an export regime (clearance={Clearance}). Blocking match.",
-                                        SERVICE_ID, queueItem.ContainerNumber, fs6000ScanForFyco?.FycoPresent, primaryBOE.RegimeCode, primaryBOE.ClearanceType);
-
-                                    await WriteMatchQualityFlagAsync(
-                                        dbContext,
-                                        queueItem.ContainerNumber,
-                                        queueItem.ScannerType,
-                                        primaryBOE.Id,
-                                        flagType: "FycoMismatch",
-                                        severity: "Critical",
-                                        description: $"Scan FycoPresent='{fs6000ScanForFyco?.FycoPresent}' (Export) but BOE.RegimeCode='{primaryBOE.RegimeCode}' is not an export regime (export set: 10,19,20,24,27,30,34,35,37,39). Clearance was '{primaryBOE.ClearanceType}'.",
-                                        stoppingToken);
-
-                                    hasICUMSData = false;
-                                    primaryBOEId = null;
-                                    primaryBOE = null;
-                                    boeRecords.Clear();
-                                }
-                                else if (scanFyco == FycoCategory.Unknown && boeIsExport)
-                                {
-                                    // Suspicious but allowed: export BOE with no Fyco confirmation.
-                                    _logger.LogWarning("{ServiceId} FYCO SUSPICIOUS: {Container} BOE.ClearanceType='{Clearance}' (Export) but scan FycoPresent='{Fyco}' (Unknown). Allowing with flag.",
-                                        SERVICE_ID, queueItem.ContainerNumber, primaryBOE.ClearanceType, fs6000ScanForFyco?.FycoPresent ?? "(empty)");
-
-                                    if (primaryBOE != null)
-                                    {
-                                        await WriteMatchQualityFlagAsync(
-                                            dbContext,
-                                            queueItem.ContainerNumber,
-                                            queueItem.ScannerType,
-                                            primaryBOE.Id,
-                                            flagType: "FycoMismatch",
-                                            severity: "Warning",
-                                            description: $"BOE.ClearanceType='{primaryBOE.ClearanceType}' is Export, but scan FycoPresent='{fs6000ScanForFyco?.FycoPresent ?? "(empty)"}' provides no confirmation. Match allowed but flagged.",
-                                            stoppingToken);
-                                    }
                                 }
                             }
 
@@ -962,17 +984,26 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             hasICUMSData = await icumsDownloadsDbContext.BOEDocuments
                                 .AnyAsync(b => b.ContainerNumber == container.ContainerNumber, stoppingToken);
 
+                            // Full BOE set retained for House-BL consolidation; canonical
+                            // selection happens via CanonicalBoeQuery below (audit 3.06).
                             boeRecords = await icumsDownloadsDbContext.BOEDocuments
                                 .Where(b => b.ContainerNumber == container.ContainerNumber)
-                                .OrderByDescending(b => b.CreatedAt)
                                 .ToListAsync(stoppingToken);
                         }
 
-                        // ✅ Store the primary BOE document (most recent one)
-                        var primaryBOE = boeRecords.OrderByDescending(b => b.CreatedAt).FirstOrDefault();
+                        // ✅ Store the primary BOE document (canonical selection — audit 3.06)
+                        var primaryBOE = boeRecords.CanonicalBoeQuery().FirstOrDefault();
                         int? primaryBOEId = primaryBOE?.Id;
 
-                        // SAFEGUARD: Location gate on re-check (same logic as Step 1)
+                        // SAFEGUARD: Location gate on re-check (same logic as Step 1).
+                        // Audit 3.02 (2026-05-05): Step 2 now writes MatchQualityFlag on
+                        // both branches mirroring Step 1's contract — previously every
+                        // re-check mismatch was silently re-blocked with no admin trail
+                        // (24 such cases in 7 days had no MQF coverage). Null-DP branch
+                        // also brought into parity: Step 1 blocks + flags, Step 2 used
+                        // to log-and-allow; now Step 2 blocks + flags too so the gate
+                        // is symmetric and re-evaluation can't promote a null-DP match
+                        // that Step 1 already rejected.
                         if (hasICUMSData && primaryBOE != null)
                         {
                             var expectedPort = ScannerLocationMap.GetExpectedPortCode(container.ScannerType);
@@ -985,6 +1016,16 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                     _logger.LogWarning("{ServiceId} LOCATION MISMATCH (re-check): {Container} scanned at {ScannerType} (expected {Expected}) but BOE DeliveryPlace={DeliveryPlace} (port={Actual}). Blocking match.",
                                         SERVICE_ID, container.ContainerNumber, container.ScannerType, expectedPort, primaryBOE.DeliveryPlace, actualPort);
 
+                                    await WriteMatchQualityFlagAsync(
+                                        dbContext,
+                                        container.ContainerNumber,
+                                        container.ScannerType,
+                                        primaryBOE.Id,
+                                        flagType: "PortMismatch",
+                                        severity: "Critical",
+                                        description: $"Re-check blocked match: scanned at {container.ScannerType} (expected port {expectedPort}) but BOE.DeliveryPlace='{primaryBOE.DeliveryPlace}' (port {actualPort}). Match blocked pending admin review.",
+                                        stoppingToken);
+
                                     hasICUMSData = false;
                                     primaryBOEId = null;
                                     primaryBOE = null;
@@ -994,8 +1035,48 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             else if (expectedPort != null && string.IsNullOrWhiteSpace(primaryBOE.DeliveryPlace))
                             {
                                 nullDeliveryPlaceCount++;
-                                _logger.LogInformation("{ServiceId} LOCATION CHECK (re-check): {Container} BOE has no DeliveryPlace — allowing match but flagging for review",
-                                    SERVICE_ID, container.ContainerNumber);
+                                _logger.LogWarning("{ServiceId} NULL DELIVERY PLACE BLOCK (re-check): {Container} BOEDocumentId={BoeId} has no DeliveryPlace — blocking match and flagging for admin review",
+                                    SERVICE_ID, container.ContainerNumber, primaryBOE.Id);
+
+                                await WriteMatchQualityFlagAsync(
+                                    dbContext,
+                                    container.ContainerNumber,
+                                    container.ScannerType,
+                                    primaryBOE.Id,
+                                    flagType: "NullDeliveryPlace",
+                                    severity: "Critical",
+                                    description: $"Re-check: BOEDocumentId={primaryBOE.Id} has no DeliveryPlace; location gate cannot verify scanner '{container.ScannerType}' (expected port '{expectedPort}'). Match blocked pending admin review.",
+                                    stoppingToken);
+
+                                hasICUMSData = false;
+                                primaryBOEId = null;
+                                primaryBOE = null;
+                                boeRecords.Clear();
+                            }
+                        }
+
+                        // ─── FYCO RULE (re-check) — audit 3.03, 2026-05-05 ───
+                        // Step 2 previously had no fyco gate at all; a previously-Complete
+                        // container that got re-checked after BOE clearancetype changed
+                        // (e.g. CMR→IM upgrade landed mid-flight) kept its stale
+                        // hasICUMSData=true even when direction now disagreed. Mirror
+                        // Step 1's contract via the shared helper so the rule fires the
+                        // same way at queue-time and at re-check.
+                        if (hasICUMSData && primaryBOE != null)
+                        {
+                            var fycoBlocked = await EvaluateAndApplyFycoRuleAsync(
+                                dbContext,
+                                container.ContainerNumber,
+                                container.ScannerType,
+                                primaryBOE,
+                                stoppingToken);
+
+                            if (fycoBlocked)
+                            {
+                                hasICUMSData = false;
+                                primaryBOEId = null;
+                                primaryBOE = null;
+                                boeRecords.Clear();
                             }
                         }
 

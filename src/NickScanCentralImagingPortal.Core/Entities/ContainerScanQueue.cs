@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Text.RegularExpressions;
 
 namespace NickScanCentralImagingPortal.Core.Entities
 {
@@ -163,18 +164,74 @@ namespace NickScanCentralImagingPortal.Core.Entities
     /// <summary>
     /// Classifies FS6000 FycoPresent values into Import / Export / Unknown.
     /// Handles known scanner typos (WWAYBILL, WABILL, WAY-BILL, IMPRT, etc.).
+    ///
+    /// Single source of truth for FycoPresent → direction. The previous parallel
+    /// implementation in ContainerValidationService.IsExportFlag (regex-only,
+    /// matching `\bex(p)?ort\b` plus literals 1/true/Y/YES) missed export-typo
+    /// records that this classifier accepted, and vice versa. Audit 3.08
+    /// (2026-05-05) closed the divergence — IsExportFlag now delegates to
+    /// FycoClassifier.IsExport. Keep the two parsers in lockstep here.
     /// </summary>
     public static class FycoClassifier
     {
+        // Broadened export-token regex. Catches the canonical "EXPORT" plus
+        // 1-letter typos (EXPOR / EXPOT / EXPROT / EPORT / EXORT) and the
+        // operator-typed waybill verbiage (WAYBILL, WABILL, WAYBILLL,
+        // WAY-BILL, "WAYBILL/EXPORT", "WAYBILL/EXPOT"). The waybill arm
+        // accepts an optional separator before BILL so WAY-BILL, WAY.BILL,
+        // WAY/BILL all match. The export arm enumerates explicit deletion-
+        // typos rather than over-permissive character classes — that keeps
+        // unrelated words ("EXIST", "EXPENSE") from being mis-classified.
+        //
+        // Verified against the 8 known-failing typo cases in the audit:
+        //   EXPOR / EXPOT / EXPROT / EPORT / EXORT
+        //   WAYBILL/EXPOT / WAYBILL/EXPROT / WAYBILLL/EXPORT
+        // Plus the canonical forms:
+        //   1 / true / Y / YES (literal flags handled in IsExport)
+        //   EXPORT, WAYBILL, WABILL, WAY-BILL/EXPORT, WAYBILL/.EXPORT
+        private static readonly Regex ExportTokenRegex = new(
+            @"\b(?:export|expor|expot|exort|eport|exprot|wa+y?[-./\s]?b?il+l?)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         public static FycoCategory Classify(string? fycoPresent)
         {
             if (string.IsNullOrWhiteSpace(fycoPresent)) return FycoCategory.Unknown;
             var upper = fycoPresent.Trim().ToUpperInvariant();
-            if (upper.Contains("EXPORT") || upper.Contains("WAYBILL") || upper.Contains("WABILL"))
+            if (IsExport(upper))
                 return FycoCategory.Export;
             if (upper.Contains("IMPORT") || upper == "IMPRT")
                 return FycoCategory.Import;
             return FycoCategory.Unknown;
+        }
+
+        /// <summary>
+        /// Returns true if the raw FycoPresent string indicates an export.
+        /// Recognises:
+        ///   - Literal boolean-ish flags (1, true, Y, YES — case-insensitive).
+        ///   - The canonical EXPORT word and 1-letter deletion / transposition
+        ///     typos (EXPOR, EXPOT, EXPROT, EPORT, EXORT).
+        ///   - The waybill family (WAYBILL, WABILL, WAYBILLL, WAY-BILL,
+        ///     WAY.BILL, WAY/BILL) — operators commonly type free-text waybill
+        ///     verbiage to indicate exports.
+        ///   - Compound strings combining the two (WAYBILL/EXPORT,
+        ///     WAY-BILL/EXPORT, WAYBILL/EXPOT, WAYBILL/EXPROT, etc.) — \b
+        ///     boundaries make either side sufficient.
+        ///
+        /// This is the canonical export-direction parser. ContainerValidationService
+        /// .IsExportFlag delegates here. Update one place; both gates follow.
+        /// </summary>
+        public static bool IsExport(string? fycoPresent)
+        {
+            if (string.IsNullOrWhiteSpace(fycoPresent)) return false;
+            var trimmed = fycoPresent.Trim();
+            if (trimmed.Equals("1")
+                || trimmed.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("Y", StringComparison.OrdinalIgnoreCase)
+                || trimmed.Equals("YES", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            return ExportTokenRegex.IsMatch(trimmed);
         }
     }
 
@@ -341,6 +398,143 @@ namespace NickScanCentralImagingPortal.Core.Entities
             if (FreeZoneRegimes.Contains(trimmed)) return "Free Zone";
             if (BoeRegimes.Contains(trimmed)) return "BOE";
             return null; // unknown regime — leave NULL so it surfaces in audit query
+        }
+    }
+
+    /// <summary>
+    /// Outcome of the 3-layer fyco/clearancetype/regime rule. Returned by
+    /// <see cref="FycoRuleEvaluator.Evaluate"/> so the three callers (CCS Step 1,
+    /// CCS Step 2, ContainerDataMapperService) all reach the same verdict and
+    /// write a consistent MatchQualityFlag.
+    /// </summary>
+    public enum FycoRuleOutcome
+    {
+        /// <summary>Rule does not apply (non-FS6000 scanner, or no fyco signal).</summary>
+        NotApplicable,
+        /// <summary>Rule passed — direction agrees.</summary>
+        Pass,
+        /// <summary>fyco=Export but BOE.ClearanceType=IM. Block + Critical flag.</summary>
+        FailLayer2_ClearanceTypeImport,
+        /// <summary>fyco=Export + EX/CMR clearance + non-export regime. Block + Critical flag.</summary>
+        FailLayer3_NonExportRegime,
+        /// <summary>BOE is export but fyco unknown — allowed match, Warning-severity flag.</summary>
+        WarningSuspicious_UnknownFycoVsExportBoe,
+    }
+
+    /// <summary>
+    /// Result of <see cref="FycoRuleEvaluator.Evaluate"/>. Carries the outcome
+    /// plus a ready-to-persist description so the calling site can write its
+    /// flag without re-deriving the message text.
+    /// </summary>
+    public sealed record FycoRuleResult(
+        FycoRuleOutcome Outcome,
+        string? FlagDescription,
+        string? FycoPresentRaw,
+        string? BoeClearanceType,
+        string? BoeRegimeCode)
+    {
+        public bool IsBlockingFailure =>
+            Outcome == FycoRuleOutcome.FailLayer2_ClearanceTypeImport ||
+            Outcome == FycoRuleOutcome.FailLayer3_NonExportRegime;
+
+        public bool IsWarning => Outcome == FycoRuleOutcome.WarningSuspicious_UnknownFycoVsExportBoe;
+
+        public static FycoRuleResult NotApplicable() =>
+            new(FycoRuleOutcome.NotApplicable, null, null, null, null);
+    }
+
+    /// <summary>
+    /// Single source of truth for the 3-layer fyco rule. Audit 3.03 (2026-05-05)
+    /// hoisted this out of three duplicated implementations:
+    ///   - ContainerCompletenessService Step 1 (queue-driven path)
+    ///   - ContainerCompletenessService Step 2 (re-check path) — was MISSING
+    ///     entirely; a previously-Complete container could keep stale
+    ///     hasICUMSData=true after a CMR→IM upgrade landed mid-flight.
+    ///   - ContainerDataMapperService.MapContainerDataAsync (mapper belt-and-braces)
+    ///
+    /// All three now call <see cref="Evaluate"/> with already-fetched FS6000
+    /// FycoPresent + BOE clearance/regime, and write their existing
+    /// MatchQualityFlag using the returned description so the database keeps a
+    /// single description shape per (container, FycoMismatch) flag.
+    ///
+    /// Pure (no DB / no logger). Each caller does its own scan + BOE fetch and
+    /// its own flag persistence — keeps the rule unit-testable and decoupled
+    /// from EF / DbContext lifetimes.
+    /// </summary>
+    public static class FycoRuleEvaluator
+    {
+        /// <summary>
+        /// Evaluates the 3-layer fyco rule. Returns Pass / NotApplicable for
+        /// non-FS6000 scanners and for non-Export fyco signals. Returns
+        /// FailLayer2 / FailLayer3 / WarningSuspicious otherwise.
+        /// </summary>
+        /// <param name="scannerType">e.g. "FS6000", "ASE". Rule only fires for FS6000.</param>
+        /// <param name="fs6000FycoPresent">The FycoPresent value from the most recent FS6000 scan, or null.</param>
+        /// <param name="boeClearanceType">BOEDocument.ClearanceType — typically "IM"/"EX"/"CMR".</param>
+        /// <param name="boeRegimeCode">BOEDocument.RegimeCode — typically a 2-digit string like "40", "10", "80".</param>
+        public static FycoRuleResult Evaluate(
+            string? scannerType,
+            string? fs6000FycoPresent,
+            string? boeClearanceType,
+            string? boeRegimeCode)
+        {
+            // Rule only meaningful for FS6000 (scanner sits at ATSL Takoradi
+            // sea terminal; fyco=EXPORT means departing TKD on a vessel).
+            if (!string.Equals(scannerType, CommonScannerTypes.FS6000, StringComparison.OrdinalIgnoreCase))
+            {
+                return FycoRuleResult.NotApplicable();
+            }
+
+            var scanFyco = FycoClassifier.Classify(fs6000FycoPresent);
+            var clearance = (boeClearanceType ?? string.Empty).Trim().ToUpperInvariant();
+            var boeIsImport = clearance.StartsWith("IM");
+            var boeIsExport = clearance.StartsWith("EX");
+            var boeIsCmr = clearance.Equals("CMR");
+
+            // Layer 2 — fyco=Export vs clearancetype=IM is the strongest mismatch.
+            if (scanFyco == FycoCategory.Export && boeIsImport)
+            {
+                return new FycoRuleResult(
+                    FycoRuleOutcome.FailLayer2_ClearanceTypeImport,
+                    $"Scan FycoPresent='{fs6000FycoPresent}' classifies as Export, but BOE.ClearanceType='{boeClearanceType}' is Import. Cargo physically departing TKD cannot be an import.",
+                    fs6000FycoPresent,
+                    boeClearanceType,
+                    boeRegimeCode);
+            }
+
+            // Layer 3 — fyco=Export + EX/CMR clearance + non-empty regime
+            // that is NOT in the export set. Empty regime + CMR is OK
+            // (defer to BOE arrival).
+            if (scanFyco == FycoCategory.Export
+                && (boeIsExport || boeIsCmr)
+                && !string.IsNullOrWhiteSpace(boeRegimeCode)
+                && !RegimeDirectionMap.IsExport(boeRegimeCode))
+            {
+                return new FycoRuleResult(
+                    FycoRuleOutcome.FailLayer3_NonExportRegime,
+                    $"Scan FycoPresent='{fs6000FycoPresent}' (Export) but BOE.RegimeCode='{boeRegimeCode}' is not an export regime (export set: 10,19,20,24,27,30,34,35,37,39). Clearance was '{boeClearanceType}'.",
+                    fs6000FycoPresent,
+                    boeClearanceType,
+                    boeRegimeCode);
+            }
+
+            // Suspicious-but-allowed: export BOE with no Fyco confirmation.
+            if (scanFyco == FycoCategory.Unknown && boeIsExport)
+            {
+                return new FycoRuleResult(
+                    FycoRuleOutcome.WarningSuspicious_UnknownFycoVsExportBoe,
+                    $"BOE.ClearanceType='{boeClearanceType}' is Export, but scan FycoPresent='{fs6000FycoPresent ?? "(empty)"}' provides no confirmation. Match allowed but flagged.",
+                    fs6000FycoPresent,
+                    boeClearanceType,
+                    boeRegimeCode);
+            }
+
+            return new FycoRuleResult(
+                FycoRuleOutcome.Pass,
+                null,
+                fs6000FycoPresent,
+                boeClearanceType,
+                boeRegimeCode);
         }
     }
 }

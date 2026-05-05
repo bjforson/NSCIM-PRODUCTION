@@ -239,10 +239,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             // can still slip through that gap. MEDU7718311 (sweep 2026-05-04) was
             // exactly this case: regime-40 IM BOE with null DP + FS6000 fyco=
             // WAYBILL/EXPORT — port rule skipped, mapper had no fyco check, CBR
-            // got rebuilt after the morning unmatch. Mirror the queue-side fyco
-            // gate (ContainerCompletenessService.cs:474-518) here so the mapper
-            // independently enforces direction-correctness regardless of port.
-            if (boeDocument != null && scannerType == CommonScannerTypes.FS6000)
+            // got rebuilt after the morning unmatch.
+            //
+            // Audit 3.03 (2026-05-05): the rule body now lives in
+            // FycoRuleEvaluator (Core); the mapper only does its own scan fetch +
+            // its own flag write so the existing "Mapper-side ..." description
+            // shape is preserved. Step 1 / Step 2 / mapper all consult the same
+            // evaluator — three sources of truth collapsed to one.
+            if (boeDocument != null && string.Equals(scannerType, CommonScannerTypes.FS6000, StringComparison.OrdinalIgnoreCase))
             {
                 var fs6000Scan = await dbContext.FS6000Scans
                     .AsNoTracking()
@@ -251,37 +255,19 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     .Select(s => new { s.FycoPresent })
                     .FirstOrDefaultAsync();
 
-                var scanFyco = FycoClassifier.Classify(fs6000Scan?.FycoPresent);
-                if (scanFyco == FycoCategory.Export)
+                var fycoResult = FycoRuleEvaluator.Evaluate(
+                    scannerType,
+                    fs6000Scan?.FycoPresent,
+                    boeDocument.ClearanceType,
+                    boeDocument.RegimeCode);
+
+                if (fycoResult.IsBlockingFailure)
                 {
-                    var clearance = (boeDocument.ClearanceType ?? string.Empty).Trim().ToUpperInvariant();
-                    var boeIsImport = clearance.StartsWith("IM");
-                    var boeIsExport = clearance.StartsWith("EX");
-                    var boeIsCmr = clearance == "CMR";
-
-                    string? rejectionReason = null;
-
-                    // Layer 2: fyco=Export vs clearancetype=IM is the strongest mismatch.
-                    if (boeIsImport)
-                    {
-                        rejectionReason =
-                            $"Mapper-side fyco rule (layer 2): scan FycoPresent='{fs6000Scan?.FycoPresent}' classifies Export but BOE.ClearanceType='{boeDocument.ClearanceType}' (Import). Cargo physically departing TKD cannot be an import.";
-                    }
-                    // Layer 3: fyco=Export + EX or CMR clearance + non-empty regime that's NOT in the export set.
-                    else if ((boeIsExport || boeIsCmr)
-                             && !string.IsNullOrWhiteSpace(boeDocument.RegimeCode)
-                             && !RegimeDirectionMap.IsExport(boeDocument.RegimeCode))
-                    {
-                        rejectionReason =
-                            $"Mapper-side fyco rule (layer 3): scan FycoPresent='{fs6000Scan?.FycoPresent}' classifies Export but BOE.RegimeCode='{boeDocument.RegimeCode}' is not an export regime (clearance={boeDocument.ClearanceType}). Export set: 10/19/20/24/27/30/34/35/37/39.";
-                    }
-
-                    if (rejectionReason != null)
-                    {
-                        _logger.LogWarning("FYCO MISMATCH (mapper, layer 2/3): {Container} -> {Reason}", containerNumber, rejectionReason);
-                        await UpsertFycoMismatchFlagAsync(dbContext, containerNumber, scannerType, boeDocument.Id, rejectionReason);
-                        return null;
-                    }
+                    var layerLabel = fycoResult.Outcome == FycoRuleOutcome.FailLayer2_ClearanceTypeImport ? "layer 2" : "layer 3";
+                    var rejectionReason = $"Mapper-side fyco rule ({layerLabel}): {fycoResult.FlagDescription}";
+                    _logger.LogWarning("FYCO MISMATCH (mapper, {Layer}): {Container} -> {Reason}", layerLabel, containerNumber, rejectionReason);
+                    await UpsertFycoMismatchFlagAsync(dbContext, containerNumber, scannerType, boeDocument.Id, rejectionReason);
+                    return null;
                 }
             }
 
@@ -685,9 +671,11 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                         if (containerNumbers.Count > 0)
                         {
-                            // Tie-break: prefer the most recently created transferred BOE doc
-                            // per container (status "Transferred" is the canonical
-                            // ready-for-mapping state per IcumDataTransferService).
+                            // Audit 3.06 (2026-05-05): align the per-container tie-break
+                            // with the canonical helper used by CCS Step 1 / Step 2 /
+                            // ValidatePortMatchAsync — ProcessingStatus="Transferred" +
+                            // OrderByDescending Id (NOT CreatedAt; see
+                            // CanonicalBoeQueryExtensions doc-comment for rationale).
                             var boeLookup = await icumDownloadsContext.BOEDocuments
                                 .AsNoTracking()
                                 .Where(b => containerNumbers.Contains(b.ContainerNumber)
@@ -696,7 +684,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 .Select(g => new
                                 {
                                     ContainerNumber = g.Key,
-                                    LatestId = g.OrderByDescending(b => b.CreatedAt).Select(b => b.Id).FirstOrDefault()
+                                    LatestId = g.OrderByDescending(b => b.Id).Select(b => b.Id).FirstOrDefault()
                                 })
                                 .ToDictionaryAsync(x => x.ContainerNumber, x => x.LatestId);
 

@@ -832,10 +832,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
         {
             try
             {
+                // Audit 3.06 (2026-05-05): use the shared CanonicalBoeQuery
+                // helper so this call site agrees with CCS Step 1 / Step 2 /
+                // mapper on which BOE row is canonical (ProcessingStatus=
+                // "Transferred", OrderByDescending Id).
                 var boe = await _icumDownloadsDbContext.BOEDocuments
                     .AsNoTracking()
                     .Where(b => b.ContainerNumber == containerNumber)
-                    .OrderByDescending(b => b.Id)
+                    .CanonicalBoeQuery()
                     .Select(b => new { b.DeliveryPlace })
                     .FirstOrDefaultAsync();
 
@@ -911,10 +915,13 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
                     return; // No FS6000 scan or flag missing → rule not applicable.
                 }
 
+                // Audit 3.06 (2026-05-05): shared CanonicalBoeQuery — match the
+                // BOE the queue-time port rule + mapper see, so layer 5 doesn't
+                // disagree with layer 1/3 on which row is canonical.
                 var boe = await _icumDownloadsDbContext.BOEDocuments
                     .AsNoTracking()
                     .Where(b => b.ContainerNumber == containerNumber)
-                    .OrderByDescending(b => b.Id)
+                    .CanonicalBoeQuery()
                     .Select(b => new { b.ClearanceType, b.RegimeCode })
                     .FirstOrDefaultAsync();
 
@@ -994,26 +1001,18 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
             }
         }
 
-        // Recognises FS6000 fyco-as-export markers. FycoPresent was specced as a boolean-ish
-        // flag (1/true/Y/YES) but operators in practice type free-text waybill verbiage —
-        // 60% of real records hold "WAYBILL/EXPORT", another 4% "WAY-BILL/EXPORT", plus
-        // "EXPORT" and assorted typos (see memory reference_port_match_rules_enabled_2026_05_02.md).
-        // The regex catches the dominant typed forms; ~14 records / 0.7% with deeper typos
-        // (EXPOR, EXPORR, EXPROT, EPORT, EXPORTSTC TI) still slip through and are best
-        // addressed at FS6000-ingest validation time.
-        private static readonly Regex ExportTokenRegex =
-            new(@"\bex(p)?ort\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
+        // Audit 3.08 (2026-05-05): unified with FycoClassifier.IsExport so the
+        // queue/mapper pipeline and the validation rule library share a single
+        // export-token parser. Previously the local Regex `\bex(p)?ort\b` plus
+        // the literal 1/true/Y/YES checks here diverged from FycoClassifier's
+        // substring matcher — 8 records with EXPOR / EXPOT / EXPROT / EPORT /
+        // EXORT typos slipped through both gates. The broadened regex now lives
+        // in FycoClassifier.IsExport (see ContainerScanQueue.cs:165-179) and
+        // catches all 8 known typos plus the canonical forms (1/true/Y/YES,
+        // EXPORT, WAYBILL, WABILL, WAYBILLL, WAY-BILL, etc.). Update there;
+        // this delegate will follow.
         private static bool IsExportFlag(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-            var t = raw.Trim();
-            return t.Equals("1")
-                || t.Equals("true", StringComparison.OrdinalIgnoreCase)
-                || t.Equals("Y",    StringComparison.OrdinalIgnoreCase)
-                || t.Equals("YES",  StringComparison.OrdinalIgnoreCase)
-                || ExportTokenRegex.IsMatch(t);
-        }
+            => FycoClassifier.IsExport(raw);
 
         /// <summary>
         /// Calculates overall completeness score
@@ -1502,4 +1501,41 @@ namespace NickScanCentralImagingPortal.Services.ContainerValidation
     }
 
     // ScannerContainer is now defined in ContainerValidationModels.cs
+
+    /// <summary>
+    /// Audit 3.06 (2026-05-05) — single source of truth for "pick the canonical BOE
+    /// per container". Previously four call sites each ordered differently:
+    ///
+    ///   ContainerCompletenessService.cs (Step 1 + Step 2)   OrderByDescending(b.CreatedAt)
+    ///   ContainerDataMapperService.cs (pendingMappings)     OrderByDescending(b.CreatedAt)
+    ///   ContainerValidationService.cs (ValidatePortMatch)   OrderByDescending(b.Id)
+    ///
+    /// Plus the per-container pending-mappings filter in the mapper already
+    /// required ProcessingStatus == "Transferred" — but the per-row selectors
+    /// above did not.
+    ///
+    /// Race-window inconsistency: a CMR pre-declaration created 2026-04-29 and an
+    /// IM-upgraded row appended 2026-05-04 could pass different gates depending on
+    /// which OrderBy was used at that moment, because UpgradeCMRToBOEAsync mutates
+    /// CreatedAt. Standardise on Id desc — monotonic, uncorrupted by upgrade
+    /// timestamp logic — plus the Transferred filter so non-canonical drafts
+    /// (Pending / Failed / Reprocessing) never win the selection.
+    ///
+    /// Use as a fluent extension after any pre-filter (e.g. AsNoTracking() +
+    /// Where(b => b.ContainerNumber == ...)). The helper applies the
+    /// "Transferred" filter and the canonical Id-desc ordering on top.
+    /// </summary>
+    public static class CanonicalBoeQueryExtensions
+    {
+        public static IQueryable<BOEDocument> CanonicalBoeQuery(this IQueryable<BOEDocument> source) =>
+            source.Where(b => b.ProcessingStatus == "Transferred")
+                  .OrderByDescending(b => b.Id);
+
+        // In-memory overload for callers that already materialised the BOE list
+        // (e.g. ContainerCompletenessService Steps 1/2 fetch the full set first
+        // for House-BL consolidation accounting, then pick primaryBOE).
+        public static IEnumerable<BOEDocument> CanonicalBoeQuery(this IEnumerable<BOEDocument> source) =>
+            source.Where(b => b.ProcessingStatus == "Transferred")
+                  .OrderByDescending(b => b.Id);
+    }
 }
