@@ -5,7 +5,6 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.RateLimiting;
-using HealthChecks.UI.Client;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -677,32 +676,13 @@ static async Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResul
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddTransient<NickScanCentralImagingPortal.Services.Http.CorrelationForwardingHandler>();
 
-// ✅ Add Health Checks UI
-builder.Services.AddHealthChecksUI(settings =>
-{
-    settings.SetEvaluationTimeInSeconds(60); // Check every 60 seconds
-    settings.MaximumHistoryEntriesPerEndpoint(50);
-    // ✅ FIX: Use absolute URL with localhost to avoid DNS resolution errors
-    // HealthChecks UI makes HTTP calls internally and cannot use 0.0.0.0 as a connection address
-    // Extract port from ASPNETCORE_URLS or use default from launchSettings.json (5205)
-    var urls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS") ?? builder.Configuration["Urls"] ?? "";
-    var apiPort = "5205"; // Default port (from launchSettings.json)
-    if (!string.IsNullOrEmpty(urls))
-    {
-        // Try to extract port from URLs like "http://0.0.0.0:5205" or "http://localhost:5205"
-        var portMatch = System.Text.RegularExpressions.Regex.Match(urls, @":(\d+)");
-        if (portMatch.Success)
-        {
-            apiPort = portMatch.Groups[1].Value;
-        }
-    }
-    // Use absolute URL with localhost (valid connection address) - HTTP only
-    // Note: HTTPS redirection is disabled when using HTTP only to prevent SSL errors
-    var healthEndpointUrl = $"http://localhost:{apiPort}/health";
-    settings.AddHealthCheckEndpoint("NickScan API", healthEndpointUrl);
-}).AddInMemoryStorage();
-
-Log.Information("✅ Comprehensive health checks configured (3 databases, UI enabled)");
+// 2026-05-05 audit 8.04: HealthChecks.UI removed in favour of the plain
+// /health JSON endpoint. The UI surface was emitting request lines that
+// exceeded Kestrel's 8 KiB request-line cap (414 URI Too Long) once
+// IdentityModel was pinned in Sprint 1A. WebApp's /monitoring/health page
+// (backed by /api/Monitoring/health/overview) is the canonical visual
+// dashboard going forward.
+Log.Information("✅ Comprehensive health checks configured (3 databases, JSON endpoint)");
 
 // Add comprehensive monitoring with SignalR
 // This already registers ComprehensiveHealthCheckService as singleton and hosted service
@@ -1332,7 +1312,6 @@ if (hasHttpsEndpoint && !app.Environment.IsDevelopment())
 else
 {
     // Disable HTTPS redirection in development or when using HTTP only
-    // This prevents HealthChecks.UI from trying to connect via HTTPS when only HTTP is available
     Log.Information("⚠️ HTTPS redirection disabled - using HTTP only or development mode");
 }
 
@@ -1370,12 +1349,35 @@ Log.Information("✅ NickERP tenancy middleware enabled");
 
 app.MapControllers();
 
-// ✅ Map Health Check Endpoints (no rate limiting)
+// ✅ Map Health Check Endpoints (no rate limiting). 2026-05-05 audit 8.04:
+// dropped the HealthChecks.UI Client UIResponseWriter dependency and switched
+// to a small in-process JSON writer that emits the same shape consumers were
+// already reading (status, totalDuration, entries[name -> {status, description, duration, tags}]).
 app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {
-    // HealthChecks UI expects the default UIResponseWriter JSON format
-    ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
+    ResponseWriter = WriteHealthCheckJsonResponse
 }).AllowAnonymous().DisableRateLimiting();
+
+static Task WriteHealthCheckJsonResponse(HttpContext context, Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)
+{
+    context.Response.ContentType = "application/json; charset=utf-8";
+    var payload = new
+    {
+        status = report.Status.ToString(),
+        totalDuration = report.TotalDuration.TotalMilliseconds,
+        entries = report.Entries.ToDictionary(
+            kvp => kvp.Key,
+            kvp => new
+            {
+                status = kvp.Value.Status.ToString(),
+                description = kvp.Value.Description,
+                duration = kvp.Value.Duration.TotalMilliseconds,
+                tags = kvp.Value.Tags,
+                exception = kvp.Value.Exception?.Message
+            })
+    };
+    return context.Response.WriteAsJsonAsync(payload);
+}
 
 // Liveness probe (simple check, no rate limiting). 2026-04-28: AllowAnonymous added —
 // without it the FallbackPolicy.RequireAuthenticatedUser() at line ~344 catches the
@@ -1392,14 +1394,10 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
     Predicate = check => check.Tags.Contains("database") || check.Tags.Contains("ready")
 }).DisableRateLimiting().AllowAnonymous();
 
-// Health Check UI
-app.MapHealthChecksUI(options =>
-{
-    options.UIPath = "/health-ui";
-    options.ApiPath = "/health-api";
-});
-
-Log.Information("✅ Health check endpoints configured: /health, /health/live, /health/ready, /health-ui");
+// 2026-05-05 audit 8.04: /health-ui + /health-api routes removed with the
+// HealthChecks.UI package. WebApp's /monitoring/health remains as the
+// visual dashboard surface.
+Log.Information("✅ Health check endpoints configured: /health, /health/live, /health/ready");
 
 app.MapHub<NickScanCentralImagingPortal.API.Hubs.DashboardHub>("/hubs/dashboard");
 app.MapHub<NickScanCentralImagingPortal.API.Hubs.ComprehensiveDashboardHub>("/hubs/comprehensive-dashboard");
