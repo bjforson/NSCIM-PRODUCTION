@@ -297,6 +297,11 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<IEmailService, NickScanCentralImagingPortal.Services.Email.EmailService>();
             services.AddHostedService<NickScanCentralImagingPortal.Services.Email.DailyDataQualityReportService>();
 
+            // Sprint 5G3 / audit 8.25 — persisted dashboard alerts + email-on-Critical
+            // via NickComms.Gateway (registered just below). Scoped because it
+            // takes ApplicationDbContext.
+            services.AddScoped<IDashboardAlertService, NickScanCentralImagingPortal.Services.Monitoring.DashboardAlertService>();
+
             // NickComms Gateway client (typed HttpClient)
             services.AddHttpClient<INickCommsClient, NickScanCentralImagingPortal.Services.Email.NickCommsClient>(client =>
             {

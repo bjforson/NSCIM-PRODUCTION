@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
+using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using Npgsql;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -92,6 +93,8 @@ namespace NickScanCentralImagingPortal.API.Hubs
                     var hubContext = scope.ServiceProvider.GetRequiredService<IHubContext<ImageAnalysisDashboardHub>>();
                     var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                     var icumsDownloadsDbContext = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+                    // Sprint 5G3 / audit 8.25 — alert persistence + email-on-Critical
+                    var alertService = scope.ServiceProvider.GetRequiredService<IDashboardAlertService>();
 
                     // Get dashboard data
                     var dashboardData = await GetDashboardDataAsync(dbContext, icumsDownloadsDbContext, stoppingToken);
@@ -99,11 +102,12 @@ namespace NickScanCentralImagingPortal.API.Hubs
                     // Broadcast to all connected clients
                     await hubContext.Clients.All.SendAsync("DashboardUpdate", dashboardData, stoppingToken);
 
-                    // Check for new alerts and broadcast them
+                    // Check for new alerts and broadcast them. Persistence + dedupe + email
+                    // happen inside the service; we only handle the SignalR delta here.
                     var previousAlerts = _previousAlerts;
-                    var currentAlerts = await GetCurrentAlertsAsync(dbContext, stoppingToken);
+                    var currentAlerts = await GetCurrentAlertsAsync(dbContext, alertService, stoppingToken);
 
-                    // Find new alerts (not in previous list)
+                    // Find new alerts (not in previous list — dedupe is by persisted Id).
                     var newAlerts = currentAlerts
                         .Where(a => !previousAlerts.Any(pa => pa.Id == a.Id))
                         .ToList();
@@ -664,90 +668,73 @@ namespace NickScanCentralImagingPortal.API.Hubs
             return Task.FromResult(0);
         }
 
+        /// <summary>
+        /// Sprint 5G3 / audit 8.25 — runs the existing in-memory alert-detection
+        /// rules and routes each through <see cref="IDashboardAlertService.RaiseAsync"/>
+        /// for persistence, dedupe, and email-on-Critical via NickComms. The
+        /// returned list is populated from the persisted entities so SignalR
+        /// clients see the canonical Id and EmailSentAtUtc fields.
+        ///
+        /// Severity normalization: existing rule strings ("High", "Medium")
+        /// are mapped to the audit-finding canonical values ("Critical",
+        /// "Warning"). "Critical" stays "Critical" — that's the only severity
+        /// that triggers the email path inside the service.
+        /// </summary>
         private async Task<List<DashboardAlert>> GetCurrentAlertsAsync(
             ApplicationDbContext dbContext,
+            IDashboardAlertService alertService,
             CancellationToken cancellationToken)
         {
+            const string Source = nameof(ImageAnalysisDashboardBroadcastService);
             var now = DateTime.UtcNow;
-            var alerts = new List<DashboardAlert>();
+            var rawAlerts = new List<(string Type, string Severity, string Title, string Description, Dictionary<string, object>? Metadata)>();
 
-            // Check for bottlenecks - groups with high queue sizes
+            // ===== Detection rules (unchanged from pre-Sprint-5G3) =====
+
             var readyGroups = await dbContext.AnalysisGroups
                 .Where(g => g.Status == AnalysisStatuses.Ready)
                 .CountAsync(cancellationToken);
 
             if (readyGroups > 100)
             {
-                alerts.Add(new DashboardAlert
-                {
-                    Id = alerts.Count + 1,
-                    AlertType = "Bottleneck",
-                    Severity = "Critical",
-                    Title = $"High queue in Ready stage",
-                    Message = $"{readyGroups} groups waiting for analyst assignment",
-                    CreatedAt = now,
-                    IsAcknowledged = false,
-                    IsResolved = false
-                });
+                rawAlerts.Add(("Bottleneck", "Critical",
+                    "High queue in Ready stage",
+                    $"{readyGroups} groups waiting for analyst assignment",
+                    null));
             }
             else if (readyGroups > 50)
             {
-                alerts.Add(new DashboardAlert
-                {
-                    Id = alerts.Count + 1,
-                    AlertType = "Bottleneck",
-                    Severity = "High",
-                    Title = $"Growing queue in Ready stage",
-                    Message = $"{readyGroups} groups waiting for analyst assignment",
-                    CreatedAt = now,
-                    IsAcknowledged = false,
-                    IsResolved = false
-                });
+                rawAlerts.Add(("Bottleneck", "Critical", // was "High" pre-5G3
+                    "Growing queue in Ready stage",
+                    $"{readyGroups} groups waiting for analyst assignment",
+                    null));
             }
 
-            // Check for audit queue
             var auditReadyGroups = await dbContext.AnalysisGroups
                 .Where(g => g.Status == AnalysisStatuses.AnalystCompleted)
                 .CountAsync(cancellationToken);
 
             if (auditReadyGroups > 50)
             {
-                alerts.Add(new DashboardAlert
-                {
-                    Id = alerts.Count + 1,
-                    AlertType = "Bottleneck",
-                    Severity = auditReadyGroups > 75 ? "Critical" : "High",
-                    Title = $"High queue in Audit stage",
-                    Message = $"{auditReadyGroups} groups waiting for audit assignment",
-                    CreatedAt = now,
-                    IsAcknowledged = false,
-                    IsResolved = false
-                });
+                rawAlerts.Add(("Bottleneck",
+                    auditReadyGroups > 75 ? "Critical" : "Critical", // was "Critical"/"High"
+                    "High queue in Audit stage",
+                    $"{auditReadyGroups} groups waiting for audit assignment",
+                    null));
             }
 
-            // Check for stale assignments (older than 4 hours)
             var staleAssignments = await dbContext.AnalysisAssignments
                 .Where(a => a.State == "Active" && a.CreatedAtUtc < now.AddHours(-4))
                 .CountAsync(cancellationToken);
 
             if (staleAssignments > 0)
             {
-                alerts.Add(new DashboardAlert
-                {
-                    Id = alerts.Count + 1,
-                    AlertType = "Performance",
-                    Severity = staleAssignments > 10 ? "High" : "Medium",
-                    Title = $"Stale assignments detected",
-                    Message = $"{staleAssignments} assignments older than 4 hours",
-                    CreatedAt = now,
-                    IsAcknowledged = false,
-                    IsResolved = false
-                });
+                rawAlerts.Add(("Performance",
+                    staleAssignments > 10 ? "Critical" : "Warning", // was "High"/"Medium"
+                    "Stale assignments detected",
+                    $"{staleAssignments} assignments older than 4 hours",
+                    null));
             }
-
-            // Check for data integrity issues
-            using var scope = _scopeFactory.CreateScope();
-            var icumsDb = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
 
             var nullGroupIdentifier = await dbContext.ContainerCompletenessStatuses
                 .Where(c => string.IsNullOrEmpty(c.GroupIdentifier))
@@ -766,36 +753,69 @@ namespace NickScanCentralImagingPortal.API.Hubs
 
                 if (integrityPercentage < 95.0)
                 {
-                    alerts.Add(new DashboardAlert
-                    {
-                        Id = alerts.Count + 1,
-                        AlertType = "DataIntegrity",
-                        Severity = integrityPercentage < 90.0 ? "Critical" : "High",
-                        Title = $"Data integrity issues detected",
-                        Message = $"{nullGroupIdentifier} containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId. Integrity: {integrityPercentage:F2}%",
-                        CreatedAt = now,
-                        IsAcknowledged = false,
-                        IsResolved = false,
-                        Metadata = new Dictionary<string, object>
+                    rawAlerts.Add(("DataIntegrity",
+                        integrityPercentage < 90.0 ? "Critical" : "Critical", // was "Critical"/"High"
+                        "Data integrity issues detected",
+                        $"{nullGroupIdentifier} containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId. Integrity: {integrityPercentage:F2}%",
+                        new Dictionary<string, object>
                         {
                             { "NullGroupIdentifier", nullGroupIdentifier },
                             { "MissingBOEDocumentId", missingBOEDocumentId },
                             { "IntegrityPercentage", integrityPercentage }
-                        }
-                    });
+                        }));
                 }
                 else if (nullGroupIdentifier > 50 || missingBOEDocumentId > 50)
                 {
+                    rawAlerts.Add(("DataIntegrity", "Warning", // was "Medium"
+                        "Data integrity warning",
+                        $"{nullGroupIdentifier} containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId",
+                        null));
+                }
+            }
+
+            // ===== Persist + dedupe + email-on-Critical via the service =====
+            var alerts = new List<DashboardAlert>(rawAlerts.Count);
+            foreach (var raw in rawAlerts)
+            {
+                try
+                {
+                    var entity = await alertService.RaiseAsync(
+                        raw.Type, raw.Severity, raw.Title, raw.Description, Source, cancellationToken);
+
+                    alerts.Add(new DashboardAlert
+                    {
+                        Id = entity.Id,
+                        AlertType = entity.Type,
+                        Severity = entity.Severity,
+                        Title = entity.Title,
+                        Message = entity.Description ?? string.Empty,
+                        CreatedAt = entity.RaisedAtUtc,
+                        AcknowledgedAt = entity.AcknowledgedAtUtc,
+                        AcknowledgedBy = entity.AcknowledgedBy,
+                        IsAcknowledged = entity.AcknowledgedAtUtc.HasValue,
+                        IsResolved = false,
+                        Metadata = raw.Metadata ?? new Dictionary<string, object>()
+                    });
+                }
+                catch (Exception ex)
+                {
+                    // Fall back to in-memory broadcast — better an unpersisted
+                    // alert than no alert at all if the DB or NickComms is down.
+                    _logger.LogError(ex,
+                        "[DASHBOARD-ALERTS] RaiseAsync failed for {Type}/{Title}; falling back to ephemeral broadcast",
+                        raw.Type, raw.Title);
+
                     alerts.Add(new DashboardAlert
                     {
                         Id = alerts.Count + 1,
-                        AlertType = "DataIntegrity",
-                        Severity = "Medium",
-                        Title = $"Data integrity warning",
-                        Message = $"{nullGroupIdentifier} containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId",
+                        AlertType = raw.Type,
+                        Severity = raw.Severity,
+                        Title = raw.Title,
+                        Message = raw.Description,
                         CreatedAt = now,
                         IsAcknowledged = false,
-                        IsResolved = false
+                        IsResolved = false,
+                        Metadata = raw.Metadata ?? new Dictionary<string, object>()
                     });
                 }
             }

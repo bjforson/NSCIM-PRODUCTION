@@ -2236,6 +2236,88 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.ToTable("crossrecordscans");
                 });
 
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.DashboardAlertEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("AcknowledgedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acknowledgedatutc");
+
+                    b.Property<string>("AcknowledgedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("acknowledgedby");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTime?>("EmailSentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("emailsentatutc");
+
+                    b.Property<DateTime>("RaisedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("raisedatutc");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("severity");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("source");
+
+                    b.Property<long>("TenantId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_dashboardalerts");
+
+                    b.HasIndex("AcknowledgedAtUtc")
+                        .HasDatabaseName("ix_dashboardalerts_acknowledgedatutc");
+
+                    b.HasIndex("RaisedAtUtc")
+                        .HasDatabaseName("ix_dashboardalerts_raisedatutc");
+
+                    b.HasIndex("Severity")
+                        .HasDatabaseName("ix_dashboardalerts_severity");
+
+                    b.HasIndex("Type")
+                        .HasDatabaseName("ix_dashboardalerts_type");
+
+                    b.HasIndex("Type", "Title", "RaisedAtUtc")
+                        .HasDatabaseName("ix_dashboardalerts_type_title_raisedatutc");
+
+                    b.HasIndex("TenantId", "Id")
+                        .HasDatabaseName("ix_dashboardalerts_tenant_id");
+
+                    b.ToTable("dashboardalerts");
+                });
+
             modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.EndpointUsageLog", b =>
                 {
                     b.Property<long>("Id")

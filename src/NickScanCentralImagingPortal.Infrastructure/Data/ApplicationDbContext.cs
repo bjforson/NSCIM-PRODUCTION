@@ -134,6 +134,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
         // Match quality flags (Match Correction Tool — replaces log-only anomaly tracking)
         public DbSet<MatchQualityFlag> MatchQualityFlags { get; set; }
 
+        // Dashboard alerts (Sprint 5G3 / audit 8.25 — persist + email on-call when
+        // critical alerts fire, instead of broadcasting to SignalR only).
+        public DbSet<DashboardAlertEntity> DashboardAlerts { get; set; }
+
         // Per-image audit verdicts (deferred plan request 1 — child of AuditDecision)
         public DbSet<AuditImageDecision> AuditImageDecisions { get; set; }
 
@@ -1062,6 +1066,35 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.HasIndex(e => e.CreatedAtUtc);
                 // Composite for the admin "open flags" landing-page query
                 entity.HasIndex(e => new { e.IsResolved, e.Severity, e.CreatedAtUtc });
+            });
+
+            // Dashboard alerts (Sprint 5G3 / audit 8.25 — persisted alert log)
+            modelBuilder.Entity<DashboardAlertEntity>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Type).IsRequired().HasMaxLength(64);
+                entity.Property(e => e.Severity).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.Description).HasMaxLength(2000);
+                entity.Property(e => e.Source).HasMaxLength(200);
+                entity.Property(e => e.AcknowledgedBy).HasMaxLength(100);
+
+                // Phase-1 tenancy: DB default = current_setting('app.tenant_id')::bigint
+                // is applied via raw SQL in the migration (EF can't express
+                // server-side function defaults reliably across providers).
+                entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+
+                entity.HasIndex(e => e.Type);
+                entity.HasIndex(e => e.Severity);
+                entity.HasIndex(e => e.RaisedAtUtc);
+                entity.HasIndex(e => e.AcknowledgedAtUtc);
+                // Dedupe support — IDashboardAlertService probes
+                // (Type, Title, RaisedAtUtc) within a 30-minute window.
+                entity.HasIndex(e => new { e.Type, e.Title, e.RaisedAtUtc })
+                      .HasDatabaseName("ix_dashboardalerts_type_title_raisedatutc");
+                // Tenancy index — matches the phase-1 pattern
+                entity.HasIndex(e => new { e.TenantId, e.Id })
+                      .HasDatabaseName("ix_dashboardalerts_tenant_id");
             });
 
             // Decision Agent configuration
