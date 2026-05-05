@@ -131,11 +131,21 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             try
             {
-                using var connection = new NpgsqlConnection(_connectionString);
+                // Audit 8.03 (2026-05-05): this background service uses raw Npgsql,
+                // not EF, so the TenantConnectionInterceptor never fires. Since the
+                // 2026-04-25 phase-1 RLS rollout, applicationlogs is FORCE ROW LEVEL
+                // SECURITY with a fail-closed '0' default; without app.tenant_id the
+                // query returns 0 rows every cycle (errors visible but undetected
+                // for 9 days). Open a transaction and SET LOCAL app.tenant_id = '1'
+                // before the read so RLS sees the platform tenant.
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync(stoppingToken);
+                await using var tx = await connection.BeginTransactionAsync(stoppingToken);
+                await using (var setCmd = new NpgsqlCommand("SET LOCAL app.tenant_id = '1'", connection, tx))
+                    await setCmd.ExecuteNonQueryAsync(stoppingToken);
 
                 var query = @"
-                    SELECT 
+                    SELECT
                         l.id,
                         l.timestamp,
                         l.level,
@@ -151,31 +161,35 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                             l.logger NOT ILIKE '%ErrorMonitoring%'
                             AND l.logger NOT ILIKE '%ErrorInvestigation%'))
                         AND NOT EXISTS (
-                            SELECT 1 
+                            SELECT 1
                             FROM errorinvestigations ei
                             WHERE ei.relatedlogids LIKE '%' || CAST(l.id AS TEXT) || '%'
                         )
                     ORDER BY l.timestamp DESC
                     LIMIT 100";
 
-                using var command = new NpgsqlCommand(query, connection);
+                await using var command = new NpgsqlCommand(query, connection, tx);
                 command.Parameters.AddWithValue("@CutoffTime", cutoffTime);
 
-                using var reader = await command.ExecuteReaderAsync(stoppingToken);
-                while (await reader.ReadAsync(stoppingToken))
+                await using (var reader = await command.ExecuteReaderAsync(stoppingToken))
                 {
-                    errors.Add(new ErrorLogEntry
+                    while (await reader.ReadAsync(stoppingToken))
                     {
-                        Id = reader.GetInt64(reader.GetOrdinal("id")),
-                        Timestamp = reader.GetDateTime(reader.GetOrdinal("timestamp")),
-                        Level = reader.GetString(reader.GetOrdinal("level")),
-                        ServiceId = reader.IsDBNull(reader.GetOrdinal("serviceid")) ? null : reader.GetString(reader.GetOrdinal("serviceid")),
-                        Operation = reader.IsDBNull(reader.GetOrdinal("operation")) ? null : reader.GetString(reader.GetOrdinal("operation")),
-                        Message = reader.GetString(reader.GetOrdinal("message")),
-                        Exception = reader.IsDBNull(reader.GetOrdinal("exception")) ? null : reader.GetString(reader.GetOrdinal("exception")),
-                        Properties = reader.IsDBNull(reader.GetOrdinal("properties")) ? null : reader.GetString(reader.GetOrdinal("properties"))
-                    });
+                        errors.Add(new ErrorLogEntry
+                        {
+                            Id = reader.GetInt64(reader.GetOrdinal("id")),
+                            Timestamp = reader.GetDateTime(reader.GetOrdinal("timestamp")),
+                            Level = reader.GetString(reader.GetOrdinal("level")),
+                            ServiceId = reader.IsDBNull(reader.GetOrdinal("serviceid")) ? null : reader.GetString(reader.GetOrdinal("serviceid")),
+                            Operation = reader.IsDBNull(reader.GetOrdinal("operation")) ? null : reader.GetString(reader.GetOrdinal("operation")),
+                            Message = reader.GetString(reader.GetOrdinal("message")),
+                            Exception = reader.IsDBNull(reader.GetOrdinal("exception")) ? null : reader.GetString(reader.GetOrdinal("exception")),
+                            Properties = reader.IsDBNull(reader.GetOrdinal("properties")) ? null : reader.GetString(reader.GetOrdinal("properties"))
+                        });
+                    }
                 }
+
+                await tx.CommitAsync(stoppingToken);
             }
             catch (PostgresException ex) when (ex.SqlState == "42P01")
             {

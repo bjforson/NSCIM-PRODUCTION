@@ -28,6 +28,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     "Set ConnectionStrings:NS_CIS_Connection in appsettings.json or environment.");
         }
 
+        // Audit 8.02 (2026-05-05): every method in this controller opens a raw
+        // NpgsqlConnection (not via EF), so the TenantConnectionInterceptor never
+        // fires. Since the 2026-04-25 phase-1 RLS rollout, applicationlogs is
+        // FORCE ROW LEVEL SECURITY with a fail-closed '0' default; without
+        // app.tenant_id set, every read returns 0 rows. Wrap each method's work
+        // in a transaction and issue SET LOCAL app.tenant_id = '1' as the first
+        // command so RLS sees the platform tenant for the duration of the work.
+        private const string SetTenantIdSql = "SET LOCAL app.tenant_id = '1'";
+
         [HttpGet("logs")]
         public async Task<ActionResult<PagedResult<LogEntry>>> GetLogs(
             [FromQuery] string? serviceId = null,
@@ -43,8 +52,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 var logs = new List<LogEntry>();
                 var totalCount = 0;
 
-                using var connection = new NpgsqlConnection(_connectionString);
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync();
+                await using var tx = await connection.BeginTransactionAsync();
+                await using (var setCmd = new NpgsqlCommand(SetTenantIdSql, connection, tx))
+                    await setCmd.ExecuteNonQueryAsync();
 
                 var whereClause = "WHERE 1=1";
                 var parameters = new List<NpgsqlParameter>();
@@ -74,7 +86,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 var countQuery = $"SELECT COUNT(*) FROM applicationlogs {whereClause}";
-                using (var countCommand = new NpgsqlCommand(countQuery, connection))
+                await using (var countCommand = new NpgsqlCommand(countQuery, connection, tx))
                 {
                     foreach (var p in parameters) countCommand.Parameters.Add(p.Clone());
                     var countResult = await countCommand.ExecuteScalarAsync();
@@ -89,23 +101,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     ORDER BY timestamp DESC
                     LIMIT {pageSize} OFFSET {offset}";
 
-                using var command = new NpgsqlCommand(query, connection);
+                await using var command = new NpgsqlCommand(query, connection, tx);
                 foreach (var p in parameters) command.Parameters.Add(p.Clone());
 
-                using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                await using (var reader = await command.ExecuteReaderAsync())
                 {
-                    logs.Add(new LogEntry
+                    while (await reader.ReadAsync())
                     {
-                        Id = reader.GetInt32(reader.GetOrdinal("id")),
-                        Timestamp = reader.GetDateTime(reader.GetOrdinal("timestamp")),
-                        Level = reader.IsDBNull(reader.GetOrdinal("level")) ? "Unknown" : reader.GetString(reader.GetOrdinal("level")),
-                        ServiceId = reader.IsDBNull(reader.GetOrdinal("logger")) ? null : reader.GetString(reader.GetOrdinal("logger")),
-                        Message = reader.IsDBNull(reader.GetOrdinal("message")) ? "" : reader.GetString(reader.GetOrdinal("message")),
-                        Exception = reader.IsDBNull(reader.GetOrdinal("exception")) ? null : reader.GetString(reader.GetOrdinal("exception")),
-                        Properties = reader.IsDBNull(reader.GetOrdinal("properties")) ? null : reader.GetString(reader.GetOrdinal("properties"))
-                    });
+                        logs.Add(new LogEntry
+                        {
+                            Id = reader.GetInt32(reader.GetOrdinal("id")),
+                            Timestamp = reader.GetDateTime(reader.GetOrdinal("timestamp")),
+                            Level = reader.IsDBNull(reader.GetOrdinal("level")) ? "Unknown" : reader.GetString(reader.GetOrdinal("level")),
+                            ServiceId = reader.IsDBNull(reader.GetOrdinal("logger")) ? null : reader.GetString(reader.GetOrdinal("logger")),
+                            Message = reader.IsDBNull(reader.GetOrdinal("message")) ? "" : reader.GetString(reader.GetOrdinal("message")),
+                            Exception = reader.IsDBNull(reader.GetOrdinal("exception")) ? null : reader.GetString(reader.GetOrdinal("exception")),
+                            Properties = reader.IsDBNull(reader.GetOrdinal("properties")) ? null : reader.GetString(reader.GetOrdinal("properties"))
+                        });
+                    }
                 }
+
+                await tx.CommitAsync();
 
                 return Ok(new PagedResult<LogEntry>
                 {
@@ -130,8 +146,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 var statistics = new LogStatistics();
 
-                using var connection = new NpgsqlConnection(_connectionString);
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync();
+                await using var tx = await connection.BeginTransactionAsync();
+                await using (var setCmd = new NpgsqlCommand(SetTenantIdSql, connection, tx))
+                    await setCmd.ExecuteNonQueryAsync();
 
                 var query = @"
                     SELECT COALESCE(logger, 'Unknown') AS serviceid, level,
@@ -142,21 +161,25 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     WHERE timestamp >= NOW() - INTERVAL '1 hour' * @hoursBack
                     GROUP BY logger, level
                     ORDER BY logcount DESC";
-                using var command = new NpgsqlCommand(query, connection);
+                await using var command = new NpgsqlCommand(query, connection, tx);
                 command.Parameters.AddWithValue("@hoursBack", hoursBack);
 
-                using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
+                await using (var reader = await command.ExecuteReaderAsync())
                 {
-                    statistics.ServiceStats.Add(new ServiceLogStats
+                    while (await reader.ReadAsync())
                     {
-                        ServiceId = reader.GetString(reader.GetOrdinal("serviceid")),
-                        Level = reader.IsDBNull(reader.GetOrdinal("level")) ? "Unknown" : reader.GetString(reader.GetOrdinal("level")),
-                        LogCount = reader.GetInt32(reader.GetOrdinal("logcount")),
-                        FirstLog = reader.GetDateTime(reader.GetOrdinal("firstlog")),
-                        LastLog = reader.GetDateTime(reader.GetOrdinal("lastlog"))
-                    });
+                        statistics.ServiceStats.Add(new ServiceLogStats
+                        {
+                            ServiceId = reader.GetString(reader.GetOrdinal("serviceid")),
+                            Level = reader.IsDBNull(reader.GetOrdinal("level")) ? "Unknown" : reader.GetString(reader.GetOrdinal("level")),
+                            LogCount = reader.GetInt32(reader.GetOrdinal("logcount")),
+                            FirstLog = reader.GetDateTime(reader.GetOrdinal("firstlog")),
+                            LastLog = reader.GetDateTime(reader.GetOrdinal("lastlog"))
+                        });
+                    }
                 }
+
+                await tx.CommitAsync();
 
                 return Ok(statistics);
             }
@@ -172,14 +195,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
-                using var connection = new NpgsqlConnection(_connectionString);
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync();
+                await using var tx = await connection.BeginTransactionAsync();
+                await using (var setCmd = new NpgsqlCommand(SetTenantIdSql, connection, tx))
+                    await setCmd.ExecuteNonQueryAsync();
 
-                using var command = new NpgsqlCommand("sp_CleanupOldLogs", connection);
+                await using var command = new NpgsqlCommand("sp_CleanupOldLogs", connection, tx);
                 command.CommandType = System.Data.CommandType.StoredProcedure;
                 command.Parameters.AddWithValue("@DaysToKeep", daysToKeep);
 
                 var result = await command.ExecuteScalarAsync();
+
+                await tx.CommitAsync();
 
                 _logger.LogInformation("Log cleanup completed: {Result}", result);
                 return Ok(new { message = "Log cleanup completed", result });
@@ -198,16 +226,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 var serviceIds = new List<string>();
 
-                using var connection = new NpgsqlConnection(_connectionString);
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync();
+                await using var tx = await connection.BeginTransactionAsync();
+                await using (var setCmd = new NpgsqlCommand(SetTenantIdSql, connection, tx))
+                    await setCmd.ExecuteNonQueryAsync();
 
-                using var command = new NpgsqlCommand("SELECT DISTINCT logger FROM applicationlogs WHERE logger IS NOT NULL ORDER BY logger", connection);
-                using var reader = await command.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
+                await using var command = new NpgsqlCommand("SELECT DISTINCT logger FROM applicationlogs WHERE logger IS NOT NULL ORDER BY logger", connection, tx);
+                await using (var reader = await command.ExecuteReaderAsync())
                 {
-                    serviceIds.Add(reader.GetString(0));
+                    while (await reader.ReadAsync())
+                    {
+                        serviceIds.Add(reader.GetString(0));
+                    }
                 }
+
+                await tx.CommitAsync();
 
                 return Ok(serviceIds);
             }
@@ -224,11 +258,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var levels = new List<string>();
-                using var connection = new NpgsqlConnection(_connectionString);
+                await using var connection = new NpgsqlConnection(_connectionString);
                 await connection.OpenAsync();
-                using var command = new NpgsqlCommand("SELECT DISTINCT level FROM applicationlogs WHERE level IS NOT NULL ORDER BY level", connection);
-                using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync()) levels.Add(reader.GetString(0));
+                await using var tx = await connection.BeginTransactionAsync();
+                await using (var setCmd = new NpgsqlCommand(SetTenantIdSql, connection, tx))
+                    await setCmd.ExecuteNonQueryAsync();
+
+                await using var command = new NpgsqlCommand("SELECT DISTINCT level FROM applicationlogs WHERE level IS NOT NULL ORDER BY level", connection, tx);
+                await using (var reader = await command.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync()) levels.Add(reader.GetString(0));
+                }
+
+                await tx.CommitAsync();
+
                 return Ok(levels);
             }
             catch (Exception ex)

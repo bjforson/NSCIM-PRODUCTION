@@ -85,6 +85,19 @@ NormalizeConnectionStrings(builder.Configuration, builder.Environment);
 // Note: Main configuration comes from appsettings.Logging.json
 // This ensures consistent file size limits, rolling intervals, and retention policies
 var dbConnString = builder.Configuration.GetConnectionString("NS_CIS_Connection");
+
+// Audit 8.01 (2026-05-05): the Serilog Postgres sink uses raw Npgsql, not the EF
+// TenantConnectionInterceptor, so it never sets app.tenant_id. RLS fail-closed
+// default '0' rejected every applicationlogs INSERT since the 2026-04-25 phase-1
+// RLS rollout (sink silently dead 9 days). Append Options=-c app.tenant_id=1 to
+// the sink-only connection string so every backend session it opens starts with
+// the correct GUC. Other consumers (EF, raw Npgsql in controllers) are untouched.
+var sinkConnString = string.IsNullOrEmpty(dbConnString)
+    ? string.Empty
+    : (dbConnString.Contains("Options=", StringComparison.OrdinalIgnoreCase)
+        ? dbConnString
+        : dbConnString.TrimEnd(';') + ";Options=-c app.tenant_id=1");
+
 var columnWriters = new Dictionary<string, Serilog.Sinks.PostgreSQL.ColumnWriters.ColumnWriterBase>
 {
     { "timestamp", new Serilog.Sinks.PostgreSQL.ColumnWriters.TimestampColumnWriter() },
@@ -100,7 +113,7 @@ Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
     .WriteTo.Console(new NickScanCentralImagingPortal.API.Logging.ServiceColorFormatter())
     .WriteTo.PostgreSQL(
-        connectionString: dbConnString ?? "",
+        connectionString: sinkConnString,
         tableName: "applicationlogs",
         columnOptions: columnWriters,
         needAutoCreateTable: false,
