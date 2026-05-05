@@ -22,6 +22,94 @@ For each release, this file records:
 
 ---
 
+## [2.16.6] — 2026-05-05 — Sprint 2C: dead code excision + orphan-AG relocation + queue materialization
+
+The largest single coordinated change in the audit's fix-it sprint plan.
+12 files changed, 190 insertions, 1,991 deletions. Closes 1 P0 + 5 P1
+findings and disarms 1 latent P0.
+
+### Behaviour changes
+
+- **Orphan-AG `Cancel`-on-expire is now in live code.** Today's 2.16.1
+  fix (commit `2325433`) had landed in the dead `AssignmentWorker.cs`
+  file — never executed at runtime. The 14 Cancelled AGs cancelled
+  earlier today were cancelled by a manual probe, not by running code.
+  The logic is now ported into `ImageAnalysisOrchestratorService.cs`
+  (helper `IsOrphanAnalysisGroupAsync` ~line 1556; usage in
+  `ReclaimExpiredAssignmentsAsync` ~lines 1481-1530 and in
+  `ValidateAssignmentsAsync` ~lines 1577-1620). Audit `4.01` (P0) closed.
+- **Behaviour add (not a 1:1 port):** the existing orchestrator
+  `ReclaimExpiredAssignmentsAsync` was not transitioning AG.Status at
+  all when expiring an assignment. Pre-fix: expired assignments left
+  AGs stuck in `AnalystAssigned` forever (until manual sweep). Now:
+  expired assignments transition the AG back to `Ready` for non-orphan
+  AGs, and to `Cancelled` for orphan AGs. **This explains the
+  "queue=0 with 16 Ready AGs" mystery surfaced in the audit** — those
+  AGs were stuck `AnalystAssigned`, not `Ready`.
+- **Queue entries materialize immediately.** `AutoAssignByRoleAsync`
+  now calls `UpsertQueueEntryAsync` after the assignment commit (audit
+  `4.02`). Previously queue entries only appeared via `ReconcileQueueAsync`
+  with a 1-2 minute lag; operators saw assignments late.
+- **`AnalysisStatusValidator` now knows about `AgentProcessing`,
+  `Cancelled`, `Archived`** (audit `4.04`). Unknown-from fallback
+  changed from silent `return true` to `return false` + trace warning.
+  `Cancelled` and `Archived` are terminal (no outbound transitions).
+- **ICUMS submission simulator disarmed.** Removed
+  `services.AddHostedService<ICUMSSubmissionService>()` registration
+  in `ServiceConfiguration.cs:329`. The simulator (`Random.Shared.NextDouble() < 0.1`
+  failure injection) no longer runs. `QueueForSubmissionAsync` interface
+  remains usable by `ContainerValidationController.ApproveContainer`,
+  but rows now sit unprocessed (the orchestrator's Outbox is the real
+  submission path for normal workflow). Audit `5.04` (latent P0) disarmed.
+- **`IcumDataTransferController.TriggerTransfer` now returns 503**
+  with a clear "use orchestrator workflow" message instead of leaking
+  a null-reference. Audit `5.18` partial.
+
+### Dead code deleted (5 files, ~2,000 lines)
+
+- `src/NickScanCentralImagingPortal.Services/ImageAnalysis/AssignmentWorker.cs`
+  (audit `4.01`/`4.07` — never registered as IHostedService)
+- `src/NickScanCentralImagingPortal.Services/ImageAnalysis/SubmissionWorker.cs`
+  (was `[Obsolete]`-tagged)
+- `src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisBootstrapper.cs`
+- `src/NickScanCentralImagingPortal.Services/IcumApi/IcumDataTransferService.cs`
+  (audit `5.12`)
+- `src/NickScanWebApp.New/Services/SignalRService.cs` (audit `6.05` — targeted nonexistent `/hubs/scanner`)
+
+### What this release does NOT do
+
+- Does not fix the BOE re-arrival drop of MasterBlNumber (5.01) — Sprint 2D.
+- Does not add Layer 5 to the match-correctness model (3.01) — Sprint 3.
+- Does not unify the dialog's `IsConsolidated` routing assumption (6.01) — Sprint 4.
+- Does not re-implement a real ICUMS submission consumer for the
+  `icumssubmissionqueues` table — deferred. The simulator is disarmed
+  but the manual-approve flow is now operationally inert.
+
+### Risk and rollback
+
+Risk surface: medium. Five file deletions + five-site behaviour
+changes in the live orchestrator. Pre-deploy build clean (0 errors,
+all warnings pre-existing). Rollback: `git revert dbf5ac9` + redeploy.
+
+### Audit findings closed
+
+- 4.01 (P0)
+- 4.02
+- 4.03
+- 4.04
+- 4.07
+- 6.05
+- 5.04 (latent P0 disarmed)
+- 5.12 (partial)
+- 5.18 (partial)
+
+### Commits
+
+- `dbf5ac9` — `fix(orchestrator): Sprint 2C — dead code excision + orphan-AG relocation + queue materialization`
+- (this commit) — `chore(release): bump to 2.16.6 + Sprint 2C release notes`
+
+---
+
 ## [2.16.5] — 2026-05-05 — Sprint 1 Group B: RLS structural floor (2.01)
 
 The highest-stakes single change in the audit's fix-it sprint plan. Restores
