@@ -22,6 +22,47 @@ For each release, this file records:
 
 ---
 
+## [2.16.9] — 2026-05-05 — Team 3 follow-ups: HealthChecks UI replaced + heartbeat log rollout
+
+Two parallel agents covering the audit-follow-up "polish" surface.
+
+### What landed
+
+- `3f3f8a2` Team 3 Agent 3.2 — HealthChecks UI removed; `/health` JSON kept (8.04 closed)
+- `3a6d73a` Team 3 Agent 3.1 — Heartbeat-log rollout to 10 more BackgroundServices (8.13 follow-up)
+
+### Behaviour changes
+
+- **`/health-ui` is gone.** Replaced with the simpler `/health` JSON endpoint (which already worked). Root cause of the 414 was Kestrel's 8 KiB request-line cap being exceeded by HealthChecks UI's polling URL with state in query string. Removing the UI dropped 4 problematic transitive packages in one stroke (`IdentityModel`, `KubernetesClient` with its GHSA suppression, `EntityFrameworkCore.InMemory`, the UI itself). The WebApp's existing `/monitoring/health` page (backed by `/api/Monitoring/health/overview`) covers the visual surface — no replacement built.
+- **15 of ~35 BackgroundServices now emit per-iteration heartbeat logs.** Sprint 5G2 wired 5; this release adds 10 more: `EndpointUsageBufferService`, `RecordReconciliationWorker`, `ErrorMonitoringBackgroundService`, `IcumFileArchiveService`, `FailedFileRetryService`, `DailyDataQualityReportService`, `ICUMSMetricsCollectorService`, `CMRRedownloadBackgroundService`, `QueueRecoveryService`, `ManualBOESelectivityService`. Each emits `[ServiceId] iteration=N elapsed_ms=X processed=Y skipped=Z failed=W` at end of iteration plus a per-cycle CorrelationId scope.
+
+### Pragmatic substitutions in T3.1
+
+The agent's priority list assumed standalone classes that don't exist:
+- `IntakeWorker` — intake is a method on `ImageAnalysisOrchestratorService`, not a separate class. Substituted `CMRRedownloadBackgroundService`.
+- `MultiContainerValidationService` — plain DI service, not `BackgroundService`. Substituted `QueueRecoveryService`.
+- `IcumFileScannerService` — uses `ThrottledLogger` wrapper that doesn't expose the underlying `ILogger`; wiring would require a logger-type refactor (stop condition). Substituted `ManualBOESelectivityService`.
+
+### Audit findings closed
+
+- **8.04** (was partial in 2.16.4 — fully closed here)
+- **8.13 follow-up** (10 of 30 remaining services wired; 15 of 35 total)
+
+### Audit running totals (after 2.16.4 → 2.16.9)
+
+- **P0:** 6 of 6 closed
+- **Latent P0 disarmed:** 1 (5.04)
+- **P1:** ~35 of ~45 closed (~78%)
+- **P2/P3:** ~17 of ~120 closed (~14%)
+
+### Routing endpoint design (companion artifact, not a code change)
+
+`docs/audit/2026-05-05/follow-up-routing-endpoint-design.md` (2,429 words) — Agent 2.1's design for the server-side `IsConsolidated` disambiguation endpoint. Surfaced empirically that `AG.GroupType` is uniformly `'BL'` in production (all 2,738 rows), so design pivoted to RCS-shape dispatch. Pattern A (used cars, 2,774 rows) became a first-class `CargoGroupingMode`. Phase 1 implementation lands separately as Team 2 Agent 2.2 (in flight).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
 ## [2.16.8] — 2026-05-05 — Sprint 5G1 + 5G2: schema integrity + observability uplift
 
 Two parallel sprints landing the structural cleanup half of the audit.
