@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Services.Logging;
 using NickScanCentralImagingPortal.Services.Settings;
 
 namespace NickScanCentralImagingPortal.Services.IcumApi
@@ -24,6 +25,13 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
         private readonly int _archiveAfterHours;
         private readonly int _batchSize;
         private readonly int _retentionYears;
+
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. ProcessArchiveCycleAsync
+        // writes these and ExecuteAsync reads them for the per-iteration summary.
+        private int _cycleCount = 0;
+        private int _lastCycleArchived = 0;
+        private int _lastCycleFailed = 0;
+        private int _lastCycleSkipped = 0;
 
         public IcumFileArchiveService(
             IServiceScopeFactory serviceScopeFactory,
@@ -49,6 +57,27 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 try
                 {
                     await Task.Delay(_processingInterval, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("{ServiceId} Service cancellation requested", SERVICE_ID);
+                    break;
+                }
+
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(IcumFileArchiveService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastCycleArchived = 0;
+                _lastCycleFailed = 0;
+                _lastCycleSkipped = 0;
+                int _failedThisCycle = 0;
+
+                try
+                {
                     await ProcessArchiveCycleAsync();
                 }
                 catch (OperationCanceledException)
@@ -58,8 +87,21 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "{ServiceId} Error in archive processing cycle", SERVICE_ID);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = files archived this cycle; skipped = files seen
+                // but not eligible (no BOE docs / missing on disk); failed =
+                // per-file archive errors plus loop-level exceptions.
+                _logger.LogIterationSummary(
+                    "ICUMS-ARCHIVE",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastCycleArchived,
+                    itemsSkipped: _lastCycleSkipped,
+                    itemsFailed: _lastCycleFailed + _failedThisCycle);
             }
             _logger.LogInformation("{ServiceId} Archive Service stopped", SERVICE_ID);
         }
@@ -88,6 +130,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             int archivedCount = 0;
             int failedCount = 0;
+            int skippedCount = 0;
 
             foreach (var file in filesToArchive)
             {
@@ -97,6 +140,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     if (!File.Exists(file.FilePath))
                     {
                         _logger.LogWarning("{ServiceId} File not found, skipping: {FilePath}", SERVICE_ID, file.FilePath);
+                        skippedCount++;
                         continue;
                     }
 
@@ -106,6 +150,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     {
                         _logger.LogWarning("{ServiceId} File {FileName} has no BOE documents, skipping archive",
                             SERVICE_ID, file.FileName);
+                        skippedCount++;
                         continue;
                     }
 
@@ -128,6 +173,12 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             _logger.LogInformation("{ServiceId} Archive cycle completed. Archived: {Archived}, Failed: {Failed}",
                 SERVICE_ID, archivedCount, failedCount);
+
+            // Audit 8.13 (Sprint 5G2 follow-up): publish per-cycle counts to
+            // ExecuteAsync's heartbeat emitter.
+            _lastCycleArchived = archivedCount;
+            _lastCycleFailed = failedCount;
+            _lastCycleSkipped = skippedCount;
 
             // Step 2: Update archive indexes
             await UpdateArchiveIndexesAsync(archiveBasePath);

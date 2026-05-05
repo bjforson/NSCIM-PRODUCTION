@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.Email
 {
@@ -15,6 +16,12 @@ namespace NickScanCentralImagingPortal.Services.Email
         private readonly ILogger<DailyDataQualityReportService> _logger;
         private readonly IConfiguration _configuration;
         private readonly bool _enabled;
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. ExecuteAsync
+        // and GenerateAndSendReportAsync share these for the per-iteration
+        // summary emitted on each daily wake.
+        private int _cycleCount = 0;
+        private int _lastReportSent = 0;
+        private int _lastReportFailed = 0;
 
         public DailyDataQualityReportService(
             IServiceProvider serviceProvider,
@@ -39,6 +46,16 @@ namespace NickScanCentralImagingPortal.Services.Email
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(DailyDataQualityReportService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastReportSent = 0;
+                _lastReportFailed = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     // Calculate time until next 8:00 AM
@@ -75,10 +92,22 @@ namespace NickScanCentralImagingPortal.Services.Email
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "Error in Daily Data Quality Report Service");
                     // Wait 1 hour before retrying if there's an error
                     await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = reports sent successfully this wake; failed =
+                // reports that failed to send + loop-level exceptions.
+                _logger.LogIterationSummary(
+                    "DAILY-DQ-REPORT",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastReportSent,
+                    itemsSkipped: 0,
+                    itemsFailed: _lastReportFailed + _failedThisCycle);
             }
 
             _logger.LogInformation("Daily Data Quality Report Service stopped");
@@ -127,15 +156,18 @@ namespace NickScanCentralImagingPortal.Services.Email
                 if (success)
                 {
                     _logger.LogInformation("✅ Daily data quality report sent successfully");
+                    _lastReportSent = 1;
                 }
                 else
                 {
                     _logger.LogWarning("⚠️ Failed to send daily data quality report");
+                    _lastReportFailed = 1;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error generating daily data quality report");
+                _lastReportFailed = 1;
             }
         }
 

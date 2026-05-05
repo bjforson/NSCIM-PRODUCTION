@@ -7,6 +7,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 using Polly;
 using Polly.CircuitBreaker;
 
@@ -56,9 +57,22 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             var flushIntervalSeconds = _configuration.GetValue<int>("Monitoring:EndpointUsageFlushIntervalSeconds", 10);
             var batchSize = _configuration.GetValue<int>("Monitoring:EndpointUsageBatchSize", 100);
+            // Audit 8.13 (Sprint 5G2 follow-up): monotonic iteration counter for
+            // the per-iteration heartbeat log line.
+            var cycleCount = 0;
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(EndpointUsageBufferService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed time for the
+                // heartbeat line emitted at the bottom of the iteration.
+                var _cycleStartedAt = DateTime.UtcNow;
+                cycleCount++;
+                int _flushedThisCycle = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(flushIntervalSeconds), stoppingToken);
@@ -72,6 +86,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                     if (batch.Count > 0)
                     {
                         await FlushBatchAsync(batch, stoppingToken);
+                        _flushedThisCycle = batch.Count;
                     }
                 }
                 catch (OperationCanceledException)
@@ -80,9 +95,22 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "Error in EndpointUsageBufferService flush loop");
                     await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = records flushed in this batch; failed = exceptions
+                // caught at the loop level (not per-record DB failures, which
+                // are absorbed by the circuit-breaker pipeline).
+                _logger.LogIterationSummary(
+                    "ENDPOINT-USAGE-BUFFER",
+                    cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _flushedThisCycle,
+                    itemsSkipped: 0,
+                    itemsFailed: _failedThisCycle);
             }
 
             _logger.LogInformation("EndpointUsageBufferService stopping - flushing remaining records");

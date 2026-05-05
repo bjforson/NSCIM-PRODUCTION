@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.IcumApi
 {
@@ -22,6 +23,12 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
         private DateTime _lastThroughputCalculation = DateTime.UtcNow;
         private long _lastFilesProcessed = 0;
         private long _lastDocumentsProcessed = 0;
+
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. UpdateGaugesAsync
+        // writes _lastGaugesUpdated and ExecuteAsync reads it for the
+        // per-iteration summary line.
+        private int _cycleCount = 0;
+        private int _lastGaugesUpdated = 0;
 
         public ICUMSMetricsCollectorService(
             IServiceScopeFactory serviceScopeFactory,
@@ -48,10 +55,18 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ICUMSMetricsCollectorService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastGaugesUpdated = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     await UpdateGaugesAsync();
-                    await Task.Delay(_collectionInterval, stoppingToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -60,8 +75,31 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "{ServiceId} Error updating ICUMS metrics", SERVICE_ID);
                     await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+                }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = number of gauge categories updated this cycle
+                // (queue depth / failed queue / pending / processing /
+                // throughput / memory = 6 on success, 0 on failure); failed =
+                // exceptions caught at the outer or inner level.
+                _logger.LogIterationSummary(
+                    "ICUMS-METRICS-COLLECTOR",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastGaugesUpdated,
+                    itemsSkipped: 0,
+                    itemsFailed: _failedThisCycle);
+
+                try
+                {
+                    await Task.Delay(_collectionInterval, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
                 }
             }
 
@@ -121,6 +159,11 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
                 _logger.LogDebug("{ServiceId} Updated gauges: Queue={QueueDepth}, FailedQueue={FailedQueueDepth}, Pending={PendingFiles}, Processing={ProcessingFiles}",
                     SERVICE_ID, queueStats.TotalPending, pendingRetries.Count, pendingFiles.Count, processingFiles);
+
+                // Audit 8.13 (Sprint 5G2 follow-up): publish gauges-updated
+                // count to ExecuteAsync's heartbeat emitter. 6 = queue + failed
+                // queue + pending + processing + throughput pair + memory.
+                _lastGaugesUpdated = 6;
             }
             catch (Exception ex)
             {

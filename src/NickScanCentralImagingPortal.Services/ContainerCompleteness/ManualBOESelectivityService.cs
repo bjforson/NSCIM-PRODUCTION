@@ -7,6 +7,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.IcumApi;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
@@ -21,6 +22,9 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         private const string SERVICE_ID = "[MANUAL-BOE-SELECTIVITY]";
         private int _consecutiveDatabaseUnavailableCount = 0;
         private const int MAX_WARNING_LOGS = 3; // Only log warnings for first 3 attempts
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. ExecuteAsync
+        // owns these for the per-iteration summary line.
+        private int _cycleCount = 0;
 
         public ManualBOESelectivityService(
             IServiceProvider serviceProvider,
@@ -36,6 +40,15 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ManualBOESelectivityService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                int _failedThisCycle = 0;
+                bool _skippedCycle = false;
                 try
                 {
                     // Check if we can access databases before processing
@@ -60,6 +73,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     else
                     {
                         _consecutiveDatabaseUnavailableCount++;
+                        _skippedCycle = true;
                         // Only log warnings for first few attempts, then use Debug to reduce noise
                         if (_consecutiveDatabaseUnavailableCount <= MAX_WARNING_LOGS)
                         {
@@ -89,13 +103,27 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             _logger.LogDebug(ex, "{ServiceId} Database connectivity error during BOE processing (attempt {Count})",
                                 SERVICE_ID, _consecutiveDatabaseUnavailableCount);
                         }
+                        _failedThisCycle = 1;
                     }
                     else
                     {
                         // Actual error (not connectivity) - always log
+                        _failedThisCycle = 1;
                         _logger.LogError(ex, "{ServiceId} Error during manual BOE request processing cycle", SERVICE_ID);
                     }
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // Per-request granularity is owned by the called methods; this
+                // line confirms liveness + cycle outcome (skipped due to DB
+                // unavailable / failed / clean run).
+                _logger.LogIterationSummary(
+                    "MANUAL-BOE-SELECTIVITY",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _failedThisCycle == 0 && !_skippedCycle ? 1 : 0,
+                    itemsSkipped: _skippedCycle ? 1 : 0,
+                    itemsFailed: _failedThisCycle);
 
                 // Wait for configured interval (read from database settings)
                 using (var scope = _serviceProvider.CreateScope())

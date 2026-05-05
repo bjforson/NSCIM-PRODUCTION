@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.RecordCompleteness
 {
@@ -40,6 +41,13 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
         private const string SERVICE_ID = "[RECORD-RECON]";
         private static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(60);
 
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. RunTickAsync
+        // writes these and ExecuteAsync reads them for the per-iteration
+        // summary line.
+        private int _cycleCount = 0;
+        private int _lastTickProcessed = 0;
+        private int _lastTickSkipped = 0;
+
         public RecordReconciliationWorker(
             IServiceScopeFactory scopeFactory,
             ILogger<RecordReconciliationWorker> logger)
@@ -63,6 +71,17 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(RecordReconciliationWorker));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastTickProcessed = 0;
+                _lastTickSkipped = 0;
+                int _failedThisCycle = 0;
+
                 var intervalMinutes = 30;
                 try
                 {
@@ -70,8 +89,20 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "{ServiceId} Tick failed — continuing after interval", SERVICE_ID);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = records created+updated+containers promoted this
+                // tick; skipped = records archived (deliberate non-progress).
+                _logger.LogIterationSummary(
+                    "RECORD-RECON",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastTickProcessed,
+                    itemsSkipped: _lastTickSkipped,
+                    itemsFailed: _failedThisCycle);
 
                 try
                 {
@@ -192,6 +223,11 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
             _logger.LogInformation(
                 "{ServiceId} Tick done in {Ms}ms — created={Created} updated={Updated} promoted={Promoted} archived={Archived}",
                 SERVICE_ID, sw.ElapsedMilliseconds, stats.RecordsCreated, stats.RecordsUpdated, stats.ContainersPromoted, stats.RecordsArchived);
+
+            // Audit 8.13 (Sprint 5G2 follow-up): publish per-tick counts to
+            // ExecuteAsync's heartbeat emitter.
+            _lastTickProcessed = stats.RecordsCreated + stats.RecordsUpdated + stats.ContainersPromoted;
+            _lastTickSkipped = stats.RecordsArchived;
 
             return intervalMinutes;
         }

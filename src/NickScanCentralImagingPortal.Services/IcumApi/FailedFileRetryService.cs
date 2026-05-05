@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.IcumApi
 {
@@ -22,6 +23,13 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
         private readonly TimeSpan _processingInterval;
         private readonly int _maxRetriesPerCycle;
         private readonly TimeSpan _maxRetryDelay;
+
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. ProcessFailedFilesAsync
+        // writes these and ExecuteAsync reads them for the per-iteration summary.
+        private int _cycleCount = 0;
+        private int _lastCycleSuccess = 0;
+        private int _lastCycleFailure = 0;
+        private int _lastCycleAbandoned = 0;
 
         public FailedFileRetryService(
             IServiceScopeFactory serviceScopeFactory,
@@ -52,6 +60,17 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(FailedFileRetryService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastCycleSuccess = 0;
+                _lastCycleFailure = 0;
+                _lastCycleAbandoned = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     await ProcessFailedFilesAsync(stoppingToken);
@@ -63,8 +82,21 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "{ServiceId} Error in retry processing cycle", SERVICE_ID);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = retries successfully kicked off; skipped = files
+                // abandoned (gone from disk / orphan record); failed = per-file
+                // exceptions plus loop-level exceptions.
+                _logger.LogIterationSummary(
+                    "FAILED-FILE-RETRY",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastCycleSuccess,
+                    itemsSkipped: _lastCycleAbandoned,
+                    itemsFailed: _lastCycleFailure + _failedThisCycle);
 
                 // Wait before next cycle
                 await Task.Delay(_processingInterval, stoppingToken);
@@ -170,6 +202,12 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             _logger.LogInformation("{ServiceId} Retry cycle completed. Success: {Success}, Failed: {Failed}, Abandoned: {Abandoned}",
                 SERVICE_ID, successCount, failureCount, abandonedCount);
+
+            // Audit 8.13 (Sprint 5G2 follow-up): publish per-cycle counts to
+            // ExecuteAsync's heartbeat emitter.
+            _lastCycleSuccess = successCount;
+            _lastCycleFailure = failureCount;
+            _lastCycleAbandoned = abandonedCount;
         }
 
         private async Task CheckForResolvedFilesAsync(IIcumDownloadsRepository repository)

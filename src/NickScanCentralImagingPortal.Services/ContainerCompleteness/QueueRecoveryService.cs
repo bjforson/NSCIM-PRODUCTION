@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
@@ -33,6 +34,13 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         private static readonly TimeSpan RecoveryInterval = TimeSpan.FromHours(2); // Run every 2 hours
         private static readonly TimeSpan ScanLookbackWindow = TimeSpan.FromHours(24); // Check last 24 hours
         private const int BatchSize = 100; // Process 100 scans at a time
+
+        // Audit 8.13 (Sprint 5G2 follow-up): heartbeat state. PerformRecoveryAsync
+        // writes these and ExecuteAsync reads them for the per-iteration summary.
+        private int _cycleCount = 0;
+        private int _lastQueued = 0;
+        private int _lastSkipped = 0;
+        private int _lastFound = 0;
 
         public QueueRecoveryService(
             IServiceProvider serviceProvider,
@@ -54,15 +62,38 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(QueueRecoveryService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastQueued = 0;
+                _lastSkipped = 0;
+                _lastFound = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     await PerformRecoveryAsync(stoppingToken);
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "{ServiceId} ❌ Error during recovery cycle", SERVICE_ID);
                     AlertRecoveryServiceFailure(ex.Message);
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                // processed = scans queued for recovery; skipped = duplicates
+                // already in queue; failed = loop-level exceptions.
+                _logger.LogIterationSummary(
+                    "QUEUE-RECOVERY",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastQueued,
+                    itemsSkipped: _lastSkipped,
+                    itemsFailed: _failedThisCycle);
 
                 // Wait for next recovery cycle
                 await Task.Delay(RecoveryInterval, stoppingToken);
@@ -94,6 +125,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 _logger.LogInformation(
                     "{ServiceId} ✅ Recovery cycle completed in {Duration:F1}s. Found {FoundCount} missed scans, queued {QueuedCount} scans, skipped {SkippedCount} duplicates",
                     SERVICE_ID, duration.TotalSeconds, recoveryStats.TotalFound, recoveryStats.TotalQueued, recoveryStats.TotalSkipped);
+
+                // Audit 8.13 (Sprint 5G2 follow-up): publish per-cycle counts
+                // to ExecuteAsync's heartbeat emitter.
+                _lastFound = recoveryStats.TotalFound;
+                _lastQueued = recoveryStats.TotalQueued;
+                _lastSkipped = recoveryStats.TotalSkipped;
 
                 // Log warning if missed scans were found (indicates previous queue publishing failures)
                 if (recoveryStats.TotalFound > 0)

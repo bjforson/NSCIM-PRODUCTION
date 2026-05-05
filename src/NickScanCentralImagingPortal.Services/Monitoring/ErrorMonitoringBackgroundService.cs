@@ -9,6 +9,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.Monitoring
 {
@@ -25,6 +26,11 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
         private const int MaxErrorPatternLength = 2000;
         private bool _applicationLogsTableExists = true;
         private int _monitorCycleCount;
+        // Audit 8.13 (Sprint 5G2 follow-up): per-cycle counters consumed by
+        // ExecuteAsync's heartbeat emitter. DetectAndProcessNewErrorsAsync
+        // writes these so the iteration summary line carries real numbers.
+        private int _lastCycleErrorsDetected;
+        private int _lastCycleGroupsProcessed;
 
         public ErrorMonitoringBackgroundService(
             ILogger<ErrorMonitoringBackgroundService> logger,
@@ -43,6 +49,16 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2 follow-up): mint per-cycle CorrelationId
+                // so every log line emitted during this iteration carries the
+                // same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ErrorMonitoringBackgroundService));
+                // Audit 8.13 (Sprint 5G2 follow-up): track elapsed for heartbeat.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _lastCycleErrorsDetected = 0;
+                _lastCycleGroupsProcessed = 0;
+                int _failedThisCycle = 0;
+                bool _skippedDisabled = false;
                 try
                 {
                     using var scope = _serviceProvider.CreateScope();
@@ -53,6 +69,16 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                     if (!isEnabled)
                     {
                         _logger.LogDebug("Error monitoring is disabled, skipping check");
+                        _skippedDisabled = true;
+                        // Audit 8.13: emit heartbeat before sleeping the long
+                        // disabled-skip path so operators still see liveness.
+                        _logger.LogIterationSummary(
+                            "ERROR-MONITOR",
+                            ++_monitorCycleCount,
+                            DateTime.UtcNow - _cycleStartedAt,
+                            itemsProcessed: 0,
+                            itemsSkipped: 1,
+                            itemsFailed: 0);
                         await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
                         continue;
                     }
@@ -69,12 +95,35 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                         await ResetStuckInvestigationsAsync(stoppingToken);
                     }
 
+                    // Audit 8.13 (Sprint 5G2 follow-up): per-iteration heartbeat.
+                    // processed = error groups processed; skipped = errors
+                    // detected but already-investigated; failed = exceptions
+                    // caught at the loop level.
+                    _logger.LogIterationSummary(
+                        "ERROR-MONITOR",
+                        _monitorCycleCount,
+                        DateTime.UtcNow - _cycleStartedAt,
+                        itemsProcessed: _lastCycleGroupsProcessed,
+                        itemsSkipped: Math.Max(0, _lastCycleErrorsDetected - _lastCycleGroupsProcessed),
+                        itemsFailed: _failedThisCycle);
+
                     // Wait before next check
                     await Task.Delay(TimeSpan.FromMinutes(checkIntervalMinutes), stoppingToken);
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "❌ Error in error monitoring service");
+                    if (!_skippedDisabled)
+                    {
+                        _logger.LogIterationSummary(
+                            "ERROR-MONITOR",
+                            _monitorCycleCount,
+                            DateTime.UtcNow - _cycleStartedAt,
+                            itemsProcessed: _lastCycleGroupsProcessed,
+                            itemsSkipped: 0,
+                            itemsFailed: _failedThisCycle);
+                    }
                     await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
                 }
             }
@@ -99,22 +148,32 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                     return;
                 }
 
+                // Audit 8.13 (Sprint 5G2 follow-up): publish errors-detected
+                // count to ExecuteAsync's heartbeat emitter.
+                _lastCycleErrorsDetected = newErrors.Count;
+
                 _logger.LogInformation("🔍 Detected {Count} new error(s) in logs", newErrors.Count);
 
                 // Group similar errors and create/update investigations
                 var errorGroups = GroupSimilarErrors(newErrors);
 
+                int groupsProcessed = 0;
                 foreach (var group in errorGroups)
                 {
                     try
                     {
                         await investigationService.ProcessErrorGroupAsync(group, stoppingToken);
+                        groupsProcessed++;
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error processing error group: {Pattern}", group.ErrorPattern);
                     }
                 }
+
+                // Audit 8.13 (Sprint 5G2 follow-up): publish groups-processed
+                // count to ExecuteAsync's heartbeat emitter.
+                _lastCycleGroupsProcessed = groupsProcessed;
             }
             catch (Exception ex)
             {
