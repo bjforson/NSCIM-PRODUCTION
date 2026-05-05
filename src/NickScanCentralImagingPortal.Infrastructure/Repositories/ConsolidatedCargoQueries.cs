@@ -312,9 +312,17 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
         /// </summary>
         public async Task<List<string>> GetContainersByDeclarationAsync(string declarationNumber)
         {
+            // 2026-05-05: Removed `!b.IsConsolidated` filter — companion fix to commit 4c4931c
+            // (2026-05-04). Same-shape bug: when the caller looks up by *declaration number* (not
+            // BL), `DeclarationNumber == declarationNumber` is the unambiguous discriminator. Some
+            // BOE rows are mis-tagged `IsConsolidated=true` at ingest despite `MasterBlNumber=NULL`
+            // — keeping the filter caused this query to return an empty list for those declarations,
+            // leaving ImageAnalysisViewDialog.LoadContainers with Containers=null and the
+            // non-consolidated tab tree empty. Consolidated path is keyed by BlNumber, so removing
+            // the flag here does not double-count. Audit finding 6.04 — missed in 4c4931c.
             var containers = await _context.BOEDocuments
                 .AsNoTracking()
-                .Where(b => b.DeclarationNumber == declarationNumber && !b.IsConsolidated)
+                .Where(b => b.DeclarationNumber == declarationNumber)
                 .Select(b => b.ContainerNumber)
                 .Distinct()
                 .ToListAsync();
