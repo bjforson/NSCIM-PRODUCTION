@@ -188,7 +188,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 Decision = decision?.Decision ?? "Pending",
                                 ReviewedBy = decision?.ReviewedBy ?? "",
                                 ReviewedAt = decision?.ReviewedAt ?? DateTime.UtcNow,
-                                Comments = decision?.Comments
+                                Comments = decision?.Comments,
+                                Tags = decision?.Tags // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
                             };
                         }).ToList()
                     })
@@ -380,7 +381,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             Decision = decision?.Decision ?? "Pending",
                             ReviewedBy = decision?.ReviewedBy ?? "",
                             ReviewedAt = decision?.ReviewedAt ?? DateTime.UtcNow,
-                            Comments = decision?.Comments
+                            Comments = decision?.Comments,
+                            Tags = decision?.Tags // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
                         };
                     }).ToList()
                 };
@@ -1687,6 +1689,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public string ReviewedBy { get; set; } = "";
             public DateTime ReviewedAt { get; set; }
             public string? Comments { get; set; }
+            // 2026-05-05 operator-reported tag persistence: analyst's image tags weren't
+            // surfaced on the audit dialog because this DTO didn't carry them. Source:
+            // imageanalysisdecisions.tags (varchar 500). Audit dialog reads via
+            // AuditReviewDialog.razor:185-194 + 932 (forwarded as OriginalAnalystTags).
+            public string? Tags { get; set; }
         }
 
         public class AuditStats

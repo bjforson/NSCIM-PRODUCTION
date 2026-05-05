@@ -22,6 +22,114 @@ For each release, this file records:
 
 ---
 
+## [2.16.11] — 2026-05-05 — Operator-reported observations: Scanner column + Tag persistence + audit-spotty triage
+
+Three operator observations triaged after 2.16.10. Two were real bugs with
+small code/data fixes; one was operational (no code change).
+
+### What landed
+
+#### Tag persistence (AuditReviewController DTO drop) — closed
+
+`ImageAnalysisDecision.Tags` was being persisted correctly to
+`imageanalysisdecisions.tags` (varchar 500; populated for 1,217 / 2,970
+rows). The Image Analysis Viewer's `LoadExistingTags` and the
+`ImageDecisionView` collapsed list both rendered tags fine. **The
+`AuditReviewDialog` rendered no tags** because two `Select(...)`
+projections in `AuditReviewController.cs` (line 185 — `GetRecordsReadyForAudit`
+and line 378 — `GetAuditGroup`) silently dropped the field. The inline
+`ImageAnalysisDecisionSummary` DTO (line 1685) also lacked the property.
+
+**Fix:** added `Tags` property to the inline DTO + projected
+`Tags = decision?.Tags` in both projections. **Net: ~5 lines.** No DB
+change, no DTO contract break elsewhere (the public `Models\AuditModels.cs`
+DTO with the same name already had a `Tags` property; the inline one
+was the bug).
+
+#### Scanner column blank on My Assignments — closed
+
+Operator reported the Scanner column on `Workbench.razor`'s assignment
+table was empty. Diagnostic agent found:
+
+- Razor binding correct (`Workbench.razor:283-285`)
+- Controller projections correct (`ImageAnalysisController.GetMyAssignments`)
+- 9/9 active queue entries had blank `scannertype`
+- 75/2,738 `analysisgroups` had NULL `scannertype` (all post-April-2026)
+- Source of truth: `containercompletenessstatuses.scannertype` IS populated
+  for all 75 cases
+
+**Root cause:** `ImageAnalysisOrchestratorService.RunRecordAnchoredIntakeAsync`
+at `:4052` reads scannertype from `record.ScannerType ?? readyChildren.First().ScannerType`.
+Both sources are NULL for the 75-row population — the legacy intake (now
+retired dead code) had read from CCS where the data actually lives.
+
+**Fix (3-part):**
+
+1. **Writer fallback** in `ImageAnalysisOrchestratorService.cs:4052` — when
+   both record-side sources are NULL, fall back to a CCS lookup using the
+   first ready child's container number. ~10 lines added.
+2. **Queue-mirror upsert** in `ReadyGroupsCacheService.cs` ON CONFLICT
+   clause — added `scannertype = EXCLUDED.scannertype` so corrections
+   propagate without waiting for a full reconcile cycle. **1 line.**
+3. **Data backfill** via `tools/.../BackfillScannerType.cs` probe — 75
+   AGs + 8 queue entries updated from CCS. Sanity-check rollback
+   (refused if >200 candidate AGs). Applied cleanly: post-state 0 NULLs.
+
+**Deferred upstream fix:** `RecordCompletenessStatus.ScannerType` and
+`RecordExpectedContainer.ScannerType` are NULL at source for these 75
+records. `RecordBuildingService` is supposed to populate them; that's the
+real-real root cause. ~1-2 hour investigation, separate sprint.
+
+#### Audit assignments "spotty" — operational, no code change
+
+Diagnostic agent found:
+
+- Audit auto-assign code path is symmetric to Analyst, working correctly
+- 5 audit assignments today all completed within seconds (when `paudit`
+  was Ready)
+- `paudit`'s heartbeat: 27 min stale, `IsReady=false`
+- **Decision Agent autonomously advances most AGs** through
+  `AnalystCompleted → AuditCompleted → Completed` without creating audit
+  assignment rows when `DecisionAgent:ProcessingDepthAudit=true` and
+  `AutonomousShadowModeOnly=false`. 17 of 21 Completed AGs today had no
+  `audit_aa` rows.
+
+The "spotty" pattern is the system performing as designed: only AGs that
+arrive while a human auditor is `Ready` produce visible audit
+assignments; the rest auto-complete. No bug.
+
+**Operator-actionable options** (no code change, just config / UX):
+- (i) Have an auditor stay logged in (heartbeat < 2 min)
+- (ii) Toggle `DecisionAgent:ProcessingDepthAudit=false` — keeps AGs in
+  `AnalystCompleted` until a human picks up
+- (iii) Set `AutonomousShadowModeOnly=true` — Decision Agent logs but
+  doesn't write `AuditDecisions` / advance status
+
+### Audit running totals
+
+- **P0:** 6 of 6 closed
+- **Latent P0 disarmed:** 1
+- **P1:** ~38 of ~45 closed
+- **P2/P3:** ~22 of ~120 closed
+
+### Probe artifacts
+
+- `C:\temp\nscim-probe\AuditSpottyProbe.cs` + `AuditSpottyProbe2.cs` (audit-spotty)
+- `C:\temp\nscim-probe\BackfillScannerType.cs` (scanner backfill)
+
+### Open follow-ups
+
+- Upstream fix in `RecordBuildingService` to set `RecordCompletenessStatus.ScannerType`
+  + `RecordExpectedContainer.ScannerType` at source — ~1-2 hours, separate sprint
+- The audit-side own-tag persistence (auditors saving their own tags into
+  `decision.Tags` rather than just rendering analyst tags) — this fix only
+  addresses the analyst→audit visibility gap. If audit-edit-tags is also
+  expected, that's a separate change
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
 ## [2.16.10] — 2026-05-05 — Team 1 + Team 2 follow-ups: routing endpoint Phase 1 + CCS dedup
 
 ### What landed

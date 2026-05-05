@@ -4050,6 +4050,23 @@ RETURNING (xmax = 0)::int;";
                     // Sanity: skip if a group already exists for this declaration+scanner
                     // (the legacy path may have created one before our linkage fired)
                     var scannerType = record.ScannerType ?? readyChildren.First().ScannerType;
+                    // 2026-05-05 operator-reported "Scanner column blank" fix: when both
+                    // record-side sources are NULL (post-April-2026 record-anchored intake
+                    // regression), fall back to CCS where the scanner data actually lives.
+                    // Single-scanner case covers 75/75 of NULL-scannertype AGs in production.
+                    if (string.IsNullOrEmpty(scannerType))
+                    {
+                        var firstContainer = readyChildren.First().ContainerNumber;
+                        if (!string.IsNullOrEmpty(firstContainer))
+                        {
+                            scannerType = await db.ContainerCompletenessStatuses
+                                .AsNoTracking()
+                                .Where(c => c.ContainerNumber == firstContainer && c.ScannerType != null)
+                                .OrderByDescending(c => c.UpdatedAt)
+                                .Select(c => c.ScannerType)
+                                .FirstOrDefaultAsync(ct);
+                        }
+                    }
                     var existing = await db.AnalysisGroups
                         .AsTracking()
                         .FirstOrDefaultAsync(g => g.GroupIdentifier == record.DeclarationNumber

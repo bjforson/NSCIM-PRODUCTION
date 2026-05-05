@@ -531,6 +531,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         leaseuntilutc = EXCLUDED.leaseuntilutc,
                         groupstatus = EXCLUDED.groupstatus,
                         groupupdatedatutc = EXCLUDED.groupupdatedatutc,
+                        scannertype = EXCLUDED.scannertype,
                         containercount = EXCLUDED.containercount,
                         containersjson = EXCLUDED.containersjson,
                         containerswithimages = EXCLUDED.containerswithimages,
