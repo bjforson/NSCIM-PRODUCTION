@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 {
@@ -45,6 +46,11 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private readonly TimeSpan _processingInterval;
         private readonly TimeSpan _graceWindow;
         private readonly bool _enabled;
+        // Audit 8.13 (Sprint 5G2): heartbeat state. SweepOnceAsync writes these
+        // and ExecuteAsync reads them for the per-iteration summary line.
+        private int _cycleCount = 0;
+        private int _lastSweepArchived = 0;
+        private int _lastSweepCandidates = 0;
 
         public ZombieAnalysisGroupSweeperService(
             IServiceProvider serviceProvider,
@@ -84,14 +90,35 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2): mint per-cycle CorrelationId so every
+                // log line emitted during this iteration carries the same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ZombieAnalysisGroupSweeperService));
+                // Audit 8.13 (Sprint 5G2): track elapsed for the heartbeat below.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                _lastSweepArchived = 0;
+                _lastSweepCandidates = 0;
+                int _failedThisCycle = 0;
                 try
                 {
                     await SweepOnceAsync(stoppingToken);
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     _logger.LogError(ex, "[ZOMBIE-SWEEPER] Error during sweep iteration");
                 }
+
+                // Audit 8.13 (Sprint 5G2): per-iteration heartbeat. processed
+                // here is the number of zombies archived this sweep; skipped is
+                // candidates seen but not zombies (still had CCS rows).
+                _logger.LogIterationSummary(
+                    "ZOMBIE-SWEEPER",
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: _lastSweepArchived,
+                    itemsSkipped: Math.Max(0, _lastSweepCandidates - _lastSweepArchived),
+                    itemsFailed: _failedThisCycle);
 
                 try { await Task.Delay(_processingInterval, stoppingToken); }
                 catch (TaskCanceledException) { return; }
@@ -115,6 +142,10 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 .Where(g => (g.UpdatedAtUtc ?? g.CreatedAtUtc) < cutoff)
                 .Select(g => new { g.Id, g.GroupIdentifier, g.CreatedAtUtc, g.UpdatedAtUtc })
                 .ToListAsync(ct);
+
+            // Audit 8.13 (Sprint 5G2): publish candidate count to the heartbeat
+            // emitter on every sweep, including empty ones.
+            _lastSweepCandidates = candidates.Count;
 
             if (candidates.Count == 0)
             {
@@ -155,6 +186,10 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         c.Id, c.GroupIdentifier, ageHours);
                 }
             }
+
+            // Audit 8.13 (Sprint 5G2): publish archived count for the heartbeat
+            // emitter (ExecuteAsync's per-iteration summary line).
+            _lastSweepArchived = archivedCount;
 
             if (archivedCount > 0)
             {

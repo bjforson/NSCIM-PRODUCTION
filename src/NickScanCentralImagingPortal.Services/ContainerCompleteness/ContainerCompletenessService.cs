@@ -21,6 +21,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly EnhancedColorCodedLogger _logger; // ✅ Using Enhanced Color-Coded Logger
+        // Audit 8.10/8.13 (Sprint 5G2): keep the raw MEL ILogger alongside the
+        // colour-coded wrapper so we can call BeginCycle / LogIterationSummary
+        // (extension methods on ILogger) without modifying the wrapper.
+        private readonly ILogger<ContainerCompletenessService> _rawLogger;
+        // Audit 8.13 (Sprint 5G2): monotonic iteration counter for heartbeat.
+        private int _cycleCount = 0;
         private readonly GoLiveOptions _goLiveOptions;
         private const string SERVICE_ID = "CONTAINER-COMPLETENESS";
 
@@ -31,6 +37,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         {
             _serviceProvider = serviceProvider;
             _logger = new EnhancedColorCodedLogger(logger, "CONTAINER-COMPLETENESS", SERVICE_ID);
+            _rawLogger = logger;
             _goLiveOptions = goLiveOptions?.Value ?? new GoLiveOptions();
         }
 
@@ -204,6 +211,13 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2): mint per-cycle CorrelationId so every
+                // log line emitted during this iteration carries the same key.
+                using var _cycleScope = _rawLogger.BeginCycle(nameof(ContainerCompletenessService));
+                // Audit 8.13 (Sprint 5G2): track elapsed for the heartbeat below.
+                var _cycleStartedAt = DateTime.UtcNow;
+                _cycleCount++;
+                int _failedThisCycle = 0;
                 try
                 {
                     await CheckContainerCompletenessAsync(stoppingToken);
@@ -216,6 +230,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 }
                 catch (Exception ex)
                 {
+                    _failedThisCycle = 1;
                     // Check if it's a database connectivity error
                     if (IsDatabaseConnectivityException(ex))
                     {
@@ -226,6 +241,19 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                         _logger.LogError(ex, "{ServiceId} Error during container completeness check", SERVICE_ID);
                     }
                 }
+
+                // Audit 8.13 (Sprint 5G2): per-iteration heartbeat. Items are
+                // hard to count from here (CheckContainerCompletenessAsync is
+                // queue-drain shaped and doesn't return a count), so processed=0
+                // for an idle cycle and failed=1 if the body threw — operators
+                // get a continuous "I'm alive" signal regardless.
+                _rawLogger.LogIterationSummary(
+                    SERVICE_ID,
+                    _cycleCount,
+                    DateTime.UtcNow - _cycleStartedAt,
+                    itemsProcessed: 0,
+                    itemsSkipped: 0,
+                    itemsFailed: _failedThisCycle);
 
                 // ✅ QUEUE ARCHITECTURE: Reduced delay since we're event-driven (queue-based)
                 // Process queue items more frequently for better responsiveness

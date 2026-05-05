@@ -111,6 +111,13 @@ var columnWriters = new Dictionary<string, Serilog.Sinks.PostgreSQL.ColumnWriter
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
+    // Audit 8.10 (2026-05-05, Sprint 5G2): stamp CorrelationId="no-cycle" on any
+    // log event emitted outside a BeginCycle scope (controllers, raw startup).
+    // Worker iterations push their own {ServiceId}-{Guid} CorrelationId via
+    // BackgroundLogScopeExtensions.BeginCycle (..Services.Logging) which Serilog
+    // surfaces through Enrich.FromLogContext above. This enricher must run AFTER
+    // FromLogContext so an actual scope value wins over the default.
+    .Enrich.With<NickScanCentralImagingPortal.API.Logging.BackgroundCycleEnricher>()
     .WriteTo.Console(new NickScanCentralImagingPortal.API.Logging.ServiceColorFormatter())
     .WriteTo.PostgreSQL(
         connectionString: sinkConnString,

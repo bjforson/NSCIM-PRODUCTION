@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.Logging;
 using NickScanCentralImagingPortal.Services.Monitoring;
 
 namespace NickScanCentralImagingPortal.Services.ImageAnalysis
@@ -118,6 +119,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2): mint per-cycle CorrelationId so every
+                // log line emitted during this iteration carries the same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ImageAnalysisOrchestratorService));
+                // Audit 8.13 (Sprint 5G2): track elapsed time for the heartbeat
+                // line emitted at the bottom of the iteration.
+                var _cycleStartedAt = DateTime.UtcNow;
                 try
                 {
                     cycleCount++;
@@ -444,6 +451,19 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         _logger.LogDebug("[ORCHESTRATOR] Cycle #{Cycle} completed - waiting {DelayMs}ms before next cycle (max work: {MaxWork})",
                             cycleCount, delay.TotalMilliseconds, maxWorkCount);
                     }
+
+                    // Audit 8.13 (Sprint 5G2): per-iteration heartbeat. processed
+                    // here is the maximum-of-three workflow work counts from this
+                    // cycle (best proxy for "stuff this cycle saw"); skipped /
+                    // failed are 0 in steady-state and surface only when the catch
+                    // arms below increment them.
+                    _logger.LogIterationSummary(
+                        nameof(ImageAnalysisOrchestratorService),
+                        cycleCount,
+                        DateTime.UtcNow - _cycleStartedAt,
+                        itemsProcessed: maxWorkCount,
+                        itemsSkipped: 0,
+                        itemsFailed: 0);
 
                     await Task.Delay(delay, stoppingToken);
                 }

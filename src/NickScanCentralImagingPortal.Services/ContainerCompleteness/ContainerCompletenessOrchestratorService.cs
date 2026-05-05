@@ -70,6 +70,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2): mint per-cycle CorrelationId so every
+                // log line emitted during this iteration carries the same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(ContainerCompletenessOrchestratorService));
+                // Audit 8.13 (Sprint 5G2): track elapsed time for the heartbeat
+                // line emitted at the bottom of the iteration.
+                var _cycleStartedAt = DateTime.UtcNow;
                 try
                 {
                     cycleCount++;
@@ -164,6 +170,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     // Ensure minimum delay of 1 minute for container completeness
                     if (delay.TotalSeconds < 60)
                         delay = TimeSpan.FromMinutes(1);
+
+                    // Audit 8.13 (Sprint 5G2): per-iteration heartbeat. processed
+                    // is the sum of the four sub-workflow counts seen this cycle —
+                    // operators get one line per cycle showing which workers had
+                    // visibility into work, even when no individual work was done.
+                    _logger.LogIterationSummary(
+                        SERVICE_ID,
+                        cycleCount,
+                        DateTime.UtcNow - _cycleStartedAt,
+                        itemsProcessed: completenessWorkCount + dataMappingWorkCount
+                            + boeSelectivityWorkCount + postICUMSValidationWorkCount,
+                        itemsSkipped: 0,
+                        itemsFailed: 0);
+
                     await Task.Delay(delay, stoppingToken);
                 }
                 catch (OperationCanceledException)

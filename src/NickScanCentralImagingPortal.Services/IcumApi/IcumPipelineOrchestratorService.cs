@@ -53,6 +53,11 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
         // Query result cache within cycle (Phase 3.3 optimization)
         private Dictionary<string, object>? _cycleCache;
 
+        // Audit 8.13 (Sprint 5G2): monotonic iteration counter for the
+        // per-iteration heartbeat log. Reset on process restart, which is fine
+        // — operators only need it to be monotonic within one process lifetime.
+        private int _cycleCount = 0;
+
         private readonly GoLiveOptions _goLiveOptions;
         private readonly DataRetentionOptions _dataRetention;
 
@@ -112,8 +117,15 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Audit 8.10 (Sprint 5G2): mint per-cycle CorrelationId so every
+                // log line emitted during this iteration carries the same key.
+                using var _cycleScope = _logger.BeginCycle(nameof(IcumPipelineOrchestratorService));
+                // Audit 8.13 (Sprint 5G2): track elapsed time for the heartbeat
+                // line emitted at the bottom of the iteration.
+                var _cycleStartedAt = DateTime.UtcNow;
                 try
                 {
+                    _cycleCount++;
                     // Clear cycle cache at start of each cycle (Phase 3.3 optimization)
                     _cycleCache = new Dictionary<string, object>();
 
@@ -189,6 +201,18 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                     // Ensure minimum delay of 30 seconds for ICUMS pipeline
                     if (delay.TotalSeconds < 30)
                         delay = TimeSpan.FromSeconds(30);
+
+                    // Audit 8.13 (Sprint 5G2): per-iteration heartbeat. processed
+                    // is the sum of file-scanner / download-queue / data-transfer
+                    // work counts seen this cycle.
+                    _logger.LogIterationSummary(
+                        SERVICE_ID,
+                        _cycleCount,
+                        DateTime.UtcNow - _cycleStartedAt,
+                        itemsProcessed: fileScannerWorkCount + downloadQueueWorkCount + dataTransferWorkCount,
+                        itemsSkipped: 0,
+                        itemsFailed: 0);
+
                     await Task.Delay(delay, stoppingToken);
                 }
                 catch (OperationCanceledException)
