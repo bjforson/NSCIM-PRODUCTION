@@ -232,10 +232,21 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.GroupIdentifier).IsRequired().HasMaxLength(150);
                 entity.Property(e => e.GroupStatus).IsRequired().HasMaxLength(30);
                 entity.Property(e => e.ContainersJson).HasColumnType("text");
+
+                // Phase-1 tenancy retrofit (Sprint 5G1 / audit 7.02). Column added
+                // by tools/migrations/sprint-5G1/02-aqe-tenant-id-rls.sql with a
+                // DB-level DEFAULT that pulls from app.tenant_id, so existing
+                // INSERT paths (raw-SQL ExecuteSqlInterpolatedAsync in
+                // ReadyGroupsCacheService.UpsertQueueEntryAsync) continue to work
+                // without modification — the default kicks in for the omitted column.
+                entity.Property(e => e.TenantId).HasColumnName("tenant_id");
+
                 entity.HasIndex(e => new { e.AssignedTo, e.Role })
                       .HasDatabaseName("ix_analysisqueueentries_assignedto_role");
                 entity.HasIndex(e => e.GroupId)
                       .HasDatabaseName("ix_analysisqueueentries_groupid");
+                entity.HasIndex(e => new { e.TenantId, e.AssignmentId })
+                      .HasDatabaseName("ix_analysisqueueentries_tenant_id");
             });
 
             // AnalysisSubmission configuration

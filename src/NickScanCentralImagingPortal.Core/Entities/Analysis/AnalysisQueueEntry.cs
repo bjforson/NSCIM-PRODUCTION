@@ -62,5 +62,16 @@ namespace NickScanCentralImagingPortal.Core.Entities.Analysis
         // ── Queue metadata ──
         public DateTime QueuedAtUtc { get; set; } = DateTime.UtcNow;
         public DateTime LastRefreshedAtUtc { get; set; } = DateTime.UtcNow;
+
+        // ── Multi-tenancy (Sprint 5G1 / 7.02) ──
+        // The phase-1 RLS rollout missed analysisqueueentries because the table
+        // was added by EF migration 20260423180227_AddSplitJobIdToCrossRecordScans
+        // (post phase-1 manual SQL rollout). Sprint 5G1 added the column + RLS;
+        // entity now carries TenantId so EF model + DDL match. The DB default
+        // (`COALESCE(NULLIF(current_setting('app.tenant_id'), ''), '1')::bigint`)
+        // means new INSERTs are populated even if the C# code doesn't set this
+        // value explicitly — but the EF model needs the property so EF doesn't
+        // mis-map other columns when EF re-reads the entity.
+        public long TenantId { get; set; } = 1;
     }
 }
