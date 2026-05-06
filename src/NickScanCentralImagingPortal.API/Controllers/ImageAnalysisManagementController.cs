@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Npgsql;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -5,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using NickScanCentralImagingPortal.API.Authorization;
 using NickScanCentralImagingPortal.Core.Constants;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -1219,9 +1221,25 @@ namespace NickScanCentralImagingPortal.API.Controllers
             settings.MaxGroupsPerCycle = Math.Clamp(request.maxGroupsPerCycle, 1, 500);
             settings.UpdatedAtUtc = DateTime.UtcNow;
 
+            _db.PermissionAuditLogs.Add(new PermissionAuditLog
+            {
+                Action     = "DA_SETTINGS_UPDATE",
+                EntityType = "DecisionAgentSettings",
+                EntityId   = settings.Id,
+                IPAddress  = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Timestamp  = DateTime.UtcNow,
+                Details    = JsonSerializer.Serialize(new {
+                                 settings.Enabled, settings.ShadowMode,
+                                 settings.NormalThreshold, settings.AbnormalThreshold,
+                                 settings.ProcessingDepthAudit, settings.ProcessingDepthSubmission,
+                                 settings.AllowNormalDecisions, settings.AllowAbnormalDecisions
+                             })
+            });
             await _db.SaveChangesAsync();
-            _logger.LogInformation("[DECISION-AGENT-API] Settings updated: Enabled={Enabled}, Shadow={Shadow}, Normal<={NormalT}, Abnormal>={AbnormalT}",
-                settings.Enabled, settings.ShadowMode, settings.NormalThreshold, settings.AbnormalThreshold);
+            _logger.LogWarning("[DECISION-AGENT-API] Settings updated by {User}: Enabled={Enabled}, Shadow={Shadow}, Normal<={NormalT}, Abnormal>={AbnormalT}, DepthAudit={DepthAudit}, DepthSubmission={DepthSub}",
+                User.Identity?.Name ?? "unknown",
+                settings.Enabled, settings.ShadowMode, settings.NormalThreshold, settings.AbnormalThreshold,
+                settings.ProcessingDepthAudit, settings.ProcessingDepthSubmission);
 
             return Ok(settings);
         }
@@ -1293,6 +1311,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _db.DecisionAgentConditions.Add(condition);
             }
 
+            bool isNew = !(request.id.HasValue && request.id.Value > 0);
+            _logger.LogWarning("[DECISION-AGENT-API] Condition {Action} by {User}: Name={Name}, Key={Key}, Weight={Weight}, Enabled={Enabled}",
+                isNew ? "created" : "updated", User.Identity?.Name ?? "unknown",
+                condition.Name, condition.ConditionKey, condition.Weight, condition.Enabled);
+            _db.PermissionAuditLogs.Add(new PermissionAuditLog
+            {
+                Action     = isNew ? "DA_CONDITION_CREATE" : "DA_CONDITION_UPDATE",
+                EntityType = "DecisionAgentCondition",
+                EntityId   = condition.Id,
+                IPAddress  = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                Timestamp  = DateTime.UtcNow,
+                Details    = JsonSerializer.Serialize(new {
+                                 condition.Name, condition.ConditionKey,
+                                 condition.Weight, condition.Enabled, condition.Description
+                             })
+            });
             await _db.SaveChangesAsync();
             return Ok(condition);
         }
