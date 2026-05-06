@@ -13,6 +13,7 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<AuditReview> Logger
 @inject IConfiguration Configuration
+@inject IWebHostEnvironment HostEnv
 @implements IDisposable
 
 <PageTitle>NICKSCAN ERP — NSCIS — Audit Review@(_myAssignments.Any() ? $" ({_myAssignments.Count})" : "")</PageTitle>
@@ -615,11 +616,16 @@
                 Logger.LogWarning(ex, "Error retrieving token for SignalR connection");
             }
 
+            var isProd = HostEnv.IsProduction();
             _readinessHub = new HubConnectionBuilder()
                 .WithUrl(hubUrl, options =>
                 {
                     if (!string.IsNullOrEmpty(token))
                         options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    options.HttpMessageHandlerFactory = _ =>
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateHttpHandler(Configuration, isProd);
+                    options.WebSocketConfiguration =
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateWebSocketConfig(Configuration, isProd);
                 })
                 .WithAutomaticReconnect()
                 .Build();
