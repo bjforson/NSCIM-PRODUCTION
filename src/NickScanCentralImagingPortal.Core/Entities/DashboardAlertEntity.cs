@@ -91,8 +91,13 @@ namespace NickScanCentralImagingPortal.Core.Entities
         /// <c>NOT NULL DEFAULT current_setting('app.tenant_id')::bigint</c>
         /// so EF inserts can omit this and the database fills it. RLS policy
         /// <c>tenant_isolation_dashboardalerts</c> enforces row visibility.
+        ///
+        /// <c>DatabaseGeneratedOption.Computed</c> tells EF to omit this column
+        /// from INSERTs and read it back, so the DB DEFAULT actually fires
+        /// instead of EF sending a literal <c>0</c> from the CLR field.
         /// </summary>
         [Column("tenant_id")]
+        [DatabaseGenerated(DatabaseGeneratedOption.Computed)]
         public long TenantId { get; set; }
     }
 }
