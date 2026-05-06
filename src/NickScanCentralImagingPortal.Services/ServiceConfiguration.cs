@@ -293,6 +293,13 @@ namespace NickScanCentralImagingPortal.Services
             // ✅ ISO 27001: Access Review Service (quarterly reviews)
             services.AddHostedService<AccessReview.AccessReviewService>();
 
+            // Auto-generates AiCargoSummary on completed wave AGs via Ollama. Was
+            // user-triggered only (button in CargoGroupSummaryTab) which left every
+            // newly-formed wave with a NULL summary until an analyst clicked through.
+            // Idle until Ollama is reachable on AiWorkflow:OllamaBaseUrl. Disable via
+            // AiWorkflow:AutoGenerateSummaries=false if Ollama load is a concern.
+            services.AddHostedService<NickScanCentralImagingPortal.Services.AiCargoSummary.AiCargoSummaryBackgroundService>();
+
             // Email Service
             services.AddScoped<IEmailService, NickScanCentralImagingPortal.Services.Email.EmailService>();
             services.AddHostedService<NickScanCentralImagingPortal.Services.Email.DailyDataQualityReportService>();
