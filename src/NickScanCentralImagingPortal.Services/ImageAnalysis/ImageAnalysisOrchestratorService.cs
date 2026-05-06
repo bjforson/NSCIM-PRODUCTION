@@ -3598,6 +3598,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     .Select(g => g.Id)
                     .ToListAsync(ct);
 
+                var groupMeta = await db.AnalysisGroups
+                    .AsNoTracking()
+                    .Where(g => activeGroupIds.Contains(g.Id))
+                    .Select(g => new { g.Id, g.GroupIdentifier, g.ScannerType })
+                    .ToDictionaryAsync(g => g.Id, ct);
+
                 var recordPairs = await db.AnalysisRecords
                     .AsNoTracking()
                     .Where(r => activeGroupIds.Contains(r.GroupId))
@@ -3622,24 +3628,61 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         .Distinct()
                         .ToList();
 
-                    // Find which have decisions
-                    var decidedContainers = await db.ImageAnalysisDecisions
+                    // Find which have decisions (expanded to include IAD details for synthetic audit rows)
+                    var decidedIads = await db.ImageAnalysisDecisions
                         .AsNoTracking()
                         .Where(d => allContainers.Contains(d.ContainerNumber))
-                        .Select(d => d.ContainerNumber)
-                        .Distinct()
+                        .Select(d => new { d.Id, d.ContainerNumber, d.Decision, d.GroupIdentifier })
                         .ToListAsync(ct);
 
-                    var decidedSet = new HashSet<string>(decidedContainers, StringComparer.OrdinalIgnoreCase);
+                    var decidedSet = new HashSet<string>(
+                        decidedIads.Select(d => d.ContainerNumber),
+                        StringComparer.OrdinalIgnoreCase);
 
-                    // A group is stale if ALL its containers are in decidedSet
+                    var iadByContainer = decidedIads
+                        .GroupBy(d => d.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.Id).First(),
+                                      StringComparer.OrdinalIgnoreCase);
+
+                    // A group is stale if it has containers AND ALL of them are in decidedSet
+                    // The .Count > 0 guard prevents vacuous-truth: LINQ All() returns true on empty
+                    // sequences, which would prematurely complete wave-child AGs before any analyst
+                    // decision exists (containers not yet linked at sweep time).
                     var staleIds = groupsWithRecords
-                        .Where(x => x.Containers.All(c => decidedSet.Contains(c)))
+                        .Where(x => x.Containers.Count > 0 && x.Containers.All(c => decidedSet.Contains(c)))
                         .Select(x => x.Id)
                         .ToList();
 
                     if (staleIds.Count > 0)
                     {
+                        // Write synthetic AuditDecision rows for legitimately-swept AGs before bulk-completing.
+                        // These AGs had all containers decided but audit never happened — the housekeeping
+                        // sweep completes them, so we record the action in the audit ledger.
+                        foreach (var grp in groupsWithRecords.Where(x => staleIds.Contains(x.Id)))
+                        {
+                            var meta = groupMeta.GetValueOrDefault(grp.Id);
+                            foreach (var containerNum in grp.Containers)
+                            {
+                                if (!iadByContainer.TryGetValue(containerNum, out var iad)) continue;
+                                db.AuditDecisions.Add(new AuditDecision
+                                {
+                                    ContainerNumber         = containerNum,
+                                    GroupIdentifier         = iad.GroupIdentifier ?? meta?.GroupIdentifier ?? grp.Id.ToString(),
+                                    ScannerType             = meta?.ScannerType ?? "Unknown",
+                                    ImageAnalysisDecisionId = iad.Id,
+                                    Decision                = iad.Decision ?? "Approved",
+                                    AuditNotes              = "Auto-completed by housekeeping sweep — all containers decided, audit stage not completed",
+                                    AuditedBy               = "SYSTEM-HOUSEKEEPING",
+                                    AuditedAt               = now,
+                                    IsCompleted             = true,
+                                    CompletedAt             = now,
+                                    OverallGroupDecision    = "Approved",
+                                    CreatedAt               = now
+                                });
+                            }
+                        }
+                        await db.SaveChangesAsync(ct);
+
                         var releasedCount = await db.AnalysisAssignments
                             .Where(a => staleIds.Contains(a.GroupId) && a.State == "Active")
                             .ExecuteUpdateAsync(s => s
@@ -4573,13 +4616,19 @@ RETURNING (xmax = 0)::int;";
             // Two queries:
             // 1. Records not yet checked (IsMultiContainerScan=false, SplitStatus=null) — detect new multi-container scans
             // 2. Records already flagged but not linked (IsMultiContainerScan=true, SplitStatus=null, SplitJobId=null) — link to splitter jobs
+            // ApplicationDbContext defaults to NoTracking — without AsTracking(), property
+            // mutations below would be silently dropped by SaveChangesAsync. Pre-2026-05-06
+            // this caused only ~10 records to ever get IsMultiContainerScan set across the
+            // entire history (those 10 were probably the ones tracked via a different path).
             var uncheckedRecords = await db.AnalysisRecords
+                .AsTracking()
                 .Where(r => !r.IsMultiContainerScan && r.SplitStatus == null)
                 .OrderByDescending(r => r.CreatedAtUtc)
                 .Take(50)
                 .ToListAsync(ct);
 
             var unlinkdRecords = await db.AnalysisRecords
+                .AsTracking()
                 .Where(r => r.IsMultiContainerScan && r.SplitStatus == null && r.SplitJobId == null)
                 .OrderByDescending(r => r.CreatedAtUtc)
                 .Take(50)
@@ -4623,14 +4672,27 @@ RETURNING (xmax = 0)::int;";
                 if (uncheckedRecordIds.Contains(record.Id))
                 {
                     if (!containerToScan.TryGetValue(record.ContainerNumber, out var scan))
-                        continue; // Not a multi-container scan
+                    {
+                        // Not a multi-container scan — mark checked so the record leaves
+                        // the unchecked queue. Without this, single-container records
+                        // recur in `Take(50)` forever and starve the older multi-container
+                        // backlog (queue grew to 3000+ before this fix).
+                        record.SplitStatus = "NotApplicable";
+                        updated++;
+                        continue;
+                    }
 
                     var containers = scan.OriginalContainerNumbers
                         .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
                         .Select(c => c.Trim())
                         .ToList();
 
-                    if (containers.Count < 2) continue;
+                    if (containers.Count < 2)
+                    {
+                        record.SplitStatus = "NotApplicable";
+                        updated++;
+                        continue;
+                    }
 
                     var position = containers[0] == record.ContainerNumber ? "left" : "right";
                     record.IsMultiContainerScan = true;
@@ -4640,7 +4702,13 @@ RETURNING (xmax = 0)::int;";
 
                 // Resolve the OriginalScanRecord for this container (needed for splitter job lookup)
                 if (!containerToScan.TryGetValue(record.ContainerNumber, out var scanForSearch))
+                {
+                    // Defensive: shouldn't happen for IsMultiContainerScan=true records, but
+                    // mark as Skipped rather than continue so it leaves the unlinked queue.
+                    record.SplitStatus = "Skipped";
+                    updated++;
                     continue;
+                }
 
                 // Check if a split job exists in the splitter for these containers
                 try
@@ -4724,8 +4792,78 @@ RETURNING (xmax = 0)::int;";
                         }
                         else
                         {
-                            // No split job exists — mark as pending (will need submission)
+                            // No split job exists — submit one now (durable wiring; previously
+                            // this branch silently set Pending and waited for a manual
+                            // submit_backlog.py run that stopped happening 2026-04-10).
+                            // FS6000 only for now; ASE images need a JWT-authed fetch via
+                            // /api/ContainerDetails/image/ase/full which the orchestrator
+                            // doesn't have credentials for.
                             record.SplitStatus = "Pending";
+                            if (string.Equals(scanForSearch.ScannerType, "FS6000", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try
+                                {
+                                    var pair = scanForSearch.OriginalContainerNumbers
+                                        .Replace(";", ",")
+                                        .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                        .Select(s => s.Trim())
+                                        .Where(s => s.Length >= 4 && !s.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase))
+                                        .Take(2)
+                                        .ToArray();
+                                    if (pair.Length >= 2)
+                                    {
+                                        var imgBytes = await db.Set<NickScanCentralImagingPortal.Core.Entities.FS6000.FS6000Image>()
+                                            .AsNoTracking()
+                                            .Where(i => i.ImageType == "Main" && i.ImageData != null
+                                                && db.Set<NickScanCentralImagingPortal.Core.Entities.FS6000.FS6000Scan>()
+                                                    .Any(s => s.Id == i.ScanId &&
+                                                              (s.ContainerNumber == pair[0] || s.ContainerNumber == pair[1])))
+                                            .OrderBy(i => i.CreatedAt)
+                                            .Select(i => i.ImageData)
+                                            .FirstOrDefaultAsync(ct);
+
+                                        if (imgBytes != null && imgBytes.Length > 0)
+                                        {
+                                            using var content = new System.Net.Http.MultipartFormDataContent();
+                                            var img = new System.Net.Http.ByteArrayContent(imgBytes);
+                                            img.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+                                            content.Add(img, "file", "scan.jpg");
+                                            content.Add(new System.Net.Http.StringContent($"{pair[0]},{pair[1]}"), "container_numbers");
+                                            content.Add(new System.Net.Http.StringContent("FS6000"), "scanner_type");
+
+                                            var submitResp = await client.PostAsync("/api/split/upload", content, ct);
+                                            if (submitResp.IsSuccessStatusCode)
+                                            {
+                                                var submitJson = await submitResp.Content.ReadAsStringAsync(ct);
+                                                using var submitDoc = System.Text.Json.JsonDocument.Parse(submitJson);
+                                                if (submitDoc.RootElement.TryGetProperty("id", out var newIdProp))
+                                                {
+                                                    var newId = newIdProp.GetString();
+                                                    if (Guid.TryParse(newId, out var parsedId))
+                                                    {
+                                                        record.SplitJobId = parsedId;
+                                                        _logger.LogInformation(
+                                                            "[SPLIT-DETECTION] Enqueued split job {JobId} for {C1}+{C2}",
+                                                            parsedId, pair[0], pair[1]);
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                _logger.LogWarning(
+                                                    "[SPLIT-DETECTION] /api/split/upload returned {Status} for {C1}+{C2}",
+                                                    submitResp.StatusCode, pair[0], pair[1]);
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception submitEx)
+                                {
+                                    _logger.LogDebug(submitEx,
+                                        "[SPLIT-DETECTION] Auto-submit failed for {Container} (will retry next cycle)",
+                                        record.ContainerNumber);
+                                }
+                            }
                         }
                     }
                     else
