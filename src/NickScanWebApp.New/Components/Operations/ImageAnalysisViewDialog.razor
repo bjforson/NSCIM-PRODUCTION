@@ -90,10 +90,11 @@
                         <MudText Typo="Typo.body2">
                             <strong>Wave @_waveContext.WaveNumber of @_waveContext.TotalWaves</strong>
                             — BOL: @_waveContext.ParentGroupIdentifier
-                            — Overall: @_waveContext.DecidedContainers/@_waveContext.TotalContainers decided
+                            — @_waveContext.ContainersInWaves/@_waveContext.TotalContainers containers in waves
+                            — @_waveContext.DecidedContainers/@_waveContext.TotalContainers decided
                             @if (_waveContext.PendingContainers > 0)
                             {
-                                <text> — @_waveContext.PendingContainers awaiting images</text>
+                                <text> — @_waveContext.PendingContainers awaiting images (more waves expected)</text>
                             }
                         </MudText>
                     </MudStack>
