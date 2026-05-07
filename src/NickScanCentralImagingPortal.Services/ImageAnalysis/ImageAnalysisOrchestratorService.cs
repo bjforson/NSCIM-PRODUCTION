@@ -3235,6 +3235,11 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     // can hit RCS-keyed data. InitialBatch waves get this set from the orchestrator;
                     // Timeout/AutoClose waves used to leave it null which broke /api/cargogroup
                     // resolution for the resulting "{BL}_W{N}" identifiers (Goods/ICUMS empty).
+                    //
+                    // 2026-05-07: pull rcs.ScannerType in the same query as a fallback for when
+                    // parent.ScannerType is null (Timeout-reason waves under parent groups whose
+                    // scannertype was never resolved upstream — 26 stranded waves in prod). The
+                    // workbench's Scanner column rendered empty for those.
                     var rcsForWave = await db.RecordCompletenessStatuses
                         .AsNoTracking()
                         .Where(r => r.DeclarationNumber == parent.GroupIdentifier
@@ -3242,8 +3247,27 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                  || r.ContainerGroupKey == parent.GroupIdentifier)
                         .Where(r => parent.ScannerType == null || r.ScannerType == null || r.ScannerType == parent.ScannerType)
                         .OrderByDescending(r => r.UpdatedAtUtc)
-                        .Select(r => (int?)r.Id)
+                        .Select(r => new { r.Id, r.ScannerType })
                         .FirstOrDefaultAsync(ct);
+
+                    // Third-tier fallback: containercompletenessstatuses keyed by the
+                    // container numbers we're about to enrol. Catches cases where neither
+                    // parent nor the RCS row itself has scannertype populated. In prod 26
+                    // Timeout-reason waves landed with NULL scanner via the parent+RCS path;
+                    // CCS has it for all 26 (see probe wavescannerlookup).
+                    string? scannerFromCcs = null;
+                    if (parent.ScannerType == null && rcsForWave?.ScannerType == null && readyContainers.Count > 0)
+                    {
+                        var rcContainerNumbers = readyContainers.Select(w => w.ContainerNumber).ToList();
+                        scannerFromCcs = await db.ContainerCompletenessStatuses
+                            .AsNoTracking()
+                            .Where(s => rcContainerNumbers.Contains(s.ContainerNumber)
+                                     && s.ScannerType != null)
+                            .Select(s => s.ScannerType)
+                            .FirstOrDefaultAsync(ct);
+                    }
+
+                    var resolvedScannerType = parent.ScannerType ?? rcsForWave?.ScannerType ?? scannerFromCcs;
 
                     // Sprint 5G2 / B1 lock-the-door: redundant Status="Ready" removed (default value).
                     var waveGroup = new AnalysisGroup
@@ -3251,11 +3275,11 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         GroupIdentifier = waveGroupIdentifier,
                         NormalizedGroupIdentifier = normalized,
                         GroupType = "BL",
-                        ScannerType = parent.ScannerType,
+                        ScannerType = resolvedScannerType,
                         ParentGroupId = parent.Id,
                         WaveNumber = nextWaveNumber,
                         WaveCreatedReason = reason,
-                        RecordCompletenessStatusId = rcsForWave
+                        RecordCompletenessStatusId = rcsForWave?.Id
                     };
                     db.AnalysisGroups.Add(waveGroup);
                     await db.SaveChangesAsync(ct);
@@ -3267,7 +3291,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         {
                             GroupId = waveGroup.Id,
                             ContainerNumber = wpc.ContainerNumber,
-                            ScannerType = parent.ScannerType,
+                            ScannerType = resolvedScannerType,
                             Status = "Ready",
                             CreatedAtUtc = DateTime.UtcNow
                         });
