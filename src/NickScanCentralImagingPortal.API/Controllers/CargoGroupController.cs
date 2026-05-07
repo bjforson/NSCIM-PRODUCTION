@@ -282,6 +282,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 string actualGroupIdentifier = groupIdentifier;
                 CargoType? actualType = type;
 
+                // Wave-AG normalization: dialog passes wave-suffixed identifiers like
+                // "10326204603_W1" straight from the assignment table. The cargo
+                // service keys ICUMS/BOE data on the underlying BL/declaration, so
+                // map wave gids to the AG's NormalizedGroupIdentifier before any
+                // other resolution. Without this, the Summary tab is empty for wave
+                // AGs whose RCS link wasn't set at creation (Timeout/AutoClose waves).
+                if (groupIdentifier.Contains("_W"))
+                {
+                    var normalizedFromAg = await _appDb.AnalysisGroups
+                        .AsNoTracking()
+                        .Where(g => g.GroupIdentifier == groupIdentifier)
+                        .Select(g => g.NormalizedGroupIdentifier)
+                        .FirstOrDefaultAsync();
+                    if (!string.IsNullOrWhiteSpace(normalizedFromAg) && normalizedFromAg != groupIdentifier)
+                    {
+                        _logger.LogInformation("Normalized wave group identifier {Wave} -> {Normalized}",
+                            groupIdentifier, normalizedFromAg);
+                        actualGroupIdentifier = normalizedFromAg;
+                    }
+                }
+
                 // Check if it might be a container number (format: 4 letters + digits, e.g., MSKU4670840)
                 if (groupIdentifier.Length >= 4 &&
                     char.IsLetter(groupIdentifier[0]) &&

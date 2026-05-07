@@ -187,6 +187,27 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     .FirstOrDefaultAsync(r => r.Id == ag.RecordCompletenessStatusId.Value, ct);
             }
 
+            // Wave-AG fallback: Timeout/Auto-close waves are created without a direct
+            // RecordCompletenessStatusId FK (only InitialBatch waves get it set). Recover
+            // the RCS via the AG's NormalizedGroupIdentifier, which strips any "_W{N}"
+            // suffix and equals the BL/declaration that the RCS row keys on.
+            // Without this, wave AGs (e.g. "10326204603_W1") fall through to the
+            // legacy/unknown branch and the cargo summary tab shows no ICUMS data.
+            if (rcs == null && !string.IsNullOrWhiteSpace(ag.NormalizedGroupIdentifier))
+            {
+                var normalizedKey = ag.NormalizedGroupIdentifier;
+                rcs = await _appDb.RecordCompletenessStatuses
+                    .AsNoTracking()
+                    .Where(r => r.DeclarationNumber == normalizedKey || r.BlNumber == normalizedKey || r.ContainerGroupKey == normalizedKey)
+                    .Where(r => ag.ScannerType == null || r.ScannerType == null || r.ScannerType == ag.ScannerType)
+                    .OrderByDescending(r => r.UpdatedAtUtc)
+                    .FirstOrDefaultAsync(ct);
+                if (rcs != null)
+                {
+                    diagnostics.Add($"ag.rcs.via-normalized={rcs.Id}");
+                }
+            }
+
             if (rcs != null)
             {
                 diagnostics.Add($"ag.rcs.id={rcs.Id}");
