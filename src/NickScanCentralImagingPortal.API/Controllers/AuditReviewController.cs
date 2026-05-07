@@ -1186,22 +1186,25 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                     // Update AnalysisGroup status to AuditCompleted
                     // ✅ FIX: Update ALL matching AnalysisGroups (assignment may point to date-suffixed variant, e.g. 10925597967_20250101_20250131)
-                    group.Status = AnalysisStatuses.AuditCompleted;
-                    group.UpdatedAtUtc = now;
                     var allMatchingGroups = await _dbContext.AnalysisGroups
                         .AsTracking()
                         .Where(g => g.GroupIdentifier == request.GroupIdentifier ||
                             g.GroupIdentifier == group.GroupIdentifier ||
                             (g.GroupIdentifier != null && g.GroupIdentifier.StartsWith(request.GroupIdentifier + "_")))
                         .ToListAsync();
+                    // Sprint 5G2 / B1: route every status flip through the state-machine facade so a
+                    // status_transitions audit row is written and the legal-transition table is enforced.
+                    // Idempotent calls (already in AuditCompleted) are no-ops inside the facade.
                     foreach (var g in allMatchingGroups)
                     {
-                        g.Status = AnalysisStatuses.AuditCompleted;
+                        await AnalysisGroupStateMachine.TransitionAsync(
+                            _dbContext, g, AnalysisStatuses.AuditCompleted,
+                            triggerName: "AuditSubmissionAllContainersAudited",
+                            actor: username,
+                            reason: $"Audit submission completed for group {request.GroupIdentifier} (overall decision: {overallDecision}).",
+                            correlationId: HttpContext?.TraceIdentifier);
                         g.UpdatedAtUtc = now;
                     }
-
-                    // Save AnalysisGroup changes (this table doesn't have triggers)
-                    await _dbContext.SaveChangesAsync();
 
                     // ✅ FIX: Release the assignment so it immediately disappears from My Assignments
                     // Use raw SQL to avoid EF Core CTE (WITH) which breaks on SQL Server 2014

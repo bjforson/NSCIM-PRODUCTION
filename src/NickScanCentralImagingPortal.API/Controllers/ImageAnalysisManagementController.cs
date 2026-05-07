@@ -276,10 +276,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         _logger.LogInformation("✅ Fixing stuck group {GroupId} ({GroupIdentifier}): {Decided}/{Total} containers decided",
                             group.Id, group.GroupIdentifier, decidedContainers.Count, groupContainers.Count);
 
-                        group.Status = AnalysisStatuses.AnalystCompleted;
-                        group.UpdatedAtUtc = now;
-                        fixedCount++;
-
                         var analystAssignments = await _db.AnalysisAssignments
                             .Where(a => a.GroupId == group.Id && a.Role == "Analyst" && a.State == "Active")
                             .AsTracking()
@@ -292,7 +288,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             assignmentReleasedCount++;
                         }
 
-                        await _db.SaveChangesAsync();
+                        // Sprint 5G2 / B1: route through the state-machine facade. AnalystAssigned → AnalystCompleted
+                        // is in the legal table.
+                        await AnalysisGroupStateMachine.TransitionAsync(
+                            _db, group, AnalysisStatuses.AnalystCompleted,
+                            triggerName: "FixStuckAnalystGroups",
+                            actor: User?.Identity?.Name ?? "anonymous",
+                            reason: $"All {decidedContainers.Count}/{groupContainers.Count} containers had decisions but group was stuck in AnalystAssigned.",
+                            correlationId: HttpContext?.TraceIdentifier);
+                        group.UpdatedAtUtc = now;
+                        fixedCount++;
 
                         if (!string.IsNullOrEmpty(group.GroupIdentifier))
                             groupIdentifiersToUpdateWorkflow.Add(group.GroupIdentifier);
@@ -890,11 +895,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
             // move group to Assigned if it was Ready
             if (group.Status == AnalysisStatuses.Ready)
             {
-                group.Status = AnalysisStatuses.AnalystAssigned;
+                // Sprint 5G2 / B1: route through the state-machine facade. Ready → AnalystAssigned
+                // is in the legal table.
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    _db, group, AnalysisStatuses.AnalystAssigned,
+                    triggerName: "ManagerAssignedAnalyst",
+                    actor: User?.Identity?.Name ?? "anonymous",
+                    reason: $"Manager assigned analyst {username} to group {groupId}.",
+                    correlationId: HttpContext?.TraceIdentifier);
                 group.UpdatedAtUtc = DateTime.UtcNow;
             }
-
-            await _db.SaveChangesAsync();
+            else
+            {
+                await _db.SaveChangesAsync();
+            }
             return Ok();
         }
 
@@ -948,13 +962,33 @@ namespace NickScanCentralImagingPortal.API.Controllers
             var group = await _db.AnalysisGroups.AsTracking().FirstOrDefaultAsync(g => g.Id == groupId);
             if (group != null)
             {
-                group.Status = group.Status == AnalysisStatuses.AuditAssigned
+                // Sprint 5G2 / B1: routed through facade. AuditAssigned → AnalystCompleted (bounce
+                // back to analysts) and AnalystAssigned/anything-else → Ready (return to pool).
+                var targetStatus = group.Status == AnalysisStatuses.AuditAssigned
                     ? AnalysisStatuses.AnalystCompleted
                     : AnalysisStatuses.Ready;
-                group.UpdatedAtUtc = DateTime.UtcNow;
+                try
+                {
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _db, group, targetStatus,
+                        triggerName: "ManagerReleasedGroup",
+                        actor: User?.Identity?.Name ?? "anonymous",
+                        reason: $"Manual release by manager (assignments→Released).",
+                        correlationId: HttpContext?.TraceIdentifier,
+                        ct: HttpContext?.RequestAborted ?? CancellationToken.None);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Release: skipping illegal {From}→{To} for group {GroupId}", group.Status, targetStatus, groupId);
+                    // Persist the assignment-state changes regardless so the release isn't lost.
+                    await _db.SaveChangesAsync();
+                }
             }
-
-            await _db.SaveChangesAsync();
+            else
+            {
+                // No matching group — still persist the assignment-state changes from earlier.
+                await _db.SaveChangesAsync();
+            }
             return Ok();
         }
 
@@ -1029,11 +1063,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
             // Move group to Assigned if it was Ready
             if (group.Status == AnalysisStatuses.Ready)
             {
-                group.Status = AnalysisStatuses.AnalystAssigned;
+                // Sprint 5G2 / B1: route through the state-machine facade. Ready → AnalystAssigned
+                // is in the legal table.
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    _db, group, AnalysisStatuses.AnalystAssigned,
+                    triggerName: "ManagerAssignedAnalystByString",
+                    actor: User?.Identity?.Name ?? "anonymous",
+                    reason: $"Manager assigned analyst {username} to group {groupId} (backward compatibility endpoint).",
+                    correlationId: HttpContext?.TraceIdentifier);
                 group.UpdatedAtUtc = DateTime.UtcNow;
             }
-
-            await _db.SaveChangesAsync();
+            else
+            {
+                await _db.SaveChangesAsync();
+            }
             _logger.LogInformation("Assigned group {GroupIdentifier} to {User} (backward compatibility endpoint)", groupId, username);
             return Ok(new { success = true });
         }
@@ -1061,13 +1104,31 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             if (group != null)
             {
-                group.Status = group.Status == AnalysisStatuses.AuditAssigned
+                // Sprint 5G2 / B1: routed through facade. Same logic as ReleaseGroup above —
+                // AuditAssigned bounces back to AnalystCompleted, anything else returns to Ready.
+                var targetStatus = group.Status == AnalysisStatuses.AuditAssigned
                     ? AnalysisStatuses.AnalystCompleted
                     : AnalysisStatuses.Ready;
-                group.UpdatedAtUtc = DateTime.UtcNow;
+                try
+                {
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _db, group, targetStatus,
+                        triggerName: "ManagerReleasedGroupByString",
+                        actor: User?.Identity?.Name ?? "anonymous",
+                        reason: $"Manual release via legacy string-id endpoint (group identifier={groupId}).",
+                        correlationId: HttpContext?.TraceIdentifier,
+                        ct: HttpContext?.RequestAborted ?? CancellationToken.None);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Release-by-string: skipping illegal {From}→{To} for group {GroupId}", group.Status, targetStatus, group.Id);
+                    await _db.SaveChangesAsync();
+                }
             }
-
-            await _db.SaveChangesAsync();
+            else
+            {
+                await _db.SaveChangesAsync();
+            }
             _logger.LogInformation("Released group {GroupIdentifier} (backward compatibility endpoint)", groupId);
             return Ok(new { success = true });
         }
@@ -1391,8 +1452,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             // Revert group to Ready
-            group.Status = "Ready";
-            await _db.SaveChangesAsync();
+            // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted/AgentProcessing → Ready
+            // are in the legal table (extended for ReverseAgentDecision rollback).
+            await AnalysisGroupStateMachine.TransitionAsync(
+                _db, group, AnalysisStatuses.Ready,
+                triggerName: "ReverseAgentDecision",
+                actor: User?.Identity?.Name ?? "anonymous",
+                reason: $"Reversing Decision Agent audit log {auditLogId} (decision={auditLog.Decision}); reason: {request?.reason ?? "(none)"}.",
+                correlationId: HttpContext?.TraceIdentifier);
 
             // Revert workflow stages
             if (!string.IsNullOrWhiteSpace(auditLog.ContainerNumbers))

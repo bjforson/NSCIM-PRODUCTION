@@ -69,12 +69,19 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
 
             // ✅ CLAIM: Mark all eligible groups as AgentProcessing BEFORE processing
             // This prevents the assignment worker from assigning them to analysts during scoring
+            // Sprint 5G2 / B1: route through the state-machine facade. Ready → AgentProcessing
+            // is in the legal table.
             foreach (var g in readyGroups)
             {
-                g.Status = AnalysisStatuses.AgentProcessing;
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    db, g, AnalysisStatuses.AgentProcessing,
+                    triggerName: "DecisionAgentClaimedGroup",
+                    actor: "DECISION-AGENT",
+                    reason: "Claiming Ready group for autonomous evaluation cycle.",
+                    correlationId: null,
+                    ct: ct);
                 g.UpdatedAtUtc = DateTime.UtcNow;
             }
-            await db.SaveChangesAsync(ct);
             logger.LogInformation("[DECISION-AGENT] Claimed {Count} group(s) as AgentProcessing", readyGroups.Count);
 
             // Build evaluators list (BuiltIn + Dynamic)
@@ -262,9 +269,16 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
                     }
                     await db.SaveChangesAsync(ct);
 
-                    // Advance: AnalystCompleted → AuditCompleted
-                    group.Status = AnalysisStatuses.AuditCompleted;
-                    await db.SaveChangesAsync(ct);
+                    // Advance: AgentProcessing → AuditCompleted (depth=Audit jumps past AnalystCompleted because
+                    // DecisionSideEffectsService.ApplyForGroupAsync only advances Ready/AnalystAssigned, not AgentProcessing).
+                    // Sprint 5G2 / B1: route through the state-machine facade.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        db, group, AnalysisStatuses.AuditCompleted,
+                        triggerName: "DecisionAgentAutoAudited",
+                        actor: "DECISION-AGENT",
+                        reason: $"Auto-audit complete (depth=Audit); score={scoringResult.Score:F3}, decision={decision}.",
+                        correlationId: null,
+                        ct: ct);
 
                     // Stage 3: Through Submission (if enabled)
                     if (settings.ProcessingDepthSubmission)
@@ -272,11 +286,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
                         depthReached = "Submission";
                         // Mark as Completed — the existing SubmissionWorker will pick it up
                         // or we can directly mark it for submission
-                        group.Status = AnalysisStatuses.Completed;
                         group.TotalContainerCount = records.Count;
                         group.SubmittedContainerCount = records.Count;
                         group.PendingContainerCount = 0;
-                        await db.SaveChangesAsync(ct);
+                        // Sprint 5G2 / B1: route through the state-machine facade. AuditCompleted → Completed
+                        // is in the legal table.
+                        await AnalysisGroupStateMachine.TransitionAsync(
+                            db, group, AnalysisStatuses.Completed,
+                            triggerName: "DecisionAgentAutoSubmitted",
+                            actor: "DECISION-AGENT",
+                            reason: $"Auto-submit complete (depth=Submission); score={scoringResult.Score:F3}, decision={decision}, records={records.Count}.",
+                            correlationId: null,
+                            ct: ct);
                     }
                 }
 
@@ -328,14 +349,28 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
             {
                 if (group.Status == AnalysisStatuses.AgentProcessing)
                 {
-                    group.Status = AnalysisStatuses.Ready;
+                    // Sprint 5G2 / B1: route through the state-machine facade. AgentProcessing → Ready
+                    // is in the legal table.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        db, group, AnalysisStatuses.Ready,
+                        triggerName: "DecisionAgentReleasedGroup",
+                        actor: "DECISION-AGENT",
+                        reason: $"Released group back to Ready (decision={decision}, shadow={settings.ShadowMode}); audit log persisted alongside.",
+                        correlationId: null,
+                        ct: ct);
                     group.UpdatedAtUtc = DateTime.UtcNow;
                     logger.LogInformation("[DECISION-AGENT] Reverted group {GroupIdentifier} to Ready (decision={Decision}, shadow={Shadow})",
                         group.GroupIdentifier, decision, settings.ShadowMode);
                 }
+                else
+                {
+                    await db.SaveChangesAsync(ct);
+                }
             }
-
-            await db.SaveChangesAsync(ct);
+            else
+            {
+                await db.SaveChangesAsync(ct);
+            }
 
             logger.LogInformation(
                 "[DECISION-AGENT] Group {GroupIdentifier}: score={Score:F3}, decision={Decision}, depth={Depth}, shadow={Shadow}, time={TimeMs}ms",

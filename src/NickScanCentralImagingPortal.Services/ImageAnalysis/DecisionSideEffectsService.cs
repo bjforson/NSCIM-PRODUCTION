@@ -104,7 +104,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 if (group.Status == AnalysisStatuses.AnalystAssigned ||
                     group.Status == AnalysisStatuses.Ready)
                 {
-                    group.Status = AnalysisStatuses.AnalystCompleted;
+                    // Sprint 5G2 / B1: route through the state-machine facade. Both Ready and AnalystAssigned
+                    // are legal predecessors to AnalystCompleted.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        db, group, AnalysisStatuses.AnalystCompleted,
+                        triggerName: "DecisionSideEffectsAllRecordsDecided",
+                        actor: "DECISION-SIDE-EFFECTS",
+                        reason: $"All records for group {groupIdentifier} are Decided; advancing analyst phase.",
+                        correlationId: null,
+                        ct: ct);
                     group.UpdatedAtUtc = DateTime.UtcNow;
                     groupJustCompleted = true;
 

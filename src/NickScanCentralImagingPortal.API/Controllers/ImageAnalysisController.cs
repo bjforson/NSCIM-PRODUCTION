@@ -639,12 +639,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                             foreach (var groupIdentifier in stuckGroupIdentifiers)
                             {
+                                // Sprint 5G2 / B1: load AsTracking so the state-machine facade can persist the
+                                // status flip (default ApplicationDbContext is NoTracking — see memory
+                                // feedback_application_dbcontext_notracking_default.md).
                                 var grp = await db.AnalysisGroups
+                                    .AsTracking()
                                     .FirstOrDefaultAsync(g => g.GroupIdentifier == groupIdentifier
                                         && g.Status == AnalysisStatuses.AuditAssigned);
                                 if (grp == null) continue;
 
-                                grp.Status = AnalysisStatuses.AuditCompleted;
+                                await AnalysisGroupStateMachine.TransitionAsync(
+                                    db, grp, AnalysisStatuses.AuditCompleted,
+                                    triggerName: "AuditSelfHealStuckAssignment",
+                                    actor: "SYSTEM-SELFHEAL",
+                                    reason: $"All containers for group {groupIdentifier} were audited but status was still AuditAssigned (missed completion trigger).",
+                                    correlationId: null);
                                 grp.UpdatedAtUtc = DateTime.UtcNow;
 
                                 // Release active audit assignments for this group
@@ -991,11 +1000,30 @@ namespace NickScanCentralImagingPortal.API.Controllers
             };
             _db.AnalysisAssignments.Add(assignment);
 
-            // Update group status
-            group.Status = userRole == "Audit" ? AnalysisStatuses.AuditAssigned : AnalysisStatuses.AnalystAssigned;
-            group.UpdatedAtUtc = now;
+            // Sprint 5G2 / B1: routed through facade. The facade's SaveChangesAsync also commits
+            // the AnalysisAssignment.Add above. If the transition is illegal (e.g. the group was
+            // already claimed by someone else and is no longer in a claimable state), return
+            // 409 Conflict — the AnalysisAssignment is not persisted (transaction rolls back via
+            // the absent SaveChanges) and the client should re-fetch + retry.
+            var targetStatus = userRole == "Audit" ? AnalysisStatuses.AuditAssigned : AnalysisStatuses.AnalystAssigned;
+            try
+            {
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    _db, group, targetStatus,
+                    triggerName: "UserClaimedGroup",
+                    actor: username,
+                    reason: $"User {username} claimed group {groupId} (role={userRole}, lease={assignment.LeaseUntilUtc:O}).",
+                    correlationId: HttpContext?.TraceIdentifier,
+                    ct: HttpContext?.RequestAborted ?? CancellationToken.None);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogInformation(
+                    "Claim conflict for group {GroupId} by {Username}: {Error}",
+                    groupId, username, ex.Message);
+                return Conflict(new { error = "Group is no longer in a claimable state. Refresh and try again." });
+            }
 
-            await _db.SaveChangesAsync();
             await WriteAudit("ImageAnalysis", "Claim", $"User {username} claimed group {groupId}", nameof(AnalysisAssignment), groupId);
 
             return Ok(new { success = true, leaseUntilUtc = assignment.LeaseUntilUtc });
@@ -1092,14 +1120,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
             };
             _db.AnalysisAssignments.Add(assignment);
 
-            // Update group status
+            // Sprint 5G2 / B1: routed through facade. The existing guard limits fromStatus to
+            // {Ready, AnalystCompleted}; the facade's validator covers all four resulting edges
+            // (Ready→AnalystAssigned, Ready→AuditAssigned, AnalystCompleted→AnalystAssigned,
+            // AnalystCompleted→AuditAssigned).
             if (group.Status == AnalysisStatuses.Ready || group.Status == AnalysisStatuses.AnalystCompleted)
             {
-                group.Status = assignRole == "Audit" ? AnalysisStatuses.AuditAssigned : AnalysisStatuses.AnalystAssigned;
-                group.UpdatedAtUtc = now;
+                var targetStatus = assignRole == "Audit" ? AnalysisStatuses.AuditAssigned : AnalysisStatuses.AnalystAssigned;
+                try
+                {
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _db, group, targetStatus,
+                        triggerName: "AdminAssignedGroup",
+                        actor: username,
+                        reason: $"Admin {username} assigned group {groupId} to {request.AssignedTo ?? "unassigned"} (role={assignRole}, lease={assignment.LeaseUntilUtc:O}).",
+                        correlationId: HttpContext?.TraceIdentifier,
+                        ct: HttpContext?.RequestAborted ?? CancellationToken.None);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogInformation(
+                        "Admin assign conflict for group {GroupId}: {Error}",
+                        groupId, ex.Message);
+                    return Conflict(new { error = "Group state changed during assignment. Refresh and try again." });
+                }
             }
-
-            await _db.SaveChangesAsync();
+            else
+            {
+                // Group is in a state where status doesn't change (e.g. already AnalystAssigned);
+                // persist the assignment record on its own.
+                await _db.SaveChangesAsync();
+            }
             await WriteAudit("ImageAnalysis", "Assign", $"Admin {username} assigned group {groupId} to {request.AssignedTo ?? "unassigned"} ({assignRole})", nameof(AnalysisAssignment), groupId);
 
             return Ok(new { success = true, assignment = new { assignment.AssignedTo, assignment.Role, assignment.LeaseUntilUtc } });
@@ -1295,17 +1346,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             // Mark group state
-            // ✅ FIX 3 (LOW PRIORITY): Validate status transition
-            var oldStatus = group.Status;
-            var newStatus = AnalysisStatuses.AnalystCompleted;
-            if (!AnalysisStatusValidator.IsValidTransition(oldStatus, newStatus))
-            {
-                _logger.LogWarning("Invalid status transition attempted: {OldStatus} → {NewStatus} for group {GroupId}",
-                    oldStatus, newStatus, groupId);
-            }
-            group.Status = newStatus;
+            // Sprint 5G2 / B1: route through the state-machine facade. Replaces the prior
+            // advisory IsValidTransition() check with mandatory enforcement. Ready/AnalystAssigned →
+            // AnalystCompleted are in the legal table.
+            await AnalysisGroupStateMachine.TransitionAsync(
+                _db, group, AnalysisStatuses.AnalystCompleted,
+                triggerName: "AnalystSubmittedFindingsBulk",
+                actor: username,
+                reason: $"Analyst saved bulk decision for group {groupId} (deprecated bulk endpoint).",
+                correlationId: HttpContext?.TraceIdentifier);
             group.UpdatedAtUtc = now;
-            await _db.SaveChangesAsync();
 
             // Centralized side effects for all containers in this group
             var sideEffects = new NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionSideEffectsService(_logger);
@@ -1366,14 +1416,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
             }
 
-            var oldStatus = group.Status;
-            var newStatus = AnalysisStatuses.AuditCompleted;
-            if (!AnalysisStatusValidator.IsValidTransition(oldStatus, newStatus))
-            {
-                _logger.LogWarning("Invalid status transition attempted: {OldStatus} → {NewStatus} for group {GroupId}",
-                    oldStatus, newStatus, groupId);
-            }
-            group.Status = newStatus;
+            // Sprint 5G2 / B1: route through the state-machine facade. Replaces the prior
+            // advisory IsValidTransition() check with mandatory enforcement. AnalystCompleted/AuditAssigned →
+            // AuditCompleted are in the legal table.
+            await AnalysisGroupStateMachine.TransitionAsync(
+                _db, group, AnalysisStatuses.AuditCompleted,
+                triggerName: "AuditDecisionSavedBulk",
+                actor: username,
+                reason: $"Audit saved bulk decision={req.Decision} for group {groupId} (deprecated bulk endpoint).",
+                correlationId: HttpContext?.TraceIdentifier);
             group.UpdatedAtUtc = now;
 
             var auditAssignments = await _db.AnalysisAssignments
@@ -1565,7 +1616,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         CreatedAtUtc = now
                     });
 
-                    group.Status = AnalysisStatuses.AuditAssigned;
+                    // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
+                    // is already in the legal table.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        db, group, AnalysisStatuses.AuditAssigned,
+                        triggerName: "ImmediateAuditAssignment",
+                        actor: "SYSTEM-IMMEDIATE-AUDIT-ASSIGNMENT",
+                        reason: $"Auto-assignment to auditor {auditorUsername} after they completed all prior assignments.",
+                        correlationId: null);
                     group.UpdatedAtUtc = now;
                     assignedCount++;
                 }
@@ -1628,10 +1686,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
             };
             _db.AnalysisSubmissions.Add(submission);
 
-            group.Status = "Submitted";
+            // Sprint 5G2 / B1: route through the state-machine facade. AuditCompleted → Submitted
+            // is in the legal table.
+            await AnalysisGroupStateMachine.TransitionAsync(
+                _db, group, AnalysisStatuses.Submitted,
+                triggerName: "SubmitICUMS_Test",
+                actor: User?.Identity?.Name ?? "anonymous",
+                reason: $"Test ICUMS payload saved for group {groupId}.",
+                correlationId: HttpContext?.TraceIdentifier);
             group.UpdatedAtUtc = now;
 
-            await _db.SaveChangesAsync();
             await WriteAudit("ImageAnalysis", "SubmitICUMS_Test", $"Test payload saved for group {groupId}", nameof(AnalysisSubmission), groupId);
             return Ok(new { success = true, path = fullPath });
         }
@@ -1667,12 +1731,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 if (!existingByKey.TryGetValue(id, out var group))
                 {
+                    // Sprint 5G2 / B1 lock-the-door: redundant Status="Ready" removed (default value).
                     group = new AnalysisGroup
                     {
                         GroupIdentifier = id,
                         GroupType = req.GroupType,
                         ScannerType = req.ScannerType,
-                        Status = "Ready",
                         CreatedAtUtc = now
                     };
                     _db.AnalysisGroups.Add(group);

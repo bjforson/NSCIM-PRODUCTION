@@ -7,7 +7,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Helpers;
+using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+// AnalysisGroupStateMachine lives in Infrastructure.Data (with the DbContext)
+// because it uses EF Core types — Core stays EF-free per v1 layering.
 using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ImageAnalysis
@@ -168,19 +172,48 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     continue;
                 }
 
-                // Transactional flip: guard on Status in the WHERE clause so we don't
-                // stomp on a concurrent upgrade that advanced the group legitimately.
-                var rowsAffected = await db.Database.ExecuteSqlInterpolatedAsync($@"
-                    UPDATE analysisgroups
-                       SET status = 'Archived',
-                           updatedatutc = now()
-                     WHERE id = {c.Id}
-                       AND status = 'AnalystCompleted'", ct);
+                // Sprint 5G2 / Bridge B1 — pilot the AnalysisGroupStateMachine facade. Replaces the
+                // prior raw-SQL UPDATE with a tracked-entity mutation so every status transition
+                // leaves an audit row in analysis_group_status_transitions and routes through the
+                // legal-transitions table. The facade enforces:
+                //   - status guard (validator throws on illegal from→to)
+                //   - tracked-entity requirement (.AsTracking below)
+                //   - single SaveChangesAsync that writes both the status flip + audit row
+                // The original raw-SQL guard `AND status = 'AnalystCompleted'` is preserved by
+                // the validator's table — only the AnalystCompleted → Archived edge is legal here,
+                // so any concurrent advance off AnalystCompleted will trip the validator and
+                // surface as an exception caught by the outer try/catch in ExecuteAsync.
+                var group = await db.AnalysisGroups
+                    .AsTracking()
+                    .FirstOrDefaultAsync(g => g.Id == c.Id, ct);
 
-                if (rowsAffected > 0)
+                if (group is null)
+                {
+                    // Vanished between the candidate scan and the load — treat as concurrent removal.
+                    continue;
+                }
+
+                if (group.Status != AnalysisStatuses.AnalystCompleted)
+                {
+                    // Concurrent advance (e.g. legitimate audit assignment landed) — leave it alone.
+                    continue;
+                }
+
+                var ageHours = (DateTime.UtcNow - (c.UpdatedAtUtc ?? c.CreatedAtUtc)).TotalHours;
+
+                var result = await AnalysisGroupStateMachine.TransitionAsync(
+                    db,
+                    group,
+                    AnalysisStatuses.Archived,
+                    triggerName: "ZombieAnalysisGroupSweep",
+                    actor: "ZombieAnalysisGroupSweeper",
+                    reason: $"Zombie AG: stuck in AnalystCompleted for {ageHours:F1}h with zero ContainerCompletenessStatus rows (GroupIdentifier={c.GroupIdentifier}).",
+                    correlationId: null,
+                    ct: ct);
+
+                if (result == AnalysisGroupTransitionResult.Applied)
                 {
                     archivedCount++;
-                    var ageHours = (DateTime.UtcNow - (c.UpdatedAtUtc ?? c.CreatedAtUtc)).TotalHours;
                     _logger.LogWarning(
                         "[ZOMBIE-SWEEPER] Archived zombie AnalysisGroup Id={GroupId} GroupIdentifier={GroupIdentifier} (was AnalystCompleted for {AgeHours:F1} h with zero CCS rows)",
                         c.Id, c.GroupIdentifier, ageHours);

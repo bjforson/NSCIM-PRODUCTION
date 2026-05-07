@@ -869,26 +869,33 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                                 if (!wasInserted && !groupIsTerminal && group.Status != initialStatus)
                                 {
-                                    var allowedTransitions = new Dictionary<string, List<string>>
+                                    // Sprint 5G2 / B1: routed through facade. The previous local
+                                    // transition table is now redundant — AnalysisStatusValidator
+                                    // covers the same edges (Ready/AnalystAssigned/AnalystCompleted/
+                                    // AuditAssigned/AuditCompleted → Completed) and the facade's
+                                    // ValidateTransition throws if the edge isn't legal.
+                                    _logger.LogInformation(
+                                        "[INTAKE] Updating group {GroupIdentifier} from {OldStatus} to {NewStatus}",
+                                        g.GroupIdentifier, group.Status, initialStatus);
+                                    try
                                     {
-                                        [AnalysisStatuses.Ready] = new List<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Completed },
-                                        [AnalysisStatuses.AnalystAssigned] = new List<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Completed },
-                                        [AnalysisStatuses.AnalystCompleted] = new List<string> { AnalysisStatuses.Completed },
-                                        [AnalysisStatuses.AuditAssigned] = new List<string> { AnalysisStatuses.AuditCompleted, AnalysisStatuses.Completed },
-                                        [AnalysisStatuses.AuditCompleted] = new List<string> { AnalysisStatuses.Completed }
-                                    };
-
-                                    if (allowedTransitions.ContainsKey(group.Status) &&
-                                        allowedTransitions[group.Status].Contains(initialStatus))
-                                    {
-                                        _logger.LogInformation(
-                                            "[INTAKE] Updating group {GroupIdentifier} from {OldStatus} to {NewStatus}",
-                                            g.GroupIdentifier, group.Status, initialStatus);
-                                        group.Status = initialStatus;
-                                        group.UpdatedAtUtc = DateTime.UtcNow;
-                                        await db.SaveChangesAsync(stoppingToken);
-
+                                        await AnalysisGroupStateMachine.TransitionAsync(
+                                            db, group, initialStatus,
+                                            triggerName: "IntakeWaveProgression",
+                                            actor: "ORCHESTRATOR-INTAKE",
+                                            reason: $"Wave-progression reconciliation: existing group reobserved during intake; container completeness implies {initialStatus}.",
+                                            correlationId: null,
+                                            ct: stoppingToken);
                                         Interlocked.Increment(ref localUpdatedCount);
+                                    }
+                                    catch (InvalidOperationException ex)
+                                    {
+                                        // Illegal transition (e.g. terminal Cancelled/Archived to
+                                        // anything). Log + skip rather than crash the intake loop.
+                                        _logger.LogWarning(
+                                            ex,
+                                            "[INTAKE] Skipping illegal transition {From}→{To} for group {GroupIdentifier}",
+                                            group.Status, initialStatus, g.GroupIdentifier);
                                     }
                                 }
 
@@ -1272,11 +1279,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             .FirstOrDefaultAsync(g => g.Id == group.Id, stoppingToken);
                         if (trackedGroup != null)
                         {
-                            trackedGroup.Status = assignedStatus;
-                            trackedGroup.UpdatedAtUtc = now;
+                            // Sprint 5G2 / B1: routed through facade. The facade's SaveChangesAsync
+                            // commits the AnalysisAssignment.Add above too — both writes share the
+                            // tracked context and the outer transaction (tx.CommitAsync below).
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, trackedGroup, assignedStatus,
+                                triggerName: $"AssignmentTo{roleName}",
+                                actor: "ORCHESTRATOR-ASSIGNMENT",
+                                reason: $"Auto-assigned to {assignedUser} (role={roleName}, lease={leaseUntil:O}).",
+                                correlationId: null,
+                                ct: stoppingToken);
                         }
-
-                        await db.SaveChangesAsync(stoppingToken);
+                        else
+                        {
+                            // Group disappeared between selection and assignment — persist the
+                            // AnalysisAssignment row for forensic audit (the assigned user and
+                            // lease still represent intent), then commit. This matches the
+                            // pre-refactor behaviour where the SaveChangesAsync ran regardless.
+                            await db.SaveChangesAsync(stoppingToken);
+                        }
                         await tx.CommitAsync(stoppingToken);
                         wasAssigned = true;
                     });
@@ -1538,16 +1559,33 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, stoppingToken))
                         {
-                            groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                            // Sprint 5G2 / B1: route through the state-machine facade. AnalystAssigned/AuditAssigned → Cancelled
+                            // are in the legal table.
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, groupToUpdate, AnalysisStatuses.Cancelled,
+                                triggerName: "ExpiredLeaseOrphanCancellation",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: $"Orphan AG with expired {assignment.Role} assignment: no boedocumentid, no active CBR.",
+                                correlationId: null,
+                                ct: stoppingToken);
                             _logger.LogInformation(
                                 "[CLEANUP] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR; lease sweeper would otherwise re-issue assignment)",
                                 groupToUpdate.Id, groupToUpdate.GroupIdentifier);
                         }
                         else
                         {
-                            groupToUpdate.Status = assignment.Role == "Audit"
+                            var revertTo = assignment.Role == "Audit"
                                 ? AnalysisStatuses.AnalystCompleted
                                 : AnalysisStatuses.Ready;
+                            // Sprint 5G2 / B1: route through the state-machine facade. AuditAssigned → AnalystCompleted
+                            // and AnalystAssigned → Ready are in the legal table.
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, groupToUpdate, revertTo,
+                                triggerName: "ExpiredLeaseRevert",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: $"Lease expired for {assignment.Role} assignment {assignment.Id} (user={assignment.AssignedTo}); reverting to {revertTo}.",
+                                correlationId: null,
+                                ct: stoppingToken);
                         }
                         groupToUpdate.UpdatedAtUtc = now;
                     }
@@ -1658,16 +1696,32 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         if (await IsOrphanAnalysisGroupAsync(db, groupToUpdate.Id, stoppingToken))
                         {
-                            groupToUpdate.Status = AnalysisStatuses.Cancelled;
+                            // Sprint 5G2 / B1: route through the state-machine facade. AnalystAssigned/AuditAssigned → Cancelled
+                            // are in the legal table.
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, groupToUpdate, AnalysisStatuses.Cancelled,
+                                triggerName: "InvalidAssignmentOrphanCancellation",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: $"Orphan AG with invalid {assignment.Role} assignment: no boedocumentid, no active CBR.",
+                                correlationId: null,
+                                ct: stoppingToken);
                             _logger.LogInformation(
                                 "[VALIDATION] Orphan AG {GroupId} ({GroupIdentifier}) → Cancelled (no boedocumentid, no active CBR)",
                                 groupToUpdate.Id, groupToUpdate.GroupIdentifier);
                         }
                         else
                         {
-                            groupToUpdate.Status = assignment.Role == "Audit"
+                            var revertTo = assignment.Role == "Audit"
                                 ? AnalysisStatuses.AnalystCompleted
                                 : AnalysisStatuses.Ready;
+                            // Sprint 5G2 / B1: route through the state-machine facade.
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, groupToUpdate, revertTo,
+                                triggerName: "InvalidAssignmentRevert",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: $"Invalid {assignment.Role} assignment {assignment.Id} found during validation; reverting to {revertTo}.",
+                                correlationId: null,
+                                ct: stoppingToken);
                         }
                         groupToUpdate.UpdatedAtUtc = now;
                     }
@@ -1700,6 +1754,9 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         var oldStatus = g.Status;
                         var newStatus = AnalysisStatuses.Completed;
+                        // Sprint 5G2 / B1: keep the explicit guard so we can `continue` cleanly without
+                        // raising the facade's exception inside the transaction. AuditCompleted → Completed
+                        // is in the legal table; any other oldStatus is a real bug we should surface.
                         if (!AnalysisStatusValidator.IsValidTransition(oldStatus, newStatus))
                         {
                             _logger.LogWarning(
@@ -1786,9 +1843,17 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                         _logger.LogInformation("[SUBMISSION] Set {Count} CCS record(s) to WorkflowStage=PendingSubmission for GroupIdentifier={GroupId}", ccsUpdated, ccsGid);
                                 }
 
-                                g.Status = newStatus;
+                                // Sprint 5G2 / B1: route through the state-machine facade. AuditCompleted → Completed
+                                // is in the legal table. The facade's SaveChangesAsync auto-enlists in the ambient
+                                // transaction, so the audit row is committed/rolled-back atomically with the submission.
+                                await AnalysisGroupStateMachine.TransitionAsync(
+                                    db, g, AnalysisStatuses.Completed,
+                                    triggerName: "ICUMSSubmissionCompleted",
+                                    actor: "ORCHESTRATOR-SUBMISSION",
+                                    reason: $"ICUMS payload generated and saved (group={g.GroupIdentifier}, analyst={analyst.Count}, audit={audits.Count}).",
+                                    correlationId: null,
+                                    ct: stoppingToken);
                                 g.UpdatedAtUtc = DateTime.UtcNow;
-                                await db.SaveChangesAsync(stoppingToken);
                                 await transaction.CommitAsync(stoppingToken);
 
                                 _logger.LogInformation("[SUBMISSION] Submission completed for group {Group} ({Identifier}) — {AnalystCount} analyst + {AuditCount} audit decisions",
@@ -2675,7 +2740,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         if (!undecided.Any())
                         {
                             // All containers audited — transition to AuditCompleted
-                            group.Status = AnalysisStatuses.AuditCompleted;
+                            // Sprint 5G2 / B1: route through the state-machine facade. AuditAssigned → AuditCompleted
+                            // is in the legal table.
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, group, AnalysisStatuses.AuditCompleted,
+                                triggerName: "HousekeepingStuckAuditFix",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: $"All {auditedContainers.Count}/{recordContainers.Count} containers audited but group stuck in AuditAssigned.",
+                                correlationId: null,
+                                ct: ct);
                             group.UpdatedAtUtc = DateTime.UtcNow;
 
                             // Mark audit decisions as completed
@@ -2718,10 +2791,17 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 {
                     foreach (var group in agentStuck)
                     {
-                        group.Status = AnalysisStatuses.Ready;
+                        // Sprint 5G2 / B1: route through the state-machine facade. AgentProcessing → Ready
+                        // is in the legal table.
+                        await AnalysisGroupStateMachine.TransitionAsync(
+                            db, group, AnalysisStatuses.Ready,
+                            triggerName: "HousekeepingAgentCrashRecovery",
+                            actor: "ORCHESTRATOR-HOUSEKEEPING",
+                            reason: $"Group stuck in AgentProcessing for >5 minutes (UpdatedAtUtc={group.UpdatedAtUtc:o}) — agent likely crashed; reverting to Ready.",
+                            correlationId: null,
+                            ct: ct);
                         group.UpdatedAtUtc = DateTime.UtcNow;
                     }
-                    await db.SaveChangesAsync(ct);
                     _logger.LogWarning("[HOUSEKEEPING-SWEEP] Recovered {Count} group(s) stuck in AgentProcessing (>5 min) back to Ready",
                         agentStuck.Count);
                 }
@@ -2855,13 +2935,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     }
                     catch { /* best-effort */ }
 
+                    // Sprint 5G2 / B1 lock-the-door: Status setter is internal; the object
+                    // initializer can't write it from outside Infrastructure. Create with default
+                    // "Ready", then transition to the computed initialStatus via the facade so the
+                    // initial state lands an audit row when it diverges from default. If
+                    // initialStatus == "Ready" the facade's same-state idempotent path returns
+                    // without writing.
                     var waveGroup = new AnalysisGroup
                     {
                         GroupIdentifier = waveGroupIdentifier,
                         NormalizedGroupIdentifier = normalized,
                         GroupType = "BL",
                         ScannerType = scannerType,
-                        Status = initialStatus,
                         ParentGroupId = parentGroup.Id,
                         WaveNumber = 1,
                         WaveCreatedReason = "InitialBatch",
@@ -2869,6 +2954,23 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     };
                     db.AnalysisGroups.Add(waveGroup);
                     await db.SaveChangesAsync(ct);
+                    if (!string.Equals(initialStatus, AnalysisStatuses.Ready, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, waveGroup, initialStatus,
+                                triggerName: "WaveIntakeInitialStatus",
+                                actor: "ORCHESTRATOR-INTAKE",
+                                reason: $"New wave-group created during intake; container completeness implies initial status {initialStatus} (Ready→{initialStatus}).",
+                                correlationId: null,
+                                ct: ct);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            _logger.LogWarning(ex, "[INTAKE] Could not apply initial status {Status} to wave-group {GroupId}; group remains Ready", initialStatus, waveGroup.Id);
+                        }
+                    }
 
                     // 4. Create AnalysisRecords for ready containers only
                     foreach (var containerNumber in readyContainerNumbers)
@@ -3129,16 +3231,31 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     // Wave groups need a unique GroupIdentifier — append wave suffix
                     var waveGroupIdentifier = $"{parent.GroupIdentifier}_W{nextWaveNumber}";
 
+                    // Resolve the RCS link so cargo summary lookups by NormalizedGroupIdentifier
+                    // can hit RCS-keyed data. InitialBatch waves get this set from the orchestrator;
+                    // Timeout/AutoClose waves used to leave it null which broke /api/cargogroup
+                    // resolution for the resulting "{BL}_W{N}" identifiers (Goods/ICUMS empty).
+                    var rcsForWave = await db.RecordCompletenessStatuses
+                        .AsNoTracking()
+                        .Where(r => r.DeclarationNumber == parent.GroupIdentifier
+                                 || r.BlNumber == parent.GroupIdentifier
+                                 || r.ContainerGroupKey == parent.GroupIdentifier)
+                        .Where(r => parent.ScannerType == null || r.ScannerType == null || r.ScannerType == parent.ScannerType)
+                        .OrderByDescending(r => r.UpdatedAtUtc)
+                        .Select(r => (int?)r.Id)
+                        .FirstOrDefaultAsync(ct);
+
+                    // Sprint 5G2 / B1 lock-the-door: redundant Status="Ready" removed (default value).
                     var waveGroup = new AnalysisGroup
                     {
                         GroupIdentifier = waveGroupIdentifier,
                         NormalizedGroupIdentifier = normalized,
                         GroupType = "BL",
                         ScannerType = parent.ScannerType,
-                        Status = "Ready",
                         ParentGroupId = parent.Id,
                         WaveNumber = nextWaveNumber,
-                        WaveCreatedReason = reason
+                        WaveCreatedReason = reason,
+                        RecordCompletenessStatusId = rcsForWave
                     };
                     db.AnalysisGroups.Add(waveGroup);
                     await db.SaveChangesAsync(ct);
@@ -3504,9 +3621,28 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                 _logger.LogInformation(
                                     "[HOUSEKEEPING] Fixing stuck group {GroupId} ({GroupIdentifier}): {OldStatus} → {NewStatus}",
                                     g.Id, g.GroupIdentifier, g.Status, correctStatus);
-                                g.Status = correctStatus;
-                                g.UpdatedAtUtc = now;
-                                groupsToFix.Add(g);
+                                // Sprint 5G2 / B1: route through the state-machine facade. Validator now tracks the
+                                // edges this sweep can produce (AnalystAssigned/AuditAssigned → AnalystCompleted/Ready/Completed).
+                                // The legacy "Assigned" legacy status (filter at 3524) is NOT in the validator — if a real
+                                // legacy row appears we'll surface a logged exception and skip rather than silently violate
+                                // the legal table; in practice no live writer produces "Assigned" for AnalysisGroup.
+                                try
+                                {
+                                    await AnalysisGroupStateMachine.TransitionAsync(
+                                        db, g, correctStatus,
+                                        triggerName: "HousekeepingStuckGroupResync",
+                                        actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                        reason: $"Stuck group with no active assignment; WorkflowStage indicates correct status is {correctStatus} (computed from CCS distribution).",
+                                        correlationId: null,
+                                        ct: stoppingToken);
+                                    g.UpdatedAtUtc = now;
+                                    groupsToFix.Add(g);
+                                }
+                                catch (InvalidOperationException ex)
+                                {
+                                    _logger.LogError(ex, "[HOUSEKEEPING] Skipping stuck group {GroupId} {OldStatus}→{NewStatus} — transition not in validator legal table",
+                                        g.Id, g.Status, correctStatus);
+                                }
                             }
                         }
                         else
@@ -3516,9 +3652,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                 _logger.LogWarning(
                                     "[HOUSEKEEPING] Fixing stuck group {GroupId} ({GroupIdentifier}): {OldStatus} → Ready (no containers found)",
                                     g.Id, g.GroupIdentifier, g.Status);
-                                g.Status = AnalysisStatuses.Ready;
-                                g.UpdatedAtUtc = now;
-                                groupsToFix.Add(g);
+                                // Sprint 5G2 / B1: route through the state-machine facade. AnalystAssigned → Ready
+                                // is in the legal table; AuditAssigned → Ready is too (added for housekeeping above).
+                                try
+                                {
+                                    await AnalysisGroupStateMachine.TransitionAsync(
+                                        db, g, AnalysisStatuses.Ready,
+                                        triggerName: "HousekeepingStuckGroupNoContainers",
+                                        actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                        reason: $"Stuck group with no active assignment AND no containers found in CCS; reverting to Ready for re-intake.",
+                                        correlationId: null,
+                                        ct: stoppingToken);
+                                    g.UpdatedAtUtc = now;
+                                    groupsToFix.Add(g);
+                                }
+                                catch (InvalidOperationException ex)
+                                {
+                                    _logger.LogError(ex, "[HOUSEKEEPING] Skipping stuck group {GroupId} {OldStatus}→Ready — transition not in validator legal table",
+                                        g.Id, g.Status);
+                                }
                             }
                         }
                     }
@@ -3526,7 +3678,6 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                 if (groupsToFix.Any())
                 {
-                    await db.SaveChangesAsync(stoppingToken);
                     _logger.LogInformation("[HOUSEKEEPING] Fixed {Count} stuck groups", groupsToFix.Count);
                 }
 
@@ -3842,6 +3993,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                 if (groupsToSync.Any())
                 {
+                    // Sprint 5G2 / B1: routed through facade per group. Each transition gets its
+                    // own audit row + SaveChangesAsync — N round-trips instead of one batch save,
+                    // but every change is auditable. Illegal transitions (e.g. legacy "Assigned"
+                    // status that's not in the validator's table) log + skip rather than break
+                    // the sweep.
+                    var syncedCount = 0;
                     foreach (var (group, newStatus, reason) in groupsToSync)
                     {
                         var oldStatus = group.Status;
@@ -3849,12 +4006,27 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             "[HOUSEKEEPING] Syncing group {GroupId} ({GroupIdentifier}) from {OldStatus} to {NewStatus}. Reason: {Reason}",
                             group.Id, group.GroupIdentifier, oldStatus, newStatus, reason);
 
-                        group.Status = newStatus;
-                        group.UpdatedAtUtc = now;
+                        try
+                        {
+                            await AnalysisGroupStateMachine.TransitionAsync(
+                                db, group, newStatus,
+                                triggerName: "WorkflowStageDriftSync",
+                                actor: "ORCHESTRATOR-HOUSEKEEPING",
+                                reason: reason,
+                                correlationId: null,
+                                ct: ct);
+                            syncedCount++;
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            _logger.LogWarning(
+                                ex,
+                                "[HOUSEKEEPING] Skipping illegal drift-sync transition {From}→{To} for group {GroupId} ({GroupIdentifier})",
+                                oldStatus, newStatus, group.Id, group.GroupIdentifier);
+                        }
                     }
 
-                    await db.SaveChangesAsync(ct);
-                    _logger.LogInformation("[HOUSEKEEPING] Synchronized {Count} groups based on WorkflowStage mismatch", groupsToSync.Count);
+                    _logger.LogInformation("[HOUSEKEEPING] Synchronized {Count} groups based on WorkflowStage mismatch", syncedCount);
                 }
             }
             catch (Exception ex)
@@ -4133,13 +4305,13 @@ RETURNING (xmax = 0)::int;";
                         await using var tx = await db.Database.BeginTransactionAsync(ct);
                         try
                         {
+                            // Sprint 5G2 / B1 lock-the-door: redundant Status="Ready" removed (default value).
                             var group = new AnalysisGroup
                             {
                                 GroupIdentifier = record.DeclarationNumber,
                                 NormalizedGroupIdentifier = record.DeclarationNumber,
                                 GroupType = "BL",
                                 ScannerType = scannerType,
-                                Status = "Ready",
                                 Priority = 0,
                                 RecordCompletenessStatusId = record.Id,
                             };

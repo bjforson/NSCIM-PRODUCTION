@@ -140,8 +140,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 var oldStatus = group.Status;
-                group.Status = AnalysisStatuses.AnalystCompleted;
-                group.UpdatedAtUtc = DateTime.UtcNow;
 
                 var analystAssignments = await _context.AnalysisAssignments
                     .AsTracking()
@@ -156,7 +154,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     assignment.UpdatedAtUtc = DateTime.UtcNow;
                 }
 
-                await _context.SaveChangesAsync();
+                // Sprint 5G2 / B1: route through the state-machine facade. Both Ready and AnalystAssigned
+                // are legal predecessors to AnalystCompleted in the validator table.
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    _context, group, AnalysisStatuses.AnalystCompleted,
+                    triggerName: "WorkflowStagePromotionAllContainersDecided",
+                    actor: User?.Identity?.Name ?? "anonymous",
+                    reason: $"All containers for group {groupIdentifier} have decisions and have moved past ImageAnalysis stage.",
+                    correlationId: HttpContext?.TraceIdentifier);
+                group.UpdatedAtUtc = DateTime.UtcNow;
+
                 _logger.LogInformation(
                     "EnsureGroupStatusFromWorkflowStageAsync: Promoted group {GroupIdentifier} from {OldStatus} to AnalystCompleted and released {Count} analyst assignment(s)",
                     groupIdentifier, oldStatus, analystAssignments.Count);
@@ -302,12 +309,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         CreatedAtUtc = now
                     });
 
-                    group.Status = AnalysisStatuses.AnalystAssigned;
+                    // Sprint 5G2 / B1: route through the state-machine facade. Ready → AnalystAssigned
+                    // is in the legal table.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _context, group, AnalysisStatuses.AnalystAssigned,
+                        triggerName: "ImmediateAnalystAssignment",
+                        actor: "SYSTEM-IMMEDIATE-ASSIGNMENT",
+                        reason: $"Auto-assignment to analyst {analystUsername} after they completed all prior assignments.",
+                        correlationId: null);
                     group.UpdatedAtUtc = now;
                     assignedCount++;
                 }
-
-                await _context.SaveChangesAsync();
 
                 _logger.LogInformation("✅ Immediately assigned {Count} new groups to analyst {Username} after completing all previous work",
                     assignedCount, analystUsername);
@@ -461,10 +473,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     CreatedAtUtc = now
                 });
 
-                group.Status = AnalysisStatuses.AuditAssigned;
+                // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
+                // is in the legal table.
+                await AnalysisGroupStateMachine.TransitionAsync(
+                    _context, group, AnalysisStatuses.AuditAssigned,
+                    triggerName: "ImmediateAuditAssignmentForGroup",
+                    actor: "SYSTEM-IMMEDIATE-AUDIT-ASSIGNMENT",
+                    reason: $"Group reached AnalystCompleted; auto-assigned to auditor {selectedUser}.",
+                    correlationId: null);
                 group.UpdatedAtUtc = now;
-
-                await _context.SaveChangesAsync();
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned group {GroupId} ({GroupIdentifier}) to auditor {Username}",
                     groupId, group.GroupIdentifier, selectedUser);
@@ -627,12 +644,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         CreatedAtUtc = now
                     });
 
-                    group.Status = AnalysisStatuses.AuditAssigned;
+                    // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
+                    // is in the legal table.
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _context, group, AnalysisStatuses.AuditAssigned,
+                        triggerName: "ImmediateAuditAssignment",
+                        actor: "SYSTEM-IMMEDIATE-AUDIT-ASSIGNMENT",
+                        reason: $"Auto-assignment to auditor {auditorUsername} after they completed all prior assignments.",
+                        correlationId: null);
                     group.UpdatedAtUtc = now;
                     assignedCount++;
                 }
-
-                await _context.SaveChangesAsync();
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned {Count} new groups to auditor {Username} after completing all previous work",
                     assignedCount, auditorUsername);
@@ -1619,12 +1641,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         .Where(c => c.GroupIdentifier == originalGroupIdentifier)
                                         .FirstOrDefaultAsync();
 
+                                    // Sprint 5G2 / B1 lock-the-door: Status="PartiallyCompleted"
+                                    // removed from initializer. The downstream block at line ~1681
+                                    // ("Mark group as PartiallyCompleted immediately") already
+                                    // routes the Ready→PartiallyCompleted transition through the
+                                    // facade, so the new group lands in the right state via the
+                                    // audited path.
                                     analysisGroup = new AnalysisGroup
                                     {
                                         Id = Guid.NewGuid(),
                                         GroupIdentifier = resolvedGroupIdentifier,
                                         ScannerType = firstContainerStatus?.ScannerType ?? request.ScannerType,
-                                        Status = AnalysisStatuses.PartiallyCompleted, // Set directly to PartiallyCompleted
                                         TotalContainerCount = groupContainers.Count,
                                         SubmittedContainerCount = 0,
                                         PendingContainerCount = containersWithoutImages.Count,
@@ -1662,11 +1689,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                      analysisGroup.Status == AnalysisStatuses.AnalystAssigned ||
                                      analysisGroup.Status == AnalysisStatuses.PartiallyCompleted)) // ✅ Allow update if already PartiallyCompleted
                                 {
-                                    analysisGroup.Status = AnalysisStatuses.PartiallyCompleted;
                                     analysisGroup.PartiallyCompletedDate = DateTime.UtcNow;
                                     analysisGroup.TotalContainerCount = groupContainers.Count;
                                     analysisGroup.SubmittedContainerCount = 0; // No containers with images to submit
                                     analysisGroup.PendingContainerCount = containersWithoutImages.Count;
+
+                                    // Sprint 5G2 / B1: route through the state-machine facade. Ready/AnalystAssigned/PartiallyCompleted
+                                    // → PartiallyCompleted are now in the legal table (extended for this auto-progression edge).
+                                    await AnalysisGroupStateMachine.TransitionAsync(
+                                        _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
+                                        triggerName: "AutoProgressionAllContainersImageless",
+                                        actor: User?.Identity?.Name ?? "anonymous",
+                                        reason: $"All {containersWithoutImages.Count} containers in group {resolvedGroupIdentifier} have no images - marked PartiallyCompleted.",
+                                        correlationId: HttpContext?.TraceIdentifier);
                                     analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
 
                                     _logger.LogInformation("✅ [AUTO-PROGRESSION] Group {Group} marked as PartiallyCompleted (all {Count} containers have no images)",
@@ -1791,12 +1826,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 _logger.LogInformation("Moving group {Group} from {OldStatus} to PartiallyCompleted (all containers WITH images have decisions, {WithoutImages} containers without images)",
                                     resolvedGroupIdentifier, analysisGroup.Status, containersWithoutImages.Count);
 
-                                // ✅ FIX: Set status to PartiallyCompleted when some containers have no images
-                                analysisGroup.Status = AnalysisStatuses.PartiallyCompleted;
                                 analysisGroup.PartiallyCompletedDate = DateTime.UtcNow;
                                 analysisGroup.TotalContainerCount = groupContainers.Count;
                                 analysisGroup.SubmittedContainerCount = containersWithImages.Count; // Containers with images that were decided
                                 analysisGroup.PendingContainerCount = containersWithoutImages.Count; // Containers without images
+
+                                // Sprint 5G2 / B1: route through the state-machine facade. Ready/AnalystAssigned/PartiallyCompleted
+                                // → PartiallyCompleted are now in the legal table (extended for this auto-progression edge).
+                                await AnalysisGroupStateMachine.TransitionAsync(
+                                    _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
+                                    triggerName: "AutoProgressionMixedImageContainers",
+                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    reason: $"All {containersWithImages.Count} containers with images decided; {containersWithoutImages.Count} have no images - marked PartiallyCompleted.",
+                                    correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
 
                                 // Release any active Analyst assignments
@@ -1867,8 +1909,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 _logger.LogInformation("Moving group {Group} from {OldStatus} to AnalystCompleted (all containers WITH images have decisions)",
                                     resolvedGroupIdentifier, analysisGroup.Status);
 
-                                // ✅ FIX: Set status to AnalystCompleted (not Completed) to make it available for Audit assignment
-                                analysisGroup.Status = AnalysisStatuses.AnalystCompleted;
+                                // Sprint 5G2 / B1: route through the state-machine facade. Both Ready and AnalystAssigned
+                                // are legal predecessors to AnalystCompleted in the validator table.
+                                await AnalysisGroupStateMachine.TransitionAsync(
+                                    _context, analysisGroup, AnalysisStatuses.AnalystCompleted,
+                                    triggerName: "AnalystSubmittedAllContainerDecisions",
+                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    reason: $"All {containersWithImages.Count} containers with images in group {resolvedGroupIdentifier} now have decisions.",
+                                    correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
 
                                 // ✅ FIX: Release the Analyst assignment so the record moves to Audit queue

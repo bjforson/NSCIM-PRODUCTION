@@ -16,11 +16,48 @@ namespace NickScanCentralImagingPortal.Core.Helpers
         /// </summary>
         private static readonly Dictionary<string, HashSet<string>> ValidTransitions = new()
         {
-            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AgentProcessing } }, // AnalystCompleted: Decision Agent bypasses assignment; AgentProcessing: Decision Agent claims group
-            { AnalysisStatuses.AgentProcessing, new HashSet<string> { AnalysisStatuses.Ready, AnalysisStatuses.AnalystCompleted } }, // 2026-05-05: Decision Agent releases (no decision) or completes (auto-decided)
-            { AnalysisStatuses.AnalystAssigned, new HashSet<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Ready, AnalysisStatuses.Cancelled } }, // 2026-05-05: orphan-AG path → Cancelled
-            { AnalysisStatuses.AnalystCompleted, new HashSet<string> { AnalysisStatuses.AuditAssigned, AnalysisStatuses.AuditCompleted } }, // AuditCompleted: Decision Agent bypasses audit assignment
-            { AnalysisStatuses.AuditAssigned, new HashSet<string> { AnalysisStatuses.AuditCompleted, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Cancelled } }, // 2026-05-05: orphan-AG path → Cancelled
+            // Sprint 5G2 / B1: promote ImageAnalysisDecisionController auto-progression's Ready→PartiallyCompleted
+            // edge into the legal table. Decision controller marks groups PartiallyCompleted when ALL containers
+            // are imageless (analysisGroup created/loaded fresh in the same request body).
+            // Sprint 5G2 / B1 (followup): Ready→Completed for intake's wave-progression reconciliation
+            // (RunIntakeWorkflowAsync at ImageAnalysisOrchestratorService.cs:887): when an existing group is
+            // re-observed during intake and stats show all containers terminal, the group jumps directly to
+            // Completed. The local transition table at the call site previously gated this; now the validator does.
+            // Sprint 5G2 / B1 (followup 2): Ready→AuditAssigned for ImageAnalysisController.AssignGroup —
+            // admin/lead can assign an auditor directly to a Ready group, skipping the analyst step entirely
+            // (rare but legitimate "Audit-only" review path).
+            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AuditAssigned, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AgentProcessing, AnalysisStatuses.PartiallyCompleted, AnalysisStatuses.Completed } }, // AnalystCompleted: Decision Agent bypasses assignment; AgentProcessing: Decision Agent claims group; PartiallyCompleted: auto-progression on imageless group; Completed: intake wave-progression reconciliation; AuditAssigned: admin direct-to-audit assignment
+            // Sprint 5G2 / B1: promote DecisionAgentWorker's AgentProcessing→AuditCompleted edge into the
+            // legal table. When ProcessingDepthAudit is enabled, the agent self-audits its own decision and
+            // jumps directly from AgentProcessing to AuditCompleted (the AnalystCompleted state is implicit
+            // and skipped — DecisionSideEffectsService's guard at line 104 only fires for AnalystAssigned/Ready,
+            // so the group stays AgentProcessing through the side effects).
+            { AnalysisStatuses.AgentProcessing, new HashSet<string> { AnalysisStatuses.Ready, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AuditCompleted } }, // 2026-05-05: Decision Agent releases (no decision) or completes (auto-decided); B1: AuditCompleted when ProcessingDepthAudit advances directly
+            // Sprint 5G2 / B1: promote ImageAnalysisDecisionController auto-progression's AnalystAssigned→PartiallyCompleted
+            // edge (some containers imageless, all decided) into the legal table.
+            { AnalysisStatuses.AnalystAssigned, new HashSet<string> { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Ready, AnalysisStatuses.Cancelled, AnalysisStatuses.PartiallyCompleted, AnalysisStatuses.Completed } }, // 2026-05-05: orphan-AG path → Cancelled; B1: PartiallyCompleted from auto-progression; B1: Completed from RunStuckGroupsSweep when housekeeping observes all containers Completed
+            // Sprint 5G2 / B1: promote ZombieAnalysisGroupSweeper's existing transition out of bypass-only
+            // into the legal table so AnalysisGroupStateMachine can apply it. The sweeper archives
+            // AnalystCompleted AGs that have aged past the grace window with zero ContainerCompletenessStatus
+            // rows; this is documented live behaviour (zombie sweeper writes Archived) which the validator
+            // previously did not know about.
+            // Sprint 5G2 / B1: promote ImageAnalysisManagementController.ReverseAgentDecision's
+            // AnalystCompleted→Ready edge into the legal table. Agent reversal rolls a group back to
+            // Ready so analysts can re-decide (the agent's auto-completion is undone).
+            // Sprint 5G2 / B1 (followup): AnalystCompleted→Completed for intake wave-progression
+            // reconciliation + housekeeping WorkflowStage drift sync
+            // (ImageAnalysisOrchestratorService.cs:887 + 3960): when intake or the WorkflowStage-driven
+            // housekeeping observes an AnalystCompleted group whose underlying containers are all
+            // terminal, the group jumps to Completed without going via Audit. Live behaviour predates
+            // the validator; promoting the edge here so the facade can apply it.
+            // Sprint 5G2 / B1 (followup 2): AnalystCompleted→AnalystAssigned for
+            // ImageAnalysisController.AssignGroup — admin re-assigns an analyst to revisit a completed
+            // analysis (the inverse of the normal AnalystAssigned→AnalystCompleted edge).
+            { AnalysisStatuses.AnalystCompleted, new HashSet<string> { AnalysisStatuses.AuditAssigned, AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AuditCompleted, AnalysisStatuses.Archived, AnalysisStatuses.Ready, AnalysisStatuses.Completed } }, // AuditCompleted: Decision Agent bypasses audit assignment; Archived: ZombieAnalysisGroupSweeper; Ready: ReverseAgentDecision rollback; Completed: intake wave-progression + housekeeping drift sync; AnalystAssigned: admin re-assignment for re-review
+            // Sprint 5G2 / B1: promote housekeeping's AuditAssigned→Ready/Completed edges into the legal table.
+            // RunStuckGroupsSweep observes the WorkflowStage and computes the correct status — could be Ready
+            // (containers reverted to ImageAnalysis) or Completed (all containers Completed).
+            { AnalysisStatuses.AuditAssigned, new HashSet<string> { AnalysisStatuses.AuditCompleted, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.Cancelled, AnalysisStatuses.Ready, AnalysisStatuses.Completed } }, // 2026-05-05: orphan-AG path → Cancelled; B1: Ready/Completed from housekeeping stuck-group sweep
             { AnalysisStatuses.AuditCompleted, new HashSet<string> { AnalysisStatuses.Submitted, AnalysisStatuses.Completed, AnalysisStatuses.PartiallyCompleted } }, // ✅ NEW: Can transition to PartiallyCompleted
             { AnalysisStatuses.Submitted, new HashSet<string> { AnalysisStatuses.Completed } },
             { AnalysisStatuses.PartiallyCompleted, new HashSet<string> { AnalysisStatuses.Ready, AnalysisStatuses.Completed } }, // ✅ NEW: Can reprocess (Ready) or auto-complete (Completed)
