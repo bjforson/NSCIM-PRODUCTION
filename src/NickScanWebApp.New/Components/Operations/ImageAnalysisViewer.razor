@@ -2730,40 +2730,82 @@
 
                     var panelGroup = new GoodsPanelGroup { Label = label };
 
-                    var cargo = group.Records?.Where(r => r.Category == "Cargo Info" && r.Field.Contains(":")) ?? Enumerable.Empty<CargoRecord>();
-                    var itemGroups = cargo
-                        .GroupBy(r =>
-                        {
-                            var match = System.Text.RegularExpressions.Regex.Match(r.Field, @"Item\s+(\d+):");
-                            return match.Success ? int.Parse(match.Groups[1].Value) : 0;
-                        })
-                        .Where(g => g.Key > 0)
-                        .OrderBy(g => g.Key);
-
-                    foreach (var ig in itemGroups)
+                    // Primary path: structured ManifestItems on each BOE. Always present
+                    // for any BOE with line items, irrespective of single vs. multi-item.
+                    // This avoids the "Item N:" prefix parsing which silently drops
+                    // single-item declarations (CargoGroupService only prefixes when
+                    // count > 1).
+                    if (group.BOEDetails != null)
                     {
-                        var desc = ig.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value;
-                        if (string.IsNullOrWhiteSpace(desc)) continue;
-                        var item = new GoodsPanelItem
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var boe in group.BOEDetails)
                         {
-                            ItemNo = ig.Key,
-                            Description = desc.Trim(),
-                            HsCode = ig.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value,
-                            Quantity = ig.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value
-                        };
-                        panelGroup.Items.Add(item);
-                        _goodsPanelItems.Add(item); // flat list for count badge
+                            if (boe.ManifestItems == null) continue;
+                            foreach (var mi in boe.ManifestItems
+                                .Where(m => !string.IsNullOrWhiteSpace(m.Description))
+                                .OrderBy(m => m.ItemNo ?? m.ItemIndex))
+                            {
+                                var dedupeKey = $"{mi.Description!.Trim()}|{mi.HsCode}|{mi.Quantity}|{mi.Unit}";
+                                if (!seen.Add(dedupeKey)) continue;
+                                var qty = mi.Quantity.HasValue && mi.Quantity.Value > 0
+                                    ? $"{mi.Quantity.Value:N2} {mi.Unit ?? ""}".Trim()
+                                    : null;
+                                var item = new GoodsPanelItem
+                                {
+                                    ItemNo = mi.ItemNo ?? (panelGroup.Items.Count + 1),
+                                    Description = mi.Description!.Trim(),
+                                    HsCode = mi.HsCode,
+                                    Quantity = qty
+                                };
+                                panelGroup.Items.Add(item);
+                                _goodsPanelItems.Add(item);
+                            }
+                        }
                     }
 
-                    // Always extract the narrative Goods Description from the BOE
-                    // Shows as a summary header above the structured line items
-                    var goodsDesc = group.Records?
-                        .Where(r => r.Field == "Goods Description" && !string.IsNullOrWhiteSpace(r.Value))
-                        .Select(r => r.Value!.Trim())
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList();
-                    if (goodsDesc?.Any() == true)
-                        panelGroup.NarrativeText = string.Join("; ", goodsDesc);
+                    // Fallback: parse "Item N:"-prefixed Records (multi-item BOEs only —
+                    // CargoGroupService omits the prefix for single-item BOEs).
+                    if (!panelGroup.Items.Any())
+                    {
+                        var cargo = group.Records?.Where(r => r.Category == "Cargo Info" && r.Field.Contains(":")) ?? Enumerable.Empty<CargoRecord>();
+                        var itemGroups = cargo
+                            .GroupBy(r =>
+                            {
+                                var match = System.Text.RegularExpressions.Regex.Match(r.Field, @"Item\s+(\d+):");
+                                return match.Success ? int.Parse(match.Groups[1].Value) : 0;
+                            })
+                            .Where(g => g.Key > 0)
+                            .OrderBy(g => g.Key);
+
+                        foreach (var ig in itemGroups)
+                        {
+                            var desc = ig.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value;
+                            if (string.IsNullOrWhiteSpace(desc)) continue;
+                            var item = new GoodsPanelItem
+                            {
+                                ItemNo = ig.Key,
+                                Description = desc.Trim(),
+                                HsCode = ig.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value,
+                                Quantity = ig.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value
+                            };
+                            panelGroup.Items.Add(item);
+                            _goodsPanelItems.Add(item);
+                        }
+                    }
+
+                    // Narrative Goods Description from the BOE — only show when there
+                    // are no structured items, so multi-item declarations show every
+                    // line instead of a one-liner summary.
+                    if (!panelGroup.Items.Any())
+                    {
+                        var goodsDesc = group.Records?
+                            .Where(r => r.Field == "Goods Description" && !string.IsNullOrWhiteSpace(r.Value))
+                            .Select(r => r.Value!.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        if (goodsDesc?.Any() == true)
+                            panelGroup.NarrativeText = string.Join("; ", goodsDesc);
+                    }
 
                     if (panelGroup.Items.Any() || !string.IsNullOrEmpty(panelGroup.NarrativeText))
                         _goodsPanelGroups.Add(panelGroup);
@@ -2797,12 +2839,26 @@
         public string? HouseBL { get; set; }
         public string? ContainerNumber { get; set; }
         public List<CargoRecord>? Records { get; set; }
+        public List<BoeDetailResponse>? BOEDetails { get; set; }
     }
     private class CargoRecord
     {
         public string Field { get; set; } = "";
         public string? Value { get; set; }
         public string? Category { get; set; }
+    }
+    private class BoeDetailResponse
+    {
+        public List<ManifestItemResponse>? ManifestItems { get; set; }
+    }
+    private class ManifestItemResponse
+    {
+        public int ItemIndex { get; set; }
+        public int? ItemNo { get; set; }
+        public string? HsCode { get; set; }
+        public string? Description { get; set; }
+        public decimal? Quantity { get; set; }
+        public string? Unit { get; set; }
     }
     private class GoodsPanelItem
     {
