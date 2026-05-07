@@ -10,4 +10,11 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Sprint 5G2 / B1 lock-the-door: AnalysisGroup.Status setter is internal.
+         Only AnalysisGroupStateMachine (in Infrastructure) is allowed to write it.
+         All other writers go through the facade. -->
+    <InternalsVisibleTo Include="NickScanCentralImagingPortal.Infrastructure" />
+  </ItemGroup>
+
 </Project>

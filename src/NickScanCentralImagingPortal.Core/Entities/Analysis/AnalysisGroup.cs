@@ -27,8 +27,14 @@ namespace NickScanCentralImagingPortal.Core.Entities.Analysis
         [StringLength(20)]
         public string? ScannerType { get; set; }
 
+        // Sprint 5G2 / B1 lock-the-door: setter is internal so only code inside this assembly
+        // (Core) and assemblies named in InternalsVisibleTo (currently:
+        // NickScanCentralImagingPortal.Infrastructure, where AnalysisGroupStateMachine lives)
+        // can write Status. Direct writes from Controllers/Services/Hubs now fail compile —
+        // they must route through AnalysisGroupStateMachine.TransitionAsync, which validates
+        // the transition and writes the audit row in one transaction.
         [StringLength(20)]
-        public string Status { get; set; } = "Ready";
+        public string Status { get; internal set; } = "Ready";
 
         public int Priority { get; set; } = 0;
 
