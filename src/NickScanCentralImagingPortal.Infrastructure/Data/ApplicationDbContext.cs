@@ -72,6 +72,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
 
         // Image Analysis Service (new domain)
         public DbSet<AnalysisGroup> AnalysisGroups { get; set; }
+        // Sprint 5G2 / Bridge B1 — append-only audit row written by AnalysisGroupStateMachine
+        // on every successful analysisgroups.status transition. Backed by the
+        // analysis_group_status_transitions table (deploy migration in tools/migrations/sprint-5G2/).
+        public DbSet<AnalysisGroupStatusTransition> AnalysisGroupStatusTransitions
+            => Set<AnalysisGroupStatusTransition>();
         public DbSet<AnalysisRecord> AnalysisRecords { get; set; }
         public DbSet<AnalysisAssignment> AnalysisAssignments { get; set; }
         public DbSet<AnalysisQueueEntry> AnalysisQueueEntries { get; set; }
