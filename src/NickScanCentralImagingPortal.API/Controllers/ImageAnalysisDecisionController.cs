@@ -962,6 +962,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     _logger.LogWarning("Saving decision for container not found in completeness tracking: {Container}", request.ContainerNumber);
                 }
 
+                // ── Multi-container split gate + lineage capture (2026-05-07) ──
+                // Load the analysisrecord up front so we can both block decisions on
+                // multi-container records that haven't picked a split, AND copy the
+                // split-job/result IDs onto the persisted IAD so the audit trail
+                // captures which crop the analyst was looking at.
+                var arForSplit = await _context.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(r => r.ContainerNumber == request.ContainerNumber &&
+                                (r.ScannerType == request.ScannerType || string.IsNullOrEmpty(r.ScannerType)))
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (arForSplit != null
+                    && arForSplit.IsMultiContainerScan
+                    && string.Equals(arForSplit.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
+                    && arForSplit.SplitResultId == null)
+                {
+                    _logger.LogWarning(
+                        "Decision blocked for {Container}: multi-container scan with split candidates ready but no choice made (jobId={JobId})",
+                        request.ContainerNumber, arForSplit.SplitJobId);
+                    return BadRequest(new
+                    {
+                        success = false,
+                        error = "Multi-container scan: pick the correct split crop (Option A or Option B) or click \"Skip — Use Original Combined Image\" before saving the decision.",
+                        code = "split_choice_required"
+                    });
+                }
+
+                Guid? splitJobIdForIad = arForSplit?.SplitJobId;
+                Guid? splitResultIdForIad = arForSplit?.SplitResultId;
+
                 // ✅ DATE-BASED GROUPING FIX: Extract original GroupIdentifier BEFORE saving decision
                 // Format: "OriginalGroupIdentifier_YYYYMMDD_YYYYMMDD"
                 // We normalize to original GroupIdentifier for storage to match ContainerCompletenessStatus
@@ -1052,6 +1083,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     var effectiveThreatCategoryId = request.ThreatCategoryId ?? existing.ThreatCategoryId;
                     var effectiveRevenueAnomalyCategoryId = request.RevenueAnomalyCategoryId ?? existing.RevenueAnomalyCategoryId;
 
+                    // SplitJobId/SplitResultId: prefer the values from the live analysisrecord
+                    // when present (analyst's current pick) but preserve the existing IAD values
+                    // if the analysisrecord doesn't have them (e.g. re-decision on a non-split path).
+                    var effectiveSplitJobId = splitJobIdForIad ?? existing.SplitJobId;
+                    var effectiveSplitResultId = splitResultIdForIad ?? existing.SplitResultId;
+
                     var updateSql = @"
                         UPDATE ImageAnalysisDecisions
                         SET Decision = @p0,
@@ -1064,7 +1101,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             GroupIdentifier = @p6,
                             IsConsolidated = @p7,
                             ThreatCategoryId = @p8,
-                            RevenueAnomalyCategoryId = @p9
+                            RevenueAnomalyCategoryId = @p9,
+                            SplitJobId = @p11,
+                            SplitResultId = @p12
                         WHERE Id = @p10;";
 
                     var effectiveTags = tagsProvided ? request.Tags : existing.Tags;
@@ -1082,7 +1121,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p7", request.IsConsolidated),
                         new NpgsqlParameter("@p8", (object?)effectiveThreatCategoryId ?? DBNull.Value),
                         new NpgsqlParameter("@p9", (object?)effectiveRevenueAnomalyCategoryId ?? DBNull.Value),
-                        new NpgsqlParameter("@p10", existing.Id)
+                        new NpgsqlParameter("@p10", existing.Id),
+                        new NpgsqlParameter("@p11", (object?)effectiveSplitJobId ?? DBNull.Value),
+                        new NpgsqlParameter("@p12", (object?)effectiveSplitResultId ?? DBNull.Value)
                     );
 
                     decisionIdForSnapshot = existing.Id;
@@ -1105,11 +1146,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                     // Create new (raw SQL to avoid OUTPUT + trigger conflict)
                     // ✅ Gap 1a — AI training flywheel: include optional structured finding category FK ids.
+                    // 2026-05-07 — also persist SplitJobId/SplitResultId so the IAD captures
+                    // which split crop the analyst was looking at (audit lineage).
                     var insertSql = @"
                         INSERT INTO ImageAnalysisDecisions
-                            (ContainerNumber, ScannerType, Decision, Comments, Tags, SuspiciousAreas, ReviewedBy, ReviewedAt, GroupIdentifier, IsConsolidated, ThreatCategoryId, RevenueAnomalyCategoryId, CreatedAt)
+                            (ContainerNumber, ScannerType, Decision, Comments, Tags, SuspiciousAreas, ReviewedBy, ReviewedAt, GroupIdentifier, IsConsolidated, ThreatCategoryId, RevenueAnomalyCategoryId, SplitJobId, SplitResultId, CreatedAt)
                         VALUES
-                            (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, now() AT TIME ZONE 'UTC');";
+                            (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, @p13, now() AT TIME ZONE 'UTC');";
 
                     // ✅ BULLETPROOF FIX: Use normalized decision (never null due to validation above)
                     await _context.Database.ExecuteSqlRawAsync(
@@ -1125,7 +1168,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p8", (object?)normalizedGroupIdentifierForStorage ?? DBNull.Value), // ✅ Use normalized GroupIdentifier
                         new NpgsqlParameter("@p9", request.IsConsolidated),
                         new NpgsqlParameter("@p10", (object?)request.ThreatCategoryId ?? DBNull.Value),
-                        new NpgsqlParameter("@p11", (object?)request.RevenueAnomalyCategoryId ?? DBNull.Value)
+                        new NpgsqlParameter("@p11", (object?)request.RevenueAnomalyCategoryId ?? DBNull.Value),
+                        new NpgsqlParameter("@p12", (object?)splitJobIdForIad ?? DBNull.Value),
+                        new NpgsqlParameter("@p13", (object?)splitResultIdForIad ?? DBNull.Value)
                     );
 
                     // Resolve the just-inserted id by the unique (ContainerNumber, ScannerType)
