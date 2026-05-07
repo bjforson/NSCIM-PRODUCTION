@@ -28,9 +28,12 @@ public class SignedImageUrlBuilder
     private readonly ILogger<SignedImageUrlBuilder>? _logger;
 
     // Default TTL — must be <= 1 hour or the API middleware rejects it.
-    // 5 minutes is plenty for the browser to fetch the image after the Razor
-    // page renders, without leaving a long-lived token if the URL leaks.
-    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(5);
+    // 2026-05-07: bumped 5min -> 30min to match the API-side signer default.
+    // Analysts who keep a record open on the Images tab past 5 min were getting
+    // "Image failed to load" because the URL expired before they finished. The
+    // WebApp's HandleImageError additionally re-mints fresh URLs on first error,
+    // so a leaked URL is still bounded by TTL + uid.
+    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(30);
 
     public SignedImageUrlBuilder(IConfiguration configuration, ILogger<SignedImageUrlBuilder>? logger = null)
     {

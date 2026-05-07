@@ -16,7 +16,12 @@ namespace NickScanCentralImagingPortal.Services.Security;
 /// </summary>
 public class SignedImageUrlSigner : ISignedImageUrlSigner
 {
-    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(5);
+    // Default TTL bumped 5min -> 30min on 2026-05-07: analysts kept a record open
+    // on the Images tab past 5 min and got "Image failed to load" because the URL
+    // expired before they finished analysis. 30 min is well below the 1h cap the
+    // middleware enforces, and the WebApp's HandleImageError now re-mints fresh
+    // URLs on first error anyway, so a leaked URL is bounded by both TTL and uid.
+    private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan MaxTtl = TimeSpan.FromHours(1);
     private static readonly TimeSpan MinTtl = TimeSpan.FromSeconds(1);
 

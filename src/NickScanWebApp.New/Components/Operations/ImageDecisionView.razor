@@ -684,15 +684,32 @@
         }
     }
 
-    private void HandleImageError(int imageId, string imageUrl)
+    private async Task HandleImageError(int imageId, string imageUrl)
     {
         var retries = imageRetryCount.GetValueOrDefault(imageId, 0);
 
-        // Auto-retry once on first failure (transient network issues)
+        // Auto re-mint signed URL once on first failure.
+        //
+        // The most common <img> failure on this view is signed-URL expiry: the
+        // analyst keeps the record open longer than the URL TTL, then the next
+        // browser repaint reissues the same expired src and the API middleware
+        // 401s. Just bumping a cache-buster (?t=...) wouldn't help — the path
+        // is unchanged, so the signature/exp is unchanged. We have to refetch
+        // the image metadata so the API mints fresh exp/sig. ContainerDetailsService
+        // caches metadata for 1 min, so we clear it before reloading.
         if (retries == 0)
         {
             imageRetryCount[imageId] = 1;
-            Console.WriteLine($"[ImageDecisionView] Image {imageId} failed — auto-retrying (attempt 1)");
+            Console.WriteLine($"[ImageDecisionView] Image {imageId} failed — re-minting signed URL (attempt 1)");
+            try
+            {
+                ContainerDetailsService.ClearContainerCache(ContainerNumber);
+                await LoadImages();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ImageDecisionView] Re-mint failed for image {imageId}: {ex.Message}");
+            }
             StateHasChanged();
             return;
         }
@@ -706,7 +723,7 @@
 
             imageErrorMessages[imageId] = $"Image could not be loaded for container {ContainerNumber}. The scan data may be missing or corrupted in the database.";
 
-            Console.WriteLine($"[ImageDecisionView] Image {imageId} ({image.ImageType}) failed after retry | Container: {ContainerNumber} | URL: {actualSrc}");
+            Console.WriteLine($"[ImageDecisionView] Image {imageId} ({image.ImageType}) failed after re-mint | Container: {ContainerNumber} | URL: {actualSrc}");
 
             Snackbar.Add($"Image {image.ImageType} unavailable for {ContainerNumber}.", Severity.Info);
         }
