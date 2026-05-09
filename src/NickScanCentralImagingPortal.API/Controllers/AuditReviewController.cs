@@ -243,6 +243,47 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                 }
 
+                // B2′-C (2026-05-09): third hop of the parallel-state-surface drift.
+                // Wave-child AGs (and any AG whose CCS rows pre-date the BL-grouping era)
+                // have CCS.GroupIdentifier set to the container number rather than the
+                // AG's BL/declaration GroupIdentifier. Both filters above miss them,
+                // and the audit page returns "No records found" even after a successful
+                // AuditAssigned transition. The authoritative chain is
+                // AnalysisGroup.GroupIdentifier → AnalysisRecord.GroupId → AnalysisRecord.ContainerNumber → CCS.ContainerNumber.
+                // Query through that chain when the CCS.GroupIdentifier filters fail.
+                // Sprint 5G2 / B1 made AG.Status state-machine-authoritative; this third
+                // fallback extends the same principle to the audit-review fetch path.
+                if (!completenessRecords.Any())
+                {
+                    var ag = await _dbContext.AnalysisGroups
+                        .AsNoTracking()
+                        .Where(g => g.GroupIdentifier == groupIdentifier
+                                 || g.NormalizedGroupIdentifier == groupIdentifier)
+                        .Where(g => scannerType == null || g.ScannerType == scannerType)
+                        .OrderByDescending(g => g.UpdatedAtUtc)
+                        .Select(g => new { g.Id, g.GroupIdentifier })
+                        .FirstOrDefaultAsync();
+
+                    if (ag != null)
+                    {
+                        completenessRecords = await (
+                            from r in _dbContext.AnalysisRecords.AsNoTracking()
+                            join c in _dbContext.ContainerCompletenessStatuses.AsNoTracking()
+                              on r.ContainerNumber equals c.ContainerNumber
+                            where r.GroupId == ag.Id
+                               && (scannerType == null || c.ScannerType == scannerType)
+                            select c
+                        ).Distinct().ToListAsync();
+
+                        if (completenessRecords.Any())
+                        {
+                            _logger.LogInformation(
+                                "[AUDIT-REVIEW] Resolved {Count} CCS row(s) for {GroupIdentifier} via AG.Id→AnalysisRecord join (CCS.GroupIdentifier was stale/container-number)",
+                                completenessRecords.Count, groupIdentifier);
+                        }
+                    }
+                }
+
                 if (!completenessRecords.Any())
                 {
                     return Ok(new ApiResponse<AuditGroupDto>
