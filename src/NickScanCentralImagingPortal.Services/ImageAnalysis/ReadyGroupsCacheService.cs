@@ -279,20 +279,31 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             }
             else if (roleName == "Audit")
             {
+                // B2′-B (2026-05-09): previously this filter required AuditContainers > 0,
+                // i.e. at least one CCS row with WorkflowStage='Audit'. That gated audit
+                // assignment on the parallel-state-surface drift: AGs whose AG.Status had
+                // legitimately transitioned to AnalystCompleted but whose CCS rows still
+                // had WorkflowStage in {ImageAnalysis, PendingSubmission, null} were
+                // silently excluded, even with auditors Ready. Sprint 5G2 / B1 (2026-05-07)
+                // made AG.Status state-machine-authoritative; CCS.WorkflowStage is lagging
+                // and aspirational. Drop the AuditContainers gate. Keep
+                // CompletedContainers < TotalContainers (defence-in-depth — don't pull in
+                // fully-completed AGs that should already be past audit-eligible status).
+                // The orphan-AG guard below still rejects truly-empty AGs.
                 var beforeFilter = readyGroupsWithStats.Count;
                 var excludedNoContainers = readyGroupsWithStats.Count(w => w.TotalContainers == 0);
-                var excludedNoAudit = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.AuditContainers == 0);
+                var noAuditCcs = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.AuditContainers == 0);
                 var excludedAllCompleted = readyGroupsWithStats.Count(w => w.TotalContainers > 0 && w.CompletedContainers == w.TotalContainers);
 
                 readyGroupsWithStats = readyGroupsWithStats
-                    .Where(w => w.AuditContainers > 0 && w.CompletedContainers < w.TotalContainers)
+                    .Where(w => w.CompletedContainers < w.TotalContainers)
                     .ToList();
                 var afterFilter = readyGroupsWithStats.Count;
 
                 _logger.LogInformation(
-                    "[CACHE-FILTER] Audit role filter: {Before} → {After} groups (excluded {Excluded}: {NoContainers}=no-CCS-rows, {NoAudit}=no-Audit-containers, {AllCompleted}=all-Completed)",
+                    "[CACHE-FILTER] Audit role filter: {Before} → {After} groups (excluded {Excluded}: {NoContainers}=no-CCS-rows, {AllCompleted}=all-Completed; drift-surfaced {NoAuditCcs}=Status-says-audit-but-CCS-WorkflowStage-disagrees)",
                     beforeFilter, afterFilter, beforeFilter - afterFilter,
-                    excludedNoContainers, excludedNoAudit, excludedAllCompleted);
+                    excludedNoContainers, excludedAllCompleted, noAuditCcs);
             }
 
             // ── Orphan-AG guard ─────────────────────────────────────────────
