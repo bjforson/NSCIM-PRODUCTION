@@ -1,0 +1,556 @@
+@using MudBlazor
+@implements IDisposable
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ILogger<DiagnosticsPanel> Logger
+
+@*
+    Phase B / B5 (2026-05-09) — operator self-service diagnostics. Wraps the
+    SQL probes the dev team had to run by hand from C:\temp\nscim-probe during
+    the 2026-05-08/09 audit-queue investigation:
+
+      * /api/_module/diagnostics/completeness  (B7CompletenessSnap)
+      * /api/_module/diagnostics/da-posture    (B2VerifyDeploy §1+§4+§6 / DA singleton)
+      * /api/_module/diagnostics/drift-counts  (B7FycoBlastRadius + adjacent drift)
+
+    Three collapsible sections, each calling one endpoint. "Run all" button at
+    the top fires Task.WhenAll across the three to refresh the whole panel.
+    Auto-refreshes every 60 s; nothing here is hot enough to warrant SignalR.
+*@
+
+<MudText Typo="Typo.h5" Class="mb-3 d-flex align-center">
+    <MudIcon Icon="@Icons.Material.Outlined.Healing" Class="mr-2" />
+    Diagnostics — operator self-service
+    <MudSpacer />
+    @if (_lastUpdateUtc is not null)
+    {
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mr-3">
+            updated @_lastUpdateUtc.Value.ToLocalTime().ToString("HH:mm:ss")
+        </MudText>
+    }
+    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Refresh"
+               OnClick="RunAllAsync"
+               Disabled="@_isRunningAll">
+        @(_isRunningAll ? "Running…" : "Run all")
+    </MudButton>
+</MudText>
+
+<MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-3">
+    Wraps the diagnostic SQL probes ops would otherwise need dev help to run.
+    Each section is read-only; auto-refreshes every 60 s.
+</MudText>
+
+<MudExpansionPanels MultiExpansion="true">
+    @* ── Completeness Snapshot ────────────────────────────────────────── *@
+    <MudExpansionPanel Text="Completeness Snapshot" IsInitiallyExpanded="true">
+        <TitleContent>
+            <div class="d-flex align-center">
+                <MudIcon Icon="@Icons.Material.Outlined.PlaylistAddCheck" Class="mr-2" />
+                <MudText>Completeness Snapshot</MudText>
+                @if (_completeness is not null)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Class="ml-2" Variant="Variant.Outlined">
+                        @_completeness.IncompleteTotals.Total total containers
+                    </MudChip>
+                }
+            </div>
+        </TitleContent>
+        <ChildContent>
+            @if (_completeness is null)
+            {
+                <MudAlert Severity="Severity.Warning">
+                    Failed to load /api/_module/diagnostics/completeness. Check API logs.
+                </MudAlert>
+            }
+            else
+            {
+                @* KPI tiles ── 4 totals at the top ──────────────────────── *@
+                <MudGrid Spacing="2" Class="mb-3">
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Scanner incomplete</MudText>
+                                <MudText Typo="Typo.h5" Color="@TileColor(_completeness.IncompleteTotals.ScannerIncomplete)">
+                                    @_completeness.IncompleteTotals.ScannerIncomplete
+                                </MudText>
+                                <MudText Typo="Typo.caption">of @_completeness.IncompleteTotals.Total</MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">ICUMS incomplete</MudText>
+                                <MudText Typo="Typo.h5" Color="@TileColor(_completeness.IncompleteTotals.IcumsIncomplete)">
+                                    @_completeness.IncompleteTotals.IcumsIncomplete
+                                </MudText>
+                                <MudText Typo="Typo.caption">of @_completeness.IncompleteTotals.Total</MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Image incomplete</MudText>
+                                <MudText Typo="Typo.h5" Color="@TileColor(_completeness.IncompleteTotals.ImageIncomplete)">
+                                    @_completeness.IncompleteTotals.ImageIncomplete
+                                </MudText>
+                                <MudText Typo="Typo.caption">of @_completeness.IncompleteTotals.Total</MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudPaper Class="pa-3" Elevation="1">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Overall incomplete</MudText>
+                                <MudText Typo="Typo.h5" Color="@TileColor(_completeness.IncompleteTotals.OverallIncomplete)">
+                                    @_completeness.IncompleteTotals.OverallIncomplete
+                                </MudText>
+                                <MudText Typo="Typo.caption">of @_completeness.IncompleteTotals.Total</MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+
+                @* RecordCompletenessStatus by status ─────────────────── *@
+                <MudText Typo="Typo.subtitle2" Class="mb-2">
+                    RecordCompletenessStatus — by status
+                </MudText>
+                <MudTable Items="_completeness.RecordsByStatus" Hover="true" Dense="true" Class="mb-3">
+                    <HeaderContent>
+                        <MudTh>Status</MudTh>
+                        <MudTh Style="text-align:right;">Count</MudTh>
+                        <MudTh>Oldest</MudTh>
+                        <MudTh>Newest</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>
+                            <MudChip T="string" Size="Size.Small" Color="@RecordStatusColor(context.Status)" Variant="Variant.Outlined">
+                                @context.Status
+                            </MudChip>
+                        </MudTd>
+                        <MudTd Style="text-align:right;"><strong>@context.Count</strong></MudTd>
+                        <MudTd>@FormatUtc(context.OldestUtc)</MudTd>
+                        <MudTd>@FormatUtc(context.NewestUtc)</MudTd>
+                    </RowTemplate>
+                </MudTable>
+
+                @* ContainerCompletenessStatus by workflow stage ─────── *@
+                <MudText Typo="Typo.subtitle2" Class="mb-2">
+                    ContainerCompletenessStatus — by workflow stage
+                </MudText>
+                <MudTable Items="_completeness.ContainersByStage" Hover="true" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Workflow stage</MudTh>
+                        <MudTh Style="text-align:right;">Count</MudTh>
+                        <MudTh>Oldest</MudTh>
+                        <MudTh>Newest</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>
+                            <MudChip T="string" Size="Size.Small" Color="@StageColor(context.WorkflowStage)" Variant="Variant.Outlined">
+                                @context.WorkflowStage
+                            </MudChip>
+                        </MudTd>
+                        <MudTd Style="text-align:right;"><strong>@context.Count</strong></MudTd>
+                        <MudTd>@FormatUtc(context.OldestUtc)</MudTd>
+                        <MudTd>@FormatUtc(context.NewestUtc)</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </ChildContent>
+    </MudExpansionPanel>
+
+    @* ── DA Posture ──────────────────────────────────────────────────── *@
+    <MudExpansionPanel Text="DA Posture" IsInitiallyExpanded="true">
+        <TitleContent>
+            <div class="d-flex align-center">
+                <MudIcon Icon="@Icons.Material.Outlined.SmartToy" Class="mr-2" />
+                <MudText>DA Posture</MudText>
+                @if (_daPosture?.Settings is not null)
+                {
+                    <MudChip T="string" Size="Size.Small" Class="ml-2"
+                             Color="@(_daPosture.Settings.ShadowMode ? Color.Info : Color.Warning)"
+                             Variant="Variant.Outlined">
+                        @(_daPosture.Settings.ShadowMode ? "shadow" : "live")
+                    </MudChip>
+                    <MudChip T="string" Size="Size.Small" Class="ml-1"
+                             Color="@(_daPosture.Settings.Enabled ? Color.Success : Color.Default)"
+                             Variant="Variant.Outlined">
+                        @(_daPosture.Settings.Enabled ? "enabled" : "disabled")
+                    </MudChip>
+                }
+            </div>
+        </TitleContent>
+        <ChildContent>
+            @if (_daPosture is null)
+            {
+                <MudAlert Severity="Severity.Warning">
+                    Failed to load /api/_module/diagnostics/da-posture. Check API logs.
+                </MudAlert>
+            }
+            else if (_daPosture.Settings is null)
+            {
+                <MudAlert Severity="Severity.Error">
+                    DecisionAgentSettings singleton row is missing. The settings page should
+                    have created it on first save — re-open /admin/decision-agent to fix.
+                </MudAlert>
+            }
+            else
+            {
+                @* DA settings — single-row table ─────────────────────── *@
+                <MudText Typo="Typo.subtitle2" Class="mb-2">DecisionAgentSettings (id=@_daPosture.Settings.Id)</MudText>
+                <MudSimpleTable Dense="true" Striped="true" Class="mb-3">
+                    <tbody>
+                        <tr>
+                            <td><strong>Enabled</strong></td>
+                            <td>@_daPosture.Settings.Enabled</td>
+                            <td><strong>ShadowMode</strong></td>
+                            <td>
+                                <MudChip T="string" Size="Size.Small"
+                                         Color="@(_daPosture.Settings.ShadowMode ? Color.Info : Color.Warning)"
+                                         Variant="Variant.Filled">
+                                    @_daPosture.Settings.ShadowMode
+                                </MudChip>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong>AllowNormal</strong></td>
+                            <td>@_daPosture.Settings.AllowNormalDecisions</td>
+                            <td><strong>AllowAbnormal</strong></td>
+                            <td>@_daPosture.Settings.AllowAbnormalDecisions</td>
+                        </tr>
+                        <tr>
+                            <td><strong>NormalThreshold</strong></td>
+                            <td>@_daPosture.Settings.NormalThreshold.ToString("F2")</td>
+                            <td><strong>AbnormalThreshold</strong></td>
+                            <td>@_daPosture.Settings.AbnormalThreshold.ToString("F2")</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Depth: Decision</strong></td>
+                            <td>@_daPosture.Settings.ProcessingDepthDecision</td>
+                            <td><strong>Depth: Audit</strong></td>
+                            <td>@_daPosture.Settings.ProcessingDepthAudit</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Depth: Submission</strong></td>
+                            <td>@_daPosture.Settings.ProcessingDepthSubmission</td>
+                            <td><strong>MaxPerCycle</strong></td>
+                            <td>@_daPosture.Settings.MaxGroupsPerCycle</td>
+                        </tr>
+                        <tr>
+                            <td><strong>CreatedAt</strong></td>
+                            <td>@FormatUtc(_daPosture.Settings.CreatedAtUtc)</td>
+                            <td><strong>UpdatedAt</strong></td>
+                            <td>@FormatUtc(_daPosture.Settings.UpdatedAtUtc)</td>
+                        </tr>
+                    </tbody>
+                </MudSimpleTable>
+
+                @if (_daPosture.Settings.ShadowMode)
+                {
+                    <MudAlert Severity="Severity.Info" Class="mb-3" Dense="true">
+                        ShadowMode = true — DA is scoring groups but NOT auto-advancing them.
+                        AGs in AnalystCompleted will sit until a human auditor moves them.
+                    </MudAlert>
+                }
+
+                @* Recent DA-actor transitions ───────────────────────── *@
+                <MudText Typo="Typo.subtitle2" Class="mb-2">
+                    Recent DECISION-AGENT transitions (last @_daPosture.RecentDaTransitions.Count)
+                </MudText>
+                @if (_daPosture.RecentDaTransitions.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        No DECISION-AGENT transitions on record. Either DA is dormant or the
+                        state-machine facade hasn't observed any DA writes yet.
+                    </MudText>
+                }
+                else
+                {
+                    <MudSimpleTable Dense="true" Hover="true" Striped="true">
+                        <thead>
+                            <tr>
+                                <th style="width: 100px;">Time</th>
+                                <th style="width: 130px;">Group</th>
+                                <th>From → To</th>
+                                <th>Trigger</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var t in _daPosture.RecentDaTransitions)
+                            {
+                                <tr>
+                                    <td>
+                                        <MudText Typo="Typo.caption">
+                                            @t.OccurredAtUtc.ToLocalTime().ToString("HH:mm:ss")
+                                        </MudText>
+                                    </td>
+                                    <td>
+                                        <MudText Typo="Typo.caption" Style="font-family: monospace;">
+                                            @t.GroupId.ToString("N").Substring(0, 8)
+                                        </MudText>
+                                    </td>
+                                    <td>
+                                        <MudText Typo="Typo.caption">
+                                            @(string.IsNullOrEmpty(t.FromStatus) ? "(new)" : t.FromStatus) → <strong>@t.ToStatus</strong>
+                                        </MudText>
+                                    </td>
+                                    <td><MudText Typo="Typo.caption">@t.TriggerName</MudText></td>
+                                    <td>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary"
+                                                 Style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; display: inline-block;">
+                                            @t.Reason
+                                        </MudText>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                }
+            }
+        </ChildContent>
+    </MudExpansionPanel>
+
+    @* ── Drift Counts ────────────────────────────────────────────────── *@
+    <MudExpansionPanel Text="Drift Counts" IsInitiallyExpanded="true">
+        <TitleContent>
+            <div class="d-flex align-center">
+                <MudIcon Icon="@Icons.Material.Outlined.WarningAmber" Class="mr-2" />
+                <MudText>Drift Counts</MudText>
+                @if (_drift is not null)
+                {
+                    var totalDrift = _drift.CcsOrphans + _drift.FycoMismatches + _drift.AuditStageOrphans;
+                    <MudChip T="string" Size="Size.Small" Class="ml-2"
+                             Color="@(totalDrift > 0 ? Color.Error : Color.Success)"
+                             Variant="Variant.Outlined">
+                        @totalDrift total
+                    </MudChip>
+                }
+            </div>
+        </TitleContent>
+        <ChildContent>
+            @if (_drift is null)
+            {
+                <MudAlert Severity="Severity.Warning">
+                    Failed to load /api/_module/diagnostics/drift-counts. Check API logs.
+                </MudAlert>
+            }
+            else
+            {
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="4">
+                        <MudPaper Class="pa-3" Elevation="2">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">CCS orphans</MudText>
+                                <MudText Typo="Typo.h4" Color="@TileColor(_drift.CcsOrphans)">
+                                    @_drift.CcsOrphans
+                                </MudText>
+                                <MudText Typo="Typo.caption">
+                                    Container-completeness rows missing both GroupIdentifier and BOEDocumentId.
+                                    Healthy = 0.
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudPaper Class="pa-3" Elevation="2">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Fyco ↔ regime mismatches</MudText>
+                                <MudText Typo="Typo.h4" Color="@TileColor(_drift.FycoMismatches)">
+                                    @_drift.FycoMismatches
+                                </MudText>
+                                <MudText Typo="Typo.caption">
+                                    Active Primary BOE relations whose latest FS6000 fyco is EXPORT but the
+                                    BOE regime is import (40/50/61/62/70/90). Healthy = 0.
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudPaper Class="pa-3" Elevation="2">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Audit-stage orphans</MudText>
+                                <MudText Typo="Typo.h4" Color="@TileColor(_drift.AuditStageOrphans)">
+                                    @_drift.AuditStageOrphans
+                                </MudText>
+                                <MudText Typo="Typo.caption">
+                                    AGs in AnalystCompleted/AuditAssigned with no Active assignment row.
+                                    Healthy = 0; combined with audit-pool empty = stuck workflow.
+                                </MudText>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            }
+        </ChildContent>
+    </MudExpansionPanel>
+</MudExpansionPanels>
+
+<MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-3">
+    Auto-refreshes every 60 s. Hit "Run all" to refresh on demand.
+</MudText>
+
+@code {
+    private const int RefreshIntervalMs = 60_000;
+
+    private bool _isRunningAll;
+    private DateTime? _lastUpdateUtc;
+    private CompletenessSnapshot? _completeness;
+    private DaPostureSnapshot? _daPosture;
+    private DriftSnapshot? _drift;
+    private System.Timers.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunAllAsync();
+        _refreshTimer = new System.Timers.Timer(RefreshIntervalMs);
+        _refreshTimer.Elapsed += async (_, _) => await InvokeAsync(RunAllAsync);
+        _refreshTimer.AutoReset = true;
+        _refreshTimer.Start();
+    }
+
+    private async Task RunAllAsync()
+    {
+        if (_isRunningAll) return;
+        _isRunningAll = true;
+        StateHasChanged();
+        try
+        {
+            // Three independent endpoints — fire in parallel. Any individual
+            // failure resolves to null via SafeGetAsync; the sections that
+            // failed render their own Warning alert.
+            var completenessTask = SafeGetAsync<CompletenessSnapshot>("/api/_module/diagnostics/completeness");
+            var daPostureTask = SafeGetAsync<DaPostureSnapshot>("/api/_module/diagnostics/da-posture");
+            var driftTask = SafeGetAsync<DriftSnapshot>("/api/_module/diagnostics/drift-counts");
+            await Task.WhenAll(completenessTask, daPostureTask, driftTask);
+            _completeness = await completenessTask;
+            _daPosture = await daPostureTask;
+            _drift = await driftTask;
+            _lastUpdateUtc = DateTime.UtcNow;
+        }
+        finally
+        {
+            _isRunningAll = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task<T?> SafeGetAsync<T>(string endpoint)
+    {
+        try
+        {
+            return await ApiService.GetAsync<T>(endpoint);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load {Endpoint}", endpoint);
+            return default;
+        }
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+    }
+
+    // ── Formatters ─────────────────────────────────────────────────────
+
+    private static string FormatUtc(DateTime? utc)
+    {
+        if (utc is null) return "—";
+        return utc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    private static Color TileColor(long count) => count > 0 ? Color.Error : Color.Success;
+
+    private static Color RecordStatusColor(string status) => status?.ToLowerInvariant() switch
+    {
+        "completed" => Color.Success,
+        "submitted" => Color.Info,
+        "ready" => Color.Primary,
+        "inanalysis" => Color.Primary,
+        "inaudit" => Color.Warning,
+        "pendingsubmission" => Color.Info,
+        "partiallyready" => Color.Warning,
+        "pending" => Color.Default,
+        "archived" => Color.Default,
+        "failed" => Color.Error,
+        _ => Color.Default,
+    };
+
+    private static Color StageColor(string stage) => stage?.ToLowerInvariant() switch
+    {
+        "completed" => Color.Success,
+        "submitted" => Color.Info,
+        "audit" => Color.Warning,
+        "imageanalysis" => Color.Primary,
+        "pendingsubmission" => Color.Info,
+        "pending" => Color.Default,
+        _ => Color.Default,
+    };
+
+    // ── DTOs (mirror the API contract — see ModuleDiagnosticsController.cs) ──
+
+    public sealed record RecordStatusRow(
+        string Status,
+        long Count,
+        DateTime? OldestUtc,
+        DateTime? NewestUtc);
+
+    public sealed record ContainerStageRow(
+        string WorkflowStage,
+        long Count,
+        DateTime? OldestUtc,
+        DateTime? NewestUtc);
+
+    public sealed record IncompleteTotals(
+        long ScannerIncomplete,
+        long IcumsIncomplete,
+        long ImageIncomplete,
+        long OverallIncomplete,
+        long Total);
+
+    public sealed record CompletenessSnapshot(
+        DateTime AsOfUtc,
+        IReadOnlyList<RecordStatusRow> RecordsByStatus,
+        IReadOnlyList<ContainerStageRow> ContainersByStage,
+        IncompleteTotals IncompleteTotals);
+
+    public sealed record DaSettingsRow(
+        int Id,
+        bool Enabled,
+        bool ShadowMode,
+        bool AllowNormalDecisions,
+        bool AllowAbnormalDecisions,
+        double NormalThreshold,
+        double AbnormalThreshold,
+        bool ProcessingDepthDecision,
+        bool ProcessingDepthAudit,
+        bool ProcessingDepthSubmission,
+        int MaxGroupsPerCycle,
+        DateTime CreatedAtUtc,
+        DateTime? UpdatedAtUtc);
+
+    public sealed record DaTransitionRow(
+        long Id,
+        DateTime OccurredAtUtc,
+        Guid GroupId,
+        string FromStatus,
+        string ToStatus,
+        string TriggerName,
+        string Reason);
+
+    public sealed record DaPostureSnapshot(
+        DateTime AsOfUtc,
+        DaSettingsRow? Settings,
+        IReadOnlyList<DaTransitionRow> RecentDaTransitions);
+
+    public sealed record DriftSnapshot(
+        DateTime AsOfUtc,
+        long CcsOrphans,
+        long FycoMismatches,
+        long AuditStageOrphans);
+}
