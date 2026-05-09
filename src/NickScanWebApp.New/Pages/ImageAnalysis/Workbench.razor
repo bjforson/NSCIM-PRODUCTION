@@ -653,10 +653,16 @@
         {
             Console.WriteLine("🔍 [ImageAnalysis] LoadData START");
             Logger?.LogInformation("🔍 [ImageAnalysis] LoadData START - Loading image analysis data...");
-            
-            // Load settings to check AssignmentMode
-            Console.WriteLine("🔍 [ImageAnalysis] Calling GET /api/image-analysis-management/service-state");
-            var settings = await ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+
+            // 2026-05-09 (Phase B / B7 UX): parallelize settings + my-assignments + (optional)
+            // available-groups via Task.WhenAll. ~max(call) total instead of ~sum(call).
+            // Eager-fire available-groups even in Manual mode and discard if not needed —
+            // the extra GET is dwarfed by the sequential round-trip saved in UserClaim mode.
+            var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
+            var availableTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Analyst");
+            await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
+            var settings = settingsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
             if (settings != null)
             {
@@ -676,10 +682,9 @@
                 Logger?.LogWarning("Could not load analysis settings");
             }
 
-            // Load my assignments
-            Console.WriteLine("🔍 [ImageAnalysis] Calling GET /api/image-analysis/my-assignments?role=Analyst");
-            Logger?.LogInformation("🔍 [ImageAnalysis] Loading my assignments...");
-            var assignments = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
+            // 2026-05-09 (Phase B / B7 UX): assignments + available results consumed
+            // from the parallel WhenAll fired at the top of LoadData.
+            var assignments = assignmentsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Assignments loaded: {assignments?.Count ?? 0} items");
             if (assignments != null && assignments.Any())
             {
@@ -698,34 +703,11 @@
                 Logger?.LogWarning("No assignments returned from API");
             }
 
-            // Load available groups if UserClaim mode
             if (_assignmentMode == "UserClaim")
             {
-                Logger?.LogInformation("Loading available groups (UserClaim mode)...");
-                try
-                {
-                    var available = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Analyst");
-                    if (available != null)
-                    {
-                        _availableGroups = available;
-                        Logger?.LogInformation("Loaded {Count} available groups", available.Count);
-                    }
-                    else
-                    {
-                        _availableGroups = new();
-                        Logger?.LogWarning("No available groups returned from API");
-                    }
-                }
-                catch (Exception ex2)
-                {
-                    Logger?.LogError(ex2, "Error loading available groups");
-                    _availableGroups = new();
-                    // Don't show error to user if it's just a mode issue
-                    if (!ex2.Message.Contains("UserClaim"))
-                    {
-                        Snackbar.Add($"Error loading available groups: {ex2.Message}", Severity.Warning);
-                    }
-                }
+                var available = availableTask.IsCompletedSuccessfully ? availableTask.Result : null;
+                _availableGroups = available ?? new();
+                Logger?.LogInformation("Loaded {Count} available groups", _availableGroups.Count);
             }
             else
             {
@@ -820,24 +802,29 @@
             ["Containers"] = assignment.Containers,
             ["OnDecisionSaved"] = EventCallback.Factory.Create(this, async () =>
             {
-                // ✅ Close dialog after decision is saved
+                // 2026-05-09 (Phase B / B7 UX): close dialog instantly, refresh in
+                // background. Removed the Task.Delay(500) — that was added pre-Sprint-5G2
+                // when state-machine writes were eventually-consistent; now they're
+                // synchronous within SaveChangesAsync, so the delay just hurt UX.
                 Console.WriteLine("🔄 [ImageAnalysis] OnDecisionSaved called - refreshing assignments list");
                 if (dialogRef != null)
                 {
                     dialogRef.Close(DialogResult.Ok(true));
-                    // Add small delay to ensure backend immediate assignment completes
-                    await Task.Delay(500);
-                    await LoadData(); // Refresh the list
-                    Console.WriteLine("✅ [ImageAnalysis] Assignments list refreshed after decision saved");
                 }
+                _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
             }),
             ["OnAllContainersDecided"] = EventCallback.Factory.Create(this, async () =>
             {
                 Console.WriteLine("✅ [ImageAnalysis] OnAllContainersDecided called - all containers in group completed");
-                // Refresh assignments after a short delay to allow immediate assignment to complete
-                await Task.Delay(1000);
-                await LoadData();
-                Console.WriteLine("✅ [ImageAnalysis] Assignments list refreshed after all containers decided");
+                // 2026-05-09 (Phase B / B7 UX): optimistic remove + close-first + parallel refresh.
+                // Previously did `await Task.Delay(1000); await LoadData();` — analyst stared at the
+                // dialog for ~1.7s. Now the AG vanishes from the list in the same frame the dialog
+                // closes; LoadData reconciles in the background. AG.GroupIdentifier is the dedup key.
+                _myAssignments = _myAssignments
+                    .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
+                    .ToList();
+                StateHasChanged();
+                _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
             })
         };
 

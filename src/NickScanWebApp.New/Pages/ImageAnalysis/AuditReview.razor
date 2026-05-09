@@ -441,29 +441,34 @@
         _loading = true;
         try
         {
-            // Load settings to check AssignmentMode
-            var settings = await ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+            // 2026-05-09 (Phase B / B7 UX): parallelize the three GETs via Task.WhenAll
+            // so the post-action refresh takes ~max(call) instead of ~sum(call). Cuts
+            // the perceived refresh time roughly 3x for users on slower links.
+            var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
+            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Audit");
+            // Eagerly fire the available-groups GET; if mode turns out to be Manual we
+            // discard the result. The cost of one extra GET is dwarfed by the
+            // sequential round-trip we save when mode is UserClaim.
+            var availableTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Audit");
+
+            await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
+
+            var settings = settingsTask.Result;
+            var assignments = assignmentsTask.Result;
+            var available = availableTask.Result;
+
             if (settings != null)
             {
                 _assignmentMode = settings.AssignmentMode ?? "Manual";
             }
-
-            // Load my assignments (Audit role)
-            var assignments = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Audit");
             if (assignments != null)
             {
                 _myAssignments = assignments;
                 Logger.LogInformation("📥 [AUDIT] Loaded {Count} assignments", _myAssignments.Count);
             }
-
-            // Load available groups if UserClaim mode
             if (_assignmentMode == "UserClaim")
             {
-                var available = await ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Audit");
-                if (available != null)
-                {
-                    _availableGroups = available;
-                }
+                _availableGroups = available ?? new();
             }
             else
             {
@@ -554,15 +559,22 @@
                     {
                         if (success)
                         {
-                            // ✅ Immediately refresh the audit assignments list
-                            await LoadAuditData();
-                            StateHasChanged(); // Ensure UI updates immediately
-                            
-                            // ✅ Close dialog after refresh
+                            // 2026-05-09 (Phase B / B7 UX): close dialog FIRST, then optimistic-
+                            // remove the just-completed AG from the visible list, then refresh in
+                            // background. The previous version did `await LoadAuditData()` *before*
+                            // closing the dialog — paudit stared at the dialog for ~600-1000ms while
+                            // three sequential GETs ran. Now the dialog dismisses instantly and the
+                            // row disappears in the same frame; the background refresh just
+                            // reconciles state for any other rows.
                             if (dialogRef != null)
                             {
                                 dialogRef.Close(DialogResult.Ok(true));
                             }
+                            _myAssignments = _myAssignments
+                                .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
+                                .ToList();
+                            StateHasChanged();
+                            _ = InvokeAsync(LoadAuditData); // background reconcile, fire-and-forget
                         }
                     })
                 };
