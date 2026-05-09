@@ -2199,9 +2199,9 @@
         });
 
         await InvokeAsync(StateHasChanged);
-        await Task.Delay(200);
-
-        // Directly open fullscreen viewer for next container
+        // 2026-05-09 (Phase B / B7 UX): removed Task.Delay(200) — that was a transition
+        // smoother for the panel collapse/expand animation but added perceptible lag.
+        // Directly open fullscreen viewer for next container.
         await DirectOpenFullscreenViewer(nextContainerNumber);
     }
 

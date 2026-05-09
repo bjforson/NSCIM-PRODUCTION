@@ -962,6 +962,13 @@
             // Use InvokeAsync to ensure clean dispatcher state after dialog close
             await InvokeAsync(async () =>
             {
+                // 2026-05-09 (Phase B / B7 UX): removed 500/500/300 ms Task.Delay
+                // calls between image and container advances. Those were pre-Sprint-5G2
+                // race-workarounds when state writes were eventually-consistent; the
+                // facade (AnalysisGroupStateMachine) now writes synchronously inside
+                // SaveChangesAsync, so the auditor doesn't need to wait. Saves ~800-1300ms
+                // per AG.
+                //
                 // First check remaining images in the same container
                 if (_containerImages.TryGetValue(result.ContainerNumber, out var currentImages))
                 {
@@ -969,7 +976,6 @@
                     {
                         if (string.IsNullOrEmpty(GetImageVerdict(result.ContainerNumber, i)))
                         {
-                            await Task.Delay(500);
                             await OpenFullImage(currentImages[i], result.ContainerNumber, i);
                             return;
                         }
@@ -992,7 +998,6 @@
                                 if (string.IsNullOrEmpty(GetImageVerdict(nextContainer, i)))
                                 {
                                     Snackbar.Add($"Container {result.ContainerNumber} complete — next: {nextContainer}", Severity.Info);
-                                    await Task.Delay(500);
                                     await OpenFullImage(nextImages[i], nextContainer, i);
                                     return;
                                 }
@@ -1003,7 +1008,6 @@
 
                 // All images in all containers are decided — auto-submit
                 Snackbar.Add("All images audited — submitting...", Severity.Info);
-                await Task.Delay(300);
                 await SubmitAuditAll();
             });
         }
