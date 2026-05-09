@@ -774,6 +774,24 @@ Log.Information("✅ RecordBuildingService registered (event-driven record build
 builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.RecordCompleteness.RecordReconciliationWorker>();
 Log.Information("✅ Record Reconciliation Worker registered (1.14.0 — safety-net)");
 
+// Resilience item 2 (2026-05-09) — backfill validator. Re-applies the FYCO direction
+// + port-match rules retroactively to all active Primary ContainerBOERelations rows
+// every Validation:BackfillIntervalHours hours (default 24h). Output mode is
+// flag-only: violations land as Warning-severity dashboardalerts rows via the
+// existing IDashboardAlertService dedupe path. Catches legacy violations that
+// pre-date the rule activation 2026-05-02. Disable via Validation:BackfillEnabled=false.
+builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.BackfillValidationService>();
+Log.Information("✅ Backfill Validation Service registered (resilience item 2 — 2026-05-09)");
+
+// Item 7 (2026-05-09) — drift sweep. Pure-observation periodic counter for three
+// silent-integrity classes (orphan audit-stage AGs, CCS denorm drift, long-stale
+// audit queue). Logs a Warning summary every cycle and raises a single
+// dashboardalerts row when any count exceeds threshold (default 5). Cadence via
+// Validation:DriftSweepIntervalHours (default 24). Disable via
+// Validation:DriftSweepEnabled=false. Does not fix anything — surfaces growth.
+builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.DriftSweepService>();
+Log.Information("✅ Drift Sweep Service registered (item 7 — 2026-05-09)");
+
 // ✅ Image Analysis Background Services are already registered in ServiceConfiguration.AddStandardizedServices()
 // All workers (IntakeWorker, AssignmentWorker, SubmissionWorker, HousekeepingWorker, ImageAnalysisBootstrapper) 
 // are registered via AddBackgroundServices() method

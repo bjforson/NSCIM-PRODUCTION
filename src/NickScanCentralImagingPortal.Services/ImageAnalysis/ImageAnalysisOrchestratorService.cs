@@ -76,6 +76,29 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private DateTime _lastDisabledLogTime = DateTime.MinValue;
         private static readonly TimeSpan _logThrottleInterval = TimeSpan.FromMinutes(5);
 
+        // Resilience item 3 (2026-05-09) — dead-mans-switch state for the audit
+        // pool. Pattern: when the orchestrator detects backlog AND no auditor
+        // Ready, we mark _firstAuditPoolEmptyAt; if the condition still holds 30
+        // minutes later we raise a Critical AuditPoolEmpty alert. _lastAlertAt
+        // gates re-firing within a 60-minute window so we don't spam ops while
+        // the situation is being investigated. Both reset to MinValue on each
+        // recovery (auditor goes Ready OR backlog drains).
+        //
+        // Reasoning for thresholds:
+        //   - 30-min dwell — matches the existing audit-stage backlog surface
+        //     log (uses the same auditBacklogStaleCutoff) and the doubled lease
+        //     window from the 2026-05-09 audit-queue work. Anything shorter
+        //     fires during normal lunch-break gaps.
+        //   - 60-min idempotency — the dedupe path in IDashboardAlertService
+        //     already collapses (Type, Title) collisions within 30 min; doubling
+        //     it here means a Critical alert that's been seen + acked won't
+        //     re-page the same on-call within the rest of an hour-long shift.
+        private DateTime _firstAuditPoolEmptyAt = DateTime.MinValue;
+        private DateTime _lastAuditPoolEmptyAlertAt = DateTime.MinValue;
+        private static readonly TimeSpan _auditPoolEmptyAlertDwell = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan _auditPoolEmptyAlertCooldown = TimeSpan.FromMinutes(60);
+        private static readonly TimeSpan _auditPoolReadinessFreshness = TimeSpan.FromMinutes(60);
+
         // Query result cache within cycle (Phase 3.3 optimization)
         private Dictionary<string, object>? _cycleCache;
 
@@ -3933,6 +3956,13 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     .Select(grp => new { Status = grp.Key, Count = grp.Count(), Oldest = grp.Min(g => g.UpdatedAtUtc) })
                     .ToListAsync(ct);
 
+                var totalAuditBacklog = auditBacklog.Sum(b => b.Count);
+                DateTime? oldestBacklogTimestamp = auditBacklog
+                    .Select(b => b.Oldest)
+                    .Where(d => d.HasValue)
+                    .DefaultIfEmpty()
+                    .Min();
+
                 foreach (var bucket in auditBacklog)
                 {
                     var ageMinutes = bucket.Oldest.HasValue
@@ -3942,6 +3972,110 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         "[HOUSEKEEPING] Audit-stage backlog: {Count} AG(s) in {Status} older than 30 min (oldest {AgeMinutes:F0} min). " +
                         "Check userreadiness for Role='Audit' — if all IsReady=False or stale, no auditor is online to pick this up.",
                         bucket.Count, bucket.Status, ageMinutes);
+                }
+
+                // ── Resilience item 3 (2026-05-09): AuditPoolEmpty dead-mans-switch ──
+                // Promote the passive [HOUSEKEEPING] log above to an active Critical
+                // dashboard alert when ALL of:
+                //   (a) totalAuditBacklog > 0 — there's work waiting in AnalystCompleted
+                //       or AuditAssigned older than 30 min (the same predicate the
+                //       backlog log uses).
+                //   (b) zero auditors are operationally Ready — userreadiness has no
+                //       row with IsReady=true AND LastHeartbeat >= now-60min for
+                //       Role='Audit' (60-min idle window matches the heartbeat cleanup
+                //       in CleanupExpiredUserReadinessAsync via MaxIdleMinutesForReadiness).
+                //   (c) the (a)+(b) combination has held for >30 min — guards against
+                //       brief lunch-break / sign-off gaps. Tracked via
+                //       _firstAuditPoolEmptyAt; reset to MinValue on each recovery.
+                //
+                // Idempotency: re-fire suppressed for 60 min via _lastAuditPoolEmptyAlertAt
+                // (the IDashboardAlertService dedupe path also collapses on (Type, Title)
+                // within 30 min and on any unacknowledged row, so this is belt+braces).
+                //
+                // Reasoning trace (test-equivalent):
+                //   T+0    backlog appears, no auditors. _firstAuditPoolEmptyAt = T+0.
+                //          totalBacklog>0 + readyAuditors=0 + dwell=0 → no alert.
+                //   T+30   condition still holds. dwell=30 → alert fires; _lastAlertAt=T+30.
+                //   T+45   condition still holds. dwell=45 but cooldown unexpired → no alert.
+                //   T+60   auditor goes Ready. readyAuditors≥1 → reset _firstAuditPoolEmptyAt=MinValue.
+                //   T+90   pool empties again. _firstAuditPoolEmptyAt=T+90; dwell timer restarts.
+                //   T+120  alerted again. Cooldown=60 min from T+30 has expired (T+90 > T+30+60).
+                //
+                // No DB schema change — uses existing dashboardalerts via IDashboardAlertService.
+                try
+                {
+                    var readyAuditorCutoff = now - _auditPoolReadinessFreshness;
+                    var readyAuditorCount = await db.UserReadiness
+                        .AsNoTracking()
+                        .CountAsync(r => r.Role == "Audit"
+                            && r.IsReady
+                            && r.LastHeartbeat >= readyAuditorCutoff, ct);
+
+                    var poolEmpty = totalAuditBacklog > 0 && readyAuditorCount == 0;
+
+                    if (poolEmpty)
+                    {
+                        if (_firstAuditPoolEmptyAt == DateTime.MinValue)
+                        {
+                            _firstAuditPoolEmptyAt = now;
+                        }
+
+                        var dwell = now - _firstAuditPoolEmptyAt;
+                        var sinceLastAlert = now - _lastAuditPoolEmptyAlertAt;
+
+                        if (dwell >= _auditPoolEmptyAlertDwell
+                            && sinceLastAlert >= _auditPoolEmptyAlertCooldown)
+                        {
+                            var oldestAge = oldestBacklogTimestamp.HasValue
+                                ? (now - oldestBacklogTimestamp.Value).TotalMinutes
+                                : 0;
+
+                            var bucketSummary = string.Join(", ",
+                                auditBacklog.Select(b => $"{b.Count}×{b.Status}"));
+
+                            using var scope = _scopeFactory.CreateScope();
+                            var alerts = scope.ServiceProvider.GetRequiredService<IDashboardAlertService>();
+                            await alerts.RaiseAsync(
+                                type: "AuditPoolEmpty",
+                                severity: "Critical",
+                                title: "Audit pool empty — no auditor Ready while backlog grows",
+                                description:
+                                    $"{totalAuditBacklog} AG(s) older than 30 min ({bucketSummary}); " +
+                                    $"oldest pending {oldestAge:F0} min; zero userreadiness rows with " +
+                                    $"Role='Audit', IsReady=true, and heartbeat in the last 60 min. " +
+                                    $"Dwell {dwell.TotalMinutes:F0} min. Operator action: log in an auditor and toggle Ready.",
+                                source: nameof(ImageAnalysisOrchestratorService) + " (CloseStaleDecidedGroupsAsync)",
+                                ct: ct);
+
+                            _lastAuditPoolEmptyAlertAt = now;
+
+                            _logger.LogWarning(
+                                "[HOUSEKEEPING] AuditPoolEmpty Critical alert raised: backlog={Backlog} ({Buckets}), " +
+                                "oldest={OldestAge:F0}min, dwell={Dwell:F0}min, readyAuditors=0",
+                                totalAuditBacklog, bucketSummary, oldestAge, dwell.TotalMinutes);
+                        }
+                    }
+                    else
+                    {
+                        // Recovery: backlog drained OR an auditor came online. Reset
+                        // the dwell tracker so the next pool-empty event starts a
+                        // fresh 30-min window. Cooldown timer is *not* reset — it
+                        // self-expires after 60 min.
+                        if (_firstAuditPoolEmptyAt != DateTime.MinValue)
+                        {
+                            _logger.LogInformation(
+                                "[HOUSEKEEPING] Audit pool recovered: backlog={Backlog}, readyAuditors={ReadyAuditors}; " +
+                                "dwell tracker reset.",
+                                totalAuditBacklog, readyAuditorCount);
+                            _firstAuditPoolEmptyAt = DateTime.MinValue;
+                        }
+                    }
+                }
+                catch (Exception alertEx)
+                {
+                    _logger.LogError(alertEx,
+                        "[HOUSEKEEPING] AuditPoolEmpty alert path failed; continuing housekeeping. " +
+                        "totalAuditBacklog={Backlog}", totalAuditBacklog);
                 }
             }
             catch (Exception ex)
