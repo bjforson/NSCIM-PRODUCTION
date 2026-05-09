@@ -360,9 +360,36 @@
         // Failure-isolated — if it can't connect we still get the 30s polling refresh.
         await InitializeDashboardHub();
 
-        // ✅ FIX: Set readiness to true immediately after hub is initialized
-        // This ensures audit users are ready to receive assignments as soon as page loads
-        await SetReadyForAssignment(true);
+        // 🔁 [AUDIT KEEPALIVE 2026-05-09] Auto-mark-Ready when the audit page opens.
+        // Rationale: today's investigation showed AGs piling up unassigned because
+        // paudit users land on /operations/audit with their `userreadiness.IsReady`
+        // already false (left over from a prior Dispose() flip, or a server-side
+        // sweep). They wouldn't have opened the audit queue if they didn't intend
+        // to audit, so we flip Ready=true on their behalf. If they manually toggle
+        // off later via OnReadyChanged, we leave that alone — don't fight the user.
+        //
+        // Failure-isolated: if SetReadyForAssignment throws (network blip, hub
+        // down) the snackbar from inside SetReadyForAssignment will already inform
+        // the user; the page itself stays usable.
+        if (!_isReadyForAssignment)
+        {
+            try
+            {
+                _isReadyForAssignment = true; // optimistic UI flip
+                await SetReadyForAssignment(true);
+                Snackbar.Add("✅ You are now Ready for new audits/assignments.", Severity.Info);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "🔁 [AUDIT KEEPALIVE] Auto-mark-Ready on init failed (non-fatal)");
+            }
+        }
+        else
+        {
+            // Already Ready — still ensure the heartbeat is fresh so the orchestrator's
+            // 60-min idle window resets immediately on page-open.
+            try { await SendHeartbeatAsync(); } catch { /* failure-isolated */ }
+        }
 
         await LoadAuditData();
         
@@ -591,6 +618,13 @@
                                 .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
                                 .ToList();
                             StateHasChanged();
+
+                            // 🔁 [AUDIT KEEPALIVE 2026-05-09] Explicit heartbeat on submit so the
+                            // orchestrator's 60-min idle window resets to "now". Otherwise the worst
+                            // case is: paudit submits an audit, doesn't navigate, the 30s timer
+                            // happens to be 28s away, the idle window slowly creeps. Failure-isolated.
+                            try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+
                             _ = InvokeAsync(LoadAuditData); // background reconcile, fire-and-forget
                         }
                     })

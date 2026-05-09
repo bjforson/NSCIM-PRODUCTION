@@ -449,8 +449,38 @@
         // failure-isolated: any exception inside InitializeDashboardHub is swallowed and
         // surfaced as a non-blocking warning, so a hub outage doesn't break page init.
         await InitializeDashboardHub();
-        await SetReadyForAssignment(true); // Auto-ready on page load
-        
+        // 🔁 [ANALYST KEEPALIVE 2026-05-09] Auto-mark-Ready when the workbench opens.
+        // Rationale: today's investigation showed AGs piling up unassigned because
+        // analyst users land on /operations/image-analysis with their
+        // `userreadiness.IsReady` already false (left over from a prior Dispose()
+        // flip, or a server-side sweep). They wouldn't have opened the workbench
+        // if they didn't intend to analyze, so we flip Ready=true on their behalf.
+        // If they manually toggle off later via OnReadyChanged, we leave that
+        // alone — don't fight the user.
+        //
+        // Failure-isolated: if SetReadyForAssignment throws (network blip, hub
+        // down) the snackbar from inside SetReadyForAssignment will already inform
+        // the user; the page itself stays usable.
+        if (!_isReadyForAssignment)
+        {
+            try
+            {
+                _isReadyForAssignment = true; // optimistic UI flip
+                await SetReadyForAssignment(true);
+                Snackbar.Add("✅ You are now Ready for new analyst assignments.", Severity.Info);
+            }
+            catch (Exception ex)
+            {
+                Logger?.LogWarning(ex, "🔁 [ANALYST KEEPALIVE] Auto-mark-Ready on init failed (non-fatal)");
+            }
+        }
+        else
+        {
+            // Already Ready — still ensure the heartbeat is fresh so the orchestrator's
+            // 60-min idle window resets immediately on page-open.
+            try { await SendHeartbeatAsync(); } catch { /* failure-isolated */ }
+        }
+
         var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
         _refreshTimer = new System.Threading.Timer(async _ =>
         {
@@ -536,42 +566,20 @@
             await _readinessHub.StartAsync();
             Logger.LogInformation("UserReadinessHub connected successfully");
             
+            // 🔁 [ANALYST KEEPALIVE 2026-05-09] Fire one heartbeat right after hub
+            // start so the orchestrator's idle window resets immediately on page load.
+            await SendHeartbeatAsync();
+
             // Start heartbeat timer (every 30 seconds)
             // ✅ IMPORTANT: Send heartbeat even if not ready, to keep connection alive
-            _heartbeatTimer = new System.Threading.Timer(async _ =>
+            // 🔁 [ANALYST KEEPALIVE 2026-05-09] Inlined heartbeat body extracted into
+            // SendHeartbeatAsync() so it can also be called from OnDecisionSaved /
+            // OnAllContainersDecided submit paths. Behaviour preserved verbatim.
+            _heartbeatTimer = new System.Threading.Timer(_ =>
             {
-                try
-                {
-                    // Check if user is authenticated before sending heartbeat
-                    var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-                    if (authState?.User?.Identity?.IsAuthenticated != true)
-                    {
-                        // User is not authenticated - skip heartbeat silently
-                        Logger.LogDebug("⚠️ [FRONTEND] Skipping heartbeat - user not authenticated");
-                        return;
-                    }
-                    
-                    // Always send heartbeat via API to keep record alive
-                    await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
-                    
-                    // Also send via SignalR if connected and ready
-                    if (_readinessHub?.State == HubConnectionState.Connected && _isReadyForAssignment)
-                    {
-                        await _readinessHub.SendAsync("SendHeartbeat", _userRole);
-                    }
-                }
-                catch (NickScanWebApp.Shared.Services.ApiException apiEx) when (apiEx.Message.Contains("401") || apiEx.Message.Contains("Unauthorized"))
-                {
-                    // 401 errors are expected when user is not authenticated - log at debug level
-                    Logger.LogDebug("⚠️ [FRONTEND] Heartbeat failed - user not authenticated (401)");
-                }
-                catch (Exception ex)
-                {
-                    // Only log non-auth errors as warnings
-                    Logger.LogWarning(ex, "⚠️ [FRONTEND] Error sending heartbeat: {Message}", ex.Message);
-                }
+                _ = InvokeAsync(SendHeartbeatAsync);
             }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
-            
+
             Logger.LogInformation("✅ [FRONTEND] Heartbeat timer started (30 second interval)");
         }
         catch (Exception ex)
@@ -671,6 +679,52 @@
             // Failure-isolated. Page falls back to the existing polling timer for queue refresh.
             Logger.LogWarning(ex, "Could not connect to ImageAnalysisDashboardHub — falling back to polling");
             Console.WriteLine($"⚠️ [ImageAnalysis] ImageAnalysisDashboardHub init failed (falling back to polling): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 🔁 [ANALYST KEEPALIVE 2026-05-09] Send a single heartbeat to keep the
+    /// userreadiness row's `LastHeartbeat` fresh. Called from:
+    ///   • the 30-second timer in InitializeReadinessHub() (continuous keepalive)
+    ///   • the OnDecisionSaved / OnAllContainersDecided submit callbacks below
+    ///     (so the orchestrator's 60-min idle window resets to "now" on every
+    ///     submit, not just on the next 30s tick).
+    /// Behaviour preserved verbatim from the inlined timer body — including the
+    /// auth-state probe (skip silently when not authenticated, log at Debug
+    /// level on 401), and the SignalR-only-if-connected-and-ready guard.
+    /// Failure-isolated: never throws to its callers.
+    /// </summary>
+    private async Task SendHeartbeatAsync()
+    {
+        try
+        {
+            // Check if user is authenticated before sending heartbeat
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            if (authState?.User?.Identity?.IsAuthenticated != true)
+            {
+                // User is not authenticated - skip heartbeat silently
+                Logger.LogDebug("⚠️ [FRONTEND] Skipping heartbeat - user not authenticated");
+                return;
+            }
+
+            // Always send heartbeat via API to keep record alive
+            await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
+
+            // Also send via SignalR if connected and ready
+            if (_readinessHub?.State == HubConnectionState.Connected && _isReadyForAssignment)
+            {
+                await _readinessHub.SendAsync("SendHeartbeat", _userRole);
+            }
+        }
+        catch (NickScanWebApp.Shared.Services.ApiException apiEx) when (apiEx.Message.Contains("401") || apiEx.Message.Contains("Unauthorized"))
+        {
+            // 401 errors are expected when user is not authenticated - log at debug level
+            Logger.LogDebug("⚠️ [FRONTEND] Heartbeat failed - user not authenticated (401)");
+        }
+        catch (Exception ex)
+        {
+            // Only log non-auth errors as warnings
+            Logger.LogWarning(ex, "⚠️ [FRONTEND] Error sending heartbeat: {Message}", ex.Message);
         }
     }
 
@@ -930,6 +984,13 @@
                 {
                     dialogRef.Close(DialogResult.Ok(true));
                 }
+
+                // 🔁 [ANALYST KEEPALIVE 2026-05-09] Explicit heartbeat on save so the
+                // orchestrator's 60-min idle window resets to "now". Otherwise the worst
+                // case is: analyst saves, doesn't navigate, the 30s timer happens to be
+                // 28s away, the idle window slowly creeps. Failure-isolated.
+                try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+
                 _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
             }),
             ["OnAllContainersDecided"] = EventCallback.Factory.Create(this, async () =>
@@ -943,6 +1004,13 @@
                     .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
                     .ToList();
                 StateHasChanged();
+
+                // 🔁 [ANALYST KEEPALIVE 2026-05-09] Explicit heartbeat on group completion so
+                // the orchestrator's 60-min idle window resets to "now". Mirrors the per-container
+                // OnDecisionSaved heartbeat above — fires once more on the AG-level finish.
+                // Failure-isolated.
+                try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+
                 _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
             })
         };
