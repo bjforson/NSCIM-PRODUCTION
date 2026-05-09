@@ -6,6 +6,7 @@
 @using NickScanWebApp.New.Models
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
+@using NickScanCentralImagingPortal.Core.Models
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -337,6 +338,11 @@
     
     // ✅ FIX: UserReadinessHub for audit assignments
     private HubConnection? _readinessHub;
+    // 🔔 [AUDIT] ImageAnalysisDashboardHub for instant queue-splice on AG transitions.
+    // Subscribes to "AnalysisGroupTransition" broadcasts so completed/cancelled AGs
+    // disappear from _myAssignments without waiting for the 30s polling refresh.
+    // Failure-isolated: if the connection fails the page still works via polling.
+    private HubConnection? _dashboardHub;
     // ✅ FIX: Default to true so audit users can receive assignments immediately
     // Users can still toggle it off if they don't want new assignments
     private bool _isReadyForAssignment = true;
@@ -349,11 +355,15 @@
     {
         // ✅ FIX: Initialize UserReadinessHub for audit role
         await InitializeReadinessHub();
-        
+
+        // 🔔 [AUDIT] Initialize ImageAnalysisDashboardHub for instant AG-transition splices.
+        // Failure-isolated — if it can't connect we still get the 30s polling refresh.
+        await InitializeDashboardHub();
+
         // ✅ FIX: Set readiness to true immediately after hub is initialized
         // This ensures audit users are ready to receive assignments as soon as page loads
         await SetReadyForAssignment(true);
-        
+
         await LoadAuditData();
         
         var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
@@ -674,6 +684,92 @@
         }
     }
 
+    // 🔔 [AUDIT] ImageAnalysisDashboardHub initialization — mirrors InitializeReadinessHub
+    // exactly (TLS handler, token retrieval, automatic reconnect). Subscribes to the
+    // "AnalysisGroupTransition" broadcast so when an AG leaves AuditAssigned (Completed
+    // via DA, AnalystCompleted via lease-revert, Cancelled, Archived, etc.) the row is
+    // spliced out of _myAssignments instantly — no GET, no 30s polling lag.
+    //
+    // Failure-isolated: the entire body is wrapped in try/catch so a hub failure logs a
+    // warning and the page falls back to the existing 30s LoadAuditData polling refresh.
+    private async Task InitializeDashboardHub()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/imageAnalysisDashboard";
+
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null) token = await task;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "🔔 [AUDIT] Error retrieving token for ImageAnalysisDashboardHub connection");
+            }
+
+            var isProd = HostEnv.IsProduction();
+            _dashboardHub = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    options.HttpMessageHandlerFactory = _ =>
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateHttpHandler(Configuration, isProd);
+                    options.WebSocketConfiguration =
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateWebSocketConfig(Configuration, isProd);
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            // Splice handler — when an AG leaves audit-eligible state, drop it from
+            // the visible list. AuditAssigned means the AG is still mine (or could
+            // come back to me on lease-renew); anything else means it moved past
+            // audit (Completed, AuditCompleted via DA, AnalystCompleted lease-revert,
+            // Cancelled, Archived, etc.) — remove from _myAssignments.
+            _dashboardHub.On<AgTransitionEvent>("AnalysisGroupTransition", async ev =>
+            {
+                await InvokeAsync(() =>
+                {
+                    if (string.IsNullOrEmpty(ev.GroupIdentifier)) return;
+
+                    if (ev.ToStatus != AnalysisStatuses.AuditAssigned
+                        && _myAssignments.Any(a => a.GroupIdentifier == ev.GroupIdentifier))
+                    {
+                        Logger.LogInformation(
+                            "🔔 [AUDIT] Splicing AG {GroupIdentifier} from queue — transitioned {From} → {To} (actor={Actor}, trigger={Trigger})",
+                            ev.GroupIdentifier, ev.FromStatus, ev.ToStatus, ev.Actor, ev.TriggerName);
+
+                        _myAssignments = _myAssignments
+                            .Where(a => a.GroupIdentifier != ev.GroupIdentifier)
+                            .ToList();
+                        StateHasChanged();
+                    }
+                });
+            });
+
+            _dashboardHub.Reconnected += _ =>
+            {
+                Logger.LogInformation("🔔 [AUDIT] ImageAnalysisDashboardHub reconnected");
+                return Task.CompletedTask;
+            };
+
+            await _dashboardHub.StartAsync();
+            Logger.LogInformation("🔔 [AUDIT] ImageAnalysisDashboardHub connected — listening for AnalysisGroupTransition broadcasts");
+        }
+        catch (Exception ex)
+        {
+            // Failure-isolated — page still works via 30s polling refresh.
+            Logger.LogWarning(ex, "🔔 [AUDIT] Could not connect to ImageAnalysisDashboardHub — falling back to polling refresh");
+        }
+    }
+
     private async Task OnReadyChanged(bool isReady)
     {
         _isReadyForAssignment = isReady;
@@ -788,6 +884,10 @@
         {
             _ = _readinessHub.DisposeAsync();
         }
+        if (_dashboardHub != null)
+        {
+            _ = _dashboardHub.DisposeAsync();
+        }
     }
 
     // DTOs
@@ -797,6 +897,22 @@
         public T? Data { get; set; }
         public string? Message { get; set; }
     }
+
+    // 🔔 [AUDIT] DTO mirroring the API's TransitionEventDto (ModuleQueuesController) and
+    // the LivePipelinePanel's TransitionRow. SignalR JSON serializer maps camelCase wire
+    // payloads to these PascalCase C# props. Used by the AnalysisGroupTransition handler
+    // wired in InitializeDashboardHub() to splice completed AGs out of _myAssignments.
+    private sealed record AgTransitionEvent(
+        long Id,
+        DateTime OccurredAtUtc,
+        Guid GroupId,
+        string? GroupIdentifier,
+        string? FromStatus,
+        string ToStatus,
+        string? TriggerName,
+        string Actor,
+        string? Reason,
+        string? CorrelationId);
 
     private class MyAssignmentDto
     {

@@ -10,6 +10,7 @@
 @inject NavigationManager NavManager
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
+@using NickScanCentralImagingPortal.Core.Models
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<Workbench> Logger
 @inject IConfiguration Configuration
@@ -406,6 +407,11 @@
     private string? _errorMessage = null;
     private bool _isReadyForAssignment = false;
     private HubConnection? _readinessHub;
+    // 2026-05-09 (Phase B / B7 UX): second SignalR hub for the imageAnalysisDashboard broadcast.
+    // Subscribes to "AnalysisGroupTransition" so the analyst queue splices completed AGs out
+    // instantly without waiting for the next 30s polling tick. Failure-isolated — if this hub
+    // can't connect, the page still works (it just falls back to the existing polling timer).
+    private HubConnection? _dashboardHub;
     private string _userRole = "Analyst"; // Default role, will be detected from user
     private string? _statusFilter;
     private string? _scannerFilter;
@@ -438,6 +444,11 @@
         // Detect user role and initialize readiness tracking
         await DetectUserRole();
         await InitializeReadinessHub();
+        // 2026-05-09 (Phase B / B7 UX): subscribe to the imageAnalysisDashboard broadcast for
+        // live AG transitions. Awaited (matches the readiness-hub pattern in this file) but
+        // failure-isolated: any exception inside InitializeDashboardHub is swallowed and
+        // surfaced as a non-blocking warning, so a hub outage doesn't break page init.
+        await InitializeDashboardHub();
         await SetReadyForAssignment(true); // Auto-ready on page load
         
         var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
@@ -570,6 +581,99 @@
         }
     }
 
+    // 2026-05-09 (Phase B / B7 UX): live splice via imageAnalysisDashboard hub. The API broadcasts
+    // `AnalysisGroupTransition` on every AG.Status write (since commit 4fc29b0). When an AG that
+    // appears in this analyst's queue moves OUT of AnalystAssigned, we drop it from `_myAssignments`
+    // immediately so the queue table doesn't sit on a stale row until the next 30s polling tick.
+    // Background reconcile (LoadData) reseeds the list with the server-of-truth view; this is a
+    // pure UX accelerator. Failure-isolated — if the hub can't connect, the page still works.
+    private async Task InitializeDashboardHub()
+    {
+        try
+        {
+            var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            var hubUrl = $"{apiBaseUrl}/hubs/imageAnalysisDashboard";
+
+            string? token = null;
+            try
+            {
+                var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (method != null)
+                {
+                    var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                    if (task != null) token = await task;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Error retrieving token for ImageAnalysisDashboardHub");
+            }
+
+            var isProd = HostEnv.IsProduction();
+            _dashboardHub = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    if (!string.IsNullOrEmpty(token))
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                    // SignalR's HubConnectionBuilder builds its own HttpClient/WebSocket and bypasses
+                    // the WebApp's pinned-thumbprint cert callback — under LocalSystem the mkcert
+                    // chain build fails. HubTlsConfig hands back a handler + WS config that mirror
+                    // the rest of the app's TLS posture so the hub connects from the service account.
+                    options.HttpMessageHandlerFactory = _ =>
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateHttpHandler(Configuration, isProd);
+                    options.WebSocketConfiguration =
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateWebSocketConfig(Configuration, isProd);
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _dashboardHub.Reconnected += _ =>
+            {
+                Logger.LogInformation("ImageAnalysisDashboardHub reconnected");
+                Console.WriteLine("🔄 [ImageAnalysis] ImageAnalysisDashboardHub reconnected");
+                return Task.CompletedTask;
+            };
+
+            // Splice handler — fires whenever the API publishes an AG status transition. We only
+            // care about transitions for AGs currently in `_myAssignments`. AnalystAssigned means
+            // the AG is still mine (or has just been reassigned to me); any other status means it
+            // moved past the analyst stage (AnalystCompleted / AuditAssigned via admin direct /
+            // AgentProcessing via DA claim / Cancelled / Archived / PartiallyCompleted / Completed).
+            // In all those cases, drop the row from the visible list so the analyst doesn't see a
+            // stale entry until the next polling tick. The background polling timer (LoadData)
+            // reseeds the list with whatever the server currently believes is mine — this hook is
+            // purely a UX accelerator and never the source of truth.
+            _dashboardHub.On<AgTransitionEvent>("AnalysisGroupTransition", async ev =>
+            {
+                await InvokeAsync(() =>
+                {
+                    if (string.IsNullOrEmpty(ev.GroupIdentifier)) return;
+                    if (ev.ToStatus != AnalysisStatuses.AnalystAssigned
+                        && _myAssignments.Any(a => a.GroupIdentifier == ev.GroupIdentifier))
+                    {
+                        Console.WriteLine($"🔔 [ImageAnalysis] Live splice: {ev.GroupIdentifier} {ev.FromStatus}→{ev.ToStatus} (trigger={ev.TriggerName}, actor={ev.Actor})");
+                        Logger.LogInformation("Live splice: {GroupIdentifier} {FromStatus}→{ToStatus} (trigger={TriggerName}, actor={Actor})",
+                            ev.GroupIdentifier, ev.FromStatus, ev.ToStatus, ev.TriggerName, ev.Actor);
+                        _myAssignments = _myAssignments
+                            .Where(a => a.GroupIdentifier != ev.GroupIdentifier)
+                            .ToList();
+                        StateHasChanged();
+                    }
+                });
+            });
+
+            await _dashboardHub.StartAsync();
+            Logger.LogInformation("ImageAnalysisDashboardHub connected successfully");
+            Console.WriteLine("✅ [ImageAnalysis] ImageAnalysisDashboardHub connected");
+        }
+        catch (Exception ex)
+        {
+            // Failure-isolated. Page falls back to the existing polling timer for queue refresh.
+            Logger.LogWarning(ex, "Could not connect to ImageAnalysisDashboardHub — falling back to polling");
+            Console.WriteLine($"⚠️ [ImageAnalysis] ImageAnalysisDashboardHub init failed (falling back to polling): {ex.Message}");
+        }
+    }
+
     private async Task OnReadyChanged(bool isReady)
     {
         _isReadyForAssignment = isReady;
@@ -643,6 +747,11 @@
         if (_readinessHub != null)
         {
             _ = _readinessHub.DisposeAsync();
+        }
+        // 2026-05-09 (Phase B / B7 UX): mirror readiness-hub disposal for the dashboard hub.
+        if (_dashboardHub != null)
+        {
+            _ = _dashboardHub.DisposeAsync();
         }
     }
 
@@ -917,4 +1026,20 @@
         public int LeaseMinutes { get; set; }
         public int MaxConcurrentPerUser { get; set; }
     }
+
+    // 2026-05-09 (Phase B / B7 UX): wire payload for the imageAnalysisDashboard hub's
+    // "AnalysisGroupTransition" broadcast. Mirrors `TransitionEventDto` in
+    // ModuleQueuesController.cs (camelCase on the wire, PascalCase in C#). Kept inline
+    // because it's only used by this page; if a second consumer appears, lift to a shared DTO.
+    private sealed record AgTransitionEvent(
+        long Id,
+        DateTime OccurredAtUtc,
+        Guid GroupId,
+        string? GroupIdentifier,
+        string? FromStatus,
+        string ToStatus,
+        string? TriggerName,
+        string Actor,
+        string? Reason,
+        string? CorrelationId);
 }
