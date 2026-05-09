@@ -3750,14 +3750,26 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             try
             {
                 var now = DateTime.UtcNow;
+                // B2′-A (2026-05-09): excluded AnalystCompleted + AuditAssigned from the stale-sweep
+                // list. Reason: when no audit user has IsReady=true, the orchestrator's
+                // AutoAssignByRoleAsync(Audit) returns silently and AGs accumulate in AnalystCompleted.
+                // The previous version of this sweep treated "all containers decided" as equivalent
+                // to "all done" and auto-completed those AGs with SYSTEM-HOUSEKEEPING synthetic audit
+                // rows, bypassing the audit stage entirely. AnalystCompleted with all-decided
+                // containers is the *normal* pre-audit state; AuditAssigned with all-decided is the
+                // *normal* in-audit state. Neither is an orphan. The sweep stays focused on actual
+                // orphan states where DA/analyst crashed mid-flow:
+                //   - Ready / AnalystAssigned: containers got decisions out-of-band (DA bypass,
+                //     side-effects); AG never advanced.
+                //   - AnalystReady / AuditReady: legacy intermediate states from older flows.
+                // Surfacing AnalystCompleted backlog goes to Phase B / B3 (queue-depth view +
+                // dashboard card). See journal entry 2026-05-09 audit-queue-investigation.
                 var activeStates = new[]
                 {
                     AnalysisStatuses.Ready,
                     AnalysisStatuses.AnalystAssigned,
                     "AnalystReady",
-                    AnalysisStatuses.AnalystCompleted,
-                    "AuditReady",
-                    AnalysisStatuses.AuditAssigned
+                    "AuditReady"
                 };
 
                 // ── Pattern 1: All containers in group have decisions somewhere ─────
@@ -3902,6 +3914,34 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     _logger.LogWarning(
                         "[HOUSEKEEPING] Archived {Count} empty Ready group(s) older than 7 days",
                         archivedCount);
+                }
+
+                // ── Pattern 3: Audit-stage backlog visibility (B2′-A, 2026-05-09) ────
+                // Surface (don't act on) AnalystCompleted + AuditAssigned AGs that are
+                // older than 30 minutes. If the orchestrator's AutoAssignByRoleAsync(Audit)
+                // can't find a Ready auditor, AGs pile up here. The B2′-A change above
+                // intentionally stops the auto-complete bypass; this log tells operators
+                // *why* the audit page has work showing up (or not) and how stale it is.
+                // Throttled by piggy-backing on the housekeeping cadence (2-minute loop).
+                var auditBacklogStaleCutoff = now.AddMinutes(-30);
+                var auditBacklog = await db.AnalysisGroups
+                    .AsNoTracking()
+                    .Where(g => (g.Status == AnalysisStatuses.AnalystCompleted
+                              || g.Status == AnalysisStatuses.AuditAssigned)
+                        && g.UpdatedAtUtc < auditBacklogStaleCutoff)
+                    .GroupBy(g => g.Status)
+                    .Select(grp => new { Status = grp.Key, Count = grp.Count(), Oldest = grp.Min(g => g.UpdatedAtUtc) })
+                    .ToListAsync(ct);
+
+                foreach (var bucket in auditBacklog)
+                {
+                    var ageMinutes = bucket.Oldest.HasValue
+                        ? (now - bucket.Oldest.Value).TotalMinutes
+                        : 0;
+                    _logger.LogWarning(
+                        "[HOUSEKEEPING] Audit-stage backlog: {Count} AG(s) in {Status} older than 30 min (oldest {AgeMinutes:F0} min). " +
+                        "Check userreadiness for Role='Audit' — if all IsReady=False or stale, no auditor is online to pick this up.",
+                        bucket.Count, bucket.Status, ageMinutes);
                 }
             }
             catch (Exception ex)
