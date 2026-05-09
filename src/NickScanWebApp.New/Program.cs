@@ -219,6 +219,12 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.ThemeService>();
 // Add inactivity timer service for auto-logout
 builder.Services.AddScoped<NickScanWebApp.New.Services.InactivityTimerService>();
 
+// Phase B / B7-C (2026-05-09): per-circuit coordinator for the layout-level
+// ReadinessKeepalive component. Lets AuditReview / Workbench register that they
+// own the readiness hub for a role, so the keepalive component skips that role
+// at heartbeat tick time and no duplicate connections are opened.
+builder.Services.AddScoped<NickScanWebApp.New.Services.ReadinessKeepaliveCoordinator>();
+
 // 2026-05-05 (Sprint 2C, audit 6.05): removed SignalRService registration.
 // The service targeted /hubs/scanner which does not exist on the API; calls
 // silently swallowed exceptions in StartAsync (the catch block was empty).

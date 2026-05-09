@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NickScanCentralImagingPortal.Integration.Tests</RootNamespace>
+    <AssemblyName>NickScanCentralImagingPortal.Integration.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Phase B / B7-D (2026-05-09): EF Core InMemory provider used to host the
+         AnalysisGroup state-machine integration test. The full PG schema isn't
+         required — the facade exercises DbSet<AnalysisGroup>, DbSet<AnalysisGroupStatusTransition>,
+         DbContext.Entry, and SaveChangesAsync. InMemory satisfies all four. The
+         existing src/NickScanCentralImagingPortal.Tests/ project (not in the .sln)
+         already uses this same package + version, so this is precedented. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NickScanCentralImagingPortal.Core\NickScanCentralImagingPortal.Core.csproj" />
+    <ProjectReference Include="..\..\src\NickScanCentralImagingPortal.Infrastructure\NickScanCentralImagingPortal.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

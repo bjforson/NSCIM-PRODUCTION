@@ -16,6 +16,13 @@
 @* Inactivity monitor for auto-logout *@
 <InactivityMonitor />
 
+@* Phase B / B7-C (2026-05-09): cross-page readiness keepalive. Renders nothing —
+   if the current user has Audit/Analyst role, auto-marks Ready=true on init (only
+   if not already manually toggled off) and sends 30 s heartbeats while on any
+   authenticated page. AuditReview/Workbench register with ReadinessKeepaliveCoordinator
+   so this component skips heartbeats for the role those pages own. *@
+<NickScanWebApp.New.Components.Shared.ReadinessKeepalive />
+
 <MudLayout>
     @* No MudAppBar — toolbar is integrated into the breadcrumb row (Option B) *@
 

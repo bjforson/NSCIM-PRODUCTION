@@ -15,6 +15,7 @@
 @inject ILogger<Workbench> Logger
 @inject IConfiguration Configuration
 @inject IWebHostEnvironment HostEnv
+@inject NickScanWebApp.New.Services.ReadinessKeepaliveCoordinator KeepaliveCoordinator
 @implements IDisposable
 
 <PageTitle>NICKSCAN ERP — NSCIS — Image Analysis@(_myAssignments.Any() ? $" ({_myAssignments.Count})" : "")</PageTitle>
@@ -443,6 +444,12 @@
         
         // Detect user role and initialize readiness tracking
         await DetectUserRole();
+
+        // 🔁 [ANALYST KEEPALIVE 2026-05-09 / B7-C] Tell the layout-level ReadinessKeepalive
+        // component that THIS page owns the readiness hub for the detected role —
+        // it'll skip heartbeats for this role until the page is disposed.
+        try { KeepaliveCoordinator.MarkPageHubActive(_userRole, true); } catch { }
+
         await InitializeReadinessHub();
         // 2026-05-09 (Phase B / B7 UX): subscribe to the imageAnalysisDashboard broadcast for
         // live AG transitions. Awaited (matches the readiness-hub pattern in this file) but
@@ -792,10 +799,15 @@
     
     public void Dispose()
     {
-        if (_isReadyForAssignment)
-        {
-            try { _ = SetReadyForAssignment(false); } catch { }
-        }
+        // 🔁 [ANALYST KEEPALIVE 2026-05-09 / B7-C] Hand the role back to the layout-level
+        // ReadinessKeepalive component before tearing down our own hub. Don't flip
+        // Ready=false here — the keepalive will pick up heartbeats from now on.
+        try { KeepaliveCoordinator.MarkPageHubActive(_userRole, false); } catch { }
+
+        // 2026-05-09 (B7-C): the legacy "auto Ready=false on Dispose" behaviour was the
+        // ROOT CAUSE the keepalive component is supposed to fix. Removed so navigation
+        // away from this page no longer races the layout-level keepalive. The user's
+        // 60-min idle window still sweeps them if they actually walk away.
         _heartbeatTimer?.Dispose();
         _refreshTimer?.Dispose();
         if (_readinessHub != null)

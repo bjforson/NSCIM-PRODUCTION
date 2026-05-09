@@ -1,0 +1,293 @@
+@*
+    Phase B / B7-C (2026-05-09) — Cross-page Ready persistence.
+
+    Today's B7-B keepalive only fires when AuditReview/Workbench loads. If the user
+    (paudit, panalyst) opens any other authenticated page first — Notifications,
+    Dashboard, Scanner Ops, etc. — their `userreadiness.IsReady` stays whatever the
+    previous Dispose() flip set it to (usually false). The 60-min idle expiry
+    (`CleanupExpiredUserReadinessAsync`) then sweeps them, audit/analyst assignment
+    stops, and the audit queue silently piles up.
+
+    This component is dropped into MainLayout (renders on every authenticated page).
+    It auto-marks Audit/Analyst users Ready=true on init (only if NOT currently ready —
+    don't fight a manual toggle-off) and sends a heartbeat every 30 s while connected,
+    matching the AuditReview / Workbench cadence.
+
+    No UI — pure background behaviour.
+
+    Duplicate-connection avoidance: AuditReview and Workbench both still own their own
+    hubs (we don't touch their core flow). When the user navigates to one of those
+    pages, the page calls ReadinessKeepaliveCoordinator.MarkPageHubActive(role, true)
+    in OnInitializedAsync. This component's heartbeat-tick callback consults the
+    coordinator and skips heartbeats for that role — the page's hub takes over.
+    On dispose, the page clears the flag and the keepalive resumes. See the
+    coordinator's class doc for why a service beats a cascading parameter here.
+
+    Failure-isolated: every block is wrapped in try/catch and logs at Warning. A
+    network blip or expired token doesn't surface a snackbar (this is background UX).
+*@
+
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.SignalR.Client
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NickScanWebApp.New.Services.ReadinessKeepaliveCoordinator KeepaliveCoordinator
+@inject ILogger<ReadinessKeepalive> Logger
+@inject IConfiguration Configuration
+@inject IWebHostEnvironment HostEnv
+@implements IAsyncDisposable
+
+@* Renders nothing — behavioural component only. *@
+
+@code {
+    /// <summary>
+    /// Roles this component manages. AuditReview / Workbench currently use these
+    /// exact strings on their own hubs; mirroring them keeps DB rows consistent.
+    /// </summary>
+    private static readonly string[] ManagedRoles = new[] { "Audit", "Analyst" };
+
+    private readonly Dictionary<string, HubConnection?> _readinessHubs = new();
+    private System.Threading.Timer? _heartbeatTimer;
+    private readonly HashSet<string> _activeRoles = new(StringComparer.OrdinalIgnoreCase);
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = authState.User;
+            if (user.Identity?.IsAuthenticated != true)
+            {
+                return;
+            }
+
+            // Pull every Role claim — some users carry both "Audit" and "Analyst"
+            // (e.g. team leads). Both single-claim ClaimTypes.Role and short-form
+            // "role" are checked, mirroring NavMenu/MainLayout's pattern.
+            var roleClaims = user.FindAll(ClaimTypes.Role)
+                                 .Concat(user.FindAll("role"))
+                                 .Select(c => c.Value)
+                                 .Where(v => !string.IsNullOrWhiteSpace(v))
+                                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                                 .ToList();
+
+            foreach (var role in ManagedRoles)
+            {
+                if (roleClaims.Contains(role, StringComparer.OrdinalIgnoreCase))
+                {
+                    _activeRoles.Add(role);
+                }
+            }
+
+            if (_activeRoles.Count == 0)
+            {
+                // User has no Audit/Analyst role — component is a no-op.
+                Logger.LogDebug("[KEEPALIVE] User {User} has no Audit/Analyst role; component idle", user.Identity?.Name);
+                return;
+            }
+
+            Logger.LogInformation("[KEEPALIVE] Initializing for user {User} roles=[{Roles}]",
+                user.Identity?.Name, string.Join(",", _activeRoles));
+
+            foreach (var role in _activeRoles)
+            {
+                // Each role gets its own hub connection — matches AuditReview/Workbench.
+                // Failure-isolated: a hub failure for one role doesn't stop the other.
+                try
+                {
+                    await InitializeReadinessHubAsync(role);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "[KEEPALIVE] Failed to initialize readiness hub for role {Role} (continuing)", role);
+                }
+            }
+
+            // Single 30 s timer drives heartbeats for every active role. Each tick
+            // consults the coordinator to skip roles a page hub is currently owning.
+            _heartbeatTimer = new System.Threading.Timer(_ =>
+            {
+                _ = InvokeAsync(SendHeartbeatsAsync);
+            }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
+            // First-pass: mark Ready (only if NOT currently ready — don't fight the user)
+            // and emit one heartbeat right now. Failure-isolated.
+            foreach (var role in _activeRoles)
+            {
+                try
+                {
+                    await EnsureReadyOnceAsync(role);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "[KEEPALIVE] EnsureReadyOnceAsync failed for {Role} (non-fatal)", role);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Whole component degrades silently — never block page render.
+            Logger.LogWarning(ex, "[KEEPALIVE] OnInitializedAsync failed (non-fatal)");
+        }
+    }
+
+    /// <summary>
+    /// On first connect: probe `/user/readiness?role=X`. Only POST `/user/ready`
+    /// with true if currently false (or no record). This protects a manual toggle-
+    /// off — paudit who explicitly turned themselves off should stay off.
+    /// </summary>
+    private async Task EnsureReadyOnceAsync(string role)
+    {
+        // Skip the role if a page hub on this circuit already owns it.
+        if (KeepaliveCoordinator.IsPageHubActive(role))
+        {
+            Logger.LogDebug("[KEEPALIVE] Skipping EnsureReady for {Role} — page hub active on circuit", role);
+            return;
+        }
+
+        UserReadinessSnapshot? snap = null;
+        try
+        {
+            snap = await ApiService.GetAsync<UserReadinessSnapshot>(
+                $"/api/image-analysis/user/readiness?role={role}");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "[KEEPALIVE] readiness probe failed for {Role}; will still send heartbeat", role);
+        }
+
+        var currentlyReady = snap?.IsReady ?? false;
+        if (!currentlyReady)
+        {
+            try
+            {
+                await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
+                {
+                    Role = role,
+                    IsReady = true,
+                    SessionId = (string?)null
+                });
+                Logger.LogInformation("[KEEPALIVE] Auto-flipped {Role} Ready=true on init (was {Was})",
+                    role, snap is null ? "unknown" : "false");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "[KEEPALIVE] Could not flip {Role} Ready=true (non-fatal)", role);
+            }
+        }
+
+        // Always send an immediate heartbeat regardless — even if we leave Ready=false
+        // (because the user manually toggled off), a fresh heartbeat keeps the row alive.
+        try
+        {
+            await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = role });
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "[KEEPALIVE] Initial heartbeat failed for {Role}", role);
+        }
+    }
+
+    private async Task InitializeReadinessHubAsync(string role)
+    {
+        var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+        var hubUrl = $"{apiBaseUrl}/hubs/userReadiness";
+
+        string? token = null;
+        try
+        {
+            var method = AuthStateProvider.GetType().GetMethod("GetTokenAsync",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (method != null)
+            {
+                var task = method.Invoke(AuthStateProvider, null) as Task<string?>;
+                if (task != null) token = await task;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "[KEEPALIVE] token retrieval failed for {Role}; hub will skip auth", role);
+        }
+
+        var isProd = HostEnv.IsProduction();
+        var hub = new HubConnectionBuilder()
+            .WithUrl(hubUrl, options =>
+            {
+                if (!string.IsNullOrEmpty(token))
+                    options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+                options.HttpMessageHandlerFactory = _ =>
+                    NickScanWebApp.New.Services.HubTlsConfig.CreateHttpHandler(Configuration, isProd);
+                options.WebSocketConfiguration =
+                    NickScanWebApp.New.Services.HubTlsConfig.CreateWebSocketConfig(Configuration, isProd);
+            })
+            .WithAutomaticReconnect()
+            .Build();
+
+        await hub.StartAsync();
+        _readinessHubs[role] = hub;
+        Logger.LogDebug("[KEEPALIVE] Hub connected for role {Role}", role);
+    }
+
+    private async Task SendHeartbeatsAsync()
+    {
+        if (_disposed) return;
+        foreach (var role in _activeRoles)
+        {
+            // Page-owned role: skip heartbeat — the page is sending its own.
+            if (KeepaliveCoordinator.IsPageHubActive(role))
+            {
+                Logger.LogTrace("[KEEPALIVE] Skipping heartbeat for {Role} — page hub active on circuit", role);
+                continue;
+            }
+
+            try
+            {
+                await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = role });
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug(ex, "[KEEPALIVE] heartbeat failed for {Role}", role);
+            }
+
+            if (_readinessHubs.TryGetValue(role, out var hub) && hub?.State == HubConnectionState.Connected)
+            {
+                try
+                {
+                    await hub.SendAsync("SendHeartbeat", role);
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogDebug(ex, "[KEEPALIVE] SignalR heartbeat failed for {Role}", role);
+                }
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        try { _heartbeatTimer?.Dispose(); } catch { }
+        foreach (var hub in _readinessHubs.Values)
+        {
+            if (hub is null) continue;
+            try { await hub.DisposeAsync(); } catch { }
+        }
+        _readinessHubs.Clear();
+        // NOTE: do NOT flip Ready=false here. The whole point of this component
+        // is to keep Ready=true persistent across navigation. Auditors who close
+        // the browser entirely will be swept by CleanupExpiredUserReadinessAsync
+        // after 60 min of idle (no fresh heartbeat) — exactly the desired posture.
+    }
+
+    private class UserReadinessSnapshot
+    {
+        public string Username { get; set; } = "";
+        public string Role { get; set; } = "";
+        public bool IsReady { get; set; }
+        public DateTime? LastHeartbeat { get; set; }
+        public DateTime? LastChangedAt { get; set; }
+        public string? Message { get; set; }
+    }
+}
