@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
@@ -1404,6 +1405,53 @@ app.MapHub<NickScanCentralImagingPortal.API.Hubs.ComprehensiveDashboardHub>("/hu
 app.MapHub<NickScanCentralImagingPortal.API.Hubs.ImageAnalysisDashboardHub>("/hubs/imageAnalysisDashboard");
 app.MapHub<NickScanCentralImagingPortal.API.Hubs.UserReadinessHub>("/hubs/userReadiness");
 app.MapHub<NickScanCentralImagingPortal.API.Hubs.ContainerScanQueueHub>("/hubs/containerScanQueue");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B / B6 Live Pipeline (2026-05-09) — fan AnalysisGroup transition events
+// out over SignalR. Wires the static AnalysisGroupStateMachine.Transitioned hook
+// to IHubContext<ImageAnalysisDashboardHub>. Lives here (API/Program.cs) instead
+// of inside Infrastructure to avoid an Infrastructure→API project reference.
+//
+// Failure mode: best-effort. The hook itself catches and logs; this subscriber
+// uses a Task.Run-wrapped fire-and-forget so a slow client doesn't block the
+// SaveChanges return path. The DB row is the source of truth — if SignalR
+// drops, /api/_module/queues/recent will catch the consumer up.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+    var hubServices = app.Services;
+    var startupLogger = app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("AnalysisGroupTransition.Broadcast");
+
+    NickScanCentralImagingPortal.Infrastructure.Data.AnalysisGroupStateMachine.Transitioned +=
+        (payload, ct) =>
+        {
+            // Fire-and-forget on a background task so we never block SaveChanges.
+            // The cancellation token is the caller's request-scoped token; once
+            // SaveChanges has returned and the request is potentially completing,
+            // we don't want a hub send to be torn down mid-flight, so we do not
+            // forward the token into SendAsync.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var hubContext = hubServices
+                        .GetRequiredService<Microsoft.AspNetCore.SignalR.IHubContext<NickScanCentralImagingPortal.API.Hubs.ImageAnalysisDashboardHub>>();
+                    await hubContext.Clients.All.SendAsync("AnalysisGroupTransition", payload).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    startupLogger.LogWarning(
+                        ex,
+                        "AnalysisGroupTransition broadcast failed for group {GroupId} ({FromStatus}→{ToStatus}); DB row {TransitionId} is the source of truth",
+                        payload.GroupId, payload.FromStatus, payload.ToStatus, payload.Id);
+                }
+            });
+
+            return Task.CompletedTask;
+        };
+
+    Log.Information("✅ AnalysisGroupStateMachine.Transitioned wired to ImageAnalysisDashboardHub");
+}
 
 // Configure comprehensive monitoring
 app.UseComprehensiveMonitoring();

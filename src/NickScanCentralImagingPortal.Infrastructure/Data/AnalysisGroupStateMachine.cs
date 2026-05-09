@@ -2,6 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 
@@ -198,7 +200,7 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
             group.Status = toStatus;
             group.UpdatedAtUtc = DateTime.UtcNow;
 
-            db.Set<AnalysisGroupStatusTransition>().Add(new AnalysisGroupStatusTransition
+            var transition = new AnalysisGroupStatusTransition
             {
                 TenantId = ResolveTenantId(group),
                 GroupId = group.Id,
@@ -209,10 +211,83 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 Reason = TrimReason(reason),
                 CorrelationId = correlationId,
                 OccurredAtUtc = DateTime.UtcNow
-            });
+            };
+            db.Set<AnalysisGroupStatusTransition>().Add(transition);
 
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            // Phase B / B6 Live Pipeline (2026-05-09): broadcast the freshly-persisted
+            // transition to any subscriber after SaveChanges returns. The DB row is the
+            // source of truth — broadcast failures are best-effort. Outside the EF
+            // transaction by construction (SaveChanges has returned). The subscriber is
+            // expected to fan out to SignalR (IHubContext<ImageAnalysisDashboardHub>),
+            // wired in API/Program.cs to avoid an Infrastructure→API dependency.
+            var subscriber = Transitioned;
+            if (subscriber is not null)
+            {
+                var groupIdentifier = group.GroupIdentifier ?? string.Empty;
+                var payload = new AnalysisGroupTransitionEvent(
+                    transition.Id,
+                    transition.OccurredAtUtc,
+                    transition.GroupId,
+                    groupIdentifier,
+                    transition.FromStatus,
+                    transition.ToStatus,
+                    transition.TriggerName,
+                    transition.Actor,
+                    transition.Reason,
+                    transition.CorrelationId);
+
+                try
+                {
+                    await subscriber(payload, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Best-effort — never let a broadcast failure surface to the caller.
+                    // The polling endpoints will eventually-consistently catch up.
+                    TryGetLogger(db)?.LogWarning(
+                        ex,
+                        "AnalysisGroupStateMachine.Transitioned subscriber threw for group {GroupId} ({FromStatus}→{ToStatus}); broadcast skipped",
+                        transition.GroupId, transition.FromStatus, transition.ToStatus);
+                }
+            }
+
             return AnalysisGroupTransitionResult.Applied;
+        }
+
+        /// <summary>
+        /// Phase B / B6 Live Pipeline — single-subscriber hook fired after every
+        /// successful <see cref="TransitionAsync"/> SaveChanges. Wired once at app
+        /// startup in API/Program.cs to fan out the event over SignalR via
+        /// <c>IHubContext&lt;ImageAnalysisDashboardHub&gt;</c>. Lives here (not in
+        /// Core/API) because the DI container sits in API and the static facade is
+        /// the only place every transition funnels through.
+        /// </summary>
+        /// <remarks>
+        /// <para>Single-subscriber by design — assignment replaces the existing
+        /// handler. Use <c>AnalysisGroupStateMachine.Transitioned += handler</c>
+        /// only if a multi-cast is genuinely needed; in v1 we wire one fan-out to
+        /// the dashboard hub and stop. The contract is "best-effort" — exceptions
+        /// thrown by the subscriber are caught and logged at Warning, then
+        /// swallowed so the caller's transition still returns Applied.</para>
+        /// <para>Threading: invoked AFTER <see cref="DbContext.SaveChangesAsync(CancellationToken)"/>
+        /// returns and OUTSIDE the EF transaction. Subscribers should perform their
+        /// own fire-and-forget if they want to avoid blocking the caller.</para>
+        /// </remarks>
+        public static event Func<AnalysisGroupTransitionEvent, CancellationToken, Task>? Transitioned;
+
+        private static ILogger? TryGetLogger(DbContext db)
+        {
+            try
+            {
+                var loggerFactory = db.GetService<ILoggerFactory>();
+                return loggerFactory?.CreateLogger("AnalysisGroupStateMachine");
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>
@@ -294,4 +369,33 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
         /// </summary>
         NotFound = 2
     }
+
+    /// <summary>
+    /// Phase B / B6 Live Pipeline (2026-05-09) — payload broadcast to
+    /// <see cref="AnalysisGroupStateMachine.Transitioned"/> subscribers after every
+    /// successful transition SaveChanges. Mirrors the <c>recent</c> endpoint row
+    /// shape so the same DTO can flow over SignalR and HTTP without divergence
+    /// (per the live-pipeline-api-contract.md §1.3).
+    /// </summary>
+    /// <param name="Id">Bigserial id of the audit row in <c>analysis_group_status_transitions</c>.</param>
+    /// <param name="OccurredAtUtc">UTC moment the transition was committed.</param>
+    /// <param name="GroupId">FK to the <see cref="AnalysisGroup"/> being transitioned.</param>
+    /// <param name="GroupIdentifier">Display-form group identifier (BL/HouseBL/logical group).</param>
+    /// <param name="FromStatus">Status the group left.</param>
+    /// <param name="ToStatus">Status the group moved into.</param>
+    /// <param name="TriggerName">Conventional trigger name (matches the audit row's <c>trigger_name</c>).</param>
+    /// <param name="Actor">Who initiated the transition (matches the audit row's <c>actor</c>).</param>
+    /// <param name="Reason">Free-text justification (≤512 chars).</param>
+    /// <param name="CorrelationId">Optional request-correlation id, when present.</param>
+    public sealed record AnalysisGroupTransitionEvent(
+        long Id,
+        DateTime OccurredAtUtc,
+        Guid GroupId,
+        string GroupIdentifier,
+        string FromStatus,
+        string ToStatus,
+        string TriggerName,
+        string Actor,
+        string Reason,
+        string? CorrelationId);
 }
