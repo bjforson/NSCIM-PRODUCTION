@@ -74,7 +74,41 @@ public sealed class ModuleQueuesController : ControllerBase
         // 3. ICUMS Outbox depth — file count + oldest mtime in Data\ICUMS\Outbox\ICUMS\ICUMS_*.json.
         queues.Add(GetIcumsOutboxRow(asOfUtc));
 
-        return Ok(new ModuleQueuesResponse(queues, asOfUtc));
+        // 4. Phase B / B3 (2026-05-09): per-role userreadiness pool snapshot. The B2′-A
+        //    investigation found that "audit queue empty" is an operational dead-mans-switch:
+        //    when no userreadiness row has IsReady=true with a heartbeat within 60 min,
+        //    AutoAssignByRoleAsync(Audit) returns silently and AGs in AnalystCompleted
+        //    pile up. Surface this directly so dashboards can flag it without re-running
+        //    the diagnostic SQL probe.
+        var maxIdleMinutes = _configuration.GetValue<int>("ImageAnalysis:MaxIdleMinutesForReadiness", 60);
+        var readinessCutoff = asOfUtc.AddMinutes(-maxIdleMinutes);
+        var readinessRows = await _db.UserReadiness
+            .GroupBy(r => r.Role)
+            .Select(g => new RoleReadinessRow(
+                g.Key,
+                g.LongCount(),
+                g.LongCount(r => r.IsReady),
+                g.LongCount(r => r.IsReady && r.LastHeartbeat >= readinessCutoff),
+                g.Where(r => r.IsReady).Max(r => (DateTime?)r.LastHeartbeat)))
+            .ToListAsync(ct);
+
+        // 5. Drift detection: AGs in audit-stage where the underlying CCS rows' WorkflowStage
+        //    disagrees with the AG status. Catches the parallel-state-surface drift documented
+        //    in the IAS-Design plan. Cheap O(N) — N is small in steady state.
+        var driftCount = await _db.AnalysisGroups
+            .Where(g => g.Status == AnalysisStatuses.AnalystCompleted
+                     || g.Status == AnalysisStatuses.AuditAssigned)
+            .Where(g => _db.AnalysisRecords
+                .Where(r => r.GroupId == g.Id)
+                .SelectMany(r => _db.ContainerCompletenessStatuses
+                    .Where(c => c.ContainerNumber == r.ContainerNumber))
+                .Any(c => c.WorkflowStage != "Audit"
+                       && c.WorkflowStage != "PendingSubmission"
+                       && c.WorkflowStage != "Submitted"
+                       && c.WorkflowStage != "Completed"))
+            .LongCountAsync(ct);
+
+        return Ok(new ModuleQueuesResponse(queues, asOfUtc, driftCount, readinessRows));
     }
 
     private static ModuleQueueRow BuildQueueRow(
@@ -133,4 +167,15 @@ public sealed class ModuleQueuesController : ControllerBase
 
 public sealed record ModuleQueueRow(string Name, long Depth, double OldestAgeSeconds);
 
-public sealed record ModuleQueuesResponse(IReadOnlyList<ModuleQueueRow> Queues, DateTime AsOfUtc);
+public sealed record RoleReadinessRow(
+    string Role,
+    long TotalUsers,
+    long ReadyUsers,
+    long ReadyRecent,
+    DateTime? LatestReadyHeartbeat);
+
+public sealed record ModuleQueuesResponse(
+    IReadOnlyList<ModuleQueueRow> Queues,
+    DateTime AsOfUtc,
+    long DriftCount,
+    IReadOnlyList<RoleReadinessRow> Readiness);

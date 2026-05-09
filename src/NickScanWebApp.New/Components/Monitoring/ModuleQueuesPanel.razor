@@ -1,0 +1,199 @@
+@using MudBlazor
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ILogger<ModuleQueuesPanel> Logger
+
+@*
+    Phase B / B3 (2026-05-09) — surfaces /api/_module/queues so operators see the
+    in-flight queue depths, the audit-stage backlog, and (most importantly) the
+    audit-role userreadiness pool. The audit-queue empty symptom is operationally
+    a dead-mans-switch on this pool — when no auditor is IsReady=true with a
+    recent heartbeat, AGs in AnalystCompleted pile up and (post-B2′-A) stay there
+    waiting. This panel makes that immediately visible without re-running the
+    diagnostic SQL probe.
+*@
+
+<MudText Typo="Typo.h5" Class="mb-3">
+    <MudIcon Icon="@Icons.Material.Outlined.Queue" Class="mr-2" />
+    Module Queues
+</MudText>
+
+@if (_isLoading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    <MudText>Loading queue depths…</MudText>
+}
+else if (_response is null)
+{
+    <MudAlert Severity="Severity.Warning">Failed to load queue depths from /api/_module/queues. Check API logs.</MudAlert>
+}
+else
+{
+    @* ── Audit pool callout — primary signal ────────────────────────────── *@
+    var auditPool = _response.Readiness?.FirstOrDefault(r => string.Equals(r.Role, "Audit", StringComparison.OrdinalIgnoreCase));
+    var auditBacklog = _response.Queues?.FirstOrDefault(q => q.Name == "audit_assignment");
+    @if (auditPool is null || auditPool.ReadyRecent == 0)
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-4">
+            <MudText Typo="Typo.subtitle1">
+                <strong>No auditor is online + ready</strong>
+                @if (auditPool is not null)
+                {
+                    @($" — {auditPool.ReadyUsers}/{auditPool.TotalUsers} marked ready, 0/{auditPool.TotalUsers} with a heartbeat in the last 60 min.")
+                }
+            </MudText>
+            @if (auditBacklog is not null && auditBacklog.Depth > 0)
+            {
+                <MudText Typo="Typo.body2" Class="mt-2">
+                    <strong>@auditBacklog.Depth</strong> AG(s) waiting in audit_assignment (oldest @FormatAge(auditBacklog.OldestAgeSeconds)). They will not move until an auditor goes Ready.
+                </MudText>
+            }
+        </MudAlert>
+    }
+    else if (auditBacklog is not null && auditBacklog.Depth > 0)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-4">
+            @auditPool.ReadyRecent of @auditPool.TotalUsers auditors are online (most recent heartbeat @FormatRecent(auditPool.LatestReadyHeartbeat)).
+            @auditBacklog.Depth AG(s) in audit_assignment.
+        </MudAlert>
+    }
+
+    @* ── Queue depths ──────────────────────────────────────────────────── *@
+    <MudGrid Spacing="2" Class="mb-4">
+        @foreach (var q in _response.Queues ?? Array.Empty<ModuleQueueRow>())
+        {
+            <MudItem xs="12" sm="6" md="4" lg="2">
+                <MudPaper Class="pa-3" Elevation="2">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatQueueName(q.Name)</MudText>
+                        <MudText Typo="Typo.h5">@q.Depth</MudText>
+                        <MudText Typo="Typo.caption" Color="@AgeColor(q.OldestAgeSeconds)">
+                            oldest @FormatAge(q.OldestAgeSeconds)
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+
+    @* ── Drift indicator ──────────────────────────────────────────────── *@
+    <MudGrid Spacing="2" Class="mb-4">
+        <MudItem xs="12" md="4">
+            <MudPaper Class="pa-3" Elevation="2">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Status ↔ WorkflowStage drift</MudText>
+                    <MudText Typo="Typo.h5" Color="@(_response.DriftCount > 0 ? Color.Warning : Color.Success)">
+                        @_response.DriftCount
+                    </MudText>
+                    <MudText Typo="Typo.caption">
+                        AGs in audit-stage where WorkflowStage disagrees with Status. 0 is healthy.
+                    </MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        @* ── Per-role readiness ──────────────────────────────────────── *@
+        @foreach (var r in _response.Readiness ?? Array.Empty<RoleReadinessRow>())
+        {
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-3" Elevation="2">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@r.Role pool</MudText>
+                        <MudText Typo="Typo.h5" Color="@(r.ReadyRecent > 0 ? Color.Success : Color.Error)">
+                            @r.ReadyRecent / @r.TotalUsers ready
+                        </MudText>
+                        <MudText Typo="Typo.caption">
+                            IsReady=true: @r.ReadyUsers · last heartbeat: @FormatRecent(r.LatestReadyHeartbeat)
+                        </MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        as of @_response.AsOfUtc.ToLocalTime().ToString("HH:mm:ss") · refreshes every 30 s
+    </MudText>
+}
+
+@code {
+    private bool _isLoading = true;
+    private ModuleQueuesResponse? _response;
+    private System.Timers.Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _refreshTimer = new System.Timers.Timer(30_000);
+        _refreshTimer.Elapsed += async (_, _) => await InvokeAsync(LoadAsync);
+        _refreshTimer.AutoReset = true;
+        _refreshTimer.Start();
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            _response = await ApiService.GetAsync<ModuleQueuesResponse>("/api/_module/queues");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load /api/_module/queues");
+            _response = null;
+        }
+        _isLoading = false;
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+    }
+
+    private static string FormatQueueName(string name) =>
+        string.Join(' ', name.Split('_').Select(s => s.Length == 0 ? s : char.ToUpper(s[0]) + s[1..]));
+
+    private static string FormatAge(double seconds)
+    {
+        if (seconds <= 0) return "—";
+        var ts = TimeSpan.FromSeconds(seconds);
+        if (ts.TotalDays >= 1) return $"{ts.TotalDays:F1}d";
+        if (ts.TotalHours >= 1) return $"{ts.TotalHours:F1}h";
+        if (ts.TotalMinutes >= 1) return $"{ts.TotalMinutes:F0}m";
+        return $"{ts.TotalSeconds:F0}s";
+    }
+
+    private static string FormatRecent(DateTime? utc)
+    {
+        if (utc is null) return "never";
+        var age = DateTime.UtcNow - utc.Value;
+        if (age.TotalDays >= 1) return $"{age.TotalDays:F0}d ago";
+        if (age.TotalHours >= 1) return $"{age.TotalHours:F0}h ago";
+        if (age.TotalMinutes >= 1) return $"{age.TotalMinutes:F0}m ago";
+        return $"{age.TotalSeconds:F0}s ago";
+    }
+
+    private static Color AgeColor(double seconds)
+    {
+        if (seconds <= 0) return Color.Default;
+        if (seconds > 3600) return Color.Warning;     // > 1h
+        if (seconds > 86400) return Color.Error;      // > 1d
+        return Color.Success;
+    }
+
+    // DTOs mirror the API contract (ModuleQueuesController.cs).
+    public sealed record ModuleQueueRow(string Name, long Depth, double OldestAgeSeconds);
+
+    public sealed record RoleReadinessRow(
+        string Role,
+        long TotalUsers,
+        long ReadyUsers,
+        long ReadyRecent,
+        DateTime? LatestReadyHeartbeat);
+
+    public sealed record ModuleQueuesResponse(
+        IReadOnlyList<ModuleQueueRow> Queues,
+        DateTime AsOfUtc,
+        long DriftCount,
+        IReadOnlyList<RoleReadinessRow> Readiness);
+}
