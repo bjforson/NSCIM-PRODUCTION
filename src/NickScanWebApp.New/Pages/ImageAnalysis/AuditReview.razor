@@ -456,10 +456,9 @@
             // the perceived refresh time roughly 3x for users on slower links.
             var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
             var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Audit");
-            // Eagerly fire the available-groups GET; if mode turns out to be Manual we
-            // discard the result. The cost of one extra GET is dwarfed by the
-            // sequential round-trip we save when mode is UserClaim.
-            var availableTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Audit");
+            // /available returns 400 outside UserClaim mode by design — wrap it so its
+            // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
+            var availableTask = TryGetAvailableAsync("/api/image-analysis/available?role=Audit");
 
             await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
 
@@ -496,6 +495,14 @@
             _loading = false;
             StateHasChanged();
         }
+    }
+
+    // /available returns 400 outside UserClaim mode by design. Decouple its fault
+    // from Task.WhenAll so the mode-aware guard above can drop the result quietly.
+    private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
+    {
+        try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }
+        catch { return null; }
     }
 
     private async Task ClaimGroup(MyAssignmentDto group)

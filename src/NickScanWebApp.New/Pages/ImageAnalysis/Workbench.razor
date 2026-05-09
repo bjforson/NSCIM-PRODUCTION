@@ -769,7 +769,9 @@
             // the extra GET is dwarfed by the sequential round-trip saved in UserClaim mode.
             var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
             var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
-            var availableTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/available?role=Analyst");
+            // /available returns 400 outside UserClaim mode by design — wrap it so its
+            // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
+            var availableTask = TryGetAvailableAsync("/api/image-analysis/available?role=Analyst");
             await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
             var settings = settingsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
@@ -814,7 +816,7 @@
 
             if (_assignmentMode == "UserClaim")
             {
-                var available = availableTask.IsCompletedSuccessfully ? availableTask.Result : null;
+                var available = availableTask.Result;
                 _availableGroups = available ?? new();
                 Logger?.LogInformation("Loaded {Count} available groups", _availableGroups.Count);
             }
@@ -841,6 +843,14 @@
         {
             _isLoading = false;
         }
+    }
+
+    // /available returns 400 outside UserClaim mode by design. Decouple its fault
+    // from Task.WhenAll so the mode-aware guard above can drop the result quietly.
+    private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
+    {
+        try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }
+        catch { return null; }
     }
 
     private async Task ClaimGroup(MyAssignmentDto group)
