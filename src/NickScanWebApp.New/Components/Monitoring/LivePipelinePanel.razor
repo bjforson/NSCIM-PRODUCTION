@@ -1,0 +1,670 @@
+@using MudBlazor
+@using Microsoft.AspNetCore.SignalR.Client
+@implements IAsyncDisposable
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NavigationManager NavManager
+@inject IConfiguration Configuration
+@inject IWebHostEnvironment HostEnv
+@inject ISnackbar Snackbar
+@inject ILogger<LivePipelinePanel> Logger
+
+@*
+    Phase B / B6 (2026-05-09) — Live Pipeline view.
+
+    Surfaces the analysis_group_status_transitions append-only audit trail
+    (introduced 2026-05-07 with Sprint 5G2 / Bridge B1) through two API
+    endpoints + a SignalR broadcast:
+
+      * GET /api/_module/queues/throughput?minutes=15
+      * GET /api/_module/queues/recent?limit=50
+      * Hub event "AnalysisGroupTransition" on /hubs/image-analysis-dashboard
+
+    The result is a real-time, always-on pipeline view: stage depths, Δ-last-60s
+    sparklines, top-actor activity, transition flows, and a colour-coded live
+    feed. Polling fallback kicks in when the SignalR connection is down >30 s,
+    so this panel degrades gracefully (per pilot-readiness gate 2 expectations).
+*@
+
+<MudText Typo="Typo.h5" Class="mb-3 d-flex align-center">
+    <MudIcon Icon="@Icons.Material.Filled.Timeline" Class="mr-2" />
+    Live Pipeline
+    <MudSpacer />
+    @if (_lastUpdateUtc is not null)
+    {
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mr-3">
+            updated @_lastUpdateUtc.Value.ToLocalTime().ToString("HH:mm:ss")
+        </MudText>
+    }
+    @if (_isHubConnected)
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">
+            <MudIcon Icon="@Icons.Material.Filled.FiberManualRecord" Size="Size.Small" Class="mr-1" />
+            connected
+        </MudChip>
+    }
+    else
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">
+            <MudIcon Icon="@Icons.Material.Outlined.RadioButtonUnchecked" Size="Size.Small" Class="mr-1" />
+            polling fallback
+        </MudChip>
+    }
+</MudText>
+
+@if (_isLoading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-4" />
+    <MudText>Loading live pipeline…</MudText>
+}
+else if (_throughput is null)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4">
+        Failed to load throughput from /api/_module/queues/throughput. Check API logs.
+    </MudAlert>
+}
+else
+{
+    @* ── Stage tiles (6 across) ──────────────────────────────────────── *@
+    <MudGrid Spacing="2" Class="mb-4">
+        @foreach (var stage in _stages)
+        {
+            var depth = _stageDepths.TryGetValue(stage, out var d) ? d : 0L;
+            var delta = _stageDelta60.TryGetValue(stage, out var x) ? x : 0L;
+            var spark = BuildSparkSeries(stage);
+            <MudItem xs="12" sm="6" md="2">
+                <MudPaper Class="pa-3" Elevation="2" Style="height: 100%;">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatStageName(stage)</MudText>
+                        <MudText Typo="Typo.h5">@depth</MudText>
+                        <MudText Typo="Typo.caption" Color="@DeltaColor(delta)">
+                            Δ60s: @(delta >= 0 ? "+" : "")@delta
+                        </MudText>
+                        @if (spark.Count > 0)
+                        {
+                            <MudChart ChartType="ChartType.Line"
+                                      ChartSeries="@(new List<ChartSeries> { new ChartSeries { Name = stage, Data = spark.Select(v => (double)v).ToArray() } })"
+                                      XAxisLabels="@_minuteLabels"
+                                      Height="50px"
+                                      Width="100%"
+                                      ChartOptions="@_sparkOptions" />
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+
+    @* ── Actor activity chips ─────────────────────────────────────────── *@
+    <MudPaper Class="pa-3 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle2" Class="mb-2">
+            <MudIcon Icon="@Icons.Material.Outlined.PersonOutline" Class="mr-1" Size="Size.Small" />
+            Actor activity (last @_throughput.WindowMinutes min)
+        </MudText>
+        @if (_throughput.ByActor is null || _throughput.ByActor.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">No transitions in window.</MudText>
+        }
+        else
+        {
+            <div class="d-flex flex-wrap gap-2">
+                @foreach (var a in _throughput.ByActor.OrderByDescending(a => a.Count).Take(8))
+                {
+                    <MudChip T="string" Size="Size.Small" Color="@ActorColor(a.Actor)" Variant="Variant.Outlined">
+                        @a.Actor · @a.Count
+                    </MudChip>
+                }
+            </div>
+        }
+    </MudPaper>
+
+    @* ── Transition flows table ───────────────────────────────────────── *@
+    <MudPaper Class="pa-3 mb-4" Elevation="2">
+        <MudText Typo="Typo.subtitle2" Class="mb-2">
+            <MudIcon Icon="@Icons.Material.Outlined.SwapHoriz" Class="mr-1" Size="Size.Small" />
+            Transition flows (last @_throughput.WindowMinutes min)
+        </MudText>
+        @if (_throughput.ByTransition is null || _throughput.ByTransition.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">No transitions in window.</MudText>
+        }
+        else
+        {
+            <MudSimpleTable Dense="true" Hover="true" Striped="true">
+                <thead>
+                    <tr>
+                        <th>From</th>
+                        <th></th>
+                        <th>To</th>
+                        <th style="text-align:right;">Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in _throughput.ByTransition.OrderByDescending(t => t.Count))
+                    {
+                        <tr>
+                            <td>@(t.FromStatus ?? "(none)")</td>
+                            <td>→</td>
+                            <td>@t.ToStatus</td>
+                            <td style="text-align:right;"><strong>@t.Count</strong></td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </MudPaper>
+
+    @* ── Live activity feed ───────────────────────────────────────────── *@
+    <MudPaper Class="pa-3 mb-2" Elevation="2">
+        <MudText Typo="Typo.subtitle2" Class="mb-2">
+            <MudIcon Icon="@Icons.Material.Outlined.RssFeed" Class="mr-1" Size="Size.Small" />
+            Live activity (newest first, last @_feed.Count of 50 max)
+        </MudText>
+        <div style="max-height: 400px; overflow-y: auto;">
+            @if (_feed.Count == 0)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">No recent transitions.</MudText>
+            }
+            else
+            {
+                <MudSimpleTable Dense="true" Hover="true">
+                    <thead>
+                        <tr>
+                            <th style="width: 90px;">Time</th>
+                            <th style="width: 140px;">Group</th>
+                            <th>Transition</th>
+                            <th>Trigger</th>
+                            <th>Actor</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in _feed)
+                        {
+                            <tr>
+                                <td>
+                                    <MudText Typo="Typo.caption">
+                                        @item.OccurredAtUtc.ToLocalTime().ToString("HH:mm:ss")
+                                    </MudText>
+                                </td>
+                                <td>
+                                    <MudText Typo="Typo.caption" Style="font-family: monospace;">
+                                        @(item.GroupIdentifier ?? item.GroupId.ToString("N").Substring(0, 8))
+                                    </MudText>
+                                </td>
+                                <td>
+                                    <MudChip T="string" Size="Size.Small" Color="@TriggerColor(item.TriggerName, item.ToStatus)" Variant="Variant.Text">
+                                        @(item.FromStatus ?? "(none)") → @item.ToStatus
+                                    </MudChip>
+                                </td>
+                                <td><MudText Typo="Typo.caption">@item.TriggerName</MudText></td>
+                                <td><MudText Typo="Typo.caption">@item.Actor</MudText></td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            }
+        </div>
+    </MudPaper>
+
+    <MudText Typo="Typo.caption" Color="Color.Secondary">
+        @if (_isHubConnected)
+        {
+            <span>SignalR connected · /throughput refreshed every 60 s · feed updates live</span>
+        }
+        else
+        {
+            <span>Polling fallback · /throughput + /recent refreshed every 5 s</span>
+        }
+    </MudText>
+}
+
+@code {
+    // ── Constants ──────────────────────────────────────────────────────
+    private const string HubPath = "/hubs/image-analysis-dashboard";
+    private const int FeedCap = 50;
+    private const int WindowMinutes = 15;
+    private const int RecentLimit = 50;
+    private const int PollIntervalMs = 5_000;
+    private const int ConnectedRefreshMs = 60_000;
+    private const int ConnectivityCheckMs = 1_000;
+    private const int FallbackThresholdSec = 30;
+
+    // Stage tile order (must match contract §2.1).
+    private static readonly string[] _stages = new[]
+    {
+        "Ready",
+        "AnalystAssigned",
+        "AnalystCompleted",
+        "AuditAssigned",
+        "AuditCompleted",
+        "Submitted",
+    };
+
+    // ── State ──────────────────────────────────────────────────────────
+    private bool _isLoading = true;
+    private DateTime? _lastUpdateUtc;
+    private ThroughputResponse? _throughput;
+    private readonly List<TransitionRow> _feed = new();
+    private readonly Dictionary<string, long> _stageDepths = new();
+    private readonly Dictionary<string, long> _stageDelta60 = new();
+    // _bucketsByStage[stage] = array of WindowMinutes counts, oldest→newest, used for the per-stage sparkline.
+    private readonly Dictionary<string, long[]> _bucketsByStage = new();
+    // _bucketStartsUtc[i] = the minute-aligned UTC start of bucket i (oldest→newest).
+    private DateTime[] _bucketStartsUtc = Array.Empty<DateTime>();
+    private string[] _minuteLabels = Array.Empty<string>();
+
+    private HubConnection? _hub;
+    private System.Timers.Timer? _pollTimer;
+    private System.Timers.Timer? _connectedRefreshTimer;
+    private System.Timers.Timer? _connectivityTimer;
+    private DateTime? _hubLastConnectedUtc;
+    private bool _isHubConnected;
+
+    private readonly ChartOptions _sparkOptions = new()
+    {
+        YAxisTicks = 1,
+        LineStrokeWidth = 2,
+        InterpolationOption = InterpolationOption.NaturalSpline,
+    };
+
+    // ── Lifecycle ──────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        // Initial parallel fetch of /throughput + /recent.
+        await LoadInitialAsync();
+        _isLoading = false;
+        StateHasChanged();
+
+        // SignalR (best-effort).
+        await TryConnectHubAsync();
+
+        // Connected-mode refresh: poll /throughput every 60 s for zero-fill drift.
+        _connectedRefreshTimer = new System.Timers.Timer(ConnectedRefreshMs);
+        _connectedRefreshTimer.Elapsed += async (_, _) =>
+        {
+            if (_isHubConnected)
+            {
+                await InvokeAsync(LoadThroughputAsync);
+            }
+        };
+        _connectedRefreshTimer.AutoReset = true;
+        _connectedRefreshTimer.Start();
+
+        // Poll fallback timer: ticks every 5 s; only fires fetches when not connected.
+        _pollTimer = new System.Timers.Timer(PollIntervalMs);
+        _pollTimer.Elapsed += async (_, _) =>
+        {
+            if (!_isHubConnected)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadThroughputAsync();
+                    await LoadRecentAsync();
+                    StateHasChanged();
+                });
+            }
+        };
+        _pollTimer.AutoReset = true;
+        _pollTimer.Start();
+
+        // Connectivity poll (1 s): flips _isHubConnected based on hub state + grace period.
+        _connectivityTimer = new System.Timers.Timer(ConnectivityCheckMs);
+        _connectivityTimer.Elapsed += async (_, _) => await InvokeAsync(UpdateConnectivityState);
+        _connectivityTimer.AutoReset = true;
+        _connectivityTimer.Start();
+    }
+
+    private async Task LoadInitialAsync()
+    {
+        var throughputTask = SafeGetAsync<ThroughputResponse>($"/api/_module/queues/throughput?minutes={WindowMinutes}");
+        var recentTask = SafeGetAsync<RecentResponse>($"/api/_module/queues/recent?limit={RecentLimit}");
+        await Task.WhenAll(throughputTask, recentTask);
+        ApplyThroughput(await throughputTask);
+        ApplyRecent(await recentTask);
+        _lastUpdateUtc = DateTime.UtcNow;
+    }
+
+    private async Task LoadThroughputAsync()
+    {
+        var t = await SafeGetAsync<ThroughputResponse>($"/api/_module/queues/throughput?minutes={WindowMinutes}");
+        if (t is not null)
+        {
+            ApplyThroughput(t);
+            _lastUpdateUtc = DateTime.UtcNow;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadRecentAsync()
+    {
+        var r = await SafeGetAsync<RecentResponse>($"/api/_module/queues/recent?limit={RecentLimit}");
+        if (r is not null)
+        {
+            ApplyRecent(r);
+            _lastUpdateUtc = DateTime.UtcNow;
+            StateHasChanged();
+        }
+    }
+
+    private async Task<T?> SafeGetAsync<T>(string endpoint)
+    {
+        try
+        {
+            return await ApiService.GetAsync<T>(endpoint);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load {Endpoint}", endpoint);
+            return default;
+        }
+    }
+
+    // ── Throughput → tiles + sparklines ────────────────────────────────
+    private void ApplyThroughput(ThroughputResponse? t)
+    {
+        if (t is null) return;
+        _throughput = t;
+
+        // Build per-minute bucket starts (oldest→newest), preserving server order.
+        if (t.ByMinute is { Count: > 0 })
+        {
+            _bucketStartsUtc = t.ByMinute.Select(b => b.MinuteUtc).ToArray();
+            _minuteLabels = _bucketStartsUtc
+                .Select((d, i) => i % 5 == 0 ? d.ToLocalTime().ToString("HH:mm") : "")
+                .ToArray();
+        }
+
+        // The /throughput endpoint exposes a global byMinute series (not per-stage).
+        // For sparklines we approximate per-stage by re-bucketising from the live feed
+        // (which we own, capped at 50). When the feed is sparse, sparklines will be flat
+        // — that's expected and the global tile depth + Δ60 covers the headline number.
+        RecomputeBucketsFromFeed();
+        RecomputeStageDepthsAndDelta();
+    }
+
+    private void RecomputeBucketsFromFeed()
+    {
+        if (_bucketStartsUtc.Length == 0) return;
+
+        foreach (var stage in _stages)
+        {
+            _bucketsByStage[stage] = new long[_bucketStartsUtc.Length];
+        }
+
+        foreach (var row in _feed)
+        {
+            var idx = FindBucketIndex(row.OccurredAtUtc);
+            if (idx < 0) continue;
+            if (_bucketsByStage.TryGetValue(row.ToStatus, out var arr))
+            {
+                arr[idx]++;
+            }
+        }
+    }
+
+    private int FindBucketIndex(DateTime occurredUtc)
+    {
+        if (_bucketStartsUtc.Length == 0) return -1;
+        // Each bucket is 1 minute wide; find the latest bucket whose start ≤ occurred.
+        for (int i = _bucketStartsUtc.Length - 1; i >= 0; i--)
+        {
+            if (occurredUtc >= _bucketStartsUtc[i]) return i;
+        }
+        return -1;
+    }
+
+    private void RecomputeStageDepthsAndDelta()
+    {
+        // Depth here = transitions INTO that stage in the throughput window
+        // (this is "throughput", not "currently-resident depth"; the Module Queues
+        // tab covers steady-state depth via /api/_module/queues).
+        foreach (var stage in _stages)
+        {
+            _stageDepths[stage] = _throughput?.ByTransition?
+                .Where(t => string.Equals(t.ToStatus, stage, StringComparison.OrdinalIgnoreCase))
+                .Sum(t => t.Count) ?? 0L;
+        }
+
+        // Δ60s = transitions whose ToStatus matches the stage and occurred in the last 60 s.
+        var cutoff = DateTime.UtcNow.AddSeconds(-60);
+        foreach (var stage in _stages)
+        {
+            _stageDelta60[stage] = _feed
+                .Count(r => r.OccurredAtUtc >= cutoff && string.Equals(r.ToStatus, stage, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private List<long> BuildSparkSeries(string stage)
+    {
+        if (_bucketsByStage.TryGetValue(stage, out var arr))
+            return arr.ToList();
+        return new List<long>();
+    }
+
+    // ── Recent → live feed ─────────────────────────────────────────────
+    private void ApplyRecent(RecentResponse? r)
+    {
+        if (r is null || r.Transitions is null) return;
+        _feed.Clear();
+        // /recent returns newest first; trust it.
+        foreach (var row in r.Transitions.Take(FeedCap))
+        {
+            _feed.Add(row);
+        }
+        RecomputeBucketsFromFeed();
+        RecomputeStageDepthsAndDelta();
+    }
+
+    // ── SignalR hub ────────────────────────────────────────────────────
+    private async Task TryConnectHubAsync()
+    {
+        try
+        {
+            var hubUrl = NavManager.ToAbsoluteUri(HubPath).ToString();
+            var isProd = HostEnv.IsProduction();
+            _hub = new HubConnectionBuilder()
+                .WithUrl(hubUrl, options =>
+                {
+                    options.HttpMessageHandlerFactory = _ =>
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateHttpHandler(Configuration, isProd);
+                    options.WebSocketConfiguration =
+                        NickScanWebApp.New.Services.HubTlsConfig.CreateWebSocketConfig(Configuration, isProd);
+                })
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hub.On<TransitionRow>("AnalysisGroupTransition", async row =>
+            {
+                await InvokeAsync(() =>
+                {
+                    HandleHubTransition(row);
+                    StateHasChanged();
+                });
+            });
+
+            _hub.Reconnected += _ =>
+            {
+                _hubLastConnectedUtc = DateTime.UtcNow;
+                Logger.LogInformation("LivePipeline hub reconnected");
+                return Task.CompletedTask;
+            };
+            _hub.Closed += _ =>
+            {
+                _hubLastConnectedUtc = null;
+                Logger.LogInformation("LivePipeline hub closed");
+                return Task.CompletedTask;
+            };
+
+            await _hub.StartAsync();
+            _hubLastConnectedUtc = DateTime.UtcNow;
+            _isHubConnected = true;
+            StateHasChanged();
+            Logger.LogInformation("LivePipeline hub connected at {HubUrl}", hubUrl);
+        }
+        catch (Exception ex)
+        {
+            // Connection failure is fine — polling fallback handles it.
+            Logger.LogWarning(ex, "LivePipeline hub failed to connect; using polling fallback");
+            _isHubConnected = false;
+        }
+    }
+
+    private void HandleHubTransition(TransitionRow row)
+    {
+        // Prepend, cap at FeedCap.
+        _feed.Insert(0, row);
+        if (_feed.Count > FeedCap)
+            _feed.RemoveRange(FeedCap, _feed.Count - FeedCap);
+
+        // Increment matching tile's Δ60 (we just heard about it now).
+        if (_stageDelta60.TryGetValue(row.ToStatus, out var current))
+            _stageDelta60[row.ToStatus] = current + 1;
+        else
+            _stageDelta60[row.ToStatus] = 1;
+
+        // Increment matching tile's depth (transitions-into in the window).
+        if (_stageDepths.TryGetValue(row.ToStatus, out var depth))
+            _stageDepths[row.ToStatus] = depth + 1;
+
+        // Increment current minute bucket for the destination stage.
+        var idx = FindBucketIndex(row.OccurredAtUtc);
+        if (idx >= 0 && _bucketsByStage.TryGetValue(row.ToStatus, out var arr))
+        {
+            arr[idx]++;
+        }
+
+        // Toast only for audit-stage entries (avoid noise on routine transitions).
+        if (string.Equals(row.ToStatus, "AuditAssigned", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(row.ToStatus, "AuditCompleted", StringComparison.OrdinalIgnoreCase))
+        {
+            var msg = $"{row.GroupIdentifier ?? row.GroupId.ToString("N").Substring(0, 8)} → {row.ToStatus}";
+            Snackbar.Add(msg, Severity.Info, opts =>
+            {
+                opts.VisibleStateDuration = 2000;
+                opts.ShowCloseIcon = false;
+            });
+        }
+
+        _lastUpdateUtc = DateTime.UtcNow;
+    }
+
+    private void UpdateConnectivityState()
+    {
+        var nowConnected = _hub?.State == HubConnectionState.Connected;
+        if (nowConnected)
+        {
+            _hubLastConnectedUtc = DateTime.UtcNow;
+            if (!_isHubConnected)
+            {
+                _isHubConnected = true;
+                StateHasChanged();
+            }
+            return;
+        }
+
+        // Not currently connected — flip to fallback after grace period.
+        var sinceLastConnected = _hubLastConnectedUtc is null
+            ? TimeSpan.FromHours(1)
+            : DateTime.UtcNow - _hubLastConnectedUtc.Value;
+        if (sinceLastConnected.TotalSeconds > FallbackThresholdSec && _isHubConnected)
+        {
+            _isHubConnected = false;
+            StateHasChanged();
+        }
+        else if (_hubLastConnectedUtc is null && _isHubConnected)
+        {
+            _isHubConnected = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Disposal ───────────────────────────────────────────────────────
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            _pollTimer?.Stop();
+            _pollTimer?.Dispose();
+            _connectedRefreshTimer?.Stop();
+            _connectedRefreshTimer?.Dispose();
+            _connectivityTimer?.Stop();
+            _connectivityTimer?.Dispose();
+        }
+        catch { /* best-effort */ }
+
+        if (_hub is not null)
+        {
+            try { await _hub.StopAsync(); } catch { /* best-effort */ }
+            try { await _hub.DisposeAsync(); } catch { /* best-effort */ }
+        }
+    }
+
+    // ── Formatters ─────────────────────────────────────────────────────
+    private static string FormatStageName(string s) => s switch
+    {
+        "AnalystAssigned"  => "Analyst Assigned",
+        "AnalystCompleted" => "Analyst Done",
+        "AuditAssigned"    => "Audit Assigned",
+        "AuditCompleted"   => "Audit Done",
+        _                  => s,
+    };
+
+    private static Color DeltaColor(long d)
+    {
+        if (d > 0) return Color.Success;
+        if (d < 0) return Color.Error;
+        return Color.Default;
+    }
+
+    private static Color ActorColor(string actor)
+    {
+        if (string.IsNullOrEmpty(actor)) return Color.Default;
+        if (actor.StartsWith("ORCHESTRATOR-", StringComparison.OrdinalIgnoreCase)) return Color.Primary;
+        if (actor.Equals("DECISION-AGENT", StringComparison.OrdinalIgnoreCase)) return Color.Tertiary;
+        if (actor.StartsWith("DECISION-", StringComparison.OrdinalIgnoreCase)) return Color.Tertiary;
+        if (actor.Equals("SYSTEM-HOUSEKEEPING", StringComparison.OrdinalIgnoreCase)) return Color.Warning;
+        return Color.Info;
+    }
+
+    private static Color TriggerColor(string? triggerName, string toStatus)
+    {
+        // Audit-stage transitions are visually loudest.
+        if (string.Equals(toStatus, "AuditAssigned", StringComparison.OrdinalIgnoreCase)) return Color.Warning;
+        if (string.Equals(toStatus, "AuditCompleted", StringComparison.OrdinalIgnoreCase)) return Color.Success;
+        if (string.Equals(toStatus, "Completed", StringComparison.OrdinalIgnoreCase)) return Color.Success;
+        if (string.Equals(toStatus, "Submitted", StringComparison.OrdinalIgnoreCase)) return Color.Info;
+        if (string.Equals(toStatus, "AnalystCompleted", StringComparison.OrdinalIgnoreCase)) return Color.Info;
+        if (string.Equals(toStatus, "AnalystAssigned", StringComparison.OrdinalIgnoreCase)) return Color.Primary;
+        return Color.Default;
+    }
+
+    // ── DTOs (mirror the API contract — camelCase on wire, PascalCase in C#) ──
+
+    public sealed record ActorRow(string Actor, long Count);
+
+    public sealed record TransitionFlowRow(string? FromStatus, string ToStatus, long Count);
+
+    public sealed record MinuteBucket(DateTime MinuteUtc, long Count);
+
+    public sealed record ThroughputResponse(
+        int WindowMinutes,
+        DateTime AsOfUtc,
+        IReadOnlyList<ActorRow> ByActor,
+        IReadOnlyList<TransitionFlowRow> ByTransition,
+        IReadOnlyList<MinuteBucket> ByMinute);
+
+    public sealed record TransitionRow(
+        long Id,
+        DateTime OccurredAtUtc,
+        Guid GroupId,
+        string? GroupIdentifier,
+        string? FromStatus,
+        string ToStatus,
+        string? TriggerName,
+        string Actor,
+        string? Reason,
+        string? CorrelationId);
+
+    public sealed record RecentResponse(
+        DateTime AsOfUtc,
+        IReadOnlyList<TransitionRow> Transitions);
+}
