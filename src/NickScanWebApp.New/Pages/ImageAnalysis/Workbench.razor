@@ -1017,6 +1017,11 @@
                 // Previously did `await Task.Delay(1000); await LoadData();` — analyst stared at the
                 // dialog for ~1.7s. Now the AG vanishes from the list in the same frame the dialog
                 // closes; LoadData reconciles in the background. AG.GroupIdentifier is the dedup key.
+                if (dialogRef != null)
+                {
+                    dialogRef.Close(DialogResult.Ok(true));
+                }
+
                 _myAssignments = _myAssignments
                     .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
                     .ToList();
