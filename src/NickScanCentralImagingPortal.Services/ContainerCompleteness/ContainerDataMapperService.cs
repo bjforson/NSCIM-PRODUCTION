@@ -191,19 +191,6 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             using var scope = _serviceProvider.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            // Check if mapping already exists
-            var existingMapping = await dbContext.ContainerBOERelations
-                .FirstOrDefaultAsync(r => r.ContainerNumber == containerNumber &&
-                                         r.ScannerType == scannerType &&
-                                         r.ScannerDataId == scannerDataId &&
-                                         r.ICUMSBOEId == icumsDataId);
-
-            if (existingMapping != null)
-            {
-                _logger.LogDebug("Mapping already exists for container {ContainerNumber}", containerNumber);
-                return existingMapping;
-            }
-
             // ✅ CONSOLIDATED CARGO: Check if this BOE is consolidated
             var icumDbContext = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
             var boeDocument = await icumDbContext.BOEDocuments
@@ -271,28 +258,169 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 }
             }
 
-            // Create new mapping
-            var mapping = new ContainerBOERelation
-            {
-                ContainerNumber = containerNumber,
-                ScannerType = scannerType,
-                ScannerDataId = scannerDataId,
-                ICUMSBOEId = icumsDataId,
-                RelationType = boeDocument?.IsConsolidated == true ? "Consolidated-HouseBL" : "Primary",
-                CreatedAt = DateTime.UtcNow,
-                IsActive = true
-            };
+            var mapping = await UpsertActiveContainerBoeRelationAsync(
+                dbContext,
+                containerNumber,
+                scannerType,
+                scannerDataId,
+                icumsDataId,
+                boeDocument?.IsConsolidated == true);
 
-            dbContext.ContainerBOERelations.Add(mapping);
-            await dbContext.SaveChangesAsync();
             // ✅ MEMORY FIX: Clear change tracker to release tracked entities
             dbContext.ChangeTracker.Clear();
 
             var relationType = boeDocument?.IsConsolidated == true ? "CONSOLIDATED" : "PRIMARY";
-            _logger.LogInformation("Created {RelationType} mapping for container {ContainerNumber} ({ScannerType}) -> ICUMS ID {ICUMSId}",
+            _logger.LogInformation("Upserted {RelationType} mapping for container {ContainerNumber} ({ScannerType}) -> ICUMS ID {ICUMSId}",
                 relationType, containerNumber, scannerType, icumsDataId);
 
             return mapping;
+        }
+
+        private async Task<ContainerBOERelation> UpsertActiveContainerBoeRelationAsync(
+            ApplicationDbContext dbContext,
+            string containerNumber,
+            string scannerType,
+            int scannerDataId,
+            int icumsDataId,
+            bool isConsolidated)
+        {
+            try
+            {
+                return await UpsertActiveContainerBoeRelationCoreAsync(
+                    dbContext,
+                    containerNumber,
+                    scannerType,
+                    scannerDataId,
+                    icumsDataId,
+                    isConsolidated,
+                    allowInsert: true);
+            }
+            catch (DbUpdateException ex) when (IsActiveContainerRelationUniqueViolation(ex))
+            {
+                _logger.LogWarning(
+                    ex,
+                    "{ServiceId} Active CBR unique index raced for {ContainerNumber}; retrying as update",
+                    SERVICE_ID,
+                    containerNumber);
+
+                dbContext.ChangeTracker.Clear();
+                return await UpsertActiveContainerBoeRelationCoreAsync(
+                    dbContext,
+                    containerNumber,
+                    scannerType,
+                    scannerDataId,
+                    icumsDataId,
+                    isConsolidated,
+                    allowInsert: false);
+            }
+        }
+
+        private static async Task<ContainerBOERelation> UpsertActiveContainerBoeRelationCoreAsync(
+            ApplicationDbContext dbContext,
+            string containerNumber,
+            string scannerType,
+            int scannerDataId,
+            int icumsDataId,
+            bool isConsolidated,
+            bool allowInsert)
+        {
+            var now = DateTime.UtcNow;
+            var relationType = isConsolidated ? "Consolidated-HouseBL" : "Primary";
+            var relations = await dbContext.ContainerBOERelations
+                .Where(r => r.ContainerNumber == containerNumber)
+                .OrderByDescending(r => r.IsActive)
+                .ThenByDescending(r => r.CreatedAt)
+                .ToListAsync();
+
+            var mapping = relations.FirstOrDefault(r => IsSameMapping(r, scannerType, scannerDataId, icumsDataId))
+                ?? relations.FirstOrDefault(r => r.IsActive)
+                ?? relations.FirstOrDefault();
+
+            if (mapping == null)
+            {
+                if (!allowInsert)
+                {
+                    mapping = await dbContext.ContainerBOERelations
+                        .Where(r => r.ContainerNumber == containerNumber && r.IsActive)
+                        .OrderByDescending(r => r.CreatedAt)
+                        .FirstOrDefaultAsync();
+                }
+
+                if (mapping == null)
+                {
+                    mapping = new ContainerBOERelation
+                    {
+                        ContainerNumber = containerNumber,
+                    };
+                    dbContext.ContainerBOERelations.Add(mapping);
+                }
+            }
+
+            var sameMapping = IsSameMapping(mapping, scannerType, scannerDataId, icumsDataId)
+                && string.Equals(mapping.RelationType, relationType, StringComparison.Ordinal);
+            var wasInactive = !mapping.IsActive;
+            var activeRowsToDeactivate = relations
+                .Where(r => r.Id != mapping.Id && r.IsActive)
+                .ToList();
+
+            if (wasInactive && activeRowsToDeactivate.Count > 0)
+            {
+                foreach (var staleActive in activeRowsToDeactivate)
+                {
+                    staleActive.IsActive = false;
+                    staleActive.LastValidatedAt = now;
+                }
+
+                await dbContext.SaveChangesAsync();
+            }
+
+            mapping.ScannerType = scannerType;
+            mapping.ScannerDataId = scannerDataId;
+            mapping.ICUMSBOEId = icumsDataId;
+            mapping.RelationType = relationType;
+            mapping.IsActive = true;
+            mapping.LastValidatedAt = now;
+
+            if (!sameMapping || wasInactive || mapping.CreatedAt == default)
+            {
+                mapping.CreatedAt = now;
+            }
+
+            foreach (var staleActive in activeRowsToDeactivate.Where(r => r.IsActive))
+            {
+                staleActive.IsActive = false;
+                staleActive.LastValidatedAt = now;
+            }
+
+            await dbContext.SaveChangesAsync();
+            return mapping;
+        }
+
+        private static bool IsSameMapping(
+            ContainerBOERelation relation,
+            string scannerType,
+            int scannerDataId,
+            int icumsDataId)
+        {
+            return string.Equals(relation.ScannerType, scannerType, StringComparison.OrdinalIgnoreCase)
+                && relation.ScannerDataId == scannerDataId
+                && relation.ICUMSBOEId == icumsDataId;
+        }
+
+        private static bool IsActiveContainerRelationUniqueViolation(DbUpdateException ex)
+        {
+            for (var inner = ex.InnerException; inner != null; inner = inner.InnerException)
+            {
+                if (inner is PostgresException pgEx
+                    && pgEx.SqlState == "23505"
+                    && (string.Equals(pgEx.ConstraintName, "ix_cbr_active_per_container", StringComparison.OrdinalIgnoreCase)
+                        || pgEx.MessageText.Contains("ix_cbr_active_per_container", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+            }
+
+            return ex.ToString().Contains("ix_cbr_active_per_container", StringComparison.OrdinalIgnoreCase);
         }
 
         // Idempotent MatchQualityFlag upsert for the cardinal port-rejection path.

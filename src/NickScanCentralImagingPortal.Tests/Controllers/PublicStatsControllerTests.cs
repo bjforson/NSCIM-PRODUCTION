@@ -6,8 +6,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NickScanCentralImagingPortal.API.Controllers;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services;
+using NickScanCentralImagingPortal.Services.Dashboard;
 using Xunit;
 
 namespace NickScanCentralImagingPortal.Tests.Controllers
@@ -54,6 +56,22 @@ namespace NickScanCentralImagingPortal.Tests.Controllers
             Assert.Equal(2, orchestrator.HealthCallCount);
         }
 
+        [Fact]
+        public async Task Get_DoesNotCallComprehensiveDashboardForScannerCounts()
+        {
+            await using var db = NewDbContext();
+            using var cache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 100 });
+            var orchestrator = new BlockingOrchestrator();
+            var dashboard = new ThrowingDashboardService();
+
+            var controller = NewController(db, cache, orchestrator, dashboard);
+            var stats = ReadOkValue(await controller.Get());
+
+            Assert.NotNull(stats);
+            Assert.Equal(3, stats.ScannersTotal);
+            Assert.False(dashboard.WasCalled);
+        }
+
         private static ApplicationDbContext NewDbContext()
         {
             var options = new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -67,13 +85,15 @@ namespace NickScanCentralImagingPortal.Tests.Controllers
         private static PublicStatsController NewController(
             ApplicationDbContext db,
             IMemoryCache cache,
-            IImageProcessingOrchestrator orchestrator)
+            IImageProcessingOrchestrator orchestrator,
+            IComprehensiveDashboardService? dashboard = null)
         {
             return new PublicStatsController(
                 db,
                 cache,
                 orchestrator,
-                NullLogger<PublicStatsController>.Instance)
+                NullLogger<PublicStatsController>.Instance,
+                dashboard)
             {
                 ControllerContext = new ControllerContext
                 {
@@ -135,6 +155,17 @@ namespace NickScanCentralImagingPortal.Tests.Controllers
             public void ReleaseBlockedCall()
             {
                 _releaseBlockedCall.TrySetResult();
+            }
+        }
+
+        private sealed class ThrowingDashboardService : IComprehensiveDashboardService
+        {
+            public bool WasCalled { get; private set; }
+
+            public Task<ComprehensiveDashboardData> GetComprehensiveDashboardDataAsync()
+            {
+                WasCalled = true;
+                throw new InvalidOperationException("Public stats must not call the comprehensive dashboard");
             }
         }
     }

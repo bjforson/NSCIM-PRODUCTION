@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using System.Security.Claims;
 using NickScanCentralImagingPortal.API.Authorization;
 using NickScanCentralImagingPortal.Core.Constants;
@@ -31,6 +32,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ILogger<ImageAnalysisDecisionController> _logger;
         private readonly ReadyGroupsCacheService? _readyGroupsCache;
         private readonly IMemoryCache? _memoryCache;
+        private readonly IConfiguration? _configuration;
         private readonly IAiWorkflowLineageService _aiLineage;
         private readonly IManifestSnapshotService _manifestSnapshot;
         private readonly DecisionSideEffectsService _decisionSideEffects;
@@ -53,7 +55,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IImageProcessingService imageProcessingService,
             DecisionSideEffectsService decisionSideEffects,
             ReadyGroupsCacheService? readyGroupsCache = null,
-            IMemoryCache? memoryCache = null)
+            IMemoryCache? memoryCache = null,
+            IConfiguration? configuration = null)
         {
             _context = context;
             _icumDb = icumDb;
@@ -64,6 +67,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _decisionSideEffects = decisionSideEffects;
             _readyGroupsCache = readyGroupsCache;
             _memoryCache = memoryCache;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -461,6 +465,128 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
         }
 
+        private async Task UpsertQueueEntryBestEffortAsync(AnalysisAssignment assignment, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache != null)
+            {
+                try
+                {
+                    await _readyGroupsCache.UpsertQueueEntryAsync(_context, assignment.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to upsert queue entry for assignment {AssignmentId}", assignment.Id);
+                }
+            }
+
+            InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+        }
+
+        private void InvalidateMyAssignmentsCache(string? username, string? role)
+        {
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role))
+                return;
+
+            _memoryCache?.Remove($"my-assignments:{username}:{role}");
+        }
+
+        private async Task<List<string>> GetReadyUsersForImmediateAssignmentAsync(
+            string roleName,
+            DateTime now,
+            CancellationToken ct = default)
+        {
+            var roleNameUpper = roleName.ToUpperInvariant();
+            var maxIdleMinutes = _configuration?.GetValue<int>("ImageAnalysis:MaxIdleMinutesForReadiness", 60) ?? 60;
+            var maxIdleTime = TimeSpan.FromMinutes(maxIdleMinutes);
+            var dbMaxIdle = now.AddMinutes(-maxIdleMinutes);
+
+            var dbReadyUsers = await _context.UserReadiness
+                .AsNoTracking()
+                .Where(r => r.Role.ToUpper() == roleNameUpper
+                    && r.IsReady
+                    && r.LastHeartbeat >= dbMaxIdle)
+                .Select(r => r.Username)
+                .ToListAsync(ct);
+
+            var signalRReadyUsers = UserReadinessStateProvider.GetReadyUsers(roleName, maxIdleTime);
+            var readyUserSet = new HashSet<string>(
+                dbReadyUsers.Concat(signalRReadyUsers),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (readyUserSet.Count == 0)
+                return new List<string>();
+
+            var matchingRoleIds = await _context.Roles
+                .AsNoTracking()
+                .Where(r => r.IsActive && r.Name.ToUpper() == roleNameUpper)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+
+            if (matchingRoleIds.Count == 0)
+                return new List<string>();
+
+            var matchingRoleSet = matchingRoleIds.ToHashSet();
+            var activeUsers = await _context.Users
+                .AsNoTracking()
+                .Where(u => u.IsActive && u.RoleId != null)
+                .Select(u => new { u.Username, u.RoleId })
+                .ToListAsync(ct);
+
+            return activeUsers
+                .Where(u => readyUserSet.Contains(u.Username)
+                    && u.RoleId.HasValue
+                    && matchingRoleSet.Contains(u.RoleId.Value))
+                .Select(u => u.Username)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private async Task<List<AnalysisGroup>> GetEligibleGroupsForImmediateAssignmentAsync(
+            string roleName,
+            string eligibleStatus,
+            int take,
+            CancellationToken ct = default)
+        {
+            if (take <= 0)
+                return new List<AnalysisGroup>();
+
+            if (_readyGroupsCache != null)
+            {
+                await _readyGroupsCache.InvalidateCacheAsync(roleName, eligibleStatus, ct);
+                return await _readyGroupsCache.GetReadyGroupsForRoleAsync(roleName, eligibleStatus, ct);
+            }
+
+            return await _context.AnalysisGroups
+                .AsNoTracking()
+                .Where(g => g.Status == eligibleStatus)
+                .OrderByDescending(g => g.Priority)
+                .Take(take)
+                .ToListAsync(ct);
+        }
+
+        private async Task<List<AnalysisGroup>> LoadTrackedGroupsInEligibilityOrderAsync(
+            IEnumerable<Guid> groupIds,
+            string eligibleStatus,
+            CancellationToken ct = default)
+        {
+            var orderedIds = groupIds.ToList();
+            if (orderedIds.Count == 0)
+                return new List<AnalysisGroup>();
+
+            var groups = await _context.AnalysisGroups
+                .AsTracking()
+                .Where(g => orderedIds.Contains(g.Id) && g.Status == eligibleStatus)
+                .ToListAsync(ct);
+
+            var order = orderedIds
+                .Select((id, index) => new { id, index })
+                .ToDictionary(x => x.id, x => x.index);
+
+            return groups
+                .OrderBy(g => order.GetValueOrDefault(g.Id, int.MaxValue))
+                .ToList();
+        }
+
         /// <summary>
         /// Check if analyst has completed ALL their assignments and trigger immediate assignment if in Auto mode
         /// </summary>
@@ -470,6 +596,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Checking immediate assignment eligibility for analyst {Username}", analystUsername);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if analyst has any remaining active assignments
                 var remainingActiveAssignments = await _context.AnalysisAssignments
@@ -527,31 +654,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // Find available "Ready" groups (without active assignments)
-                // First, get all Ready groups
-                var allReadyGroups = await _context.AnalysisGroups
-                    .AsTracking()
-                    .Where(g => g.Status == AnalysisStatuses.Ready)
-                    .OrderByDescending(g => g.Priority)
-                    .ToListAsync();
+                var readyUsers = await GetReadyUsersForImmediateAssignmentAsync("Analyst", now, ct);
+                if (!readyUsers.Contains(analystUsername, StringComparer.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("[IMMEDIATE-ASSIGNMENT] Analyst {Username} is not Ready for Analyst assignments - skipping", analystUsername);
+                    return;
+                }
 
-                _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} total Ready groups in system", allReadyGroups.Count);
+                var eligibleGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Analyst",
+                    AnalysisStatuses.Ready,
+                    settings.MaxConcurrentPerUser - activeCount,
+                    ct);
+
+                _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} eligible Ready groups from ReadyGroupsCache path", eligibleGroups.Count);
 
                 // Get group IDs that have active assignments
                 var groupIdsWithActiveAssignments = await _context.AnalysisAssignments
-                    .Where(a => a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                    .Where(a => a.State == "Active")
                     .Select(a => a.GroupId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToListAsync(ct);
+                var activeGroupIdSet = groupIdsWithActiveAssignments.ToHashSet();
 
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} groups with active assignments", groupIdsWithActiveAssignments.Count);
 
                 // Filter out groups with active assignments and take up to max
-                var readyGroups = allReadyGroups
-                    .Where(g => !groupIdsWithActiveAssignments.Contains(g.Id))
+                var readyGroupIds = eligibleGroups
+                    .Where(g => !activeGroupIdSet.Contains(g.Id))
                     .Take(settings.MaxConcurrentPerUser - activeCount) // Fill up to max
+                    .Select(g => g.Id)
                     .ToList();
+                var readyGroups = await LoadTrackedGroupsInEligibilityOrderAsync(readyGroupIds, AnalysisStatuses.Ready, ct);
 
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} available Ready groups for analyst {Username} (will assign up to {Max})",
                     readyGroups.Count, analystUsername, settings.MaxConcurrentPerUser - activeCount);
@@ -559,16 +693,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!readyGroups.Any())
                 {
                     _logger.LogWarning("⚠️ [IMMEDIATE-ASSIGNMENT] No Ready groups available for immediate assignment to analyst {Username} (Total Ready: {Total}, With Active Assignments: {Active})",
-                        analystUsername, allReadyGroups.Count, groupIdsWithActiveAssignments.Count);
+                        analystUsername, eligibleGroups.Count, groupIdsWithActiveAssignments.Count);
                     return;
                 }
 
                 // Assign groups immediately
                 var assignedCount = 0;
+                var createdAssignments = new List<AnalysisAssignment>();
                 foreach (var group in readyGroups)
                 {
                     var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                    _context.AnalysisAssignments.Add(new AnalysisAssignment
+                    var assignment = new AnalysisAssignment
                     {
                         GroupId = group.Id,
                         AssignedTo = analystUsername,
@@ -576,7 +711,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         LeaseUntilUtc = leaseUntil,
                         State = "Active",
                         CreatedAtUtc = now
-                    });
+                    };
+                    _context.AnalysisAssignments.Add(assignment);
 
                     // Sprint 5G2 / B1: route through the state-machine facade. Ready → AnalystAssigned
                     // is in the legal table.
@@ -587,7 +723,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         reason: $"Auto-assignment to analyst {analystUsername} after they completed all prior assignments.",
                         correlationId: null);
                     group.UpdatedAtUtc = now;
+                    createdAssignments.Add(assignment);
                     assignedCount++;
+                }
+
+                foreach (var assignment in createdAssignments)
+                {
+                    await UpsertQueueEntryBestEffortAsync(assignment, ct);
+                }
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Analyst", AnalysisStatuses.Ready, ct);
                 }
 
                 _logger.LogInformation("✅ Immediately assigned {Count} new groups to analyst {Username} after completing all previous work",
@@ -609,6 +756,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Triggering immediate audit assignment for group {GroupId}", groupId);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if Auto mode is enabled
                 var settings = await _context.AnalysisSettings.FirstOrDefaultAsync() ?? new AnalysisSettings();
@@ -634,8 +782,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 var hasActiveAssignment = await _context.AnalysisAssignments
                     .AnyAsync(a => a.GroupId == groupId
                         && a.Role == "Audit"
-                        && a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now));
+                        && a.State == "Active", ct);
 
                 if (hasActiveAssignment)
                 {
@@ -643,50 +790,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // Verify containers are in Audit WorkflowStage
-                if (string.IsNullOrEmpty(group.GroupIdentifier))
+                var eligibleAuditGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Audit",
+                    AnalysisStatuses.AnalystCompleted,
+                    settings.MaxConcurrentPerUser,
+                    ct);
+                if (!eligibleAuditGroups.Any(g => g.Id == groupId))
                 {
-                    _logger.LogWarning("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} has no GroupIdentifier - skipping", groupId);
+                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} is not eligible by ReadyGroupsCache Audit rules - skipping", groupId);
                     return;
                 }
 
-                var containers = await _context.ContainerCompletenessStatuses
-                    .Where(c => c.GroupIdentifier == group.GroupIdentifier)
-                    .ToListAsync();
-
-                var auditContainers = containers.Count(c => c.WorkflowStage == "Audit");
-                var totalContainers = containers.Count;
-
-                if (auditContainers == 0 || auditContainers < totalContainers)
+                var readyAuditUsers = await GetReadyUsersForImmediateAssignmentAsync("Audit", now, ct);
+                if (!readyAuditUsers.Any())
                 {
-                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} has {AuditCount}/{TotalCount} containers in Audit stage - not ready",
-                        groupId, auditContainers, totalContainers);
-                    return;
-                }
-
-                // ✅ FIX: Load roles first, then filter users to avoid Join() generating CTE
-                var auditRoleIds = await _context.Roles
-                    .Where(r => r.IsActive && r.Name == "Audit")
-                    .Select(r => r.Id)
-                    .ToListAsync();
-
-                var auditUsers = auditRoleIds.Any()
-                    ? await _context.Users
-                        .Where(u => u.IsActive && u.RoleId != null && auditRoleIds.Contains(u.RoleId.Value))
-                        .Select(u => u.Username)
-                        .Distinct()
-                        .ToListAsync()
-                    : new List<string>();
-
-                if (!auditUsers.Any())
-                {
-                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] No audit users available - skipping");
+                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] No ready audit users available - skipping");
                     return;
                 }
 
                 // Find user with fewest active assignments
                 var userAssignmentCounts = new Dictionary<string, int>();
-                foreach (var username in auditUsers)
+                foreach (var username in readyAuditUsers)
                 {
                     // ✅ FIX: Load assignments first, then filter groups in memory to avoid Join() generating CTE
                     var assignments = await _context.AnalysisAssignments
@@ -695,7 +819,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             && a.State == "Active"
                             && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
                         .Select(a => a.GroupId)
-                        .ToListAsync();
+                        .ToListAsync(ct);
 
                     if (!assignments.Any())
                     {
@@ -708,7 +832,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             g.Status != AnalysisStatuses.AuditCompleted
                             && g.Status != AnalysisStatuses.Completed)
                         .Select(g => g.Id)
-                        .ToListAsync();
+                        .ToListAsync(ct);
 
                     var count = validGroupIds.Count;
 
@@ -732,7 +856,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 // Assign group immediately
                 var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                _context.AnalysisAssignments.Add(new AnalysisAssignment
+                var assignment = new AnalysisAssignment
                 {
                     GroupId = groupId,
                     AssignedTo = selectedUser,
@@ -740,7 +864,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     LeaseUntilUtc = leaseUntil,
                     State = "Active",
                     CreatedAtUtc = now
-                });
+                };
+                _context.AnalysisAssignments.Add(assignment);
 
                 // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
                 // is in the legal table.
@@ -751,6 +876,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     reason: $"Group reached AnalystCompleted; auto-assigned to auditor {selectedUser}.",
                     correlationId: null);
                 group.UpdatedAtUtc = now;
+
+                await UpsertQueueEntryBestEffortAsync(assignment, ct);
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
+                }
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned group {GroupId} ({GroupIdentifier}) to auditor {Username}",
                     groupId, group.GroupIdentifier, selectedUser);
@@ -771,6 +903,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Checking immediate assignment eligibility for auditor {Username}", auditorUsername);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if auditor has any remaining active assignments
                 var remainingActiveAssignments = await _context.AnalysisAssignments
@@ -828,65 +961,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // ✅ FIX: Load groups and containers separately, then join in memory to avoid CTE generation
-                var analystCompletedGroups = await _context.AnalysisGroups
-                    .AsTracking()
-                    .Where(g => g.Status == AnalysisStatuses.AnalystCompleted && !string.IsNullOrEmpty(g.GroupIdentifier))
-                    .ToListAsync();
-
-                var groupIdentifiers = analystCompletedGroups.Select(g => g.GroupIdentifier).Distinct().ToList();
-
-                // ✅ FIX: Batch Contains() to avoid CTE generation
-                var containers = new List<ContainerCompletenessStatus>();
-                const int containerBatchSize2 = 1000;
-
-                if (groupIdentifiers.Count > 0)
+                var readyUsers = await GetReadyUsersForImmediateAssignmentAsync("Audit", now, ct);
+                if (!readyUsers.Contains(auditorUsername, StringComparer.OrdinalIgnoreCase))
                 {
-                    for (int i = 0; i < groupIdentifiers.Count; i += containerBatchSize2)
-                    {
-                        var batch = groupIdentifiers.Skip(i).Take(containerBatchSize2).Where(g => g != null).ToList();
-                        var batchContainers = await _context.ContainerCompletenessStatuses
-                            .Where(c => c.GroupIdentifier != null && batch.Contains(c.GroupIdentifier))
-                            .ToListAsync();
-                        containers.AddRange(batchContainers);
-                    }
+                    _logger.LogInformation("[IMMEDIATE-AUDIT-ASSIGNMENT] Auditor {Username} is not Ready for Audit assignments - skipping", auditorUsername);
+                    return;
                 }
 
-                // ✅ Join and group in memory
-                var allAnalystCompletedGroups = analystCompletedGroups
-                    .GroupJoin(
-                        containers,
-                        g => g.GroupIdentifier,
-                        c => c.GroupIdentifier,
-                        (g, containerGroup) => new
-                        {
-                            Group = g,
-                            TotalContainers = containerGroup.Count(),
-                            AuditContainers = containerGroup.Count(c => c.WorkflowStage == "Audit"),
-                            CompletedContainers = containerGroup.Count(c => c.WorkflowStage == "Completed")
-                        })
-                    .Where(w => w.AuditContainers > 0 && w.CompletedContainers < w.TotalContainers)
-                    .Select(x => x.Group)
-                    .OrderByDescending(g => g.Priority)
-                    .ToList();
+                var eligibleGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Audit",
+                    AnalysisStatuses.AnalystCompleted,
+                    settings.MaxConcurrentPerUser - activeCount,
+                    ct);
 
-                _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} total AnalystCompleted groups with Audit WorkflowStage", allAnalystCompletedGroups.Count);
+                _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} eligible AnalystCompleted groups from ReadyGroupsCache path", eligibleGroups.Count);
 
                 // Get group IDs that have active assignments
                 var groupIdsWithActiveAssignments = await _context.AnalysisAssignments
-                    .Where(a => a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                    .Where(a => a.State == "Active")
                     .Select(a => a.GroupId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToListAsync(ct);
+                var activeGroupIdSet = groupIdsWithActiveAssignments.ToHashSet();
 
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} groups with active assignments", groupIdsWithActiveAssignments.Count);
 
                 // Filter out groups with active assignments and take up to max
-                var readyGroups = allAnalystCompletedGroups
-                    .Where(g => !groupIdsWithActiveAssignments.Contains(g.Id))
+                var readyGroupIds = eligibleGroups
+                    .Where(g => !activeGroupIdSet.Contains(g.Id))
                     .Take(settings.MaxConcurrentPerUser - activeCount) // Fill up to max
+                    .Select(g => g.Id)
                     .ToList();
+                var readyGroups = await LoadTrackedGroupsInEligibilityOrderAsync(readyGroupIds, AnalysisStatuses.AnalystCompleted, ct);
 
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} available AnalystCompleted groups for auditor {Username} (will assign up to {Max})",
                     readyGroups.Count, auditorUsername, settings.MaxConcurrentPerUser - activeCount);
@@ -894,16 +1000,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!readyGroups.Any())
                 {
                     _logger.LogWarning("⚠️ [IMMEDIATE-AUDIT-ASSIGNMENT] No AnalystCompleted groups available for immediate assignment to auditor {Username} (Total: {Total}, With Active Assignments: {Active})",
-                        auditorUsername, allAnalystCompletedGroups.Count, groupIdsWithActiveAssignments.Count);
+                        auditorUsername, eligibleGroups.Count, groupIdsWithActiveAssignments.Count);
                     return;
                 }
 
                 // Assign groups immediately
                 var assignedCount = 0;
+                var createdAssignments = new List<AnalysisAssignment>();
                 foreach (var group in readyGroups)
                 {
                     var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                    _context.AnalysisAssignments.Add(new AnalysisAssignment
+                    var assignment = new AnalysisAssignment
                     {
                         GroupId = group.Id,
                         AssignedTo = auditorUsername,
@@ -911,7 +1018,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         LeaseUntilUtc = leaseUntil,
                         State = "Active",
                         CreatedAtUtc = now
-                    });
+                    };
+                    _context.AnalysisAssignments.Add(assignment);
 
                     // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
                     // is in the legal table.
@@ -922,7 +1030,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         reason: $"Auto-assignment to auditor {auditorUsername} after they completed all prior assignments.",
                         correlationId: null);
                     group.UpdatedAtUtc = now;
+                    createdAssignments.Add(assignment);
                     assignedCount++;
+                }
+
+                foreach (var assignment in createdAssignments)
+                {
+                    await UpsertQueueEntryBestEffortAsync(assignment, ct);
+                }
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
                 }
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned {Count} new groups to auditor {Username} after completing all previous work",

@@ -466,7 +466,28 @@ namespace NickScanCentralImagingPortal.Services.FS6000
 
                         var xmlFile = xmlFiles.First();
 
+                        var jpegFile = GetLargestJpegFile(jpegFiles);
+
+                        if (jpegFile == null)
+                        {
+                            _logger.LogDebug("Skipping folder {Folder} - no valid JPEG file", jpegFile);
+                            return;
+                        }
+
+                        var xmlStable = await WaitForFileStabilityAsync(xmlFile, maxWaitMs: 15000);
+                        var jpegStable = await WaitForFileStabilityAsync(jpegFile, maxWaitMs: 15000);
+                        if (!xmlStable || !jpegStable)
+                        {
+                            _logger.LogInformation(
+                                "[FS6000-INGESTION] Deferring folder {Folder}; XML stable={XmlStable}, JPEG stable={JpegStable}",
+                                folder,
+                                xmlStable,
+                                jpegStable);
+                            return;
+                        }
+
                         // FIX: Check if this file was already parsed in this cycle
+                        // only after stability passes so transiently unstable files retry.
                         var normalizedXmlPath = Path.GetFullPath(xmlFile).ToLowerInvariant();
                         lock (_parsedFilesLock)
                         {
@@ -476,14 +497,6 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                                 return;
                             }
                             _parsedFilesThisCycle.Add(normalizedXmlPath);
-                        }
-
-                        var jpegFile = GetLargestJpegFile(jpegFiles);
-
-                        if (jpegFile == null)
-                        {
-                            _logger.LogDebug("Skipping folder {Folder} - no valid JPEG file", jpegFile);
-                            return;
                         }
 
                         // FIXED: Use XmlParsingService to parse ALL fields properly
@@ -537,6 +550,11 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 if (!allContainerData.Any())
                 {
                     _logger.LogDebug("No valid container data found in any folder");
+                    lock (_parsedFilesLock)
+                    {
+                        _logger.LogDebug("[FS6000-INGESTION] 🧹 Clearing parsed files cache after empty batch: {Count} files were tracked", _parsedFilesThisCycle.Count);
+                        _parsedFilesThisCycle.Clear();
+                    }
                     return 0;
                 }
 
@@ -907,9 +925,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
         }
 
         /// <summary>
-        /// Check if a file is stable (finished writing) by monitoring file size
+        /// Check if a file is stable (finished writing) by monitoring size,
+        /// last-write time, and whether a writer still holds the file open.
         /// </summary>
-        private async Task<bool> WaitForFileStabilityAsync(string filePath, int maxWaitMs = 5000)
+        private async Task<bool> WaitForFileStabilityAsync(string filePath, int maxWaitMs = 15000)
         {
             try
             {
@@ -917,8 +936,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     return false;
 
                 long previousSize = -1;
+                DateTime previousLastWriteUtc = DateTime.MinValue;
                 int stableCount = 0;
-                int checkIntervalMs = 200;
+                const int requiredStableChecks = 4;
+                const int checkIntervalMs = 500;
                 int totalWaitMs = 0;
 
                 while (totalWaitMs < maxWaitMs)
@@ -927,12 +948,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     {
                         var fileInfo = new FileInfo(filePath);
                         long currentSize = fileInfo.Length;
+                        var currentLastWriteUtc = fileInfo.LastWriteTimeUtc;
 
-                        if (currentSize == previousSize && currentSize > 0)
+                        if (currentSize == previousSize
+                            && currentLastWriteUtc == previousLastWriteUtc
+                            && currentSize > 0
+                            && CanOpenForStableRead(filePath))
                         {
                             stableCount++;
-                            // File size hasn't changed for 2 consecutive checks = stable
-                            if (stableCount >= 2)
+                            if (stableCount >= requiredStableChecks)
                             {
                                 return true;
                             }
@@ -941,14 +965,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                         {
                             stableCount = 0;
                             previousSize = currentSize;
+                            previousLastWriteUtc = currentLastWriteUtc;
                         }
 
                         await Task.Delay(checkIntervalMs);
                         totalWaitMs += checkIntervalMs;
                     }
-                    catch (IOException)
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                     {
-                        // File locked, wait and try again
+                        stableCount = 0;
                         await Task.Delay(checkIntervalMs);
                         totalWaitMs += checkIntervalMs;
                     }
@@ -962,6 +987,12 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             }
         }
 
+        private static bool CanOpenForStableRead(string filePath)
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return stream.Length > 0;
+        }
+
         /// <summary>
         /// Read a file with retry logic to handle file locking issues
         /// </summary>
@@ -969,7 +1000,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
         {
             // STEP 1: Wait for file to be stable (finished writing)
             _logger.LogDebug("Waiting for file stability for container {Container}: {FilePath}", containerNumber, filePath);
-            bool isStable = await WaitForFileStabilityAsync(filePath, maxWaitMs: 5000);
+            bool isStable = await WaitForFileStabilityAsync(filePath, maxWaitMs: 15000);
 
             if (!isStable)
             {
@@ -984,12 +1015,27 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             {
                 try
                 {
-                    // Use FileShare.ReadWrite to allow other processes to read/write while we read
-                    // This is critical for FS6000 scanner which may still be writing the file
-                    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true))
+                    using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true))
                     {
-                        var imageBytes = new byte[fileStream.Length];
-                        await fileStream.ReadAsync(imageBytes, 0, (int)fileStream.Length);
+                        var lengthBefore = fileStream.Length;
+                        if (lengthBefore <= 0)
+                        {
+                            throw new IOException($"File is empty: {filePath}");
+                        }
+
+                        if (lengthBefore > int.MaxValue)
+                        {
+                            throw new IOException($"File is too large to read into memory: {filePath}");
+                        }
+
+                        var imageBytes = new byte[lengthBefore];
+                        await fileStream.ReadExactlyAsync(imageBytes.AsMemory(0, imageBytes.Length));
+
+                        var lengthAfter = new FileInfo(filePath).Length;
+                        if (lengthAfter != lengthBefore)
+                        {
+                            throw new IOException($"File changed while reading: {filePath}");
+                        }
 
                         if (retryCount > 0)
                         {
@@ -1000,7 +1046,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                         return imageBytes;
                     }
                 }
-                catch (IOException ex) when (retryCount < maxRetries - 1)
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && retryCount < maxRetries - 1)
                 {
                     retryCount++;
                     _logger.LogWarning("🔒 File locked for container {Container}, attempt {Attempt}/{MaxRetries}. Waiting {Delay}ms before retry: {FilePath}",
@@ -1011,7 +1057,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     // Exponential backoff - increased max delay from 2s to 5s
                     delayMs = Math.Min(delayMs * 2, 5000); // Cap at 5 seconds
                 }
-                catch (IOException ex) when (retryCount >= maxRetries - 1)
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && retryCount >= maxRetries - 1)
                 {
                     // Final attempt failed, log and rethrow
                     _logger.LogError(ex, "❌ Failed to read file for container {Container} after {MaxRetries} attempts. File may still be locked by scanner software: {FilePath}",
@@ -1071,12 +1117,11 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 {
                     try
                     {
-                        // Extract relative path from source folder
-                        // Example: C:\tadi_mirror\2025\1009\0001 -> 2025\1009\0001
-                        var relativePath = sourceFolder.Replace(_config.DestinationPath, "").TrimStart('\\', '/');
-
-                        // Build destination path in archive
-                        var archivePath = Path.Combine(_config.ProcessedPath, relativePath);
+                        if (!TryBuildArchivePath(sourceFolder, out var archivePath))
+                        {
+                            failedCount++;
+                            continue;
+                        }
 
                         // Create parent directory if it doesn't exist
                         var archiveParent = Path.GetDirectoryName(archivePath);
@@ -1085,53 +1130,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                             Directory.CreateDirectory(archiveParent);
                         }
 
-                        // Move the folder with retry logic for file lock issues.
-                        // Round-2 runtime audit M3: 25+ "Access to the path is denied"
-                        // failures per day. Previous retry only caught IOException, but
-                        // Windows surfaces antivirus/share locks as
-                        // UnauthorizedAccessException too — they look identical to a
-                        // permission denial without context. Catch both, raise the
-                        // retry budget to 5 attempts, exponential 1s/2s/4s/8s/16s,
-                        // and log the exception type so the next debug session can
-                        // tell antivirus contention from real ACL problems.
                         if (Directory.Exists(sourceFolder))
                         {
-                            bool moved = false;
-                            int retryCount = 0;
-                            const int maxRetries = 5;
-
-                            while (!moved && retryCount < maxRetries)
+                            if (await TryMoveFolderToArchiveAsync(sourceFolder, archivePath))
                             {
-                                try
-                                {
-                                    if (Directory.Exists(archivePath))
-                                    {
-                                        // If archive folder exists, delete it first
-                                        Directory.Delete(archivePath, true);
-                                    }
-
-                                    Directory.Move(sourceFolder, archivePath);
-                                    moved = true;
-                                    movedCount++;
-
-                                    _logger.LogDebug("[FS6000-ARCHIVE] Moved folder: {SourceFolder} -> {ArchivePath}", sourceFolder, archivePath);
-                                }
-                                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException)
-                                                            && retryCount < maxRetries - 1)
-                                {
-                                    retryCount++;
-                                    var delaySeconds = Math.Pow(2, retryCount - 1); // 1, 2, 4, 8 s
-                                    _logger.LogWarning(
-                                        "[FS6000-ARCHIVE] {ExType} on folder {SourceFolder}, retry {Retry}/{MaxRetries} after {Delay}s. Likely AV scan or open-handle race; will back off.",
-                                        ex.GetType().Name, sourceFolder, retryCount, maxRetries, delaySeconds);
-
-                                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
-                                }
+                                movedCount++;
                             }
-
-                            if (!moved)
+                            else
                             {
-                                throw new IOException($"Failed to move folder {sourceFolder} after {maxRetries} attempts (file lock or access-denied retries exhausted)");
+                                failedCount++;
                             }
                         }
                         else
@@ -1152,6 +1159,175 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             {
                 _logger.LogError(ex, "[FS6000-ARCHIVE] Error in MoveProcessedFoldersAsync");
             }
+        }
+
+        private bool TryBuildArchivePath(string sourceFolder, out string archivePath)
+        {
+            archivePath = string.Empty;
+
+            var stagingRoot = EnsureTrailingDirectorySeparator(_config.DestinationPath);
+            var archiveRoot = EnsureTrailingDirectorySeparator(_config.ProcessedPath);
+            var sourceResolved = Path.GetFullPath(sourceFolder);
+
+            if (!IsPathInsideRoot(sourceResolved, stagingRoot))
+            {
+                _logger.LogWarning(
+                    "[FS6000-ARCHIVE] Refusing to archive folder outside staging root. Source={SourceFolder}, StagingRoot={StagingRoot}",
+                    sourceResolved,
+                    stagingRoot);
+                return false;
+            }
+
+            var relativePath = Path.GetRelativePath(stagingRoot, sourceResolved);
+            if (relativePath.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativePath))
+            {
+                _logger.LogWarning(
+                    "[FS6000-ARCHIVE] Refusing unsafe relative archive path. Source={SourceFolder}, Relative={RelativePath}",
+                    sourceResolved,
+                    relativePath);
+                return false;
+            }
+
+            var candidateArchivePath = Path.GetFullPath(Path.Combine(archiveRoot, relativePath));
+            if (!IsPathInsideRoot(candidateArchivePath, archiveRoot))
+            {
+                _logger.LogWarning(
+                    "[FS6000-ARCHIVE] Refusing archive path outside archive root. Source={SourceFolder}, Archive={ArchivePath}",
+                    sourceResolved,
+                    candidateArchivePath);
+                return false;
+            }
+
+            archivePath = candidateArchivePath;
+            return true;
+        }
+
+        private async Task<bool> TryMoveFolderToArchiveAsync(string sourceFolder, string archivePath, int maxRetries = 5)
+        {
+            for (var attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    if (Directory.Exists(archivePath))
+                    {
+                        if (ArchiveContainsSourceFiles(sourceFolder, archivePath))
+                        {
+                            _logger.LogInformation(
+                                "[FS6000-ARCHIVE] Archive target already contains all staged files; removing duplicate staging folder: {SourceFolder}",
+                                sourceFolder);
+                            return await TryDeleteDirectoryWithRetryAsync(sourceFolder);
+                        }
+
+                        _logger.LogWarning(
+                            "[FS6000-ARCHIVE] Archive target already exists and differs; leaving source folder in staging for retry/manual review. Source={SourceFolder}, Archive={ArchivePath}",
+                            sourceFolder,
+                            archivePath);
+                        return false;
+                    }
+
+                    Directory.Move(sourceFolder, archivePath);
+                    _logger.LogDebug("[FS6000-ARCHIVE] Moved folder: {SourceFolder} -> {ArchivePath}", sourceFolder, archivePath);
+                    return true;
+                }
+                catch (Exception ex) when (IsRetryableArchiveFileSystemException(ex))
+                {
+                    if (attempt == maxRetries)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "[FS6000-ARCHIVE] Failed to archive folder after {MaxRetries} attempts. Source remains in staging for retry: {SourceFolder}",
+                            maxRetries,
+                            sourceFolder);
+                        return false;
+                    }
+
+                    var delay = TimeSpan.FromSeconds(Math.Min(16, Math.Pow(2, attempt - 1)));
+                    _logger.LogWarning(
+                        ex,
+                        "[FS6000-ARCHIVE] Retryable archive move error for {SourceFolder} (attempt {Attempt}/{MaxRetries}). Waiting {Delay}s before retry",
+                        sourceFolder,
+                        attempt,
+                        maxRetries,
+                        delay.TotalSeconds);
+                    await Task.Delay(delay);
+                }
+            }
+
+            return false;
+        }
+
+        private async Task<bool> TryDeleteDirectoryWithRetryAsync(string sourceFolder, int maxRetries = 3)
+        {
+            for (var attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(sourceFolder, recursive: true);
+                    return true;
+                }
+                catch (Exception ex) when (IsRetryableArchiveFileSystemException(ex))
+                {
+                    if (attempt == maxRetries)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "[FS6000-ARCHIVE] Could not remove duplicate staging folder after archive verification. Source remains for retry: {SourceFolder}",
+                            sourceFolder);
+                        return false;
+                    }
+
+                    var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt - 1));
+                    _logger.LogWarning(
+                        ex,
+                        "[FS6000-ARCHIVE] Retryable staging cleanup error for {SourceFolder} (attempt {Attempt}/{MaxRetries}). Waiting {Delay}s before retry",
+                        sourceFolder,
+                        attempt,
+                        maxRetries,
+                        delay.TotalSeconds);
+                    await Task.Delay(delay);
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ArchiveContainsSourceFiles(string sourceFolder, string archivePath)
+        {
+            foreach (var sourceFile in Directory.GetFiles(sourceFolder, "*", SearchOption.AllDirectories))
+            {
+                var relativeFilePath = Path.GetRelativePath(sourceFolder, sourceFile);
+                var archivedFile = Path.Combine(archivePath, relativeFilePath);
+                if (!File.Exists(archivedFile))
+                {
+                    return false;
+                }
+
+                if (new FileInfo(sourceFile).Length != new FileInfo(archivedFile).Length)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsRetryableArchiveFileSystemException(Exception ex)
+        {
+            return ex is IOException || ex is UnauthorizedAccessException;
+        }
+
+        private static string EnsureTrailingDirectorySeparator(string path)
+        {
+            var fullPath = Path.GetFullPath(path);
+            return Path.EndsInDirectorySeparator(fullPath)
+                ? fullPath
+                : fullPath + Path.DirectorySeparatorChar;
+        }
+
+        private static bool IsPathInsideRoot(string path, string rootWithTrailingSeparator)
+        {
+            var fullPath = Path.GetFullPath(path);
+            return fullPath.StartsWith(rootWithTrailingSeparator, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

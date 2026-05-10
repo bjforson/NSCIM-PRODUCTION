@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -27,18 +28,22 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<ReadyGroupsCacheService> _logger;
         private readonly IConfiguration _configuration;
+        private readonly IMemoryCache? _memoryCache;
         private readonly int _cacheExpirationSeconds;
         private readonly int _maxReadyGroups;
         private const string CacheKeyPrefix = "ReadyGroups";
+        private const string MyAssignmentsCacheKeyPrefix = "my-assignments";
 
         public ReadyGroupsCacheService(
             IServiceScopeFactory scopeFactory,
             ILogger<ReadyGroupsCacheService> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IMemoryCache? memoryCache = null)
         {
             _scopeFactory = scopeFactory;
             _logger = logger;
             _configuration = configuration;
+            _memoryCache = memoryCache;
             _cacheExpirationSeconds = _configuration.GetValue<int>("ReadyGroupsCache:ExpirationSeconds", 30);
             _maxReadyGroups = _configuration.GetValue<int>("ReadyGroupsCache:MaxGroups", 200);
         }
@@ -579,6 +584,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                 _logger.LogDebug("[QUEUE] Upserted entry for assignment {Id} group {Group}",
                     assignmentId, group.GroupIdentifier);
+                InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
             }
             catch (Exception ex)
             {
@@ -596,8 +602,28 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         {
             try
             {
+                var cacheTarget = await db.AnalysisAssignments
+                    .AsNoTracking()
+                    .Where(a => a.Id == assignmentId)
+                    .Select(a => new { a.AssignedTo, a.Role })
+                    .FirstOrDefaultAsync(ct);
+
+                if (cacheTarget == null)
+                {
+                    cacheTarget = await db.AnalysisQueueEntries
+                        .AsNoTracking()
+                        .Where(e => e.AssignmentId == assignmentId)
+                        .Select(e => new { e.AssignedTo, e.Role })
+                        .FirstOrDefaultAsync(ct);
+                }
+
                 await db.Database.ExecuteSqlRawAsync(
                     "DELETE FROM analysisqueueentries WHERE assignmentid = {0}", assignmentId);
+
+                if (cacheTarget != null)
+                {
+                    InvalidateMyAssignmentsCache(cacheTarget.AssignedTo, cacheTarget.Role);
+                }
             }
             catch (Exception ex)
             {
@@ -612,8 +638,30 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         {
             try
             {
+                var cacheTargets = await db.AnalysisQueueEntries
+                    .AsNoTracking()
+                    .Where(e => e.GroupId == groupId)
+                    .Select(e => new { e.AssignedTo, e.Role })
+                    .Distinct()
+                    .ToListAsync(ct);
+
+                if (cacheTargets.Count == 0)
+                {
+                    cacheTargets = await db.AnalysisAssignments
+                        .AsNoTracking()
+                        .Where(a => a.GroupId == groupId)
+                        .Select(a => new { a.AssignedTo, a.Role })
+                        .Distinct()
+                        .ToListAsync(ct);
+                }
+
                 await db.Database.ExecuteSqlRawAsync(
                     "DELETE FROM analysisqueueentries WHERE groupid = {0}", groupId);
+
+                foreach (var cacheTarget in cacheTargets)
+                {
+                    InvalidateMyAssignmentsCache(cacheTarget.AssignedTo, cacheTarget.Role);
+                }
             }
             catch (Exception ex)
             {
@@ -642,18 +690,20 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 var activeSet = new HashSet<int>(activeAssignments);
 
                 // All queue entries
-                var queueEntryIds = await db.AnalysisQueueEntries
+                var queueEntries = await db.AnalysisQueueEntries
                     .AsNoTracking()
-                    .Select(e => e.AssignmentId)
+                    .Select(e => new { e.AssignmentId, e.AssignedTo, e.Role })
                     .ToListAsync(ct);
 
+                var queueEntryIds = queueEntries.Select(e => e.AssignmentId).ToList();
                 var queueSet = new HashSet<int>(queueEntryIds);
 
                 // Missing: active assignment without queue entry → upsert
                 var missing = activeAssignments.Where(id => !queueSet.Contains(id)).ToList();
 
                 // Stale: queue entry without active assignment → delete
-                var stale = queueEntryIds.Where(id => !activeSet.Contains(id)).ToList();
+                var staleEntries = queueEntries.Where(e => !activeSet.Contains(e.AssignmentId)).ToList();
+                var stale = staleEntries.Select(e => e.AssignmentId).ToList();
 
                 if (missing.Count > 0)
                 {
@@ -667,9 +717,16 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 if (stale.Count > 0)
                 {
                     _logger.LogInformation("[QUEUE-RECONCILE] Found {Count} stale queue entries — removing", stale.Count);
-                    var staleIds = string.Join(",", stale);
-                    await db.Database.ExecuteSqlRawAsync(
-                        $"DELETE FROM analysisqueueentries WHERE assignmentid IN ({staleIds})");
+                    await db.AnalysisQueueEntries
+                        .Where(e => stale.Contains(e.AssignmentId))
+                        .ExecuteDeleteAsync(ct);
+
+                    foreach (var staleEntry in staleEntries
+                        .Select(e => new { e.AssignedTo, e.Role })
+                        .Distinct())
+                    {
+                        InvalidateMyAssignmentsCache(staleEntry.AssignedTo, staleEntry.Role);
+                    }
                 }
 
                 if (missing.Count == 0 && stale.Count == 0)
@@ -696,6 +753,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             public int PendingOrNullContainers { get; set; }
             public int AuditContainers { get; set; }
             public int CompletedContainers { get; set; }
+        }
+
+        private static string GetMyAssignmentsCacheKey(string username, string role)
+            => $"{MyAssignmentsCacheKeyPrefix}:{username}:{role}";
+
+        private void InvalidateMyAssignmentsCache(string? username, string? role)
+        {
+            if (_memoryCache == null || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role))
+                return;
+
+            _memoryCache.Remove(GetMyAssignmentsCacheKey(username, role));
+            _logger.LogDebug("[CACHE-INVALIDATE] Invalidated my-assignments cache for {User}/{Role}", username, role);
         }
     }
 }

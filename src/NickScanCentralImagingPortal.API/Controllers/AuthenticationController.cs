@@ -447,7 +447,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
-                if (!ServiceApiKeyValidator.IsValid(_configuration, request.ServiceApiKey))
+                var providedServiceKey = ServiceApiKeyValidator.GetProvidedKey(Request, request.ServiceApiKey);
+                if (!ServiceApiKeyValidator.IsValid(_configuration, providedServiceKey))
                 {
                     _logger.LogWarning("🔒 validate-credentials: Invalid service API key from {IP}",
                         HttpContext.Connection.RemoteIpAddress);
@@ -650,6 +651,39 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
     internal static class ServiceApiKeyValidator
     {
+        public const string HeaderName = "X-Service-Key";
+
+        public static string? GetProvidedKey(
+            Microsoft.AspNetCore.Http.HttpRequest request,
+            string? bodyKey = null,
+            bool allowQueryStringFallback = false)
+        {
+            if (request.Headers.TryGetValue(HeaderName, out var headerValues))
+            {
+                var headerValue = headerValues.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(headerValue))
+                {
+                    return headerValue;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(bodyKey))
+            {
+                return bodyKey;
+            }
+
+            if (allowQueryStringFallback && request.Query.TryGetValue("apiKey", out var queryValues))
+            {
+                var queryValue = queryValues.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(queryValue))
+                {
+                    return queryValue;
+                }
+            }
+
+            return null;
+        }
+
         public static bool IsValid(IConfiguration configuration, string? providedKey)
         {
             var expectedKey = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")

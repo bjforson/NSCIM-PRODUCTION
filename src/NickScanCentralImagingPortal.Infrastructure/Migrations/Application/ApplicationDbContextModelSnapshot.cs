@@ -360,6 +360,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.HasIndex("GroupId", "Role", "State")
                         .HasDatabaseName("ix_analysisassignments_groupid_role_state");
 
+                    b.HasIndex("GroupId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_analysisassignments_active_group")
+                        .HasFilter("\"state\" = 'Active'");
+
                     b.ToTable("analysisassignments");
                 });
 

@@ -232,10 +232,9 @@ static async Task SeedApiKeysAsync(CommsDbContext db, IConfiguration config, IHo
         {
             if (string.Equals(existing.KeyHash, keyHash, StringComparison.Ordinal))
             {
-                Log.Fatal(
-                    "Production NickComms API key for {AppName} still matches a placeholder/default seed. Rotate this key immediately.",
-                    appName);
-                continue;
+                throw new InvalidOperationException(
+                    $"Production NickComms API key for '{appName}' still matches a placeholder/default seed. " +
+                    "Rotate this key before starting the gateway.");
             }
 
             Log.Warning(

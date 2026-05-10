@@ -225,6 +225,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.Role).IsRequired().HasMaxLength(20);
                 entity.Property(e => e.State).IsRequired().HasMaxLength(20);
                 entity.HasIndex(e => new { e.GroupId, e.Role, e.State });
+                entity.HasIndex(e => e.GroupId)
+                    .IsUnique()
+                    .HasFilter("\"state\" = 'Active'")
+                    .HasDatabaseName("ux_analysisassignments_active_group");
                 entity.HasIndex(e => e.AssignedTo);
             });
 
