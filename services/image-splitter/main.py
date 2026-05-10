@@ -37,6 +37,7 @@ from models.schemas import (
 )
 from pipeline.orchestrator import run_pipeline, get_best_result, get_all_strategies
 from pipeline.image_utils import base64_to_bytes, get_image_dimensions, crop_and_encode
+from strategies.base import SplitResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("image-splitter")
@@ -275,6 +276,72 @@ async def _read_upload_with_limit(file: UploadFile) -> bytes:
 
 # ── Background processing ─────────────────────────────────────────────
 
+def ensure_minimum_split_candidates(results: list[SplitResult], image_data: bytes, image_width: Optional[int]) -> list[SplitResult]:
+    """Return at least two candidate splits when the image can be cropped."""
+    if len(results) >= 2:
+        return results
+
+    try:
+        width = image_width or get_image_dimensions(image_data)[0]
+    except Exception:
+        logger.warning("Could not determine image width for fallback split candidates", exc_info=True)
+        return results
+
+    if width < 4:
+        return results
+
+    existing = [r.split_x for r in results]
+    best = get_best_result(results)
+    base_x = best.split_x if best else width // 2
+    base_confidence = best.confidence if best else 0.33
+    min_separation = max(12, int(width * 0.01))
+    offset = max(24, int(width * 0.03))
+
+    candidate_points = [
+        base_x - offset,
+        base_x + offset,
+        width // 2,
+        (width // 2) - offset,
+        (width // 2) + offset,
+    ]
+
+    for split_x in candidate_points:
+        if len(results) >= 2:
+            break
+
+        split_x = max(1, min(int(split_x), width - 1))
+        if any(abs(split_x - existing_x) < min_separation for existing_x in existing):
+            continue
+
+        try:
+            left_bytes, right_bytes = crop_and_encode(image_data, split_x)
+        except Exception:
+            logger.warning("Could not crop fallback split candidate at x=%s", split_x, exc_info=True)
+            continue
+
+        strategy_name = "fallback_midpoint" if not best else "fallback_offset"
+        if any(r.strategy_name == strategy_name for r in results):
+            strategy_name = f"{strategy_name}_{len(results) + 1}"
+
+        results.append(SplitResult(
+            strategy_name=strategy_name,
+            split_x=split_x,
+            confidence=max(0.05, min(0.95, base_confidence * 0.75)),
+            processing_ms=0,
+            metadata={
+                "fallback": True,
+                "basis_strategy": best.strategy_name if best else "geometric_midpoint",
+                "basis_split_x": base_x,
+                "reasoning": "Generated to provide a second analyst-review candidate when only one strategy result was available.",
+            },
+            left_image=left_bytes,
+            right_image=right_bytes
+        ))
+        existing.append(split_x)
+
+    return results
+
+
 async def process_job(job_id: UUID):
     """Background task: run the splitting pipeline on a job."""
     from models.database import AsyncSessionLocal
@@ -291,6 +358,7 @@ async def process_job(job_id: UUID):
 
             # Run all strategies
             results = await run_pipeline(job.image_data)
+            results = ensure_minimum_split_candidates(results, job.image_data, job.image_width)
 
             # Store results
             for r in results:

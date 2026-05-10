@@ -54,6 +54,13 @@ by container pair, and can fetch the top split result IDs for analysis-record
 linking. The upload endpoint also persists optional `source_image_id` for audit
 lineage.
 
+#### Two-candidate analyst review - hardened
+
+Some completed jobs can legitimately produce only one strategy result. The
+splitter now adds a low-confidence deterministic fallback candidate when the
+image can be cropped, so the analyst dialog has two choices whenever the source
+image dimensions allow it.
+
 ### Tests / verification
 
 - `python -m py_compile services/image-splitter/main.py`
@@ -61,6 +68,7 @@ lineage.
 - `dotnet test src/NickScanCentralImagingPortal.Tests/NickScanCentralImagingPortal.Tests.csproj --no-build`
 - `dotnet list ... package --vulnerable --include-transitive` for API, WebApp, and test projects: no vulnerable packages reported from NuGet.
 - Live splitter probes: `/api/health` returned healthy and `/api/split/search` returned an empty array for a harmless non-existent pair.
+- Post-deploy intake proof: the worker submitted and completed a fresh two-container job for `NYKU3808732,TRHU2102211`.
 
 ### Migrations
 
@@ -69,6 +77,7 @@ lineage.
 ### Commits
 
 - (this commit) - Add two-container split intake for scanner images
+- (follow-up commit) - Ensure splitter emits two review candidates when possible
 
 ## [2.16.12] - 2026-05-10 - ASE scanner-tab image loading for encoded container routes
 
