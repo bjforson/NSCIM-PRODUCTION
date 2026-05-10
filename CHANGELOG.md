@@ -22,6 +22,48 @@ For each release, this file records:
 
 ---
 
+## [2.16.12] - 2026-05-10 - ASE scanner-tab image loading for encoded container routes
+
+Patch release for an ASE image-loading regression found after the image URL
+signing hardening was deployed.
+
+### What landed
+
+#### ASE signed image URLs with comma-separated containers - closed
+
+ASE source rows can carry comma-separated container numbers in one inspection
+record, for example `CAXU6863152, MSBU3047832`. The scanner/detail UI correctly
+URL-encoded those route values before building image links, but the shared
+signature algorithm signed the encoded path while ASP.NET Core validates against
+the decoded `HttpRequest.Path`. Result: signed browser image requests for those
+ASE scanner-tab routes could 401 even though the same image rendered correctly
+for single-container ASE rows.
+
+**Fix:** moved both API-side signing and WebApp URL building onto the shared
+`SignedImageUrlCanonical.ComputeSignature` path, and made that canonicalizer
+decode percent-encoded route values before lowercasing/signing. This keeps
+normal single-container image URLs unchanged while making encoded ASE routes
+validate against the same path shape the middleware receives.
+
+### Tests / verification
+
+- `dotnet build src/NickScanCentralImagingPortal.Core/NickScanCentralImagingPortal.Core.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- `dotnet build src/NickScanCentralImagingPortal.API/NickScanCentralImagingPortal.API.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- `dotnet build src/NickScanWebApp.New/NickScanWebApp.New.csproj -c Release --no-restore`
+- `dotnet test tests/NickScanCentralImagingPortal.Core.Tests/NickScanCentralImagingPortal.Core.Tests.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- Production deploy via `.\Deploy.ps1` (API + WebApp)
+- Live probe: signed ASE thumbnail/full image requests returned `200 image/jpeg`
+  for both single-container and comma-separated ASE paths.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- `e06ece6` - Fix signed ASE image URLs with encoded containers
+- (this commit) - chore(release): bump to 2.16.12 + ASE scanner image changelog
+
 ## [2.16.11] — 2026-05-05 — Operator-reported observations: Scanner column + Tag persistence + audit-spotty triage
 
 Three operator observations triaged after 2.16.10. Two were real bugs with
