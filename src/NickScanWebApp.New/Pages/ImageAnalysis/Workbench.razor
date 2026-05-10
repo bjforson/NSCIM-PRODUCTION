@@ -428,20 +428,7 @@
 
         Console.WriteLine("🚀 [ImageAnalysis] OnInitializedAsync START");
         Logger?.LogInformation("🚀 [ImageAnalysis] OnInitializedAsync START");
-        
-        try
-        {
-            await LoadData();
-            Console.WriteLine("✅ [ImageAnalysis] LoadData completed");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [ImageAnalysis] Error in OnInitializedAsync: {ex.Message}");
-            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
-            Logger?.LogError(ex, "❌ [ImageAnalysis] Error in OnInitializedAsync");
-            _errorMessage = $"Initialization error: {ex.Message}";
-        }
-        
+
         // Detect user role and initialize readiness tracking
         await DetectUserRole();
 
@@ -486,6 +473,19 @@
             // Already Ready — still ensure the heartbeat is fresh so the orchestrator's
             // 60-min idle window resets immediately on page-open.
             try { await SendHeartbeatAsync(); } catch { /* failure-isolated */ }
+        }
+
+        try
+        {
+            await LoadData();
+            Console.WriteLine("✅ [ImageAnalysis] LoadData completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageAnalysis] Error in OnInitializedAsync: {ex.Message}");
+            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
+            Logger?.LogError(ex, "❌ [ImageAnalysis] Error in OnInitializedAsync");
+            _errorMessage = $"Initialization error: {ex.Message}";
         }
 
         var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
@@ -739,6 +739,10 @@
     {
         _isReadyForAssignment = isReady;
         await SetReadyForAssignment(isReady);
+        if (isReady)
+        {
+            await LoadData();
+        }
     }
 
     private async Task SetReadyForAssignment(bool ready)
@@ -833,11 +837,12 @@
             // available-groups via Task.WhenAll. ~max(call) total instead of ~sum(call).
             // Eager-fire available-groups even in Manual mode and discard if not needed —
             // the extra GET is dwarfed by the sequential round-trip saved in UserClaim mode.
+            var roleQuery = Uri.EscapeDataString(_userRole);
             var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
-            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
+            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>($"/api/image-analysis/my-assignments?role={roleQuery}");
             // /available returns 400 outside UserClaim mode by design — wrap it so its
             // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
-            var availableTask = TryGetAvailableAsync("/api/image-analysis/available?role=Analyst");
+            var availableTask = TryGetAvailableAsync($"/api/image-analysis/available?role={roleQuery}");
             await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
             var settings = settingsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");

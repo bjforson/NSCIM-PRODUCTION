@@ -158,7 +158,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("my-assignments")]
         public async Task<ActionResult<List<MyAssignmentResponse>>> GetMyAssignments([FromQuery] string? role = null)
         {
-            var username = User.Identity?.Name ?? "unknown";
+            var username = GetAuthenticatedUsername();
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                return Unauthorized(new { error = "User is not authenticated" });
+            }
+
             var now = DateTime.UtcNow;
 
             // Determine user role from claims or query parameter
@@ -761,13 +766,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     username);
             }
 
-            // ✅ PERFORMANCE: Cache result for 15s to reduce repeated heavy queries
-            // SetSize(1) required when MemoryCache.SizeLimit is configured (prevents unbounded growth)
-            _memoryCache.Set(cacheKey, enhancedResult, new MemoryCacheEntryOptions()
-                .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
-                .SetSize(1));
+            // ✅ PERFORMANCE: Cache non-empty results for 15s to reduce repeated heavy queries.
+            // Do not cache empty results: the workbench can mark the user Ready immediately
+            // after the first request, and an empty cache would hide the newly-created assignment.
+            if (enhancedResult.Any())
+            {
+                _memoryCache.Set(cacheKey, enhancedResult, new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
+                    .SetSize(1));
+            }
 
             return Ok(enhancedResult);
+        }
+
+        private string GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.FindFirst("username")?.Value
+                ?? User?.FindFirst("name")?.Value
+                ?? User?.FindFirst("preferred_username")?.Value
+                ?? string.Empty;
         }
 
         private static string GetMyAssignmentsCacheKey(string username, string role) => $"my-assignments:{username}:{role}";

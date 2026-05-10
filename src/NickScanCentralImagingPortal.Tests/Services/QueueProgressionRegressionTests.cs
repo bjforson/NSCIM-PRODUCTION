@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Threading;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -246,6 +247,114 @@ namespace NickScanCentralImagingPortal.Tests.Services
             Assert.Equal("Released", assignments.Single(a => a.AssignedTo == "analyst-one").State);
         }
 
+        [Fact]
+        public async Task SetReady_AutoMode_CreatesImmediateAnalystAssignment()
+        {
+            var dbName = $"QueueProgression_Readiness_{Guid.NewGuid():N}";
+            using var cache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 100 });
+            await using var provider = new ServiceCollection()
+                .AddDbContext<ApplicationDbContext>(o => o
+                    .UseInMemoryDatabase(dbName)
+                    .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning)))
+                .BuildServiceProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            db.AnalysisSettings.Add(new AnalysisSettings
+            {
+                Enabled = true,
+                AssignmentMode = "Auto",
+                MaxConcurrentPerUser = 1,
+                LeaseMinutes = 15
+            });
+
+            db.Roles.Add(new Role
+            {
+                Id = 1001,
+                Name = "Analyst",
+                DisplayName = "Image Analyst",
+                IsActive = true
+            });
+            db.Users.Add(new User
+            {
+                Username = "analyst-one",
+                Email = "analyst-one@example.test",
+                PasswordHash = "test",
+                RoleId = 1001,
+                IsActive = true
+            });
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = "READY-GROUP",
+                NormalizedGroupIdentifier = "READY-GROUP",
+                ScannerType = "FS6000",
+                GroupType = "Container"
+            };
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "CONT-READY-001",
+                ScannerType = "FS6000",
+                Status = AnalysisStatuses.Ready
+            });
+            db.ContainerCompletenessStatuses.Add(new ContainerCompletenessStatus
+            {
+                ContainerNumber = "CONT-READY-001",
+                GroupIdentifier = "READY-GROUP",
+                ScannerType = "FS6000",
+                WorkflowStage = "ImageAnalysis",
+                Status = "Complete",
+                HasImageData = true,
+                BOEDocumentId = 123
+            });
+            await db.SaveChangesAsync();
+
+            var controller = new TestUserReadinessController(
+                db,
+                NullLogger<UserReadinessController>.Instance,
+                cache,
+                new[] { group });
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[]
+                        {
+                            new Claim(ClaimTypes.Name, "analyst-one"),
+                            new Claim(ClaimTypes.Role, "Analyst")
+                        },
+                        authenticationType: "test")),
+                    RequestServices = provider
+                }
+            };
+
+            var result = await controller.SetReady(new SetReadyRequest
+            {
+                Role = "Analyst",
+                IsReady = true
+            });
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var assignmentsCreated = (int)(ok.Value!.GetType().GetProperty("AssignmentsCreated")!.GetValue(ok.Value) ?? 0);
+            Assert.Equal(1, assignmentsCreated);
+
+            var assignment = await db.AnalysisAssignments.SingleAsync();
+            var updatedGroup = await db.AnalysisGroups.SingleAsync(g => g.Id == group.Id);
+            var readiness = await db.UserReadiness.SingleAsync();
+
+            Assert.Equal("analyst-one", assignment.AssignedTo);
+            Assert.Equal("Analyst", assignment.Role);
+            Assert.Equal("Active", assignment.State);
+            Assert.Equal(AnalysisStatuses.AnalystAssigned, updatedGroup.Status);
+            Assert.True(readiness.IsReady);
+            Assert.Equal("Analyst", readiness.Role);
+        }
+
         private static async Task<AnalysisGroup> SeedAssignedGroupAsync(ApplicationDbContext db, string groupIdentifier, string scannerType)
         {
             var group = new AnalysisGroup
@@ -328,6 +437,44 @@ namespace NickScanCentralImagingPortal.Tests.Services
             public Task<QualityAssessment> AssessQualityAsync(string containerNumber)
             {
                 return Task.FromResult(new QualityAssessment());
+            }
+        }
+
+        private sealed class TestUserReadinessController : UserReadinessController
+        {
+            private readonly List<AnalysisGroup> _readyGroups;
+
+            public TestUserReadinessController(
+                ApplicationDbContext dbContext,
+                Microsoft.Extensions.Logging.ILogger<UserReadinessController> logger,
+                IMemoryCache memoryCache,
+                IEnumerable<AnalysisGroup> readyGroups)
+                : base(dbContext, logger, memoryCache)
+            {
+                _readyGroups = readyGroups.ToList();
+            }
+
+            protected override Task<List<AnalysisGroup>> GetReadyGroupsForRoleAsync(
+                string role,
+                string eligibleStatus,
+                CancellationToken cancellationToken)
+            {
+                return Task.FromResult(_readyGroups
+                    .Where(g => g.Status == eligibleStatus)
+                    .ToList());
+            }
+
+            protected override Task InvalidateReadyGroupsCacheAsync(
+                string role,
+                string eligibleStatus,
+                CancellationToken cancellationToken)
+            {
+                return Task.CompletedTask;
+            }
+
+            protected override Task UpsertQueueEntryAsync(int assignmentId, CancellationToken cancellationToken)
+            {
+                return Task.CompletedTask;
             }
         }
     }
