@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
@@ -445,12 +447,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
-                // Validate service API key
-                var expectedKey = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")
-                    ?? _configuration["ServiceAuth:ApiKey"]
-                    ?? string.Empty;
-
-                if (string.IsNullOrEmpty(expectedKey) || request.ServiceApiKey != expectedKey)
+                if (!ServiceApiKeyValidator.IsValid(_configuration, request.ServiceApiKey))
                 {
                     _logger.LogWarning("🔒 validate-credentials: Invalid service API key from {IP}",
                         HttpContext.Connection.RemoteIpAddress);
@@ -650,5 +647,29 @@ namespace NickScanCentralImagingPortal.API.Controllers
     }
 
     #endregion
+
+    internal static class ServiceApiKeyValidator
+    {
+        public static bool IsValid(IConfiguration configuration, string? providedKey)
+        {
+            var expectedKey = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")
+                ?? configuration["ServiceAuth:ApiKey"];
+
+            return FixedTimeEquals(expectedKey, providedKey);
+        }
+
+        private static bool FixedTimeEquals(string? expectedKey, string? providedKey)
+        {
+            if (string.IsNullOrEmpty(expectedKey) || string.IsNullOrEmpty(providedKey))
+            {
+                return false;
+            }
+
+            var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expectedKey));
+            var providedHash = SHA256.HashData(Encoding.UTF8.GetBytes(providedKey));
+
+            return CryptographicOperations.FixedTimeEquals(expectedHash, providedHash);
+        }
+    }
 }
 

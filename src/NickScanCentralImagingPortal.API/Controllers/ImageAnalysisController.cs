@@ -165,6 +165,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             var now = DateTime.UtcNow;
+            var requestAborted = HttpContext?.RequestAborted ?? CancellationToken.None;
 
             // Determine user role from claims or query parameter
             var userRole = role ?? "Analyst"; // Default to Analyst
@@ -331,9 +332,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 try
                 {
-                    var orphanedIds = string.Join(",", orphanedAssignments.Select(a => $"'{a.Id}'"));
-                    var expireSql = $"UPDATE AnalysisAssignments SET State = 'Expired', UpdatedAtUtc = now() AT TIME ZONE 'UTC' WHERE Id IN ({orphanedIds})";
-                    var released = await _db.Database.ExecuteSqlRawAsync(expireSql);
+                    var orphanedIds = orphanedAssignments.Select(a => a.Id).ToList();
+                    var updatedAtUtc = DateTime.UtcNow;
+                    var released = await _db.AnalysisAssignments
+                        .Where(a => orphanedIds.Contains(a.Id))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.State, "Expired")
+                            .SetProperty(a => a.UpdatedAtUtc, updatedAtUtc),
+                            requestAborted);
+
                     _logger.LogInformation("[GetMyAssignments] Auto-released {Count} orphaned assignments for user {Username} — capacity freed",
                         released, username);
                 }
@@ -351,18 +358,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             if (assignmentsToUpdate.Any())
             {
-                // ✅ PERFORMANCE FIX: Use parameterized SQL with table-valued parameter instead of string concatenation
-                // This is safer and potentially faster for large ID lists
+                // ✅ PERFORMANCE FIX: Batch parameterized updates; bind UTC values directly to timestamptz columns.
                 var assignmentIds = assignmentsToUpdate.Select(a => a.Id).ToList();
+                var lastAccessedAtUtc = DateTime.UtcNow;
                 const int updateBatchSize = 500;
 
                 // Batch the updates to avoid very long SQL statements
                 for (int i = 0; i < assignmentIds.Count; i += updateBatchSize)
                 {
-                    var batch = assignmentIds.Skip(i).Take(updateBatchSize);
-                    var batchIds = string.Join(",", batch);
-                    var updateSql = $"UPDATE AnalysisAssignments SET LastAccessedAtUtc = now() AT TIME ZONE 'UTC' WHERE Id IN ({batchIds})";
-                    await _db.Database.ExecuteSqlRawAsync(updateSql);
+                    var batch = assignmentIds.Skip(i).Take(updateBatchSize).ToList();
+                    await _db.AnalysisAssignments
+                        .Where(a => batch.Contains(a.Id))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.LastAccessedAtUtc, lastAccessedAtUtc),
+                            requestAborted);
                 }
 
                 _logger.LogDebug("[GetMyAssignments] Updated LastAccessedAtUtc for {Count} assignments for user {Username}",
@@ -879,18 +888,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
             if (groupIds.Count == 0) return;
             try
             {
-                using var scope = HttpContext.RequestServices.CreateScope();
+                using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var lastAccessedAtUtc = DateTime.UtcNow;
 
                 const int batchSize = 500;
                 for (int i = 0; i < groupIds.Count; i += batchSize)
                 {
                     var batch = groupIds.Skip(i).Take(batchSize).ToList();
-                    var placeholders = string.Join(",", batch.Select(g => $"'{g}'"));
-#pragma warning disable EF1002 // FromSqlRaw/ExecuteSqlRaw - username/role from User.Identity, GUIDs from our data
-                    var updateSql = $"UPDATE AnalysisAssignments SET LastAccessedAtUtc = now() AT TIME ZONE 'UTC' WHERE AssignedTo = '{username.Replace("'", "''")}' AND Role = '{userRole.Replace("'", "''")}' AND State = 'Active' AND GroupId IN ({placeholders})";
-                    await db.Database.ExecuteSqlRawAsync(updateSql);
-#pragma warning restore EF1002
+                    await db.AnalysisAssignments
+                        .Where(a => a.AssignedTo == username
+                            && a.Role == userRole
+                            && a.State == "Active"
+                            && batch.Contains(a.GroupId))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.LastAccessedAtUtc, lastAccessedAtUtc));
                 }
             }
             catch (Exception ex)

@@ -39,10 +39,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// </summary>
         private bool IsValidServiceApiKey(string? providedKey)
         {
-            var expected = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")
-                ?? _configuration["ServiceAuth:ApiKey"]
-                ?? string.Empty;
-            return !string.IsNullOrEmpty(expected) && providedKey == expected;
+            return ServiceApiKeyValidator.IsValid(_configuration, providedKey);
         }
 
         [HttpGet]

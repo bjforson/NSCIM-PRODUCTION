@@ -14,13 +14,20 @@ from datetime import datetime, timezone
 from uuid import UUID
 from typing import Optional
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import Response, FileResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from config import SERVICE_HOST, SERVICE_PORT
+from config import (
+    SERVICE_HOST,
+    SERVICE_PORT,
+    MAX_IMAGE_SIZE_MB,
+    ALLOW_IMAGE_URL_FETCHES,
+    ALLOWED_IMAGE_URL_HOSTS,
+)
 from models.database import (
     get_db, create_tables, ImageSplitJob, ImageSplitResult, ImageSplitAssignment
 )
@@ -184,6 +191,88 @@ from inspector.routes import router as inspector_router  # noqa: E402
 app.include_router(inspector_router)
 
 
+# -- Ingress validation -------------------------------------------------------
+
+MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _raise_image_too_large(source: str) -> None:
+    raise HTTPException(413, f"{source} exceeds maximum image size of {MAX_IMAGE_SIZE_MB} MB")
+
+
+def _enforce_image_size(image_data: bytes, source: str) -> None:
+    if len(image_data) > MAX_IMAGE_SIZE_BYTES:
+        _raise_image_too_large(source)
+
+
+def _estimate_base64_payload_size(b64_string: str) -> int:
+    payload = b64_string.split(",", 1)[1] if "," in b64_string else b64_string
+    payload = "".join(payload.split())
+    padding = payload.count("=")
+    return max(0, (len(payload) * 3) // 4 - padding)
+
+
+def _validate_image_url(image_url: str) -> None:
+    if not ALLOW_IMAGE_URL_FETCHES:
+        raise HTTPException(400, "image_url fetches are disabled; upload image data directly")
+
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "image_url must be an absolute http(s) URL")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "image_url must not include embedded credentials")
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    if ALLOWED_IMAGE_URL_HOSTS and hostname not in ALLOWED_IMAGE_URL_HOSTS:
+        raise HTTPException(400, "image_url host is not allowed")
+
+
+async def _fetch_image_url(image_url: str) -> bytes:
+    import httpx
+
+    _validate_image_url(image_url)
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            async with client.stream("GET", image_url) as resp:
+                resp.raise_for_status()
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > MAX_IMAGE_SIZE_BYTES:
+                            _raise_image_too_large("image_url response")
+                    except ValueError:
+                        pass
+
+                chunks = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_IMAGE_SIZE_BYTES:
+                        _raise_image_too_large("image_url response")
+                    chunks.append(chunk)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"image_url fetch failed with status {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "image_url fetch failed") from exc
+
+    return b"".join(chunks)
+
+
+async def _read_upload_with_limit(file: UploadFile) -> bytes:
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_IMAGE_SIZE_BYTES:
+            _raise_image_too_large("uploaded image")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # ── Background processing ─────────────────────────────────────────────
 
 async def process_job(job_id: UUID):
@@ -312,16 +401,15 @@ async def create_split_job(
     image_data = None
 
     if request.image_base64:
-        image_data = base64_to_bytes(request.image_base64)
+        if _estimate_base64_payload_size(request.image_base64) > MAX_IMAGE_SIZE_BYTES:
+            _raise_image_too_large("image_base64")
+        try:
+            image_data = base64_to_bytes(request.image_base64)
+        except Exception as exc:
+            raise HTTPException(400, "Invalid image_base64 payload") from exc
+        _enforce_image_size(image_data, "image_base64")
     elif request.image_url:
-        import httpx
-        # SECURITY: TLS validation is enforced. If a caller needs to fetch from an
-        # internal endpoint with a self-signed cert, it must be on the trust store —
-        # do NOT disable verification.
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(request.image_url)
-            resp.raise_for_status()
-            image_data = resp.content
+        image_data = await _fetch_image_url(request.image_url)
 
     if not image_data:
         raise HTTPException(400, "Either image_base64 or image_url must be provided")
@@ -362,7 +450,7 @@ async def create_split_job_upload(
     db: AsyncSession = Depends(get_db)
 ):
     """Submit a split job with direct file upload."""
-    image_data = await file.read()
+    image_data = await _read_upload_with_limit(file)
     w, h = get_image_dimensions(image_data)
 
     job = ImageSplitJob(

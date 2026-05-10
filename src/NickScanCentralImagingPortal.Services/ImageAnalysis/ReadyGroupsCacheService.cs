@@ -374,12 +374,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         }
 
         /// <summary>
-        /// Invalidate cache for a specific role and status
-        /// Call this when groups are updated to ensure fresh data
+        /// Sync-compatible wrapper that schedules cache invalidation for a specific role and status.
+        /// Prefer InvalidateCacheAsync from async code when the caller must wait for completion.
         /// </summary>
         public void InvalidateCache(string roleName, string status)
         {
-            InvalidateCacheAsync(roleName, status).GetAwaiter().GetResult();
+            _ = InvalidateCacheBestEffortAsync(roleName, status);
         }
 
         /// <summary>
@@ -397,13 +397,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             }
         }
 
+        private async Task InvalidateCacheBestEffortAsync(string roleName, string status)
+        {
+            try
+            {
+                await InvalidateCacheAsync(roleName, status);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[CACHE-INVALIDATE] Background cache invalidation failed for {Role} with status {Status}", roleName, status);
+            }
+        }
+
         /// <summary>
-        /// Invalidate all ready groups caches
-        /// Uses RemoveByPrefixAsync when supported (Redis); otherwise cache entries expire naturally
+        /// Sync-compatible wrapper that schedules invalidation of all ready groups caches.
+        /// Prefer InvalidateAllCachesAsync from async code when the caller must wait for completion.
         /// </summary>
         public void InvalidateAllCaches()
         {
-            InvalidateAllCachesAsync().GetAwaiter().GetResult();
+            _ = InvalidateAllCachesBestEffortAsync();
         }
 
         /// <summary>
@@ -417,6 +429,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             {
                 await cache.RemoveByPrefixAsync(CacheKeyPrefix, cancellationToken);
                 _logger.LogDebug("[CACHE-INVALIDATE] Invalidated all ready groups caches");
+            }
+        }
+
+        private async Task InvalidateAllCachesBestEffortAsync()
+        {
+            try
+            {
+                await InvalidateAllCachesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[CACHE-INVALIDATE] Background cache invalidation failed for all ready groups caches");
             }
         }
 

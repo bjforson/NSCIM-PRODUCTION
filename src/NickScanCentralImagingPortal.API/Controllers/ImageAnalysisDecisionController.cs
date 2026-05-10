@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
 using NickScanCentralImagingPortal.API.Authorization;
 using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Entities;
@@ -194,7 +195,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 await AnalysisGroupStateMachine.TransitionAsync(
                     _context, group, AnalysisStatuses.AnalystCompleted,
                     triggerName: "WorkflowStagePromotionAllContainersDecided",
-                    actor: User?.Identity?.Name ?? "anonymous",
+                    actor: GetAuthenticatedActor(),
                     reason: $"All containers for group {groupIdentifier} have decisions and have moved past ImageAnalysis stage.",
                     correlationId: HttpContext?.TraceIdentifier);
                 group.UpdatedAtUtc = DateTime.UtcNow;
@@ -352,7 +353,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private string? GetAuthenticatedUsername()
         {
             return User?.Identity?.Name
-                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "username", StringComparison.OrdinalIgnoreCase))?.Value;
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "username", StringComparison.OrdinalIgnoreCase))?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "preferred_username", StringComparison.OrdinalIgnoreCase))?.Value;
+        }
+
+        private string GetAuthenticatedActor()
+        {
+            var actor = GetAuthenticatedUsername()
+                ?? User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "sub", StringComparison.OrdinalIgnoreCase))?.Value;
+
+            return Truncate(string.IsNullOrWhiteSpace(actor) ? "System" : actor.Trim(), 100);
         }
 
         private bool HasPermissionClaim(params string[] permissionNames)
@@ -390,7 +402,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     Permissions.ControllersImageAnalysisDecisionAudit);
         }
 
-        private async Task<ActionResult<object>?> ValidateSaveDecisionAssignmentOwnershipAsync(AnalysisGroup? group)
+        private async Task<ActionResult<object>?> ValidateDecisionAssignmentOwnershipAsync(AnalysisGroup? group, string operationName)
         {
             if (group == null)
                 return null;
@@ -418,7 +430,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 return null;
 
             _logger.LogWarning(
-                "SaveDecision denied for user {User}: group {GroupIdentifier} is actively assigned to {AssignedUsers}",
+                "{Operation} denied for user {User}: group {GroupIdentifier} is actively assigned to {AssignedUsers}",
+                operationName,
                 username ?? "(unknown)",
                 group.GroupIdentifier,
                 string.Join(", ", activeAssignments.Select(a => a.AssignedTo).Distinct()));
@@ -926,6 +939,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Save or update suspicious area rectangles only (does not change WorkflowStage)
         /// </summary>
         [HttpPost("rectangles")]
+        [HasPermission(Permissions.ImagesAnnotate)]
         public async Task<ActionResult<object>> SaveRectangles([FromBody] RectangleSaveRequest request)
         {
             try
@@ -935,9 +949,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return BadRequest(new { success = false, error = "ContainerNumber and ScannerType are required" });
                 }
 
+                var actor = GetAuthenticatedActor();
                 var decision = await _context.ImageAnalysisDecisions
                     .AsTracking()
                     .FirstOrDefaultAsync(d => d.ContainerNumber == request.ContainerNumber && d.ScannerType == request.ScannerType);
+
+                var rectangleGroupIdentifier = string.IsNullOrWhiteSpace(request.GroupIdentifier)
+                    ? decision?.GroupIdentifier
+                    : request.GroupIdentifier;
+                var rectangleGroup = await ResolveAnalysisGroupForDecisionAsync(rectangleGroupIdentifier, request.ScannerType);
+                if (rectangleGroup == null)
+                {
+                    var record = await _context.AnalysisRecords
+                        .AsNoTracking()
+                        .Where(r => r.ContainerNumber == request.ContainerNumber
+                            && (r.ScannerType == request.ScannerType || string.IsNullOrEmpty(r.ScannerType)))
+                        .OrderByDescending(r => r.CreatedAtUtc)
+                        .FirstOrDefaultAsync();
+
+                    if (record != null)
+                    {
+                        rectangleGroup = await _context.AnalysisGroups
+                            .AsTracking()
+                            .FirstOrDefaultAsync(g => g.Id == record.GroupId);
+                    }
+                }
+
+                var ownershipFailure = await ValidateDecisionAssignmentOwnershipAsync(rectangleGroup, nameof(SaveRectangles));
+                if (ownershipFailure != null)
+                {
+                    return ownershipFailure;
+                }
 
                 _logger.LogInformation("[SaveRectangles] Container={Container}, Scanner={Scanner}, Existing={Exists}, AreasLength={Length}",
                     request.ContainerNumber, request.ScannerType, decision != null, request.SuspiciousAreas?.Length ?? 0);
@@ -956,7 +998,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p0", request.ContainerNumber),
                         new NpgsqlParameter("@p1", request.ScannerType),
                         new NpgsqlParameter("@p2", (object?)request.SuspiciousAreas ?? DBNull.Value),
-                        new NpgsqlParameter("@p3", request.ReviewedBy ?? "System"),
+                        new NpgsqlParameter("@p3", actor),
                         new NpgsqlParameter("@p4", DateTime.UtcNow),
                         new NpgsqlParameter("@p5", (object?)request.GroupIdentifier ?? DBNull.Value),
                         new NpgsqlParameter("@p6", request.IsConsolidated)
@@ -965,8 +1007,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
                 else
                 {
+                    var nowUtc = DateTime.UtcNow;
                     decision.SuspiciousAreas = request.SuspiciousAreas;
-                    decision.UpdatedAt = DateTime.UtcNow;
+                    decision.ReviewedBy = actor;
+                    decision.ReviewedAt = nowUtc;
+                    decision.UpdatedAt = nowUtc;
                     await _context.SaveChangesAsync();
                     _logger.LogInformation("[SaveRectangles] UPDATED existing decision for {Container}, SuspiciousAreas={Areas}",
                         request.ContainerNumber, request.SuspiciousAreas?.Substring(0, Math.Min(100, request.SuspiciousAreas?.Length ?? 0)));
@@ -1204,7 +1249,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 request.Comments = Truncate((request.Comments ?? string.Empty).Trim(), 500);
                 request.Tags = Truncate((request.Tags ?? string.Empty).Trim(), 500);
                 request.GroupIdentifier = Truncate((request.GroupIdentifier ?? string.Empty).Trim(), 100);
-                request.ReviewedBy = Truncate((request.ReviewedBy ?? "System").Trim(), 100);
+                request.ReviewedBy = GetAuthenticatedActor();
 
                 // ✅ BULLETPROOF FIX: Validate and normalize decision value
                 // Normalize to proper case and validate it's a valid decision
@@ -1341,7 +1386,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     analysisGroup = await ResolveAnalysisGroupForDecisionAsync(resolvedGroupIdentifier, request.ScannerType);
                 }
 
-                var ownershipFailure = await ValidateSaveDecisionAssignmentOwnershipAsync(analysisGroup);
+                var ownershipFailure = await ValidateDecisionAssignmentOwnershipAsync(analysisGroup, nameof(SaveDecision));
                 if (ownershipFailure != null)
                 {
                     return ownershipFailure;
@@ -1985,7 +2030,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     await AnalysisGroupStateMachine.TransitionAsync(
                                         _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
                                         triggerName: "AutoProgressionAllContainersImageless",
-                                        actor: User?.Identity?.Name ?? "anonymous",
+                                        actor: request.ReviewedBy,
                                         reason: $"All {containersWithoutImages.Count} containers in group {resolvedGroupIdentifier} have no images - marked PartiallyCompleted.",
                                         correlationId: HttpContext?.TraceIdentifier);
                                     analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -2124,7 +2169,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 await AnalysisGroupStateMachine.TransitionAsync(
                                     _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
                                     triggerName: "AutoProgressionMixedImageContainers",
-                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    actor: request.ReviewedBy,
                                     reason: $"All {containersWithImages.Count} containers with images decided; {containersWithoutImages.Count} have no images - marked PartiallyCompleted.",
                                     correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -2212,7 +2257,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 await AnalysisGroupStateMachine.TransitionAsync(
                                     _context, analysisGroup, AnalysisStatuses.AnalystCompleted,
                                     triggerName: "AnalystSubmittedAllContainerDecisions",
-                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    actor: request.ReviewedBy,
                                     reason: $"All {containersWithImages.Count} containers with images in group {resolvedGroupIdentifier} now have decisions.",
                                     correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -2545,6 +2590,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Delete a decision
         /// </summary>
         [HttpDelete("{id}")]
+        [HasPermission(Permissions.ControllersImageAnalysisManagementSettings)]
         public async Task<IActionResult> DeleteDecision(int id)
         {
             try

@@ -20,7 +20,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
     ///
     /// What this supervisor does:
     /// 1. After a short startup delay (let NSCIM_API get healthy first), launches
-    ///    <c>python.exe -m uvicorn main:app --host 0.0.0.0 --port 5320</c> from the
+    ///    <c>python.exe -m uvicorn main:app --host 127.0.0.1 --port 5320</c> from the
     ///    image-splitter working directory using its venv.
     /// 2. Streams child stdout/stderr into NSCIM_API's Serilog pipeline so all
     ///    splitter logs flow into <c>Data\Logs\nickscan-*.txt</c> — no separate
@@ -44,6 +44,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
     ///     <c>&lt;WorkingDirectory&gt;\venv\Scripts\python.exe</c>.</item>
     ///   <item><c>WorkingDirectory</c> (string) — default
     ///     <c>C:\Shared\NSCIM_PRODUCTION\services\image-splitter</c>.</item>
+    ///   <item><c>Host</c> (string, default <c>127.0.0.1</c>) - passed to uvicorn.</item>
     ///   <item><c>Port</c> (int, default <c>5320</c>) — passed to uvicorn.</item>
     ///   <item><c>StartupDelaySeconds</c> (int, default <c>10</c>).</item>
     ///   <item><c>HealthCheckIntervalSeconds</c> (int, default <c>60</c>).</item>
@@ -66,6 +67,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
         private readonly bool _enabled;
         private readonly string _pythonExe;
         private readonly string _workingDir;
+        private readonly string _host;
         private readonly int _port;
         private readonly TimeSpan _startupDelay;
         private readonly TimeSpan _healthCheckInterval;
@@ -90,6 +92,12 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
 
             var defaultPython = Path.Combine(_workingDir, "venv", "Scripts", "python.exe");
             _pythonExe = configuration.GetValue<string>("ImageSplitter:Supervisor:PythonExecutable", defaultPython) ?? defaultPython;
+
+            _host = (configuration.GetValue<string>("ImageSplitter:Supervisor:Host", "127.0.0.1") ?? "127.0.0.1").Trim();
+            if (string.IsNullOrWhiteSpace(_host))
+            {
+                _host = "127.0.0.1";
+            }
 
             _port = configuration.GetValue("ImageSplitter:Supervisor:Port", 5320);
             _startupDelay = TimeSpan.FromSeconds(Math.Max(0, configuration.GetValue("ImageSplitter:Supervisor:StartupDelaySeconds", 10)));
@@ -121,8 +129,8 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             }
 
             _logger.LogInformation(
-                "[SPLITTER-SUPERVISOR] Starting. Python={PythonExe}, WorkDir={WorkDir}, Port={Port}, StartupDelay={Delay}",
-                _pythonExe, _workingDir, _port, _startupDelay);
+                "[SPLITTER-SUPERVISOR] Starting. Python={PythonExe}, WorkDir={WorkDir}, Host={Host}, Port={Port}, StartupDelay={Delay}",
+                _pythonExe, _workingDir, _host, _port, _startupDelay);
 
             try { await Task.Delay(_startupDelay, stoppingToken); }
             catch (TaskCanceledException) { return; }
@@ -182,7 +190,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             psi.ArgumentList.Add("uvicorn");
             psi.ArgumentList.Add("main:app");
             psi.ArgumentList.Add("--host");
-            psi.ArgumentList.Add("0.0.0.0");
+            psi.ArgumentList.Add(_host);
             psi.ArgumentList.Add("--port");
             psi.ArgumentList.Add(_port.ToString());
 

@@ -833,18 +833,14 @@
             Console.WriteLine("🔍 [ImageAnalysis] LoadData START");
             Logger?.LogInformation("🔍 [ImageAnalysis] LoadData START - Loading image analysis data...");
 
-            // 2026-05-09 (Phase B / B7 UX): parallelize settings + my-assignments + (optional)
-            // available-groups via Task.WhenAll. ~max(call) total instead of ~sum(call).
-            // Eager-fire available-groups even in Manual mode and discard if not needed —
-            // the extra GET is dwarfed by the sequential round-trip saved in UserClaim mode.
+            // Keep settings + my-assignments parallel, then gate the available-groups
+            // request on the resolved assignment mode. /available is only valid in
+            // UserClaim mode, so avoid creating a guaranteed 400 in Manual/Auto.
             var roleQuery = Uri.EscapeDataString(_userRole);
             var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
             var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>($"/api/image-analysis/my-assignments?role={roleQuery}");
-            // /available returns 400 outside UserClaim mode by design — wrap it so its
-            // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
-            var availableTask = TryGetAvailableAsync($"/api/image-analysis/available?role={roleQuery}");
-            await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
-            var settings = settingsTask.Result;
+
+            var settings = await settingsTask;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
             if (settings != null)
             {
@@ -864,8 +860,19 @@
                 Logger?.LogWarning("Could not load analysis settings");
             }
 
-            // 2026-05-09 (Phase B / B7 UX): assignments + available results consumed
-            // from the parallel WhenAll fired at the top of LoadData.
+            Task<List<MyAssignmentDto>?>? availableTask = null;
+            if (_assignmentMode == "UserClaim")
+            {
+                // /available can still fail if the mode changes between calls; keep
+                // it isolated so assignment loading continues.
+                availableTask = TryGetAvailableAsync($"/api/image-analysis/available?role={roleQuery}");
+                await Task.WhenAll(assignmentsTask, availableTask);
+            }
+            else
+            {
+                await assignmentsTask;
+            }
+
             var assignments = assignmentsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Assignments loaded: {assignments?.Count ?? 0} items");
             if (assignments != null && assignments.Any())
@@ -887,7 +894,7 @@
 
             if (_assignmentMode == "UserClaim")
             {
-                var available = availableTask.Result;
+                var available = availableTask?.Result;
                 _availableGroups = available ?? new();
                 Logger?.LogInformation("Loaded {Count} available groups", _availableGroups.Count);
             }
@@ -916,8 +923,8 @@
         }
     }
 
-    // /available returns 400 outside UserClaim mode by design. Decouple its fault
-    // from Task.WhenAll so the mode-aware guard above can drop the result quietly.
+    // /available can fail if assignment mode changes during refresh. Decouple its
+    // fault from Task.WhenAll so the rest of the workbench can still render.
     private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
     {
         try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }

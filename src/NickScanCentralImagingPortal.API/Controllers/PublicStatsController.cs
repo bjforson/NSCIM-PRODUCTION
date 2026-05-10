@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -35,7 +36,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
     public class PublicStatsController : ControllerBase
     {
         private const string CacheKey = "public.system-stats.v1";
+        private const string SnapshotCacheKey = "public.system-stats.snapshot.v1";
+        private const int SlowMetricWarningThresholdMs = 500;
         private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan SnapshotCacheTtl = TimeSpan.FromMinutes(5);
+        private static readonly SemaphoreSlim BuildLock = new(1, 1);
 
         // Captured once at controller-type load — used for the "uptime" metric.
         // Process.GetCurrentProcess().StartTime also works but is marginally
@@ -69,22 +74,98 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [ProducesResponseType(200, Type = typeof(PublicSystemStats))]
         public async Task<ActionResult<PublicSystemStats>> Get()
         {
-            if (_cache.TryGetValue(CacheKey, out PublicSystemStats? cached) && cached != null)
+            if (TryGetStats(CacheKey, out var cached))
             {
+                Response.Headers["X-Public-Stats-Cache"] = "HIT";
                 return Ok(cached);
             }
 
-            var stats = await BuildStatsAsync();
-            _cache.Set(CacheKey, stats, new MemoryCacheEntryOptions
+            var lockHeld = await BuildLock.WaitAsync(0);
+            if (!lockHeld)
             {
-                AbsoluteExpirationRelativeToNow = CacheTtl,
-                Priority = CacheItemPriority.Low,
+                if (TryGetStats(SnapshotCacheKey, out var snapshot))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "STALE";
+                    _logger.LogDebug("[public-stats] serving stale snapshot while refresh is already running");
+                    return Ok(snapshot);
+                }
+
+                var waitStopwatch = Stopwatch.StartNew();
+                await BuildLock.WaitAsync();
+                waitStopwatch.Stop();
+                lockHeld = true;
+                LogMetricTiming("CacheBuildLockWait", waitStopwatch.ElapsedMilliseconds);
+            }
+
+            try
+            {
+                if (TryGetStats(CacheKey, out var cachedAfterWait))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "HIT-AFTER-WAIT";
+                    return Ok(cachedAfterWait);
+                }
+
+                var stats = await BuildTimedStatsAsync();
+                CacheStats(stats);
+                Response.Headers["X-Public-Stats-Cache"] = "MISS";
+                return Ok(stats);
+            }
+            catch (Exception ex)
+            {
+                if (TryGetStats(SnapshotCacheKey, out var snapshot))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "STALE-ERROR";
+                    _logger.LogWarning(ex, "[public-stats] refresh failed; serving stale snapshot");
+                    return Ok(snapshot);
+                }
+
+                throw;
+            }
+            finally
+            {
+                if (lockHeld)
+                {
+                    BuildLock.Release();
+                }
+            }
+        }
+
+        private async Task<PublicSystemStats> BuildTimedStatsAsync()
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                return await BuildStatsAsync();
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming("BuildStats", stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private bool TryGetStats(string cacheKey, out PublicSystemStats? stats)
+        {
+            return _cache.TryGetValue(cacheKey, out stats) && stats != null;
+        }
+
+        private void CacheStats(PublicSystemStats stats)
+        {
+            _cache.Set(CacheKey, stats, CreateCacheOptions(CacheTtl, CacheItemPriority.Low));
+            _cache.Set(SnapshotCacheKey, stats, CreateCacheOptions(SnapshotCacheTtl, CacheItemPriority.Normal));
+        }
+
+        private static MemoryCacheEntryOptions CreateCacheOptions(TimeSpan ttl, CacheItemPriority priority)
+        {
+            return new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = ttl,
+                Priority = priority,
                 // The app's MemoryCache is configured with SizeLimit = 1000 in
                 // Program.cs; every entry must declare its relative size. One
-                // slot is appropriate — this cache holds a single compact DTO.
+                // slot is appropriate - this cache holds a single compact DTO.
                 Size = 1,
-            });
-            return Ok(stats);
+            };
         }
 
         private async Task<PublicSystemStats> BuildStatsAsync()
@@ -213,6 +294,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 });
 
             // ── Tier 3: system health ───────────────────────────────────
+            var scannerStatusStopwatch = Stopwatch.StartNew();
             try
             {
                 if (_dashboard != null)
@@ -230,6 +312,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogDebug(ex, "[public-stats] scanner status lookup failed — using defaults");
             }
+            finally
+            {
+                scannerStatusStopwatch.Stop();
+                LogMetricTiming("ScannerStatus", scannerStatusStopwatch.ElapsedMilliseconds);
+            }
             if (stats.ScannersTotal == 0)
             {
                 // Safe static default: three scanner families we know exist.
@@ -242,6 +329,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 () => _db.Users.CountAsync(u =>
                     u.LastLoginAt != null && u.LastLoginAt >= fifteenMinAgo));
 
+            var healthStopwatch = Stopwatch.StartNew();
             try
             {
                 var health = await _orchestrator.GetSystemHealthAsync();
@@ -254,6 +342,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // the orchestrator is under load — default optimistic.
                 stats.SystemsOperational = true;
             }
+            finally
+            {
+                healthStopwatch.Stop();
+                LogMetricTiming("SystemHealth", healthStopwatch.ElapsedMilliseconds);
+            }
 
             return stats;
         }
@@ -263,32 +356,61 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         private async Task<int> SafeCountAsync(string metric, Func<Task<int>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to 0", metric);
                 return 0;
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
             }
         }
 
         private async Task<double> SafePercentAsync(string metric, Func<Task<double>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to 0", metric);
                 return 0;
             }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
+            }
         }
 
         private async Task<double> SafeValueAsync(string metric, double fallback, Func<Task<double>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to {Fallback}", metric, fallback);
                 return fallback;
             }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private void LogMetricTiming(string metric, long elapsedMs)
+        {
+            if (elapsedMs >= SlowMetricWarningThresholdMs)
+            {
+                _logger.LogWarning("[public-stats] metric {Metric} took {ElapsedMs} ms", metric, elapsedMs);
+                return;
+            }
+
+            _logger.LogDebug("[public-stats] metric {Metric} took {ElapsedMs} ms", metric, elapsedMs);
         }
     }
 
