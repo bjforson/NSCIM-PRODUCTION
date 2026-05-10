@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
@@ -24,6 +25,10 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private readonly ILogger _logger;
         private readonly ReadyGroupsCacheService? _queueService;
 
+        [ActivatorUtilitiesConstructor]
+        public DecisionSideEffectsService(ILogger<DecisionSideEffectsService> logger, ReadyGroupsCacheService queueService)
+            : this((ILogger)logger, queueService) { }
+
         public DecisionSideEffectsService(ILogger<DecisionSideEffectsService> logger) : this((ILogger)logger, null) { }
 
         public DecisionSideEffectsService(ILogger logger) : this(logger, null) { }
@@ -32,6 +37,71 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         {
             _logger = logger;
             _queueService = queueService;
+        }
+
+        private static string? BaseScannerType(string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return null;
+
+            var trimmed = scannerType.Trim();
+            var dashIndex = trimmed.IndexOf('-');
+            return dashIndex > 0 ? trimmed.Substring(0, dashIndex) : trimmed;
+        }
+
+        private static bool ScannerMatches(string? candidate, string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return true;
+
+            if (string.IsNullOrWhiteSpace(candidate))
+                return true;
+
+            var candidateTrimmed = candidate.Trim();
+            var requestedTrimmed = requested.Trim();
+            var requestedBase = BaseScannerType(requestedTrimmed);
+
+            return string.Equals(candidateTrimmed, requestedTrimmed, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(requestedBase) &&
+                    (string.Equals(candidateTrimmed, requestedBase, StringComparison.OrdinalIgnoreCase)
+                     || candidateTrimmed.StartsWith(requestedBase + "-", StringComparison.OrdinalIgnoreCase)))
+                || requestedTrimmed.StartsWith(candidateTrimmed + "-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IQueryable<ContainerCompletenessStatus> ApplyScannerFilter(
+            IQueryable<ContainerCompletenessStatus> query,
+            string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return query;
+
+            var scannerBase = BaseScannerType(scannerType) ?? scannerType;
+            return query.Where(c =>
+                c.ScannerType == scannerType
+                || c.ScannerType == scannerBase
+                || c.ScannerType.StartsWith(scannerBase + "-"));
+        }
+
+        private static IQueryable<ImageAnalysisDecision> ApplyScannerFilter(
+            IQueryable<ImageAnalysisDecision> query,
+            string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return query;
+
+            var scannerBase = BaseScannerType(scannerType) ?? scannerType;
+            return query.Where(d =>
+                d.ScannerType == scannerType
+                || d.ScannerType == scannerBase
+                || d.ScannerType.StartsWith(scannerBase + "-"));
+        }
+
+        private static AnalysisGroup? ChooseGroupForScanner(IEnumerable<AnalysisGroup> candidates, string? scannerType)
+        {
+            return candidates
+                .OrderByDescending(g => ScannerMatches(g.ScannerType, scannerType))
+                .ThenByDescending(g => !string.IsNullOrWhiteSpace(g.ScannerType))
+                .FirstOrDefault();
         }
 
         /// <summary>
@@ -50,21 +120,45 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             try
             {
+                var normalizedGroupId = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+
                 // 0. Load group early — needed for decision guard and later steps
-                var group = await db.AnalysisGroups
+                var groupCandidates = await db.AnalysisGroups
                     .AsTracking()
-                    .FirstOrDefaultAsync(g => g.GroupIdentifier == groupIdentifier
-                        || g.NormalizedGroupIdentifier == groupIdentifier, ct);
+                    .Where(g => g.GroupIdentifier == groupIdentifier
+                        || g.NormalizedGroupIdentifier == groupIdentifier
+                        || g.GroupIdentifier == normalizedGroupId
+                        || g.NormalizedGroupIdentifier == normalizedGroupId)
+                    .ToListAsync(ct);
+
+                var group = ChooseGroupForScanner(groupCandidates, scannerType);
 
                 if (group == null)
                     return;
 
+                var effectiveScannerType = scannerType ?? group.ScannerType;
+                if (!ScannerMatches(group.ScannerType, effectiveScannerType))
+                {
+                    _logger.LogWarning("[DECISION-FX] Group {Group} scanner {GroupScanner} does not match decision scanner {DecisionScanner}; skipping side effects",
+                        groupIdentifier, group.ScannerType ?? "(none)", scannerType ?? "(none)");
+                    return;
+                }
+
+                var decisionGroupIdentifiers = new[] { groupIdentifier, normalizedGroupId, group.GroupIdentifier, group.NormalizedGroupIdentifier }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
                 // GUARD: Verify a real ImageAnalysisDecision exists before flipping to "Decided".
                 // Prevents the self-healing sweep from auto-deciding containers that were never reviewed.
-                var hasDecision = await db.ImageAnalysisDecisions
-                    .AnyAsync(d => d.ContainerNumber == containerNumber
-                        && (d.GroupIdentifier == groupIdentifier
-                            || d.GroupIdentifier == group.NormalizedGroupIdentifier), ct);
+                var hasDecision = await ApplyScannerFilter(
+                    db.ImageAnalysisDecisions
+                        .Where(d => d.ContainerNumber == containerNumber
+                            && (d.Decision == "Normal" || d.Decision == "Abnormal")
+                            && d.GroupIdentifier != null
+                            && decisionGroupIdentifiers.Contains(d.GroupIdentifier)),
+                    effectiveScannerType)
+                    .AnyAsync(ct);
 
                 if (!hasDecision)
                 {
@@ -76,8 +170,17 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 // 1. Update AnalysisRecord.Status to Decided
                 var records = await db.AnalysisRecords
                     .AsTracking()
-                    .Where(r => r.ContainerNumber == containerNumber && r.Status == "Ready")
+                    .Where(r => r.GroupId == group.Id
+                        && r.ContainerNumber == containerNumber
+                        && r.Status == "Ready")
                     .ToListAsync(ct);
+
+                if (!string.IsNullOrWhiteSpace(effectiveScannerType))
+                {
+                    records = records
+                        .Where(r => ScannerMatches(r.ScannerType, effectiveScannerType))
+                        .ToList();
+                }
 
                 if (records.Any())
                 {
@@ -136,6 +239,13 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             .Where(e => e.RecordId == recordId
                                      && e.ContainerNumber == containerNumber)
                             .ToListAsync(ct);
+
+                        if (!string.IsNullOrWhiteSpace(effectiveScannerType))
+                        {
+                            expectedRows = expectedRows
+                                .Where(e => ScannerMatches(e.ScannerType, effectiveScannerType))
+                                .ToList();
+                        }
                         var nowUtc = DateTime.UtcNow;
                         foreach (var row in expectedRows)
                         {
@@ -255,11 +365,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 // 5. Update WorkflowStage on completeness records
                 // When the group just completed, advance ALL containers (not just the triggering one)
                 // to prevent WorkflowStage desync where some containers stay at "ImageAnalysis".
-                var normalizedGroupId = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
                 IQueryable<ContainerCompletenessStatus> completenessQuery = db.ContainerCompletenessStatuses
                     .AsTracking()
                     .Where(c => c.GroupIdentifier == normalizedGroupId
                         && c.WorkflowStage == "ImageAnalysis");
+
+                completenessQuery = ApplyScannerFilter(completenessQuery, effectiveScannerType);
 
                 if (!groupJustCompleted)
                     completenessQuery = completenessQuery.Where(c => c.ContainerNumber == containerNumber);
@@ -299,22 +410,36 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             if (string.IsNullOrWhiteSpace(groupIdentifier))
                 return;
 
-            var group = await db.AnalysisGroups
+            var normalizedGroupId = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+            var groupCandidates = await db.AnalysisGroups
                 .AsTracking()
-                .FirstOrDefaultAsync(g => g.GroupIdentifier == groupIdentifier
-                    || g.NormalizedGroupIdentifier == groupIdentifier, ct);
+                .Where(g => g.GroupIdentifier == groupIdentifier
+                    || g.NormalizedGroupIdentifier == groupIdentifier
+                    || g.GroupIdentifier == normalizedGroupId
+                    || g.NormalizedGroupIdentifier == normalizedGroupId)
+                .ToListAsync(ct);
+
+            var group = ChooseGroupForScanner(groupCandidates, scannerType);
 
             if (group == null)
                 return;
 
+            var effectiveScannerType = scannerType ?? group.ScannerType;
             var records = await db.AnalysisRecords
                 .AsTracking()
                 .Where(r => r.GroupId == group.Id)
                 .ToListAsync(ct);
 
+            if (!string.IsNullOrWhiteSpace(effectiveScannerType))
+            {
+                records = records
+                    .Where(r => ScannerMatches(r.ScannerType, effectiveScannerType))
+                    .ToList();
+            }
+
             foreach (var container in records.Select(r => r.ContainerNumber).Distinct())
             {
-                await ApplyAsync(db, container, groupIdentifier, scannerType, ct);
+                await ApplyAsync(db, container, groupIdentifier, effectiveScannerType, ct);
             }
         }
     }

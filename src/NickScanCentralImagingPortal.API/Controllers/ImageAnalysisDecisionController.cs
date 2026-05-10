@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using NickScanCentralImagingPortal.API.Authorization;
+using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
@@ -30,6 +32,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IMemoryCache? _memoryCache;
         private readonly IAiWorkflowLineageService _aiLineage;
         private readonly IManifestSnapshotService _manifestSnapshot;
+        private readonly DecisionSideEffectsService _decisionSideEffects;
         // v2.9.6: used to tag each typed ContainerAnnotation row with the
         // dimensions of the image it was drawn against, so CocoExport /
         // future scalers can map fractional coords back to real pixels on
@@ -47,6 +50,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IAiWorkflowLineageService aiLineage,
             IManifestSnapshotService manifestSnapshot,
             IImageProcessingService imageProcessingService,
+            DecisionSideEffectsService decisionSideEffects,
             ReadyGroupsCacheService? readyGroupsCache = null,
             IMemoryCache? memoryCache = null)
         {
@@ -56,6 +60,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _aiLineage = aiLineage;
             _manifestSnapshot = manifestSnapshot;
             _imageProcessingService = imageProcessingService;
+            _decisionSideEffects = decisionSideEffects;
             _readyGroupsCache = readyGroupsCache;
             _memoryCache = memoryCache;
         }
@@ -79,17 +84,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// but in a focused, per-group fashion, so that recently completed groups flow
         /// cleanly into the audit queue without waiting for background maintenance.
         /// </summary>
-        private async Task EnsureGroupStatusFromWorkflowStageAsync(string groupIdentifier)
+        private async Task EnsureGroupStatusFromWorkflowStageAsync(string groupIdentifier, string? scannerType = null)
         {
             if (string.IsNullOrWhiteSpace(groupIdentifier))
                 return;
 
             try
             {
-                // ✅ CRITICAL: Load with tracking to ensure changes persist
-                var group = await _context.AnalysisGroups
-                    .AsTracking()
-                    .FirstOrDefaultAsync(g => g.GroupIdentifier == groupIdentifier);
+                var group = await ResolveAnalysisGroupForDecisionAsync(groupIdentifier, scannerType);
 
                 if (group == null)
                     return;
@@ -102,8 +104,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 // Get all containers for this group from completeness table
-                var containers = await _context.ContainerCompletenessStatuses
-                    .Where(c => c.GroupIdentifier == groupIdentifier)
+                var normalizedGroupIdentifier = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+                var groupScannerType = group.ScannerType ?? scannerType;
+
+                var containersQuery = _context.ContainerCompletenessStatuses
+                    .Where(c => c.GroupIdentifier == normalizedGroupIdentifier);
+
+                if (!string.IsNullOrWhiteSpace(groupScannerType))
+                {
+                    var scannerBase = BaseScannerType(groupScannerType) ?? groupScannerType;
+                    containersQuery = containersQuery.Where(c =>
+                        c.ScannerType == groupScannerType
+                        || c.ScannerType == scannerBase
+                        || c.ScannerType.StartsWith(scannerBase + "-"));
+                }
+
+                var containers = await containersQuery
                     .Select(c => new { c.ContainerNumber, c.WorkflowStage })
                     .ToListAsync();
 
@@ -126,9 +142,26 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .Distinct()
                     .ToList();
 
-                var decidedContainers = await _context.ImageAnalysisDecisions
-                    .Where(d => d.GroupIdentifier == groupIdentifier &&
-                                (d.Decision == "Normal" || d.Decision == "Abnormal"))
+                var decisionGroupIdentifiers = new[] { groupIdentifier, normalizedGroupIdentifier, group.GroupIdentifier, group.NormalizedGroupIdentifier }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var decisionsQuery = _context.ImageAnalysisDecisions
+                    .Where(d => d.GroupIdentifier != null
+                        && decisionGroupIdentifiers.Contains(d.GroupIdentifier)
+                        && (d.Decision == "Normal" || d.Decision == "Abnormal"));
+
+                if (!string.IsNullOrWhiteSpace(groupScannerType))
+                {
+                    var scannerBase = BaseScannerType(groupScannerType) ?? groupScannerType;
+                    decisionsQuery = decisionsQuery.Where(d =>
+                        d.ScannerType == groupScannerType
+                        || d.ScannerType == scannerBase
+                        || d.ScannerType.StartsWith(scannerBase + "-"));
+                }
+
+                var decidedContainers = await decisionsQuery
                     .Select(d => d.ContainerNumber)
                     .Distinct()
                     .ToListAsync();
@@ -153,6 +186,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     assignment.State = "Released";
                     assignment.UpdatedAtUtc = DateTime.UtcNow;
                 }
+
+                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
 
                 // Sprint 5G2 / B1: route through the state-machine facade. Both Ready and AnalystAssigned
                 // are legal predecessors to AnalystCompleted in the validator table.
@@ -190,6 +225,227 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             if (string.IsNullOrEmpty(value)) return value;
             return value.Length <= maxLen ? value : value.Substring(0, maxLen);
+        }
+
+        private static string? BaseScannerType(string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return null;
+
+            var trimmed = scannerType.Trim();
+            var dashIndex = trimmed.IndexOf('-');
+            return dashIndex > 0 ? trimmed.Substring(0, dashIndex) : trimmed;
+        }
+
+        private static bool ScannerMatches(string? candidate, string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return true;
+
+            if (string.IsNullOrWhiteSpace(candidate))
+                return true;
+
+            var candidateTrimmed = candidate.Trim();
+            var requestedTrimmed = requested.Trim();
+            var requestedBase = BaseScannerType(requestedTrimmed);
+
+            return string.Equals(candidateTrimmed, requestedTrimmed, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(requestedBase) &&
+                    (string.Equals(candidateTrimmed, requestedBase, StringComparison.OrdinalIgnoreCase)
+                     || candidateTrimmed.StartsWith(requestedBase + "-", StringComparison.OrdinalIgnoreCase)))
+                || requestedTrimmed.StartsWith(candidateTrimmed + "-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task<AnalysisGroup?> ResolveAnalysisGroupForDecisionAsync(string? groupIdentifier, string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(groupIdentifier))
+                return null;
+
+            var normalizedGroupIdentifier = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+            var candidates = await _context.AnalysisGroups
+                .AsTracking()
+                .Where(g => g.GroupIdentifier == groupIdentifier
+                    || g.NormalizedGroupIdentifier == groupIdentifier
+                    || g.GroupIdentifier == normalizedGroupIdentifier
+                    || g.NormalizedGroupIdentifier == normalizedGroupIdentifier)
+                .ToListAsync();
+
+            return candidates
+                .OrderByDescending(g => ScannerMatches(g.ScannerType, scannerType))
+                .ThenByDescending(g => string.Equals(g.GroupIdentifier, groupIdentifier, StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault();
+        }
+
+        private static List<string> BuildDecisionGroupIdentifiers(params string?[] groupIdentifiers)
+        {
+            var identifiers = new List<string>();
+
+            foreach (var groupIdentifier in groupIdentifiers)
+            {
+                if (string.IsNullOrWhiteSpace(groupIdentifier))
+                    continue;
+
+                identifiers.Add(groupIdentifier);
+
+                var normalized = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    identifiers.Add(normalized);
+            }
+
+            return identifiers
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool DecisionGroupMatches(string? decisionGroupIdentifier, IReadOnlyCollection<string> groupIdentifiers)
+        {
+            if (groupIdentifiers.Count == 0)
+                return true;
+
+            if (string.IsNullOrWhiteSpace(decisionGroupIdentifier))
+                return false;
+
+            if (groupIdentifiers.Contains(decisionGroupIdentifier, StringComparer.OrdinalIgnoreCase))
+                return true;
+
+            var normalizedDecisionGroup = GroupIdentifierHelper.GetNormalizedGroupIdentifier(decisionGroupIdentifier);
+            if (!string.IsNullOrWhiteSpace(normalizedDecisionGroup)
+                && groupIdentifiers.Contains(normalizedDecisionGroup, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return groupIdentifiers.Any(g =>
+                !string.IsNullOrWhiteSpace(g)
+                && decisionGroupIdentifier.StartsWith(g + "_", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task<ImageAnalysisDecision?> FindExistingDecisionForSaveAsync(
+            string containerNumber,
+            string scannerType,
+            IReadOnlyCollection<string> groupIdentifiers)
+        {
+            var candidates = await _context.ImageAnalysisDecisions
+                .Where(d => d.ContainerNumber == containerNumber
+                    && d.ScannerType == scannerType)
+                .ToListAsync();
+
+            var scoped = candidates
+                .Where(d => DecisionGroupMatches(d.GroupIdentifier, groupIdentifiers))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .FirstOrDefault();
+
+            if (scoped != null)
+                return scoped;
+
+            var legacyUngrouped = candidates
+                .Where(d => string.IsNullOrWhiteSpace(d.GroupIdentifier))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .ToList();
+
+            return legacyUngrouped.Count == 1 ? legacyUngrouped[0] : null;
+        }
+
+        private string? GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "username", StringComparison.OrdinalIgnoreCase))?.Value;
+        }
+
+        private bool HasPermissionClaim(params string[] permissionNames)
+        {
+            if (User == null || permissionNames.Length == 0)
+                return false;
+
+            var permissionSet = new HashSet<string>(permissionNames, StringComparer.OrdinalIgnoreCase);
+            return User.Claims.Any(c =>
+                string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase)
+                && permissionSet.Contains(c.Value));
+        }
+
+        private bool IsSystemOrPrivilegedDecisionCaller(string? username)
+        {
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                var normalized = username.Trim();
+                if (string.Equals(normalized, "System", StringComparison.OrdinalIgnoreCase)
+                    || normalized.StartsWith("SYSTEM-", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Contains("agent", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Contains("service", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return User?.IsInRole("Admin") == true
+                || User?.IsInRole("SuperAdmin") == true
+                || User?.IsInRole("Manager") == true
+                || User?.IsInRole("Supervisor") == true
+                || HasPermissionClaim(
+                    Permissions.ControllersImageAnalysisAssign,
+                    Permissions.ControllersImageAnalysisManagementSettings,
+                    Permissions.ControllersImageAnalysisDecisionAudit);
+        }
+
+        private async Task<ActionResult<object>?> ValidateSaveDecisionAssignmentOwnershipAsync(AnalysisGroup? group)
+        {
+            if (group == null)
+                return null;
+
+            var username = GetAuthenticatedUsername();
+            var now = DateTime.UtcNow;
+            var activeAssignments = await _context.AnalysisAssignments
+                .AsNoTracking()
+                .Where(a => a.GroupId == group.Id
+                    && a.Role == "Analyst"
+                    && a.State == "Active"
+                    && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                .ToListAsync();
+
+            if (!activeAssignments.Any())
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(username)
+                && activeAssignments.Any(a => string.Equals(a.AssignedTo, username, StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            if (IsSystemOrPrivilegedDecisionCaller(username))
+                return null;
+
+            _logger.LogWarning(
+                "SaveDecision denied for user {User}: group {GroupIdentifier} is actively assigned to {AssignedUsers}",
+                username ?? "(unknown)",
+                group.GroupIdentifier,
+                string.Join(", ", activeAssignments.Select(a => a.AssignedTo).Distinct()));
+
+            return StatusCode(403, new
+            {
+                success = false,
+                error = "This group is assigned to another analyst."
+            });
+        }
+
+        private async Task RemoveQueueEntriesForAssignmentsAsync(IEnumerable<AnalysisAssignment> assignments, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache == null)
+                return;
+
+            foreach (var assignment in assignments)
+            {
+                try
+                {
+                    await _readyGroupsCache.RemoveQueueEntryAsync(_context, assignment.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to remove queue entry for released assignment {AssignmentId}", assignment.Id);
+                }
+            }
         }
 
         /// <summary>
@@ -793,9 +1049,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // ✅ FIX AUTO-PROGRESSION: Filter decisions by scanner type if provided
                 // Since groups are separated by scanner type, we should only count decisions for the group's scanner type
                 // ✅ SCANNER TYPE FIX: Normalize scanner type comparison (handle "FS6000-Main" vs "FS6000")
+                var decisionGroupIdentifiers = new[] { groupIdentifier, resolvedGroupIdentifierForBackwardCompat }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
                 var decidedContainersQuery = _context.ImageAnalysisDecisions
-                    .Where(d => d.GroupIdentifier == groupIdentifier &&
-                               (d.Decision == "Normal" || d.Decision == "Abnormal"));
+                    .Where(d => d.GroupIdentifier != null
+                        && decisionGroupIdentifiers.Contains(d.GroupIdentifier)
+                        && (d.Decision == "Normal" || d.Decision == "Abnormal"));
 
                 // Add scanner type filter if provided (normalize to handle image-specific variants)
                 if (!string.IsNullOrEmpty(scannerType))
@@ -920,6 +1182,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Save or update an image decision
         /// </summary>
         [HttpPost]
+        [HasPermission(Permissions.ControllersImageAnalysisDecisionAnalyst)]
         public async Task<ActionResult<object>> SaveDecision([FromBody] ImageDecisionRequest request)
         {
             try
@@ -1073,13 +1336,32 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // This ensures decisions match ContainerCompletenessStatus records (which use original GroupIdentifier)
                 var normalizedGroupIdentifierForStorage = originalGroupIdentifier;
 
+                if (analysisGroup == null && !string.IsNullOrWhiteSpace(resolvedGroupIdentifier))
+                {
+                    analysisGroup = await ResolveAnalysisGroupForDecisionAsync(resolvedGroupIdentifier, request.ScannerType);
+                }
+
+                var ownershipFailure = await ValidateSaveDecisionAssignmentOwnershipAsync(analysisGroup);
+                if (ownershipFailure != null)
+                {
+                    return ownershipFailure;
+                }
+
+                var decisionGroupIdentifiersForSave = BuildDecisionGroupIdentifiers(
+                    normalizedGroupIdentifierForStorage,
+                    resolvedGroupIdentifier,
+                    analysisGroup?.GroupIdentifier,
+                    analysisGroup?.NormalizedGroupIdentifier);
+
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync<ActionResult<object>>(async () =>
                 {
                 using var tx = await _context.Database.BeginTransactionAsync();
 
-                var existing = await _context.ImageAnalysisDecisions
-                    .FirstOrDefaultAsync(d => d.ContainerNumber == request.ContainerNumber && d.ScannerType == request.ScannerType);
+                var existing = await FindExistingDecisionForSaveAsync(
+                    request.ContainerNumber,
+                    request.ScannerType,
+                    decisionGroupIdentifiersForSave);
 
                 // Captured below in both branches so the manifest-snapshot hook
                 // (Gap 0) can fire against the right decision id after the upsert.
@@ -1195,12 +1477,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p13", (object?)splitResultIdForIad ?? DBNull.Value)
                     );
 
-                    // Resolve the just-inserted id by the unique (ContainerNumber, ScannerType)
-                    // tuple. The raw INSERT path can't return a generated id directly, but
-                    // the controller already enforces a single decision row per pair.
+                    // Resolve the just-inserted id by container/scanner/group. Container
+                    // numbers can recur across groups, so the group predicate is required
+                    // to avoid attaching snapshots or annotations to an older wave.
                     decisionIdForSnapshot = await _context.ImageAnalysisDecisions
                         .Where(d => d.ContainerNumber == request.ContainerNumber &&
-                                    d.ScannerType == request.ScannerType)
+                                    d.ScannerType == request.ScannerType &&
+                                    d.GroupIdentifier == normalizedGroupIdentifierForStorage)
+                        .OrderByDescending(d => d.Id)
                         .Select(d => d.Id)
                         .FirstOrDefaultAsync();
                 }
@@ -1330,8 +1614,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // ✅ Centralized side effects: update AnalysisRecord, release assignments, advance workflow
                 if (normalizedDecision != null && !string.IsNullOrWhiteSpace(request.ContainerNumber))
                 {
-                    var sideEffects = new NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionSideEffectsService(_logger);
-                    await sideEffects.ApplyAsync(_context, request.ContainerNumber,
+                    await _decisionSideEffects.ApplyAsync(_context, request.ContainerNumber,
                         resolvedGroupIdentifier ?? request.GroupIdentifier ?? "", request.ScannerType);
                 }
 
@@ -1364,9 +1647,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         // groups to stick because we miss the container-without-image in the progression check.
                         if (analysisGroup == null)
                         {
-                            analysisGroup = await _context.AnalysisGroups
-                                .AsTracking()
-                                .FirstOrDefaultAsync(g => g.GroupIdentifier == resolvedGroupIdentifier);
+                            analysisGroup = await ResolveAnalysisGroupForDecisionAsync(resolvedGroupIdentifier, request.ScannerType);
                         }
 
                         var normalizedForCompleteness = GroupIdentifierHelper.GetNormalizedGroupIdentifier(resolvedGroupIdentifier) ?? resolvedGroupIdentifier;
@@ -1458,8 +1739,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ SCANNER TYPE FIX: Normalize scanner type comparison (handle "FS6000-Main" vs "FS6000")
                             var groupContainersHashSet = new HashSet<string>(groupContainers, StringComparer.OrdinalIgnoreCase);
                             var baseScannerType = request.ScannerType.Split('-')[0]; // Extract base scanner type (e.g., "FS6000" from "FS6000-Main")
+                            var decisionGroupIdentifiers = new[] { decisionGroupIdentifier, resolvedGroupIdentifier }
+                                .Where(g => !string.IsNullOrWhiteSpace(g))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
                             var allMatchingDecisions = await _context.ImageAnalysisDecisions
                                 .Where(d => (d.ScannerType == request.ScannerType || d.ScannerType.StartsWith(baseScannerType + "-") || d.ScannerType == baseScannerType) &&
+                                           (d.GroupIdentifier == null || decisionGroupIdentifiers.Contains(d.GroupIdentifier)) &&
                                            (d.Decision == "Normal" || d.Decision == "Abnormal"))
                                 .Select(d => d.ContainerNumber)
                                 .Distinct()
@@ -1722,6 +2008,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         _logger.LogInformation("Released Analyst assignment {AssignmentId} for group {Group} (all containers have no images)",
                                             assignment.Id, resolvedGroupIdentifier);
                                     }
+
+                                    await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
                                 }
                             }
                             // ✅ STEP 5: Find next undecided container (only from containers WITH images)
@@ -1808,7 +2096,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ DATE-BASED GROUPING FIX: Use original GroupIdentifier for validation
                             // ContainerCompletenessStatus and ImageAnalysisDecisions use original GroupIdentifier
                             var validationPassed = await ValidateAllContainersWithImagesHaveDecisionsAsync(
-                                originalGroupIdentifier, groupContainers, groupScannerType);
+                                originalGroupIdentifier, groupContainers, groupScannerType, resolvedGroupIdentifier);
 
                             if (!validationPassed)
                             {
@@ -1857,16 +2145,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         assignment.Id, resolvedGroupIdentifier);
                                 }
 
+                                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
+
                                 await _context.SaveChangesAsync();
 
                                 // ✅ FIX: Update WorkflowStage for containers WITHOUT images to 'PartiallyCompleted'
                                 // Use LINQ to update entities directly (safer than raw SQL)
                                 if (containersWithoutImages.Any())
                                 {
+                                    var scannerBaseForCompleteness = BaseScannerType(groupScannerType) ?? groupScannerType;
                                     var containersWithoutImagesStatuses = await _context.ContainerCompletenessStatuses
                                         .AsTracking()
                                         .Where(c => containersWithoutImages.Contains(c.ContainerNumber) &&
                                                    c.GroupIdentifier == normalizedForCompleteness &&
+                                                   (c.ScannerType == groupScannerType ||
+                                                    c.ScannerType == scannerBaseForCompleteness ||
+                                                    c.ScannerType.StartsWith(scannerBaseForCompleteness + "-")) &&
                                                    c.WorkflowStage != "Completed")
                                         .ToListAsync();
 
@@ -1884,10 +2178,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 // ✅ FIX: Update WorkflowStage for containers WITH images to 'Audit' (they have decisions)
                                 if (containersWithImages.Any())
                                 {
+                                    var scannerBaseForCompleteness = BaseScannerType(groupScannerType) ?? groupScannerType;
                                     var containersWithImagesStatuses = await _context.ContainerCompletenessStatuses
                                         .AsTracking()
                                         .Where(c => containersWithImages.Contains(c.ContainerNumber) &&
                                                    c.GroupIdentifier == normalizedForCompleteness &&
+                                                   (c.ScannerType == groupScannerType ||
+                                                    c.ScannerType == scannerBaseForCompleteness ||
+                                                    c.ScannerType.StartsWith(scannerBaseForCompleteness + "-")) &&
                                                    c.WorkflowStage != "Completed")
                                         .ToListAsync();
 
@@ -1942,6 +2240,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         assignment.Id, assignment.GroupId, assignment.AssignedTo, assignment.Role);
                                 }
 
+                                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
+
                                 await _context.SaveChangesAsync();
 
                                 // Invalidate ReadyGroupsCache so Audit assignment sees the new AnalystCompleted group immediately
@@ -1988,10 +2288,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ CRITICAL FIX: ALWAYS update WorkflowStage to 'Audit' when all containers are decided
                             // Use NORMALIZED GroupIdentifier - ContainerCompletenessStatus never has date suffix
                             // resolvedGroupIdentifier can be date-suffixed (e.g. 41025634146_20250101_20250131)
-                            var sql = "UPDATE ContainerCompletenessStatuses SET WorkflowStage = @p0, UpdatedAt = now() AT TIME ZONE 'UTC' WHERE GroupIdentifier = @p1 AND WorkflowStage <> @p0 AND WorkflowStage <> 'Completed'";
+                            var workflowScannerType = groupScannerType ?? request.ScannerType;
+                            var workflowScannerBase = BaseScannerType(workflowScannerType) ?? workflowScannerType;
+                            var sql = @"
+                                UPDATE ContainerCompletenessStatuses
+                                SET WorkflowStage = @p0, UpdatedAt = now() AT TIME ZONE 'UTC'
+                                WHERE GroupIdentifier = @p1
+                                  AND WorkflowStage <> @p0
+                                  AND WorkflowStage <> 'Completed'
+                                  AND (ScannerType = @p2 OR ScannerType = @p3 OR ScannerType LIKE @p4)";
                             var affected = await _context.Database.ExecuteSqlRawAsync(sql,
                                 new NpgsqlParameter("@p0", "Audit"),
-                                new NpgsqlParameter("@p1", normalizedForCompleteness));
+                                new NpgsqlParameter("@p1", normalizedForCompleteness),
+                                new NpgsqlParameter("@p2", workflowScannerType),
+                                new NpgsqlParameter("@p3", workflowScannerBase),
+                                new NpgsqlParameter("@p4", workflowScannerBase + "-%"));
                             advanced = affected > 0;
 
                             _logger.LogInformation("All containers in group {Group} have decisions. WorkflowStage updated to 'Audit': {Count} records (skipped containers already in 'Completed' stage)",
@@ -2002,7 +2313,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             {
                                 // Check WorkflowStage distribution for this group (use normalized - Completeness uses base identifier)
                                 var workflowStats = await _context.ContainerCompletenessStatuses
-                                    .Where(c => c.GroupIdentifier == normalizedForCompleteness)
+                                    .Where(c => c.GroupIdentifier == normalizedForCompleteness
+                                        && (c.ScannerType == workflowScannerType
+                                            || c.ScannerType == workflowScannerBase
+                                            || c.ScannerType.StartsWith(workflowScannerBase + "-")))
                                     .GroupBy(c => c.WorkflowStage)
                                     .Select(g => new { WorkflowStage = g.Key, Count = g.Count() })
                                     .ToListAsync();
@@ -2050,7 +2364,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // FixStuckAnalystGroups behaviour but only for the current group.
                 if (!string.IsNullOrWhiteSpace(resolvedGroupIdentifier))
                 {
-                    await EnsureGroupStatusFromWorkflowStageAsync(resolvedGroupIdentifier);
+                    await EnsureGroupStatusFromWorkflowStageAsync(resolvedGroupIdentifier, request.ScannerType);
                 }
 
                 await tx.CommitAsync();
