@@ -447,14 +447,23 @@ async def create_split_job_upload(
     file: UploadFile = File(...),
     container_numbers: str = Form(...),
     scanner_type: Optional[str] = Form(None),
+    source_image_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db)
 ):
     """Submit a split job with direct file upload."""
     image_data = await _read_upload_with_limit(file)
     w, h = get_image_dimensions(image_data)
 
+    parsed_source_image_id = None
+    if source_image_id:
+        try:
+            parsed_source_image_id = UUID(source_image_id)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid source_image_id") from exc
+
     job = ImageSplitJob(
         container_numbers=container_numbers,
+        source_image_id=parsed_source_image_id,
         scanner_type=scanner_type,
         image_data=image_data,
         image_width=w,

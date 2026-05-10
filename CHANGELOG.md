@@ -22,6 +22,54 @@ For each release, this file records:
 
 ---
 
+## [2.16.13] - 2026-05-10 - Two-container scanner split intake
+
+Feature and reliability release for scanner events that contain exactly two
+physical containers in one X-ray image.
+
+### What landed
+
+#### Two-container split intake - added
+
+Added a durable intake service that can ensure a split job for a two-container
+`OriginalScanRecord`, then link the latest per-container `AnalysisRecord` rows to
+the split job and top candidate result IDs once the splitter completes. This
+allows the analyst flow to show the two best split options for each side instead
+of waiting on late, UI-triggered detection.
+
+#### Scanner ingestion hooks - added
+
+FS6000 ingestion now requests split intake after JPEG persistence for original
+scan groups with exactly two containers. ASE ingestion now requests split intake
+after the ASE source blob is saved and the comma-split queue items are published.
+ASE split submission uses the original `AseScan.OriginalScanRecordId` and source
+image blob, so child queue tokens no longer need an exact `AseScan.ContainerNumber`
+match.
+
+#### Splitter API contract - fixed
+
+The Python splitter upload endpoint already returned `id`; the C# client expected
+`job_id`. The client now accepts both response shapes, can search existing jobs
+by container pair, and can fetch the top split result IDs for analysis-record
+linking. The upload endpoint also persists optional `source_image_id` for audit
+lineage.
+
+### Tests / verification
+
+- `python -m py_compile services/image-splitter/main.py`
+- `dotnet build src/NickScanCentralImagingPortal.API/NickScanCentralImagingPortal.API.csproj --no-restore`
+- `dotnet test src/NickScanCentralImagingPortal.Tests/NickScanCentralImagingPortal.Tests.csproj --no-build`
+- `dotnet list ... package --vulnerable --include-transitive` for API, WebApp, and test projects: no vulnerable packages reported from NuGet.
+- Live splitter probes: `/api/health` returned healthy and `/api/split/search` returned an empty array for a harmless non-existent pair.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add two-container split intake for scanner images
+
 ## [2.16.12] - 2026-05-10 - ASE scanner-tab image loading for encoded container routes
 
 Patch release for an ASE image-loading regression found after the image URL

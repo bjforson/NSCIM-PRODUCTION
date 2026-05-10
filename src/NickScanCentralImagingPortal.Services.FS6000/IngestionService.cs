@@ -575,6 +575,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     _logger.LogDebug("Processing {Count} new containers with FULL field mapping", newContainerData.Count);
 
                     var scansToAdd = newContainerData.Select(c => c.Scan).ToList();
+                    var twoContainerOriginalIds = new List<int>();
 
                     // Create OriginalScanRecord entries grouped by PicNumber (one per original scan event)
                     var scansByPicNumber = newContainerData.GroupBy(c => c.Scan.PicNumber);
@@ -609,6 +610,9 @@ namespace NickScanCentralImagingPortal.Services.FS6000
 
                         dbContext.OriginalScanRecords.Add(originalRecord);
                         await dbContext.SaveChangesAsync();
+
+                        if (allContainersInGroup.Count == 2)
+                            twoContainerOriginalIds.Add(originalRecord.Id);
 
                         foreach (var item in picGroup)
                         {
@@ -666,6 +670,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
 
                     // NEW: Process and store associated JPEG images
                     await ProcessAndStoreImagesAsync(newContainerData, dbContext);
+                    await EnsureTwoContainerSplitJobsAsync(scope.ServiceProvider, twoContainerOriginalIds);
                 }
                 else
                 {
@@ -921,6 +926,33 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in ProcessAndStoreImagesAsync");
+            }
+        }
+
+        private async Task EnsureTwoContainerSplitJobsAsync(IServiceProvider serviceProvider, IReadOnlyCollection<int> originalScanRecordIds)
+        {
+            if (originalScanRecordIds.Count == 0)
+                return;
+
+            var splitIntake = serviceProvider.GetService<ITwoContainerSplitIntakeService>();
+            if (splitIntake == null)
+            {
+                _logger.LogDebug("[FS6000-INGESTION] Two-container split intake service is not registered");
+                return;
+            }
+
+            foreach (var originalScanRecordId in originalScanRecordIds)
+            {
+                try
+                {
+                    await splitIntake.EnsureSplitJobForOriginalAsync(originalScanRecordId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "[FS6000-INGESTION] Failed to ensure split job for OriginalScanRecord {OriginalScanRecordId}",
+                        originalScanRecordId);
+                }
             }
         }
 
