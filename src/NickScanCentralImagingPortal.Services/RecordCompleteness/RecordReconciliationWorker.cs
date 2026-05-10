@@ -311,69 +311,69 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
             // anywhere in the NSCIM scanner tables. This is the reconciliation catch-up
             // that picks up containers scanned by any source (scanner, queue, direct).
 
-            // Pull the AwaitingScan candidates
+            // Pull AwaitingScan candidates that actually have scanner/completeness
+            // evidence. The old broad Take(5000) could starve later evidence-bearing
+            // rows behind thousands of old ICUMS-only records, leaving real analyst
+            // work stuck at RecordExpectedContainer.Status=AwaitingScan.
             var awaiting = await appDb.RecordExpectedContainers
                 .AsTracking()
-                .Where(c => c.Status == "AwaitingScan")
+                .Where(c => c.Status == "AwaitingScan"
+                    && appDb.ContainerCompletenessStatuses.Any(s => s.ContainerNumber == c.ContainerNumber))
+                .OrderBy(c => c.FirstSeenUtc)
                 .Take(5000)
                 .ToListAsync(ct);
-
-            if (awaiting.Count == 0) return 0;
-
-            var awaitingNumbers = awaiting.Select(a => a.ContainerNumber).Distinct().ToList();
-
-            // Check which ones have scanner evidence in ANY source
-            var withCompleteness = await appDb.ContainerCompletenessStatuses
-                .Where(c => awaitingNumbers.Contains(c.ContainerNumber))
-                .Select(c => new { c.ContainerNumber, c.ScannerType, c.InspectionId, c.HasImageData })
-                .ToListAsync(ct);
-
-            var evidenceByContainer = withCompleteness
-                .GroupBy(c => c.ContainerNumber, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.HasImageData).First(), StringComparer.OrdinalIgnoreCase);
 
             int promoted = 0;
             var nowUtc = DateTime.UtcNow;
             var parentsToBump = new HashSet<int>();
 
-            foreach (var row in awaiting)
+            if (awaiting.Count > 0)
             {
-                if (!evidenceByContainer.TryGetValue(row.ContainerNumber, out var evidence)) continue;
+                var awaitingNumbers = awaiting.Select(a => a.ContainerNumber).Distinct().ToList();
 
-                row.ScannedAtUtc = nowUtc;
-                row.InspectionId = evidence.InspectionId;
-                row.ScannerType = evidence.ScannerType;
-                row.Status = evidence.HasImageData ? "Ready" : "Pending";
-                if (evidence.HasImageData)
+                // Check which ones have scanner evidence in ANY source
+                var withCompleteness = await appDb.ContainerCompletenessStatuses
+                    .Where(c => awaitingNumbers.Contains(c.ContainerNumber))
+                    .Select(c => new { c.ContainerNumber, c.ScannerType, c.InspectionId, c.HasImageData })
+                    .ToListAsync(ct);
+
+                var evidenceByContainer = withCompleteness
+                    .GroupBy(c => c.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.HasImageData).First(), StringComparer.OrdinalIgnoreCase);
+
+                foreach (var row in awaiting)
                 {
-                    row.BecameReadyUtc = nowUtc;
+                    if (!evidenceByContainer.TryGetValue(row.ContainerNumber, out var evidence)) continue;
+
+                    row.ScannedAtUtc = nowUtc;
+                    row.InspectionId = evidence.InspectionId;
+                    row.ScannerType = evidence.ScannerType;
+                    row.Status = evidence.HasImageData ? "Ready" : "Pending";
+                    if (evidence.HasImageData)
+                    {
+                        row.BecameReadyUtc = nowUtc;
+                    }
+                    promoted++;
+                    parentsToBump.Add(row.RecordId);
                 }
-                promoted++;
-                parentsToBump.Add(row.RecordId);
             }
 
             if (promoted > 0)
             {
-                // Bump LastNewContainerAtUtc on parents whose children just transitioned
-                var parents = await appDb.RecordCompletenessStatuses
-                    .AsTracking()
-                    .Where(r => parentsToBump.Contains(r.Id))
-                    .ToListAsync(ct);
-                foreach (var p in parents)
-                {
-                    p.LastNewContainerAtUtc = nowUtc;
-                    p.UpdatedAtUtc = nowUtc;
-                }
-                await appDb.SaveChangesAsync(ct);
+                await RecomputePromotedParentsAsync(appDb, parentsToBump, nowUtc, ct);
 
                 _logger.LogInformation("{ServiceId} Promoted {Count} containers from AwaitingScan (affected {Parents} parent records)",
                     SERVICE_ID, promoted, parentsToBump.Count);
             }
 
-            // Also promote Pending → Ready for rows that now have images
+            // Also promote Pending → Ready for rows that now have images. Do this even
+            // when no AwaitingScan rows were promoted this tick; the previous early
+            // return skipped Pending catch-up entirely on quiet AwaitingScan cycles.
             var pending = await appDb.RecordExpectedContainers
                 .AsTracking()
-                .Where(c => c.Status == "Pending")
+                .Where(c => c.Status == "Pending"
+                    && appDb.ContainerCompletenessStatuses.Any(s => s.ContainerNumber == c.ContainerNumber && s.HasImageData))
+                .OrderBy(c => c.ScannedAtUtc ?? c.FirstSeenUtc)
                 .Take(5000)
                 .ToListAsync(ct);
 
@@ -388,23 +388,48 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
 
                 var readyNowSet = new HashSet<string>(withImages, StringComparer.OrdinalIgnoreCase);
                 int pendingPromoted = 0;
+                var pendingParentsToBump = new HashSet<int>();
                 foreach (var row in pending)
                 {
                     if (!readyNowSet.Contains(row.ContainerNumber)) continue;
                     row.Status = "Ready";
                     row.BecameReadyUtc = nowUtc;
                     pendingPromoted++;
+                    pendingParentsToBump.Add(row.RecordId);
                 }
 
                 if (pendingPromoted > 0)
                 {
-                    await appDb.SaveChangesAsync(ct);
+                    await RecomputePromotedParentsAsync(appDb, pendingParentsToBump, nowUtc, ct);
                     promoted += pendingPromoted;
                     _logger.LogInformation("{ServiceId} Promoted {Count} containers from Pending → Ready", SERVICE_ID, pendingPromoted);
                 }
             }
 
             return promoted;
+        }
+
+        private static async Task RecomputePromotedParentsAsync(
+            ApplicationDbContext appDb,
+            HashSet<int> parentIds,
+            DateTime nowUtc,
+            CancellationToken ct)
+        {
+            if (parentIds.Count == 0) return;
+
+            var parents = await appDb.RecordCompletenessStatuses
+                .AsTracking()
+                .Include(r => r.ExpectedContainers)
+                .Where(r => parentIds.Contains(r.Id))
+                .ToListAsync(ct);
+
+            foreach (var parent in parents)
+            {
+                parent.LastNewContainerAtUtc = nowUtc;
+                RecordCompletenessBuilder.Recompute(parent, parent.ExpectedContainers.ToList());
+            }
+
+            await appDb.SaveChangesAsync(ct);
         }
 
         private async Task RecomputeRecentRollupsAsync(ApplicationDbContext appDb, CancellationToken ct)
