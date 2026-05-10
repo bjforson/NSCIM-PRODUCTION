@@ -224,7 +224,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 || string.IsNullOrWhiteSpace(record.SplitStatus)
                 || string.Equals(record.SplitStatus, "Pending", StringComparison.OrdinalIgnoreCase)
                 || (string.Equals(record.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
-                    && record.SplitOptionA_ResultId == null));
+                    && (record.SplitOptionA_ResultId == null || record.SplitOptionB_ResultId == null)));
         }
 
         private async Task<SplitSourceImage?> LoadSourceImageAsync(

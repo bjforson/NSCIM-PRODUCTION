@@ -59,7 +59,8 @@ lineage.
 Some completed jobs can legitimately produce only one strategy result. The
 splitter now adds a low-confidence deterministic fallback candidate when the
 image can be cropped, so the analyst dialog has two choices whenever the source
-image dimensions allow it.
+image dimensions allow it. The intake sweep also revisits Ready records with a
+missing Option B so backfilled fallback candidates are linked to the analyst UI.
 
 ### Tests / verification
 
@@ -69,6 +70,7 @@ image dimensions allow it.
 - `dotnet list ... package --vulnerable --include-transitive` for API, WebApp, and test projects: no vulnerable packages reported from NuGet.
 - Live splitter probes: `/api/health` returned healthy and `/api/split/search` returned an empty array for a harmless non-existent pair.
 - Post-deploy intake proof: the worker submitted and completed a fresh two-container job for `NYKU3808732,TRHU2102211`.
+- One-time data backfill added fallback candidates to 11 completed, unreviewed jobs that previously had only one result.
 
 ### Migrations
 
@@ -78,6 +80,7 @@ image dimensions allow it.
 
 - (this commit) - Add two-container split intake for scanner images
 - (follow-up commit) - Ensure splitter emits two review candidates when possible
+- (follow-up commit) - Relink Ready records missing split Option B
 
 ## [2.16.12] - 2026-05-10 - ASE scanner-tab image loading for encoded container routes
 
