@@ -62,6 +62,7 @@ ORDER BY updatedat DESC NULLS LAST
 LIMIT 200;
 
 \echo '## ICUMS download queues with retry count beyond max'
+\connect nickscan_downloads
 SELECT id, containernumber, status, retrycount, maxretries,
        firstattemptat, lastattemptat, completedat
 FROM icumsdownloadqueue
@@ -70,13 +71,14 @@ ORDER BY lastattemptat DESC NULLS LAST
 LIMIT 200;
 
 \echo '## Processing queue rows that look stuck'
+\connect nickscan_production
 SELECT 'ContainerScanQueue' AS queue_name, id, containernumber, status, processedat AS last_attempt_at
 FROM containerscanqueues
 WHERE status = 'Processing'
   AND processedat < (NOW() AT TIME ZONE 'UTC') - INTERVAL '30 minutes'
 UNION ALL
 SELECT 'ICUMSDownloadQueue' AS queue_name, id, containernumber, status, lastattemptat AS last_attempt_at
-FROM icumsdownloadqueue
+FROM nickscan_downloads.public.icumsdownloadqueue
 WHERE status = 'Processing'
   AND lastattemptat < (NOW() AT TIME ZONE 'UTC') - INTERVAL '30 minutes'
 ORDER BY last_attempt_at;
