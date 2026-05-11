@@ -22,6 +22,30 @@ For each release, this file records:
 
 ---
 
+## [2.17.6] - 2026-05-11 - Split review workbench redesign
+
+Patch release for the splitter analyst review workflow.
+
+### What landed
+
+- Reworked the split review page from an expandable table into a focused
+  review queue with one active job at a time.
+- Replaced tiny split thumbnails as the primary review surface with large
+  left/right crop views for the top two split candidates.
+- Added explicit candidate selection, so approval records the reviewer-selected
+  split result instead of always approving the splitter's current best strategy.
+- Added save-and-next style progression after approve or reject/label actions.
+- Kept manual split correction available from the original image, but moved it
+  behind a secondary panel so the reviewer judges the actual split outputs first.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Redesign split review workbench
+
 ## [2.17.5] - 2026-05-11 - Image splitter local vision training foundation
 
 Minor release for the local vision model training path. This does not put
