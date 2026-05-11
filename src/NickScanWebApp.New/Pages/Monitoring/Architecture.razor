@@ -1,0 +1,58 @@
+@page "/monitoring/architecture"
+@page "/services/architecture"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDiagnostics)]
+@using MudBlazor
+
+<PageTitle>NICKSCAN ERP - NSCIS - Architecture Map</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4 architecture-page">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3 architecture-header">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" />
+            <MudText Typo="Typo.h4">Architecture Map</MudText>
+        </MudStack>
+        <MudButton Href="/architecture/architecture-interactive.html"
+                   Target="_blank"
+                   Variant="Variant.Outlined"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.OpenInNew">
+            Open Fullscreen
+        </MudButton>
+    </MudStack>
+
+    <iframe class="architecture-frame"
+            title="NSCIM production architecture"
+            src="/architecture/architecture-interactive.html"></iframe>
+</MudContainer>
+
+<style>
+    .architecture-page {
+        min-height: calc(100vh - 96px);
+    }
+
+    .architecture-header {
+        gap: 12px;
+    }
+
+    .architecture-frame {
+        display: block;
+        width: 100%;
+        height: calc(100vh - 172px);
+        min-height: 620px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        background: white;
+    }
+
+    @@media (max-width: 720px) {
+        .architecture-header {
+            align-items: flex-start !important;
+            flex-direction: column !important;
+        }
+
+        .architecture-frame {
+            height: calc(100vh - 220px);
+            min-height: 560px;
+        }
+    }
+</style>
