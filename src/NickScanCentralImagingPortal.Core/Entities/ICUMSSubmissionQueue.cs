@@ -25,7 +25,7 @@ namespace NickScanCentralImagingPortal.Core.Entities
 
         [Required]
         [StringLength(20)]
-        public string Status { get; set; } = "Queued"; // 'Queued', 'Processing', 'Submitted', 'Failed'
+        public string Status { get; set; } = ICUMSSubmissionQueueStatus.Pending;
 
         public int Priority { get; set; } = 1; // 1=Normal, 2=High, 3=Critical
 
@@ -49,5 +49,17 @@ namespace NickScanCentralImagingPortal.Core.Entities
         public string? SubmittedBy { get; set; } = "System";
 
         public DateTime? CompletedAt { get; set; }
+    }
+
+    /// <summary>
+    /// Queue status values consumed by ICUMSSubmissionService.
+    /// </summary>
+    public static class ICUMSSubmissionQueueStatus
+    {
+        public const string Pending = "Pending";
+        public const string Processing = "Processing";
+        public const string Submitted = "Submitted";
+        public const string Failed = "Failed";
+        public const string Cancelled = "Cancelled";
     }
 }

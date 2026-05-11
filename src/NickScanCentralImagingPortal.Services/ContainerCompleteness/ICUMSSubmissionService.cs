@@ -80,8 +80,8 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             {
                 // Get pending submissions ordered by priority and creation time
                 var pendingSubmissions = await dbContext.ICUMSSubmissionQueues
-                    .Where(s => s.Status == "Pending" ||
-                               (s.Status == "Failed" && s.RetryCount < 3 &&
+                    .Where(s => s.Status == ICUMSSubmissionQueueStatus.Pending ||
+                               (s.Status == ICUMSSubmissionQueueStatus.Failed && s.RetryCount < 3 &&
                                 (s.NextRetryAt == null || s.NextRetryAt <= DateTime.UtcNow)))
                     .OrderByDescending(s => s.Priority)
                     .ThenBy(s => s.CreatedAt)
@@ -176,7 +176,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 ScannerType = submissionData.ScannerType,
                 ImagePaths = JsonSerializer.Serialize(submissionData.ImagePaths),
                 ReportData = JsonSerializer.Serialize(submissionData.ReportData),
-                Status = "Pending",
+                Status = ICUMSSubmissionQueueStatus.Pending,
                 Priority = priority,
                 SubmittedBy = submittedBy ?? "System",
                 CreatedAt = DateTime.UtcNow,
@@ -203,10 +203,10 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             {
                 // ✅ OPTIMIZED: Use database aggregation instead of loading all records into memory
                 stats.TotalSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync();
-                stats.PendingSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == "Pending");
-                stats.ProcessingSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == "Processing");
-                stats.CompletedSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == "Submitted");
-                stats.FailedSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == "Failed");
+                stats.PendingSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == ICUMSSubmissionQueueStatus.Pending);
+                stats.ProcessingSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == ICUMSSubmissionQueueStatus.Processing);
+                stats.CompletedSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == ICUMSSubmissionQueueStatus.Submitted);
+                stats.FailedSubmissions = await dbContext.ICUMSSubmissionQueues.CountAsync(s => s.Status == ICUMSSubmissionQueueStatus.Failed);
                 stats.RetryCount = await dbContext.ICUMSSubmissionQueues.SumAsync(s => s.RetryCount);
                 stats.LastSubmissionAt = await dbContext.ICUMSSubmissionQueues.AnyAsync()
                     ? await dbContext.ICUMSSubmissionQueues.MaxAsync(s => s.CreatedAt)
@@ -214,12 +214,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                 // Calculate average processing time using database aggregation
                 var completedCount = await dbContext.ICUMSSubmissionQueues
-                    .CountAsync(s => s.Status == "Submitted" && s.CompletedAt.HasValue);
+                    .CountAsync(s => s.Status == ICUMSSubmissionQueueStatus.Submitted && s.CompletedAt.HasValue);
 
                 if (completedCount > 0)
                 {
                     var avgMilliseconds = await dbContext.ICUMSSubmissionQueues
-                        .Where(s => s.Status == "Submitted" && s.CompletedAt.HasValue)
+                        .Where(s => s.Status == ICUMSSubmissionQueueStatus.Submitted && s.CompletedAt.HasValue)
                         .AverageAsync(s => (double)((s.CompletedAt!.Value - s.CreatedAt).TotalMilliseconds));
                     stats.AverageProcessingTime = TimeSpan.FromMilliseconds(avgMilliseconds);
                 }
@@ -238,14 +238,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
             var failedSubmissions = await dbContext.ICUMSSubmissionQueues
-                .Where(s => s.Status == "Failed" && s.RetryCount < maxRetries)
+                .Where(s => s.Status == ICUMSSubmissionQueueStatus.Failed && s.RetryCount < maxRetries)
                 .ToListAsync();
 
             _logger.LogInformation("Retrying {Count} failed submissions", failedSubmissions.Count);
 
             foreach (var submission in failedSubmissions)
             {
-                submission.Status = "Pending";
+                submission.Status = ICUMSSubmissionQueueStatus.Pending;
                 submission.RetryCount++;
                 submission.NextRetryAt = DateTime.UtcNow.AddMinutes(Math.Pow(2, submission.RetryCount)); // Exponential backoff
                 submission.UpdatedAt = DateTime.UtcNow;
@@ -266,7 +266,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     submission.Id, submission.ContainerNumber);
 
                 // Update status to Processing
-                submission.Status = "Processing";
+                submission.Status = ICUMSSubmissionQueueStatus.Processing;
                 submission.UpdatedAt = DateTime.UtcNow;
                 await dbContext.SaveChangesAsync();
 
@@ -288,15 +288,16 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 if (result.IsSuccess)
                 {
                     // Update submission as successful
-                    submission.Status = "Submitted";
+                    submission.Status = ICUMSSubmissionQueueStatus.Submitted;
+                    submission.SubmittedAt = DateTime.UtcNow;
                     submission.ICUMSResponseId = result.ICUMSResponseId;
-                    submission.CompletedAt = DateTime.UtcNow;
+                    submission.CompletedAt = submission.SubmittedAt;
                     submission.ErrorMessage = null;
                 }
                 else
                 {
                     // Update submission as failed
-                    submission.Status = "Failed";
+                    submission.Status = ICUMSSubmissionQueueStatus.Failed;
                     submission.ErrorMessage = result.ErrorMessage;
                     submission.RetryCount++;
                     submission.NextRetryAt = DateTime.UtcNow.AddMinutes(Math.Pow(2, submission.RetryCount));
@@ -313,7 +314,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 _logger.LogError(ex, "Error processing submission {SubmissionId}", submission.Id);
 
                 // Update submission as failed
-                submission.Status = "Failed";
+                submission.Status = ICUMSSubmissionQueueStatus.Failed;
                 submission.ErrorMessage = ex.Message;
                 submission.RetryCount++;
                 submission.NextRetryAt = DateTime.UtcNow.AddMinutes(Math.Pow(2, submission.RetryCount));

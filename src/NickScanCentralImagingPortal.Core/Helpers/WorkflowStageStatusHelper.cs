@@ -3,9 +3,10 @@ using NickScanCentralImagingPortal.Core.Models;
 namespace NickScanCentralImagingPortal.Core.Helpers;
 
 /// <summary>
-/// Single source of truth for deriving AnalysisGroup.Status from ContainerCompletenessStatus.WorkflowStage.
-/// WorkflowStage is the canonical state; AnalysisGroup.Status is a cached/derived view that gets synced.
-/// Use this helper everywhere that computes Status from WorkflowStage counts to ensure consistency.
+/// Reconciliation helper for suggesting an AnalysisGroup.Status from legacy
+/// ContainerCompletenessStatus.WorkflowStage counts.
+/// AnalysisGroup.Status remains the authoritative routing state; callers that
+/// use this helper must apply the result through AnalysisGroupStateMachine.
 /// </summary>
 public static class WorkflowStageStatusHelper
 {

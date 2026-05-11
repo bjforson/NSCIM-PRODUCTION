@@ -195,10 +195,9 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
 
                     item.Status = ContainerScanQueueStatus.Processing;
                     item.ProcessedAt = DateTime.UtcNow;
-                    item.RetryCount++;
                     item.UpdatedAt = DateTime.UtcNow;
 
-                    _logger.LogDebug("[CONTAINER-SCAN-QUEUE] 💾 Attempting SaveChangesAsync for ID: {Id} (Status: {OldStatus} -> {NewStatus}, RetryCount: {OldRetryCount} -> {NewRetryCount})",
+                    _logger.LogDebug("[CONTAINER-SCAN-QUEUE] 💾 Attempting SaveChangesAsync for ID: {Id} (Status: {OldStatus} -> {NewStatus}, RetryCount unchanged: {OldRetryCount} -> {NewRetryCount})",
                         id, oldStatus, item.Status, oldRetryCount, item.RetryCount);
 
                     // ✅ CRITICAL FIX: Explicitly mark entity as modified to ensure SaveChanges works

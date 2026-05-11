@@ -536,7 +536,8 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
 
                 entity.HasIndex(e => e.ContainerNumber);
                 entity.HasIndex(e => e.ScannerType);
-                entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType });
+                entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType, e.InspectionId })
+                    .HasDatabaseName("IX_ContainerCompletenessStatuses_Container_Scanner_Inspection");
                 entity.HasIndex(e => e.Status);
                 entity.HasIndex(e => e.HasICUMSData);
                 // Index for COUNT queries: Status LIKE 'Complete%' AND WorkflowStage IN ('', 'Pending', 'ImageAnalysis')

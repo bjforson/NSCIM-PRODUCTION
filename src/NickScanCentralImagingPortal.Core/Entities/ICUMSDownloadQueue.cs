@@ -48,7 +48,7 @@ namespace NickScanCentralImagingPortal.Core.Entities
         public DateTime? CompletedAt { get; set; }
 
         /// <summary>
-        /// Number of times download has been attempted
+        /// Number of failed download attempts.
         /// </summary>
         public int RetryCount { get; set; } = 0;
 

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NickScanCentralImagingPortal.Core.Configuration;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -343,6 +344,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                     // Process each queue item
                     var goLiveDate = _goLiveOptions.EffectiveGoLiveDate;
+                    var queueItemsToComplete = new List<int>();
                     foreach (var queueItem in queueItems)
                     {
                         if (stoppingToken.IsCancellationRequested) break;
@@ -390,20 +392,10 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 // Already processed - just update LastCheckedAt and mark queue item as completed
                                 existingStatus.LastCheckedAt = DateTime.UtcNow;
 
-                                // ✅ FIX: Mark queue item as completed with error handling
-                                try
-                                {
-                                    await queueRepository.MarkAsCompletedAsync(queueItem.Id);
-                                    unchangedRecords++;
-                                    _logger.LogDebug("{ServiceId} ⏭️ Skipped {Container} ({ScannerType}) - already processed (InspectionId: {InspectionId}), marked as completed",
-                                        SERVICE_ID, queueItem.ContainerNumber, queueItem.ScannerType, queueItem.InspectionId);
-                                }
-                                catch (Exception markCompletedEx)
-                                {
-                                    _logger.LogError(markCompletedEx, "{ServiceId} ❌ Error marking queue item {QueueId} as completed for {Container} ({ScannerType})",
-                                        SERVICE_ID, queueItem.Id, queueItem.ContainerNumber, queueItem.ScannerType);
-                                    // Continue processing - item will be retried in next cycle
-                                }
+                                queueItemsToComplete.Add(queueItem.Id);
+                                unchangedRecords++;
+                                _logger.LogDebug("{ServiceId} ⏭️ Skipped {Container} ({ScannerType}) - already processed (InspectionId: {InspectionId}), queued completion after save",
+                                    SERVICE_ID, queueItem.ContainerNumber, queueItem.ScannerType, queueItem.InspectionId);
 
                                 continue;
                             }
@@ -457,7 +449,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                     dbContext.ContainerCompletenessStatuses.Add(exportStatus);
                                     newRecords++;
                                     queueItemsProcessed++;
-                                    await queueRepository.MarkAsCompletedAsync(queueItem.Id);
+                                    queueItemsToComplete.Add(queueItem.Id);
                                     continue;
                                 }
 
@@ -775,11 +767,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             // 1.13.0 CMR-to-IM/EX lifecycle service upgrades them — at which
                             // point the completeness service will re-process them with a
                             // proper declaration number and valid groupIdentifier.
-                            bool isCmrPending = string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
-                                                && string.IsNullOrWhiteSpace(groupIdentifier);
-
-                            // ✅ Calculate completeness
-                            bool allDataAvailable = true && hasICUMSData && hasImages && !isCmrPending; // HasScannerData is always true (from queue)
+                            var completenessDecision = ContainerCompletenessPolicy.Evaluate(
+                                hasScannerData: true,
+                                hasICUMSData,
+                                hasImageData: hasImages,
+                                clearanceType,
+                                groupIdentifier);
 
                             // Create completeness status record
                             var newStatus = new ContainerCompletenessStatus
@@ -803,8 +796,8 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 BOEDocumentId = primaryBOEId,
                                 ClearanceType = clearanceType,
                                 ICUMSDataDate = hasICUMSData ? DateTime.UtcNow : null,
-                                Status = allDataAvailable ? "Complete" : (isCmrPending ? "AwaitingDeclaration" : "Missing"),
-                                WorkflowStage = allDataAvailable ? "ImageAnalysis" : "Pending",
+                                Status = completenessDecision.Status,
+                                WorkflowStage = completenessDecision.WorkflowStage,
                                 CreatedAt = DateTime.UtcNow,
                                 UpdatedAt = DateTime.UtcNow,
                                 LastCheckedAt = DateTime.UtcNow,
@@ -819,8 +812,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             if (hasImages && !string.IsNullOrWhiteSpace(groupIdentifier))
                                 readyDeclarations.Add((groupIdentifier, queueItem.ContainerNumber));
 
-                            // Mark queue item as completed
-                            await queueRepository.MarkAsCompletedAsync(queueItem.Id);
+                            queueItemsToComplete.Add(queueItem.Id);
 
                             _logger.LogInformation("{ServiceId} ✅ Processed from queue: {Container} ({ScannerType}, InspectionId: {InspectionId}) - Status: {Status}, BOEId: {BOEId}",
                                 SERVICE_ID, queueItem.ContainerNumber, queueItem.ScannerType, queueItem.InspectionId, newStatus.Status, primaryBOEId);
@@ -873,6 +865,19 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     if (newRecords > 0 || unchangedRecords > 0)
                     {
                         await dbContext.SaveChangesAsync(stoppingToken);
+                        foreach (var queueItemId in queueItemsToComplete.Distinct())
+                        {
+                            try
+                            {
+                                await queueRepository.MarkAsCompletedAsync(queueItemId);
+                            }
+                            catch (Exception markCompletedEx)
+                            {
+                                _logger.LogError(markCompletedEx, "{ServiceId} ❌ Error marking queue item {QueueId} as completed after successful completeness save",
+                                    SERVICE_ID, queueItemId);
+                            }
+                        }
+
                         // ✅ MEMORY FIX: Clear change tracker to release tracked entities
                         dbContext.ChangeTracker.Clear();
                         _logger.LogInformation("{ServiceId} 💾 Saved {NewRecords} new completeness records (processed {QueueItemsProcessed} queue items)",
@@ -1264,15 +1269,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             existingStatus.ClearanceType = clearanceType;
                             existingStatus.ICUMSDataDate = hasICUMSData ? DateTime.UtcNow : null;
 
-                            var allDataAvailable = existingStatus.HasScannerData && hasICUMSData && hasImages;
-                            existingStatus.Status = allDataAvailable ? "Complete" : "Missing";
+                            var completenessDecision = ContainerCompletenessPolicy.Evaluate(
+                                existingStatus.HasScannerData,
+                                hasICUMSData,
+                                hasImages,
+                                clearanceType,
+                                groupIdentifier);
+                            existingStatus.Status = completenessDecision.Status;
 
                             // ✅ FIX: Update WorkflowStage if null or if status changed to Complete
                             if (string.IsNullOrEmpty(existingStatus.WorkflowStage))
                             {
-                                existingStatus.WorkflowStage = allDataAvailable ? "ImageAnalysis" : "Pending";
+                                existingStatus.WorkflowStage = completenessDecision.WorkflowStage;
                             }
-                            else if (allDataAvailable && (existingStatus.WorkflowStage == "Pending" || existingStatus.WorkflowStage == "Export-Hold"))
+                            else if (completenessDecision.IsComplete && (existingStatus.WorkflowStage == "Pending" || existingStatus.WorkflowStage == "Export-Hold"))
                             {
                                 existingStatus.WorkflowStage = "ImageAnalysis";
                             }

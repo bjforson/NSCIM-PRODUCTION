@@ -60,12 +60,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 var stats = new
                 {
-                    pending = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Queued"),
-                    submitting = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Processing"),
-                    successful = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Submitted"),
-                    failed = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Failed"),
-                    successfulToday = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Submitted" && x.SubmittedAt >= today),
-                    failedToday = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == "Failed" && x.UpdatedAt >= today)
+                    pending = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Pending),
+                    submitting = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Processing),
+                    successful = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Submitted),
+                    failed = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Failed),
+                    successfulToday = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Submitted && x.SubmittedAt >= today),
+                    failedToday = await _context.ICUMSSubmissionQueues.CountAsync(x => x.Status == ICUMSSubmissionQueueStatus.Failed && x.UpdatedAt >= today)
                 };
 
                 return Ok(stats);
@@ -91,9 +91,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return NotFound(new { error = "Submission not found" });
                 }
 
-                item.Status = "Queued";
+                item.Status = ICUMSSubmissionQueueStatus.Pending;
                 item.RetryCount++;
                 item.ErrorMessage = null;
+                item.NextRetryAt = null;
                 item.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
@@ -121,7 +122,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return NotFound(new { error = "Submission not found" });
                 }
 
-                item.Status = "Cancelled";
+                item.Status = ICUMSSubmissionQueueStatus.Cancelled;
                 item.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
