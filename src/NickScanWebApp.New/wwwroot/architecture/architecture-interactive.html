@@ -66,6 +66,48 @@
       line-height: 1.35;
     }
 
+    .live-strip {
+      margin-top: 9px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 100%;
+      border: 1px solid #dbe4ef;
+      border-radius: 999px;
+      background: #f8fafc;
+      color: #334155;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .live-strip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #94a3b8;
+    }
+
+    .live-strip.live .live-strip-dot {
+      background: #16a34a;
+      animation: livePulse 1.6s ease-in-out infinite;
+    }
+
+    .live-strip.degraded .live-strip-dot {
+      background: #d97706;
+    }
+
+    .live-strip.unhealthy .live-strip-dot,
+    .live-strip.error .live-strip-dot {
+      background: #dc2626;
+    }
+
+    .live-strip-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -303,6 +345,7 @@
     .node.live-healthy .live-badge {
       background: #16a34a;
       box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+      animation: livePulse 1.6s ease-in-out infinite;
     }
 
     .node.live-degraded .live-badge,
@@ -315,6 +358,18 @@
     .node.live-error .live-badge {
       background: #dc2626;
       box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.18);
+      animation: livePulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes livePulse {
+      0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(1.35);
+        opacity: 0.65;
+      }
     }
 
     .live-summary {
@@ -614,6 +669,10 @@
       <div>
         <h1>NickERP / NSCIM Production Architecture</h1>
         <div class="subtitle">Current v1 production topology from `bjforson/NSCIM-PRODUCTION`, updated after the 2026-05-11 main merge and production completeness repair.</div>
+        <div id="liveStrip" class="live-strip">
+          <span class="live-strip-dot"></span>
+          <span id="liveStripText" class="live-strip-text">Waiting for live telemetry from the WebApp wrapper...</span>
+        </div>
       </div>
       <div class="controls">
         <input id="search" type="search" placeholder="Search services" autocomplete="off" />
@@ -1337,6 +1396,8 @@
     const zoomInput = document.getElementById("zoom");
     const resetButton = document.getElementById("reset");
     const fitButton = document.getElementById("fit");
+    const liveStrip = document.getElementById("liveStrip");
+    const liveStripText = document.getElementById("liveStripText");
 
     let selectedNodeId = null;
     let activeFlow = "all";
@@ -1497,6 +1558,12 @@
     function applyLiveTelemetry(payload) {
       if (!payload || payload.type !== "nscim-architecture-telemetry") return;
       liveTelemetry = payload;
+      const receivedAt = payload.timestamp ? new Date(payload.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+      const stripStatus = statusClass(payload.health);
+
+      liveStrip.classList.remove("live", "healthy", "degraded", "warning", "unhealthy", "error", "unknown");
+      liveStrip.classList.add(stripStatus === "healthy" ? "live" : stripStatus);
+      liveStripText.textContent = `Live telemetry ${receivedAt} - ${payload.summary || payload.health || "snapshot received"}`;
 
       document.querySelectorAll(".node").forEach(el => {
         const live = payload.nodes?.[el.dataset.id];
