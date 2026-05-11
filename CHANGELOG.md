@@ -22,6 +22,26 @@ For each release, this file records:
 
 ---
 
+## [2.17.1] - 2026-05-11 - Split choice UI terminal statuses
+
+Patch release to finish wiring the FS6000 visual split gate into the analyst
+split-choice UI.
+
+### What landed
+
+- The inline split-choice component now recognizes `VisualSingle`, `Uncertain`,
+  and `NotApplicable` as resolved split statuses.
+- Analysts now see a clear banner when the splitter intentionally does not offer
+  crop choices, and the normal original-image workflow remains available.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Wire split choice UI terminal statuses
+
 ## [2.17.0] - 2026-05-11 - FS6000 visual split eligibility gate
 
 Feature release for FS6000 scanner images where metadata lists two container
