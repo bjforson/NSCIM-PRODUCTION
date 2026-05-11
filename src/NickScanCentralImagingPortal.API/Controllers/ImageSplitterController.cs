@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
+using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageSplitter;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -18,17 +20,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ILogger<ImageSplitterController> _logger;
         private readonly ApplicationDbContext _db;
         private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
+        private readonly ITwoContainerSplitIntakeService _splitIntake;
 
         public ImageSplitterController(
             IHttpClientFactory httpClientFactory,
             ILogger<ImageSplitterController> logger,
             ApplicationDbContext db,
-            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
+            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner,
+            ITwoContainerSplitIntakeService splitIntake)
         {
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _db = db;
             _urlSigner = urlSigner;
+            _splitIntake = splitIntake;
         }
 
         [HttpGet("health")]
@@ -90,6 +95,119 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogWarning(ex, "Failed to get original image");
                 return StatusCode(503, new { error = "Splitter service unavailable" });
             }
+        }
+
+        /// <summary>
+        /// Admin recovery path for scanner originals that have two containers and source
+        /// bytes but did not reach the splitter intake during ingestion.
+        /// </summary>
+        [HttpPost("jobs/backfill-originals")]
+        [Authorize(Policy = "AdminOnly")]
+        public async Task<IActionResult> BackfillOriginalScanRecords(
+            [FromQuery] string? scanDate = null,
+            [FromQuery] string? scannerType = null,
+            [FromQuery] int limit = 100,
+            [FromQuery] bool dryRun = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (limit < 1 || limit > 500)
+                return BadRequest(new { error = "limit must be between 1 and 500" });
+
+            var targetDate = TryParseScanDate(scanDate);
+            if (targetDate == null)
+                return BadRequest(new { error = "scanDate must be yyyy-MM-dd when supplied" });
+
+            var localZone = TimeZoneInfo.Local;
+            var localStart = targetDate.Value.ToDateTime(TimeOnly.MinValue);
+            var localEnd = localStart.AddDays(1);
+            var queryStartUtc = TimeZoneInfo.ConvertTimeToUtc(localStart, localZone);
+            var queryEndUtc = TimeZoneInfo.ConvertTimeToUtc(localEnd, localZone);
+
+            var query = _db.OriginalScanRecords
+                .AsNoTracking()
+                .Where(original => original.DerivedRecordCount == 2
+                    && original.ScanTime >= queryStartUtc
+                    && original.ScanTime < queryEndUtc);
+
+            if (!string.IsNullOrWhiteSpace(scannerType))
+            {
+                var normalizedScanner = scannerType.Trim();
+                query = query.Where(original => original.ScannerType == normalizedScanner);
+            }
+
+            var candidates = (await query
+                    .OrderBy(original => original.ScanTime)
+                    .Take(limit)
+                    .ToListAsync(cancellationToken))
+                .Where(original => ToLocalDate(original.ScanTime, localZone) == targetDate.Value)
+                .Where(original => ParseTwoContainerNumbers(original.OriginalContainerNumbers).Count == 2)
+                .ToList();
+
+            var items = new List<object>();
+            var applicable = 0;
+            var jobsCreated = 0;
+            var jobsFound = 0;
+            var linked = 0;
+            var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var original in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (dryRun)
+                {
+                    items.Add(new
+                    {
+                        original.Id,
+                        original.ScannerType,
+                        original.OriginalContainerNumbers,
+                        original.ScanTime,
+                        original.IngestedAt,
+                        status = "DryRun"
+                    });
+                    continue;
+                }
+
+                var result = await _splitIntake.EnsureSplitJobForOriginalAsync(original.Id, cancellationToken);
+                if (result.IsApplicable)
+                    applicable++;
+                if (result.SplitJobCreated)
+                    jobsCreated++;
+                if (result.SplitJobFound)
+                    jobsFound++;
+                linked += result.LinkedAnalysisRecords;
+
+                statusCounts[result.Status] = statusCounts.GetValueOrDefault(result.Status) + 1;
+
+                items.Add(new
+                {
+                    original.Id,
+                    original.ScannerType,
+                    original.OriginalContainerNumbers,
+                    original.ScanTime,
+                    original.IngestedAt,
+                    result.IsApplicable,
+                    result.SplitJobCreated,
+                    result.SplitJobFound,
+                    result.LinkedAnalysisRecords,
+                    result.Status
+                });
+            }
+
+            return Ok(new
+            {
+                scanDate = targetDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                scannerType,
+                dryRun,
+                limit,
+                candidates = candidates.Count,
+                applicable,
+                jobsCreated,
+                jobsFound,
+                analysisRecordsLinked = linked,
+                statusCounts,
+                items
+            });
         }
 
         // ── Container-level split integration endpoints ──
@@ -614,6 +732,44 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 return TryGetOutcome(metadata);
 
             return null;
+        }
+
+        private static DateOnly? TryParseScanDate(string? scanDate)
+        {
+            if (string.IsNullOrWhiteSpace(scanDate))
+                return DateOnly.FromDateTime(DateTime.Now.AddDays(-1));
+
+            return DateOnly.TryParseExact(
+                scanDate.Trim(),
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsed)
+                ? parsed
+                : null;
+        }
+
+        private static DateOnly ToLocalDate(DateTime value, TimeZoneInfo localZone)
+        {
+            var utc = value.Kind switch
+            {
+                DateTimeKind.Utc => value,
+                DateTimeKind.Local => value.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            };
+
+            return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, localZone));
+        }
+
+        private static IReadOnlyList<string> ParseTwoContainerNumbers(string? raw)
+        {
+            return (raw ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(token => !string.IsNullOrWhiteSpace(token))
+                .Where(token => !string.Equals(token, "Unknown", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(3)
+                .ToList();
         }
 
         private async Task<IActionResult> ForwardGetAsync(string path)

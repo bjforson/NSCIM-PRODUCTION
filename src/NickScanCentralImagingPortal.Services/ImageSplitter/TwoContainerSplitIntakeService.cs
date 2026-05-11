@@ -213,7 +213,13 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 .ToList();
 
             if (latestRecords.Count == 0)
-                return false;
+            {
+                var existingJob = await _splitter.FindLatestJobByContainersAsync(
+                    string.Join(",", containers),
+                    cancellationToken);
+
+                return existingJob == null;
+            }
 
             if (latestRecords.Count < 2)
                 return true;

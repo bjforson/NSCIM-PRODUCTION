@@ -22,6 +22,28 @@ For each release, this file records:
 
 ---
 
+## [2.17.3] - 2026-05-11 - Two-container split intake backfill
+
+Patch release for scanner originals that were valid two-container images but
+did not appear on the split review page because no splitter job had been
+submitted yet.
+
+### What landed
+
+- Added an admin-only `POST /api/image-splitter/jobs/backfill-originals`
+  recovery endpoint for dated two-container `OriginalScanRecord` backfills.
+- The two-container intake worker now submits valid two-container originals
+  even when analysis rows have not been created yet, while still avoiding
+  duplicate splitter jobs for container pairs already present in the splitter.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Backfill two-container split intake jobs
+
 ## [2.17.2] - 2026-05-11 - Split review queue and image loading
 
 Patch release for the standalone image split review page.
