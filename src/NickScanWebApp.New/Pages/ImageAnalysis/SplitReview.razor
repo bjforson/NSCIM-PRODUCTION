@@ -348,6 +348,20 @@ else
                                 </MudItem>
                             </MudGrid>
 
+                            @* No-split labels feed the splitter training/audit corpus. *@
+                            <MudGrid Class="mb-3">
+                                <MudItem xs="12" sm="6" md="4">
+                                    <MudSelect T="string" Value="@jobState.RejectLabel"
+                                               ValueChanged="@(v => jobState.RejectLabel = v)"
+                                               Label="Reject / Label As" Variant="Variant.Outlined" Dense="true">
+                                        <MudSelectItem Value="@SplitLabelRejected">Wrong split</MudSelectItem>
+                                        <MudSelectItem Value="@SplitLabelSingleContainer">Single container</MudSelectItem>
+                                        <MudSelectItem Value="@SplitLabelBadImage">Bad image / decode failure</MudSelectItem>
+                                        <MudSelectItem Value="@SplitLabelUncertain">Uncertain</MudSelectItem>
+                                    </MudSelect>
+                                </MudItem>
+                            </MudGrid>
+
                             @* Action Buttons *@
                             <MudStack Row="true" Spacing="2">
                                 <MudButton Variant="Variant.Filled" Color="Color.Success"
@@ -367,7 +381,7 @@ else
                                 <MudButton Variant="Variant.Outlined" Color="Color.Error"
                                            StartIcon="@Icons.Material.Outlined.Cancel"
                                            OnClick="@(() => RejectJob(context))" Disabled="@jobState.ActionBusy">
-                                    Reject
+                                    Reject / Label
                                 </MudButton>
                                 <MudSpacer />
                                 <MudButton Variant="Variant.Text" Color="Color.Default"
@@ -390,6 +404,10 @@ else
     private string _currentUser = "unknown";
     private string _apiBaseUrl = "";
     private Timer? _refreshTimer;
+    private const string SplitLabelRejected = "rejected";
+    private const string SplitLabelSingleContainer = "single_container";
+    private const string SplitLabelBadImage = "bad_image";
+    private const string SplitLabelUncertain = "uncertain";
 
     // Per-job expansion + review state. Each job carries its own loaded image,
     // results, manual split point, container assignment, and busy flag so the
@@ -408,6 +426,7 @@ else
         public int ImageWidth { get; set; }
         public string? ContainerLeft { get; set; }
         public string? ContainerRight { get; set; }
+        public string RejectLabel { get; set; } = SplitLabelRejected;
     }
 
     private JobReviewState GetJobState(Guid jobId)
@@ -638,11 +657,13 @@ else
         {
             await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/reject", new
             {
-                correct_split_x = state.ManualSplitX,
+                correct_split_x = state.RejectLabel == SplitLabelRejected ? state.ManualSplitX : null,
                 rejected_by = _currentUser,
-                reason = "Rejected from review page"
+                reason = $"Rejected from review page: {GetReviewLabelText(state.RejectLabel)}",
+                review_label = state.RejectLabel,
+                split_outcome = state.RejectLabel
             });
-            Snackbar.Add($"Split rejected for {job.ContainerNumbers}", Severity.Info);
+            Snackbar.Add($"{GetReviewLabelText(state.RejectLabel)} recorded for {job.ContainerNumbers}", Severity.Info);
             CollapseJob(job.Id);
             _jobStates.Remove(job.Id);
             await LoadJobs();
@@ -657,6 +678,14 @@ else
             state.ActionBusy = false;
         }
     }
+
+    private static string GetReviewLabelText(string? label) => label switch
+    {
+        SplitLabelSingleContainer => "Single container",
+        SplitLabelBadImage => "Bad image / decode failure",
+        SplitLabelUncertain => "Uncertain",
+        _ => "Rejected split"
+    };
 
     private string GetResultImageUrl(Guid jobId, Guid resultId, string side)
     {

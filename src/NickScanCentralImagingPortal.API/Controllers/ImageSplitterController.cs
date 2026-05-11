@@ -21,6 +21,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ApplicationDbContext _db;
         private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
         private readonly ITwoContainerSplitIntakeService _splitIntake;
+        private const string SplitLabelRejected = "rejected";
+        private const string SplitLabelSingleContainer = "single_container";
+        private const string SplitLabelBadImage = "bad_image";
+        private const string SplitLabelUncertain = "uncertain";
 
         public ImageSplitterController(
             IHttpClientFactory httpClientFactory,
@@ -73,7 +77,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         [HttpPost("jobs/{jobId}/reject")]
         public async Task<IActionResult> RejectResult(string jobId, [FromBody] JsonElement body)
-            => await ForwardPostAsync($"/api/split/{jobId}/reject", body);
+            => await ForwardRejectPostAsync(jobId, body);
 
         [HttpPost("jobs/{jobId}/manual")]
         public async Task<IActionResult> ManualSplit(string jobId, [FromBody] JsonElement body)
@@ -692,6 +696,88 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return prop.GetString();
         }
 
+        private static string? TryGetReviewLabel(JsonElement body)
+        {
+            foreach (var propertyName in new[]
+            {
+                "review_label",
+                "split_outcome",
+                "label",
+                "analyst_verdict",
+                "reason_code"
+            })
+            {
+                var label = NormalizeReviewLabel(TryGetString(body, propertyName));
+                if (!string.IsNullOrWhiteSpace(label))
+                    return label;
+            }
+
+            return null;
+        }
+
+        private static bool IsSpecificReviewLabel(string? label) =>
+            string.Equals(label, SplitLabelSingleContainer, StringComparison.Ordinal)
+            || string.Equals(label, SplitLabelBadImage, StringComparison.Ordinal)
+            || string.Equals(label, SplitLabelUncertain, StringComparison.Ordinal);
+
+        private static string? NormalizeReviewLabel(string? value)
+        {
+            var normalized = NormalizeLabelToken(value);
+            if (normalized.Length == 0)
+                return null;
+
+            return normalized switch
+            {
+                "single" or "singlecontainer" or "visualsingle" or "visuallysingle" => SplitLabelSingleContainer,
+                "badimage" or "badscan" or "corruptimage" or "corruptedimage"
+                    or "decodefailure" or "scannerdecodefailure" => SplitLabelBadImage,
+                "uncertain" or "ambiguous" or "lowconfidence" or "inconclusive"
+                    or "nosplitdetected" => SplitLabelUncertain,
+                "reject" or "rejected" or "wrongsplit" => SplitLabelRejected,
+                _ => null
+            };
+        }
+
+        private static string? NormalizeSplitOutcome(string? value)
+        {
+            var normalized = NormalizeLabelToken(value);
+            if (normalized.Length == 0)
+                return null;
+
+            if (normalized is "notapplicable" or "na" or "notsplittable" or "nosplitneeded"
+                or "badimage" or "badscan" or "corruptimage" or "corruptedimage"
+                or "decodefailure" or "scannerdecodefailure")
+            {
+                return "not_applicable";
+            }
+
+            if (normalized is "single" or "singlecontainer" or "visualsingle" or "visuallysingle")
+                return SplitLabelSingleContainer;
+
+            if (normalized is "uncertain" or "ambiguous" or "lowconfidence" or "inconclusive"
+                or "nosplitdetected")
+            {
+                return SplitLabelUncertain;
+            }
+
+            if (normalized is "approve" or "approved" or "reject" or "rejected" or "wrongsplit")
+                return null;
+
+            return value;
+        }
+
+        private static string NormalizeLabelToken(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            return new string(value
+                .Trim()
+                .ToLowerInvariant()
+                .Where(char.IsLetterOrDigit)
+                .ToArray());
+        }
+
         private static string? TryGetOutcome(JsonElement element)
         {
             foreach (var propertyName in new[]
@@ -702,12 +788,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "visual_outcome",
                 "visualOutcome",
                 "classification",
-                "resolution"
+                "resolution",
+                "analyst_verdict",
+                "review_label",
+                "label"
             })
             {
                 var value = TryGetString(element, propertyName);
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
+                var outcome = NormalizeSplitOutcome(value);
+                if (!string.IsNullOrWhiteSpace(outcome))
+                    return outcome;
             }
 
             foreach (var propertyName in new[]
@@ -718,13 +808,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "visualSingle",
                 "single_container",
                 "singleContainer",
+                "bad_image",
+                "badImage",
+                "scanner_decode_failure",
+                "scannerDecodeFailure",
                 "uncertain"
             })
             {
                 if (element.TryGetProperty(propertyName, out var prop)
                     && prop.ValueKind == JsonValueKind.True)
                 {
-                    return propertyName;
+                    return NormalizeSplitOutcome(propertyName) ?? propertyName;
                 }
             }
 
@@ -784,6 +878,54 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to forward GET {Path}", path);
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        private async Task<IActionResult> ForwardRejectPostAsync(string jobId, JsonElement body)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var jsonContent = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json");
+                var response = await client.PostAsync($"/api/split/{jobId}/reject", jsonContent);
+                var content = await response.Content.ReadAsStringAsync();
+
+                var reviewLabel = TryGetReviewLabel(body);
+                if (response.IsSuccessStatusCode && IsSpecificReviewLabel(reviewLabel))
+                {
+                    var verdictJson = JsonSerializer.Serialize(new { wall_verdict = reviewLabel });
+                    var verdictContent = new StringContent(verdictJson, Encoding.UTF8, "application/json");
+                    var verdictResponse = await client.PostAsync($"/api/split/{jobId}/wall-verdict", verdictContent);
+
+                    if (!verdictResponse.IsSuccessStatusCode)
+                    {
+                        var verdictBody = await verdictResponse.Content.ReadAsStringAsync();
+                        _logger.LogWarning(
+                            "Failed to persist split review label {Label} for job {JobId}: {StatusCode} {Body}",
+                            reviewLabel,
+                            jobId,
+                            (int)verdictResponse.StatusCode,
+                            verdictBody);
+
+                        return StatusCode((int)verdictResponse.StatusCode, new
+                        {
+                            error = "split_label_persist_failed",
+                            label = reviewLabel
+                        });
+                    }
+                }
+
+                return new ContentResult
+                {
+                    Content = content,
+                    ContentType = "application/json",
+                    StatusCode = (int)response.StatusCode
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to forward POST /api/split/{JobId}/reject", jobId);
                 return StatusCode(503, new { error = "Splitter service unavailable" });
             }
         }

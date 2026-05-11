@@ -22,6 +22,34 @@ For each release, this file records:
 
 ---
 
+## [2.17.5] - 2026-05-11 - Image splitter local vision training foundation
+
+Minor release for the local vision model training path. This does not put
+Codex or any remote model into the production split decision path.
+
+### What landed
+
+- Added append-only splitter tables for remote vision teacher runs and local
+  model prediction runs, so shadow-mode outputs can be audited without
+  overwriting analyst labels.
+- Added an OpenAI vision teacher/verifier hook behind `OPENAI_VISION_ENABLED`
+  and `OPENAI_API_KEY`. It attaches advisory metadata only and cannot change
+  deterministic split ranking, crops, or job completion.
+- Added dataset export and baseline evaluation tooling under
+  `services/image-splitter/tools/` for analyst-labelled split training data.
+- Added explicit split-review negative labels for wrong split, single
+  container, bad image/decode failure, and uncertain cases.
+- Captured a baseline training inventory report showing the current labelled
+  data gap before model training starts.
+
+### Migrations
+
+- `services/image-splitter/migrations/003_add_append_only_prediction_runs.sql`
+
+### Commits
+
+- (this commit) - Add local vision training foundation for splitter
+
 ## [2.17.4] - 2026-05-11 - Splitter orphan processing recovery
 
 Patch release for raw-engine recovery during deploys and restarts.

@@ -24,6 +24,7 @@ from strategies.claude_vision import ClaudeVisionStrategy
 from strategies.inner_casting_detector import InnerCastingPairStrategy
 from pipeline.image_utils import decode_image, crop_and_encode
 from pipeline.claude_verifier import verify_candidates_with_claude
+from pipeline.openai_verifier import attach_openai_advisory
 from config import AGREEMENT_THRESHOLD_PX, AGREEMENT_BONUS, MIN_CONFIDENCE
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,15 @@ async def run_pipeline(image_data: bytes) -> List[SplitResult]:
             icp_result.metadata["fallback_consensus"] = True
 
     apply_candidate_ranker(results, image_array.shape[1])
+
+    # OpenAI vision runs in shadow/advisory mode only. It never enters the
+    # candidate pool and cannot change ranker selection, confidence, crops, or
+    # best-result selection. If disabled, unavailable, or malformed, it returns
+    # None and deterministic splitting proceeds unchanged.
+    try:
+        await attach_openai_advisory(image_data, results)
+    except Exception as e:
+        logger.error(f"[openai_verifier] raised: {e}", exc_info=True)
 
     # Crop images for each result
     for result in results:
