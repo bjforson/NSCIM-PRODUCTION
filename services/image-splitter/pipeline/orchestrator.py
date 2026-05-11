@@ -18,6 +18,7 @@ from strategies.corner_fitting import CornerFittingStrategy
 from strategies.container_gap import ContainerGapStrategy
 from strategies.density_profile import DensityProfileStrategy
 from strategies.edge_detection import EdgeDetectionStrategy
+from strategies.foreground_seam import ForegroundSeamStrategy
 from strategies.ocr_geometry import OCRGeometryStrategy
 from strategies.claude_vision import ClaudeVisionStrategy
 from strategies.inner_casting_detector import InnerCastingPairStrategy
@@ -26,6 +27,29 @@ from pipeline.claude_verifier import verify_candidates_with_claude
 from config import AGREEMENT_THRESHOLD_PX, AGREEMENT_BONUS, MIN_CONFIDENCE
 
 logger = logging.getLogger(__name__)
+
+
+STRATEGY_PRIORS = {
+    "claude_vision": 1.00,
+    "steel_wall_midpoint": 0.95,
+    "foreground_seam": 0.90,
+    "inner_casting_pair": 0.85,
+    "edge_detection": 0.60,
+    "density_profile": 0.55,
+    "corner_fitting": 0.45,
+    "container_gap": 0.45,
+    "fallback_offset": 0.15,
+    "fallback_midpoint": 0.10,
+}
+
+SINGLETON_OUTLIER_STRATEGIES = {
+    "corner_fitting",
+    "container_gap",
+    "density_profile",
+    "edge_detection",
+    "fallback_offset",
+    "fallback_midpoint",
+}
 
 
 def get_all_strategies() -> List[BaseSplitStrategy]:
@@ -47,6 +71,8 @@ def get_all_strategies() -> List[BaseSplitStrategy]:
         InnerCastingPairStrategy(),    # 1.20.x: pure CV top-strip casting pair
                                         # detector — pixel-accurate on operator
                                         # test set (2 px error on 4c3c7a6d)
+        ForegroundSeamStrategy(),      # 1.21.x: polarity-aware foreground/background
+                                        # seam candidate for ASE + FS6000
         ClaudeVisionStrategy(),        # 1.19.0: API-backed vision oracle (teacher)
         SteelWallMidpointStrategy(),   # Legacy primary: argmin outer wall midpoint
         CornerFittingStrategy(),       # Secondary: ISO corner castings (ZIMU-type)
@@ -84,22 +110,15 @@ async def run_pipeline(image_data: bytes) -> List[SplitResult]:
     strategies = get_all_strategies()
     results: List[SplitResult] = []
 
-    # 1.19.0 — when Claude Vision is available and succeeds, use it as the primary.
-    # Otherwise fall back to steel_wall_midpoint. We keep all the other strategies
-    # running below so we can compare them against Claude in the metadata.
+    # Track legacy primary success for metadata/guards, but do not short-circuit.
+    # The splitter now needs a candidate set for ranking; stopping after one
+    # confident strategy is exactly how plausible but wrong splits reached the UI.
     CLAUDE_STRATEGY = "claude_vision"
     FALLBACK_PRIMARY = "steel_wall_midpoint"
     claude_succeeded = False
     fallback_succeeded = False
 
     for strategy in strategies:
-        # If Claude already succeeded, we still run every strategy for comparison
-        # metadata — that's the whole point of the teacher/student setup. But if
-        # Claude is not configured and the fallback primary has succeeded, we
-        # short-circuit the remaining strategies like the legacy behaviour.
-        if not claude_succeeded and fallback_succeeded and strategy.name != FALLBACK_PRIMARY:
-            logger.info(f"  Skipping {strategy.name} (fallback primary succeeded)")
-            continue
         try:
             logger.info(f"Running strategy: {strategy.name}")
             result = await strategy.analyze(image_data, image_array)
@@ -220,15 +239,14 @@ async def run_pipeline(image_data: bytes) -> List[SplitResult]:
             else:
                 r.metadata.setdefault("verifier_ranking", verifier_pick.ranking)
     else:
-        # Fallback when Claude verifier can't run (no API key, < 2
-        # candidates, API error). Use ICP+SW consensus if available,
-        # otherwise let the confidence-sorted best win.
-        logger.warning("[claude_verifier] did not return a pick — falling back to confidence sort")
+        logger.warning("[claude_verifier] did not return a pick — using deterministic candidate ranker")
         icp_result = next((r for r in results if r.strategy_name == "inner_casting_pair"), None)
         sw_result_fb = next((r for r in results if r.strategy_name == FALLBACK_PRIMARY), None)
         if icp_result and sw_result_fb and abs(icp_result.split_x - sw_result_fb.split_x) <= 10:
             icp_result.confidence = 0.99
             icp_result.metadata["fallback_consensus"] = True
+
+    apply_candidate_ranker(results, image_array.shape[1])
 
     # Crop images for each result
     for result in results:
@@ -239,11 +257,177 @@ async def run_pipeline(image_data: bytes) -> List[SplitResult]:
         except Exception as e:
             logger.error(f"Failed to crop for {result.strategy_name}: {e}")
 
-    # Sort by confidence descending — the verifier's pick (confidence=1.0)
-    # now wins naturally.
-    results.sort(key=lambda r: r.confidence, reverse=True)
+    # Sort by selected/ranker score first, then confidence, so the API/UI sees
+    # the chosen split before noisy high-confidence outliers.
+    results.sort(
+        key=lambda r: (
+            1 if r.metadata.get("ranker_selected") else 0,
+            float(r.metadata.get("ranker_score", 0.0) or 0.0),
+            r.confidence,
+        ),
+        reverse=True,
+    )
 
     return results
+
+
+def _strategy_prior(result: SplitResult, image_width: int) -> float:
+    """Return a strategy prior, adjusted by result metadata quality signals."""
+    prior = STRATEGY_PRIORS.get(result.strategy_name, 0.35)
+    meta = result.metadata or {}
+
+    if result.strategy_name == "inner_casting_pair":
+        gap_width = meta.get("gap_width_px")
+        if isinstance(gap_width, (int, float)) and gap_width > max(60, image_width * 0.025):
+            prior *= 0.35
+        elif isinstance(gap_width, (int, float)) and gap_width <= max(15, image_width * 0.006):
+            prior *= 1.08
+
+    if result.strategy_name == "corner_fitting":
+        left_found = int(meta.get("left_peaks_found") or 0)
+        right_found = int(meta.get("right_peaks_found") or 0)
+        if left_found == 0 or right_found == 0:
+            prior *= 0.45
+
+    if result.strategy_name == "steel_wall_midpoint":
+        if meta.get("split_method") == "casting_pair":
+            prior *= 1.06
+        elif meta.get("split_method") == "midpoint":
+            prior *= 0.94
+
+    if result.strategy_name == "foreground_seam":
+        seam_drop = meta.get("seam_drop")
+        if isinstance(seam_drop, (int, float)) and seam_drop >= 0.20:
+            prior *= 1.08
+        # On full-width FS6000 composites, the legacy steel-wall candidate is
+        # already well calibrated when it lands in the same cluster. Keep the
+        # foreground seam as supporting evidence instead of letting it move the
+        # crop tens of pixels inside that cluster.
+        if image_width >= 2500:
+            prior *= 0.72
+
+    if image_width >= 2500 and result.strategy_name == "density_profile":
+        prior *= 0.40
+
+    return max(0.05, min(prior, 1.10))
+
+
+def apply_candidate_ranker(results: List[SplitResult], image_width: int) -> Optional[SplitResult]:
+    """Select the best split by clustering nearby candidates and scoring support.
+
+    Raw strategy confidence is useful but not comparable across strategies. This
+    ranker rewards agreement between independent cues, keeps trusted strategies
+    as priors, and penalizes single-candidate outliers that historically caused
+    bad splits.
+    """
+    if not results:
+        return None
+
+    cluster_px = max(22, min(72, int(round(image_width * 0.018))))
+    sorted_results = sorted(results, key=lambda r: r.split_x)
+    clusters: list[dict] = []
+
+    for result in sorted_results:
+        if not clusters or abs(result.split_x - clusters[-1]["center"]) > cluster_px:
+            clusters.append({"items": [result], "center": float(result.split_x)})
+            continue
+        clusters[-1]["items"].append(result)
+        clusters[-1]["center"] = sum(r.split_x for r in clusters[-1]["items"]) / len(clusters[-1]["items"])
+
+    best_cluster = None
+    best_result = None
+
+    for cluster_index, cluster in enumerate(clusters, start=1):
+        items: list[SplitResult] = cluster["items"]
+        weighted = [
+            (r, _strategy_prior(r, image_width) * max(0.0, min(float(r.confidence or 0.0), 1.0)))
+            for r in items
+        ]
+        support = sum(weight for _, weight in weighted)
+        diversity = len({r.strategy_name for r in items})
+        spread = max(r.split_x for r in items) - min(r.split_x for r in items)
+        tightness = 1.0 - min(spread / max(cluster_px * 2.0, 1.0), 1.0)
+        center_score = 1.0 - abs(cluster["center"] - image_width / 2.0) / (image_width / 2.0)
+
+        score = (
+            support * (1.0 + 0.28 * max(0, diversity - 1))
+            + 0.14 * center_score
+            + 0.08 * tightness
+        )
+
+        if len(items) == 1:
+            strategy_name = items[0].strategy_name
+            if strategy_name in SINGLETON_OUTLIER_STRATEGIES:
+                score -= 0.25
+            if items[0].confidence < 0.40:
+                score -= 0.15
+
+        strategy_names = {r.strategy_name for r in items}
+        if image_width >= 2500 and "steel_wall_midpoint" not in strategy_names:
+            if "density_profile" in strategy_names:
+                score -= 0.25
+            if strategy_names.issubset({"inner_casting_pair", "density_profile"}):
+                score -= 0.55
+
+        representative = max(weighted, key=lambda item: item[1])[0]
+        cluster_summary = {
+            "cluster_index": cluster_index,
+            "center": round(cluster["center"], 2),
+            "score": round(float(score), 4),
+            "support": round(float(support), 4),
+            "diversity": diversity,
+            "spread_px": int(spread),
+            "members": [
+                {
+                    "strategy": r.strategy_name,
+                    "split_x": int(r.split_x),
+                    "confidence": round(float(r.confidence or 0.0), 4),
+                    "prior": round(_strategy_prior(r, image_width), 4),
+                }
+                for r in items
+            ],
+        }
+
+        for item in items:
+            item.metadata.setdefault("ranker_cluster_index", cluster_index)
+            item.metadata.setdefault("ranker_cluster_center", round(cluster["center"], 2))
+            item.metadata.setdefault("ranker_score", round(float(score), 4))
+
+        if best_cluster is None or score > best_cluster["score_raw"]:
+            best_cluster = {**cluster_summary, "score_raw": score}
+            best_result = representative
+
+    if best_result is None or best_cluster is None:
+        return None
+
+    for result in results:
+        result.metadata["ranker_selected"] = False
+        result.metadata["ranker_winner_cluster"] = best_cluster["cluster_index"]
+
+    raw_confidence = float(best_result.confidence or 0.0)
+    best_result.metadata["raw_confidence"] = round(raw_confidence, 4)
+    best_result.metadata["ranker_selected"] = True
+    best_result.metadata["ranker_reasoning"] = (
+        "Selected by deterministic candidate ranker using strategy priors, "
+        "nearby-candidate agreement, centrality, and singleton-outlier penalties."
+    )
+    best_result.metadata["ranker_winner"] = {
+        key: value
+        for key, value in best_cluster.items()
+        if key != "score_raw"
+    }
+
+    # Boost the selected result so confidence-sorted clients display the actual
+    # best split first. The original value is preserved in metadata.
+    best_result.confidence = max(raw_confidence, 0.99)
+    logger.info(
+        "[candidate_ranker] selected %s split_x=%s score=%.3f members=%s",
+        best_result.strategy_name,
+        best_result.split_x,
+        best_cluster["score_raw"],
+        ",".join(m["strategy"] for m in best_cluster["members"]),
+    )
+    return best_result
 
 
 def apply_consensus_scoring(results: List[SplitResult]) -> List[SplitResult]:
@@ -279,7 +463,10 @@ def apply_consensus_scoring(results: List[SplitResult]) -> List[SplitResult]:
 
 
 def get_best_result(results: List[SplitResult]) -> Optional[SplitResult]:
-    """Get the highest-confidence result."""
+    """Get the ranker-selected result, falling back to highest confidence."""
     if not results:
         return None
+    selected = [r for r in results if (r.metadata or {}).get("ranker_selected")]
+    if selected:
+        return max(selected, key=lambda r: float(r.metadata.get("ranker_score", 0.0) or 0.0))
     return max(results, key=lambda r: r.confidence)

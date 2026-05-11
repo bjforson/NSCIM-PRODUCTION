@@ -22,6 +22,55 @@ For each release, this file records:
 
 ---
 
+## [2.16.14] - 2026-05-11 - Splitter candidate ranker and polarity-aware seam detection
+
+Patch release for operator-reported wrong split suggestions on two-container
+scanner images.
+
+### What landed
+
+#### Splitter candidate generation - improved
+
+Added a new `foreground_seam` strategy that detects image polarity from the
+scan itself, then searches for the low-foreground seam between two large
+container masses. This covers ASE images where the visual polarity differs from
+FS6000 and the old "air is bright" assumption can place a confident cut inside
+the right-hand container.
+
+#### Splitter best-candidate selection - hardened
+
+The splitter now runs all strategies for each job instead of short-circuiting
+after `steel_wall_midpoint` succeeds. A deterministic ranker clusters nearby
+candidate split points, applies strategy priors and metadata quality signals,
+and penalizes singleton outliers such as isolated `corner_fitting`,
+`container_gap`, or `density_profile` picks. The chosen result preserves its raw
+confidence in metadata while being surfaced first to existing confidence-sorted
+clients.
+
+#### Edge detection strategy - fixed
+
+Fixed an `edge_detection` indexing bug that raised
+`'list' object has no attribute 'tolist'`, preventing that strategy from
+contributing candidate evidence.
+
+### Tests / verification
+
+- `python -m py_compile` for `pipeline/orchestrator.py`,
+  `strategies/foreground_seam.py`, and `strategies/edge_detection.py`.
+- Replayed 59 labelled splitter jobs from the local production database:
+  mean absolute split error improved from `13.56px` to `7.32px`; within-15px
+  jobs improved from `42/59` to `46/59`.
+- Replayed the fresh ASE failure `NYKU3808732,TRHU2102211`; selected split moved
+  from `steel_wall_midpoint x=790` to `foreground_seam x=667`.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add polarity-aware splitter ranker
+
 ## [2.16.13] - 2026-05-10 - Two-container scanner split intake
 
 Feature and reliability release for scanner events that contain exactly two

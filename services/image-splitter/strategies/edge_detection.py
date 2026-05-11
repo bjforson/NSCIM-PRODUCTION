@@ -104,7 +104,13 @@ class EdgeDetectionStrategy(BaseSplitStrategy):
             # Score: continuity * centrality * prominence
             center_dist = abs(peak_x - w / 2) / (w / 2)
             centrality = 1.0 - center_dist
-            prominence = properties['prominences'][list(peaks - margin).tolist().index(peak_x - margin)] if (peak_x - margin) in (peaks - margin) else 0.1
+            local_peak_x = peak_x - margin
+            local_peak_indices = np.where(peaks - margin == local_peak_x)[0]
+            prominence = (
+                float(properties["prominences"][int(local_peak_indices[0])])
+                if len(local_peak_indices) > 0
+                else 0.1
+            )
 
             score = continuity * 0.5 + centrality * 0.3 + min(prominence, 1.0) * 0.2
 
