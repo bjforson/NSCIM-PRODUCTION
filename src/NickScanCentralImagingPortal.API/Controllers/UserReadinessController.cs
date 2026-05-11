@@ -1,13 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
+using NickScanCentralImagingPortal.Core.Helpers;
+using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageAnalysis;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
@@ -22,13 +28,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
     {
         private readonly ApplicationDbContext _dbContext;
         private readonly ILogger<UserReadinessController> _logger;
+        private readonly IMemoryCache _memoryCache;
+        private readonly ReadyGroupsCacheService? _readyGroupsCache;
 
         public UserReadinessController(
             ApplicationDbContext dbContext,
-            ILogger<UserReadinessController> logger)
+            ILogger<UserReadinessController> logger,
+            IMemoryCache memoryCache,
+            ReadyGroupsCacheService? readyGroupsCache = null)
         {
             _dbContext = dbContext;
             _logger = logger;
+            _memoryCache = memoryCache;
+            _readyGroupsCache = readyGroupsCache;
         }
 
         /// <summary>
@@ -37,37 +49,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpPost("ready")]
         public async Task<ActionResult> SetReady([FromBody] SetReadyRequest request)
         {
-            var username = User.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
             {
                 return Unauthorized(new { error = "User is not authenticated" });
             }
 
-            if (string.IsNullOrWhiteSpace(request.Role))
+            var role = NormalizeAssignmentRole(request.Role);
+            if (string.IsNullOrWhiteSpace(role))
             {
-                return BadRequest(new { error = "Role is required" });
+                return BadRequest(new { error = "Role must be 'Analyst' or 'Audit'" });
             }
 
             try
             {
                 _logger.LogInformation("🔔 [READINESS] User {Username} setting readiness to {IsReady} for role {Role}",
-                    username, request.IsReady, request.Role);
+                    username, request.IsReady, role);
 
                 var now = DateTime.UtcNow;
 
                 // Find or create readiness record (AsTracking required since DbContext defaults to NoTracking)
                 var readiness = await _dbContext.UserReadiness
                     .AsTracking()
-                    .FirstOrDefaultAsync(r => r.Username == username && r.Role == request.Role);
+                    .FirstOrDefaultAsync(r => r.Username == username && r.Role == role);
 
                 if (readiness == null)
                 {
-                    _logger.LogInformation("🔔 [READINESS] Creating new readiness record for {Username} role {Role}", username, request.Role);
+                    _logger.LogInformation("🔔 [READINESS] Creating new readiness record for {Username} role {Role}", username, role);
                     // Create new record
                     readiness = new UserReadiness
                     {
                         Username = username,
-                        Role = request.Role,
+                        Role = role,
                         IsReady = request.IsReady,
                         LastHeartbeat = now,
                         LastChangedAt = now,
@@ -86,14 +99,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     if (wasChanged)
                     {
                         _logger.LogInformation("🔔 [READINESS] Readiness changed for {Username} role {Role}: {OldStatus} → {NewStatus}",
-                            username, request.Role, wasReady, request.IsReady);
+                            username, role, wasReady, request.IsReady);
                         readiness.LastChangedAt = now;
                         readiness.ChangedBy = username;
                     }
                     else
                     {
                         _logger.LogDebug("🔔 [READINESS] Readiness unchanged for {Username} role {Role}: {Status} (heartbeat updated)",
-                            username, request.Role, request.IsReady);
+                            username, role, request.IsReady);
                     }
 
                     if (!string.IsNullOrEmpty(request.SessionId))
@@ -101,16 +114,39 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 await _dbContext.SaveChangesAsync();
+                UserReadinessStateProvider.SetReadiness(username, role, request.IsReady, now, sessionId: request.SessionId);
+                InvalidateMyAssignmentsCache(username, role);
+
+                var assignmentsCreated = 0;
+                if (request.IsReady)
+                {
+                    try
+                    {
+                        assignmentsCreated = await TryCreateAssignmentsForReadyUserAsync(username, role, now, HttpContext.RequestAborted);
+                    }
+                    catch (Exception assignmentEx)
+                    {
+                        _logger.LogWarning(assignmentEx,
+                            "[READINESS-ASSIGNMENT] Readiness saved for {Username}/{Role}, but immediate assignment kick failed; orchestrator will retry",
+                            username,
+                            role);
+                    }
+                }
+                if (assignmentsCreated > 0)
+                {
+                    InvalidateMyAssignmentsCache(username, role);
+                }
 
                 _logger.LogInformation("✅ [READINESS] User {Username} readiness saved: IsReady={IsReady}, Role={Role}, LastHeartbeat={Heartbeat}",
-                    username, readiness.IsReady, request.Role, readiness.LastHeartbeat);
+                    username, readiness.IsReady, role, readiness.LastHeartbeat);
 
                 return Ok(new
                 {
                     Username = username,
-                    Role = request.Role,
+                    Role = role,
                     IsReady = readiness.IsReady,
-                    LastHeartbeat = readiness.LastHeartbeat
+                    LastHeartbeat = readiness.LastHeartbeat,
+                    AssignmentsCreated = assignmentsCreated
                 });
             }
             catch (Exception ex)
@@ -126,37 +162,39 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpPost("heartbeat")]
         public async Task<ActionResult> SendHeartbeat([FromBody] HeartbeatRequest request)
         {
-            var username = User.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
             {
                 return Unauthorized(new { error = "User is not authenticated" });
             }
 
-            if (string.IsNullOrWhiteSpace(request.Role))
+            var role = NormalizeAssignmentRole(request.Role);
+            if (string.IsNullOrWhiteSpace(role))
             {
-                return BadRequest(new { error = "Role is required" });
+                return BadRequest(new { error = "Role must be 'Analyst' or 'Audit'" });
             }
 
             try
             {
-                _logger.LogDebug("💓 [HEARTBEAT] Received heartbeat from {Username} for role {Role}", username, request.Role);
+                _logger.LogDebug("💓 [HEARTBEAT] Received heartbeat from {Username} for role {Role}", username, role);
 
                 var readiness = await _dbContext.UserReadiness
                     .AsTracking()
-                    .FirstOrDefaultAsync(r => r.Username == username && r.Role == request.Role);
+                    .FirstOrDefaultAsync(r => r.Username == username && r.Role == role);
 
                 if (readiness != null)
                 {
                     var oldHeartbeat = readiness.LastHeartbeat;
                     readiness.LastHeartbeat = DateTime.UtcNow;
                     await _dbContext.SaveChangesAsync();
+                    UserReadinessStateProvider.UpdateHeartbeat(username, role);
                     _logger.LogDebug("💓 [HEARTBEAT] Updated heartbeat for {Username} role {Role}: {OldHeartbeat} → {NewHeartbeat}",
-                        username, request.Role, oldHeartbeat, readiness.LastHeartbeat);
+                        username, role, oldHeartbeat, readiness.LastHeartbeat);
                 }
                 else
                 {
                     _logger.LogWarning("⚠️ [HEARTBEAT] Heartbeat received but no readiness record found for {Username} role {Role} - sync service should create it",
-                        username, request.Role);
+                        username, role);
                 }
                 // If record doesn't exist, that's OK - sync service or SignalR will create it
 
@@ -175,7 +213,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("readiness")]
         public async Task<ActionResult<UserReadinessResponse>> GetReadiness([FromQuery] string? role = null)
         {
-            var username = User.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
             {
                 return Unauthorized(new { error = "User is not authenticated" });
@@ -183,6 +221,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             try
             {
+                var requestedRole = role;
+                role = NormalizeAssignmentRole(role);
+                if (!string.IsNullOrWhiteSpace(requestedRole) && string.IsNullOrWhiteSpace(role))
+                {
+                    return BadRequest(new { error = "Role must be 'Analyst' or 'Audit'" });
+                }
+
                 var query = _dbContext.UserReadiness.Where(r => r.Username == username);
 
                 if (!string.IsNullOrEmpty(role))
@@ -243,7 +288,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("diagnostics")]
         public async Task<ActionResult<AssignmentDiagnosticsResponse>> GetDiagnostics([FromQuery] string? role = null)
         {
-            var username = User.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
             {
                 return Unauthorized(new { error = "User is not authenticated" });
@@ -258,6 +303,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 };
 
                 // Determine role (from query or user's actual role)
+                var requestedRole = role;
+                role = NormalizeAssignmentRole(role);
+                if (!string.IsNullOrWhiteSpace(requestedRole) && string.IsNullOrWhiteSpace(role))
+                {
+                    return BadRequest(new { error = "Role must be 'Analyst' or 'Audit'" });
+                }
+
                 if (string.IsNullOrEmpty(role))
                 {
                     // Try to determine from user's role in database
@@ -451,6 +503,241 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogError(ex, "Error getting diagnostics for user {Username}", username);
                 return StatusCode(500, new { error = "Failed to get diagnostics", message = ex.Message });
             }
+        }
+
+        private string GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.FindFirst("username")?.Value
+                ?? User?.FindFirst("name")?.Value
+                ?? User?.FindFirst("preferred_username")?.Value
+                ?? string.Empty;
+        }
+
+        private static string? NormalizeAssignmentRole(string? role)
+        {
+            if (string.IsNullOrWhiteSpace(role)) return null;
+            if (role.Equals("Analyst", StringComparison.OrdinalIgnoreCase)) return "Analyst";
+            if (role.Equals("Audit", StringComparison.OrdinalIgnoreCase)) return "Audit";
+            return null;
+        }
+
+        private void InvalidateMyAssignmentsCache(string username, string role)
+        {
+            _memoryCache.Remove($"my-assignments:{username}:{role}");
+        }
+
+        private async Task<int> TryCreateAssignmentsForReadyUserAsync(
+            string username,
+            string role,
+            DateTime now,
+            CancellationToken cancellationToken)
+        {
+            var settings = await _dbContext.AnalysisSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(cancellationToken) ?? new AnalysisSettings();
+
+            if (!settings.Enabled || !string.Equals(settings.AssignmentMode, "Auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            var roleNameUpper = role.ToUpperInvariant();
+            var matchingRoleIds = await _dbContext.Roles
+                .AsNoTracking()
+                .Where(r => r.IsActive && r.Name.ToUpper() == roleNameUpper)
+                .Select(r => r.Id)
+                .ToListAsync(cancellationToken);
+
+            var userHasRole = matchingRoleIds.Any()
+                && await _dbContext.Users
+                    .AsNoTracking()
+                    .AnyAsync(u => u.Username == username
+                        && u.IsActive
+                        && u.RoleId.HasValue
+                        && matchingRoleIds.Contains(u.RoleId.Value), cancellationToken);
+
+            if (!userHasRole)
+            {
+                _logger.LogWarning("[READINESS-ASSIGNMENT] User {Username} is ready for {Role}, but does not have that active role in the database", username, role);
+                return 0;
+            }
+
+            var maxConcurrent = settings.MaxConcurrentPerUser > 0 ? settings.MaxConcurrentPerUser : 5;
+            var activeAssignments = await _dbContext.AnalysisAssignments
+                .CountAsync(a => a.AssignedTo == username
+                    && a.State == "Active"
+                    && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now), cancellationToken);
+
+            if (activeAssignments >= maxConcurrent)
+            {
+                return 0;
+            }
+
+            var eligibleStatus = role == "Audit" ? AnalysisStatuses.AnalystCompleted : AnalysisStatuses.Ready;
+            var assignedStatus = role == "Audit" ? AnalysisStatuses.AuditAssigned : AnalysisStatuses.AnalystAssigned;
+            await InvalidateReadyGroupsCacheAsync(role, eligibleStatus, cancellationToken);
+            var readyGroups = await GetReadyGroupsForRoleAsync(role, eligibleStatus, cancellationToken);
+
+            if (!readyGroups.Any())
+            {
+                return 0;
+            }
+
+            var assignmentsCreated = 0;
+            var leaseMinutes = settings.LeaseMinutes > 0 ? settings.LeaseMinutes : 15;
+            var leaseUntil = now.AddMinutes(leaseMinutes);
+
+            foreach (var readyGroup in readyGroups)
+            {
+                if (activeAssignments + assignmentsCreated >= maxConcurrent)
+                {
+                    break;
+                }
+
+                var assignment = await TryAssignGroupToReadyUserAsync(
+                    readyGroup.Id,
+                    readyGroup.GroupIdentifier ?? readyGroup.Id.ToString(),
+                    username,
+                    role,
+                    eligibleStatus,
+                    assignedStatus,
+                    now,
+                    leaseUntil,
+                    cancellationToken);
+
+                if (assignment == null)
+                {
+                    continue;
+                }
+
+                assignmentsCreated++;
+                _logger.LogInformation(
+                    "[READINESS-ASSIGNMENT] Created assignment {AssignmentId} for {Username} ({Role}) on group {GroupIdentifier}",
+                    assignment.Id,
+                    username,
+                    role,
+                    readyGroup.GroupIdentifier);
+
+                try
+                {
+                    await UpsertQueueEntryAsync(assignment.Id, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[READINESS-ASSIGNMENT] Queue upsert failed for assignment {AssignmentId}; reconciler will repair it", assignment.Id);
+                }
+            }
+
+            if (assignmentsCreated > 0)
+            {
+                await InvalidateReadyGroupsCacheAsync(role, eligibleStatus, cancellationToken);
+            }
+
+            return assignmentsCreated;
+        }
+
+        private async Task<AnalysisAssignment?> TryAssignGroupToReadyUserAsync(
+            Guid groupId,
+            string groupIdentifier,
+            string username,
+            string role,
+            string eligibleStatus,
+            string assignedStatus,
+            DateTime now,
+            DateTime leaseUntil,
+            CancellationToken cancellationToken)
+        {
+            AnalysisAssignment? assignment = null;
+            var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+
+            try
+            {
+                await executionStrategy.ExecuteAsync(async () =>
+                {
+                    await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+                    var hasActiveAssignment = await _dbContext.AnalysisAssignments
+                        .AnyAsync(a => a.GroupId == groupId
+                            && a.State == "Active"
+                            && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now), cancellationToken);
+
+                    if (hasActiveAssignment)
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        return;
+                    }
+
+                    var trackedGroup = await _dbContext.AnalysisGroups
+                        .AsTracking()
+                        .FirstOrDefaultAsync(g => g.Id == groupId && g.Status == eligibleStatus, cancellationToken);
+
+                    if (trackedGroup == null)
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        return;
+                    }
+
+                    assignment = new AnalysisAssignment
+                    {
+                        GroupId = groupId,
+                        AssignedTo = username,
+                        Role = role,
+                        LeaseUntilUtc = leaseUntil,
+                        State = "Active",
+                        CreatedAtUtc = now,
+                        UpdatedAtUtc = now
+                    };
+                    _dbContext.AnalysisAssignments.Add(assignment);
+
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        _dbContext,
+                        trackedGroup,
+                        assignedStatus,
+                        triggerName: $"ReadinessKickTo{role}",
+                        actor: "READINESS-API",
+                        reason: $"Auto-assigned immediately when {username} marked Ready (role={role}, lease={leaseUntil:O}).",
+                        correlationId: HttpContext?.TraceIdentifier,
+                        ct: cancellationToken);
+
+                    trackedGroup.UpdatedAtUtc = now;
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[READINESS-ASSIGNMENT] Failed to assign group {GroupIdentifier} to {Username}", groupIdentifier, username);
+                _dbContext.ChangeTracker.Clear();
+                assignment = null;
+            }
+
+            return assignment;
+        }
+
+        protected virtual Task<List<AnalysisGroup>> GetReadyGroupsForRoleAsync(
+            string role,
+            string eligibleStatus,
+            CancellationToken cancellationToken)
+        {
+            return _readyGroupsCache?.GetReadyGroupsForRoleAsync(role, eligibleStatus, cancellationToken)
+                ?? Task.FromResult(new List<AnalysisGroup>());
+        }
+
+        protected virtual Task InvalidateReadyGroupsCacheAsync(
+            string role,
+            string eligibleStatus,
+            CancellationToken cancellationToken)
+        {
+            return _readyGroupsCache?.InvalidateCacheAsync(role, eligibleStatus, cancellationToken)
+                ?? Task.CompletedTask;
+        }
+
+        protected virtual Task UpsertQueueEntryAsync(int assignmentId, CancellationToken cancellationToken)
+        {
+            return _readyGroupsCache?.UpsertQueueEntryAsync(_dbContext, assignmentId, cancellationToken)
+                ?? Task.CompletedTask;
         }
 
         /// <summary>

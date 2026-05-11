@@ -53,7 +53,7 @@ namespace NickScanCentralImagingPortal.Core.Entities
         public int Priority { get; set; } = 0;
 
         /// <summary>
-        /// Number of times processing has been attempted
+        /// Number of failed processing attempts.
         /// </summary>
         public int RetryCount { get; set; } = 0;
 
@@ -538,4 +538,3 @@ namespace NickScanCentralImagingPortal.Core.Entities
         }
     }
 }
-

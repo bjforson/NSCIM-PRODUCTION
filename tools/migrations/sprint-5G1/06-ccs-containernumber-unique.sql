@@ -25,14 +25,16 @@
 --      cache, not source-of-truth — no audit-trail loss. AR/IAD reference by
 --      containernumber, not by CCS.id, so they automatically re-bind to surviving
 --      row.
---   2. Add UNIQUE constraint on (containernumber, scannertype) — composite, not
---      single-column, because the 2 cross-scanner cases must coexist.
+--   2. Add UNIQUE constraint on (containernumber, scannertype, inspectionid) —
+--      composite, not single-column, because the 2 cross-scanner cases and
+--      repeated scans for the same container/scanner must coexist.
 --
 -- The composite UNIQUE means FK4/FK5 cannot be added to ccs.containernumber alone.
 -- Documented for Agent 1.3 (FK pass): the FKs would need a composite parent
--- (containernumber, scannertype) on both sides, which requires schema work on
--- containerboerelations + imageanalysisdecisions to add scannertype as part of the
--- referencing tuple. Out of scope for Step B; flagged for follow-up.
+-- (containernumber, scannertype, inspectionid) on both sides, which requires
+-- schema work on containerboerelations + imageanalysisdecisions to add scannertype
+-- and inspectionid as part of the referencing tuple. Out of scope for Step B;
+-- flagged for follow-up.
 --
 -- Sanity cap: 100 rows total deletion. Current count is 39. STOP if >100.
 --
@@ -119,15 +121,17 @@ END $$;
 -- a CREATE UNIQUE INDEX achieves the same end result and accepts IF NOT EXISTS.
 --
 -- The UNIQUE on single column (containernumber) is NOT possible while the 2
--- cross-scanner records exist. We chose composite (containernumber, scannertype).
-CREATE UNIQUE INDEX IF NOT EXISTS ix_ccs_containernumber_scannertype_unique
-    ON containercompletenessstatuses(containernumber, scannertype);
+-- cross-scanner records exist. We chose composite
+-- (containernumber, scannertype, COALESCE(inspectionid, '')) to match the
+-- service identity and to treat NULL inspection IDs as the same legacy scan.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_ccs_container_scanner_inspection_unique
+    ON containercompletenessstatuses(containernumber, scannertype, COALESCE(inspectionid, ''));
 
 \echo '## POST-INDEX'
 SELECT indexname, indexdef
 FROM pg_indexes
 WHERE tablename = 'containercompletenessstatuses'
-  AND indexname = 'ix_ccs_containernumber_scannertype_unique';
+  AND indexname = 'ix_ccs_container_scanner_inspection_unique';
 
 COMMIT;
 

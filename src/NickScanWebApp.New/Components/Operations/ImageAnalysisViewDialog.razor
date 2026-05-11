@@ -2254,10 +2254,9 @@
                 catch { }
             });
 
-            // Close dialog after successful bulk
+            // Close dialog after successful bulk.
             if (failed == 0)
             {
-                await Task.Delay(500);
                 await HandleAllContainersDecided();
             }
         }
@@ -2306,7 +2305,6 @@
 
                     Console.WriteLine($"🔄 [DirectOpen] Decision saved for {containerNumber} - allDecided={response.AllContainersDecided}, next={response.NextContainerNumber ?? "null"}");
                     dialogRef.Close(DialogResult.Ok(true));
-                    await Task.Delay(300);
 
                     if (response.AllContainersDecided)
                     {
@@ -2349,7 +2347,9 @@
         
         Snackbar.Add("All containers in this group have been decided. Group moved to audit queue.", Severity.Success);
         
-        // Notify parent component if callback is provided
+        // Notify parent component if callback is provided. The parent owns the
+        // dialog reference and closes it immediately so the assignments list is
+        // visible again without an artificial wait.
         if (OnAllContainersDecided.HasValue)
         {
             Console.WriteLine("🔄 [ImageAnalysisViewDialog] Invoking OnAllContainersDecided callback");
@@ -2360,14 +2360,9 @@
         else
         {
             await LogToBrowserConsole("⚠️ [ImageAnalysisViewDialog] OnAllContainersDecided has NO delegate");
+            await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Falling back to CloseDialogAfterSave()");
+            await CloseDialogAfterSave();
         }
-        
-        // Close dialog after a short delay to show the success message
-        await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Waiting 2 seconds before closing dialog");
-        await Task.Delay(2000);
-        await LogToBrowserConsole("🔄 [ImageAnalysisViewDialog] Calling CloseDialogAfterSave()");
-        await CloseDialogAfterSave();
-        await LogToBrowserConsole("✅ [ImageAnalysisViewDialog] CloseDialogAfterSave completed - dialog should be closed");
     }
 
     // ✅ AUTO-PROGRESSION: Find first undecided container and expand it

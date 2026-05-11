@@ -131,8 +131,8 @@
     
     private List<SubmissionQueueItem> submissions = new();
     private List<SubmissionQueueItem> pendingSubmissions => submissions.Where(x => x.Status == "Pending").ToList();
-    private List<SubmissionQueueItem> submittingSubmissions => submissions.Where(x => x.Status == "Submitting").ToList();
-    private List<SubmissionQueueItem> successfulSubmissions => submissions.Where(x => x.Status == "Successful").ToList();
+    private List<SubmissionQueueItem> submittingSubmissions => submissions.Where(x => x.Status == "Processing").ToList();
+    private List<SubmissionQueueItem> successfulSubmissions => submissions.Where(x => x.Status == "Submitted").ToList();
     private List<SubmissionQueueItem> failedSubmissions => submissions.Where(x => x.Status == "Failed").ToList();
     
     protected override async Task OnInitializedAsync()
@@ -183,7 +183,7 @@
             try
             {
                 // Get successful items from yesterday
-                var yesterdayItems = await ApiService.GetAsync<List<SubmissionQueueItem>>($"/api/ICUMSSubmissionQueue?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}&status=Successful");
+                var yesterdayItems = await ApiService.GetAsync<List<SubmissionQueueItem>>($"/api/ICUMSSubmissionQueue?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}&status=Submitted");
                 successfulYesterday = yesterdayItems?.Count ?? 0;
             }
             catch (Exception ex)

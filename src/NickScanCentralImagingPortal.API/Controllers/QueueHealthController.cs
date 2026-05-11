@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ContainerCompleteness;
+using NickScanCentralImagingPortal.Services.Permissions;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
@@ -17,14 +20,41 @@ namespace NickScanCentralImagingPortal.API.Controllers
     /// Health check endpoint for Container Scan Queue
     /// Provides queue statistics, health status, and monitoring data
     /// </summary>
-    [AllowAnonymous] // Health check should be accessible without auth for monitoring
     [ApiController]
     [Route("api/[controller]")]
     public class QueueHealthController : ControllerBase
     {
+        private static readonly string[] DetailedQueuePermissions =
+        {
+            Permissions.ControllersCompletenessView,
+            Permissions.ControllersCompletenessManage,
+            Permissions.PagesContainerCompleteness,
+            Permissions.PagesValidationCompleteness,
+            Permissions.PagesValidationRecordCompleteness,
+            Permissions.PagesServicesFs6000Completeness,
+            Permissions.PagesServicesMonitoring,
+            Permissions.PagesAdminServiceControl,
+            Permissions.SystemMonitoringView,
+            Permissions.SystemPerformanceView,
+            Permissions.PerformanceMetricsView
+        };
+
+        private static readonly HashSet<string> DetailedQueueRoles = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Admin",
+            "SuperAdmin",
+            "Operations",
+            "Operator",
+            "ScannerOperator",
+            "Supervisor",
+            "Manager",
+            "Lead"
+        };
+
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
         private readonly ILogger<QueueHealthController> _logger;
+        private readonly IPermissionService _permissionService;
         private readonly QueuePublishingMetricsService? _metricsService;
         private readonly QueuePublishingAlertService? _alertService;
 
@@ -32,12 +62,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             ApplicationDbContext context,
             IConfiguration configuration,
             ILogger<QueueHealthController> logger,
+            IPermissionService permissionService,
             QueuePublishingMetricsService? metricsService = null,
             QueuePublishingAlertService? alertService = null)
         {
             _context = context;
             _configuration = configuration;
             _logger = logger;
+            _permissionService = permissionService;
             _metricsService = metricsService;
             _alertService = alertService;
         }
@@ -46,6 +78,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get overall queue health status
         /// </summary>
         [HttpGet]
+        [AllowAnonymous]
         [ResponseCache(Duration = 15)]
         public async Task<ActionResult<QueueHealthResponse>> GetQueueHealth()
         {
@@ -78,6 +111,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get queue statistics
         /// </summary>
         [HttpGet("statistics")]
+        [AllowAnonymous]
         [ResponseCache(Duration = 15)]
         public async Task<ActionResult<QueueStatisticsResponse>> GetStatistics()
         {
@@ -101,10 +135,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get stuck items (processing >30 minutes)
         /// </summary>
         [HttpGet("stuck")]
+        [Authorize]
         public async Task<ActionResult<List<QueueItemResponse>>> GetStuckItems()
         {
             try
             {
+                if (!await HasDetailedQueueAccessAsync())
+                {
+                    return Forbid();
+                }
+
                 var timeoutMinutes = 30;
                 var cutoffTime = DateTime.UtcNow.AddMinutes(-timeoutMinutes);
 
@@ -136,10 +176,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get failed items
         /// </summary>
         [HttpGet("failed")]
+        [Authorize]
         public async Task<ActionResult<List<QueueItemResponse>>> GetFailedItems([FromQuery] int limit = 20)
         {
             try
             {
+                if (!await HasDetailedQueueAccessAsync())
+                {
+                    return Forbid();
+                }
+
                 var failedItems = await _context.ContainerScanQueues
                     .Where(q => q.Status == "Failed")
                     .OrderByDescending(q => q.CreatedAt)
@@ -171,18 +217,24 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get queue publishing health status (Phase 3: Monitoring &amp; Alerting)
         /// </summary>
         [HttpGet("publishing")]
-        public Task<ActionResult<QueuePublishingHealthResponse>> GetPublishingHealth()
+        [Authorize]
+        public async Task<ActionResult<QueuePublishingHealthResponse>> GetPublishingHealth()
         {
             try
             {
+                if (!await HasDetailedQueueAccessAsync())
+                {
+                    return Forbid();
+                }
+
                 if (_metricsService == null)
                 {
-                    return Task.FromResult<ActionResult<QueuePublishingHealthResponse>>(StatusCode(503, new QueuePublishingHealthResponse
+                    return StatusCode(503, new QueuePublishingHealthResponse
                     {
                         Status = "ServiceUnavailable",
                         Timestamp = DateTime.UtcNow,
                         Error = "Queue publishing metrics service is not available"
-                    }));
+                    });
                 }
 
                 var metrics = _metricsService.GetMetrics();
@@ -219,17 +271,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     Alerts = alerts
                 };
 
-                return Task.FromResult<ActionResult<QueuePublishingHealthResponse>>(Ok(response));
+                return Ok(response);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to get queue publishing health status");
-                return Task.FromResult<ActionResult<QueuePublishingHealthResponse>>(StatusCode(500, new QueuePublishingHealthResponse
+                return StatusCode(500, new QueuePublishingHealthResponse
                 {
                     Status = "Error",
                     Timestamp = DateTime.UtcNow,
                     Error = ex.Message
-                }));
+                });
             }
         }
 
@@ -237,6 +289,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get queue items with filtering, sorting, and pagination
         /// </summary>
         [HttpGet("items")]
+        [Authorize]
         public async Task<ActionResult<PagedQueueItemsResponse>> GetQueueItems(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 50,
@@ -248,6 +301,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                if (!await HasDetailedQueueAccessAsync())
+                {
+                    return Forbid();
+                }
+
                 var query = _context.ContainerScanQueues.AsQueryable();
 
                 // Apply filters
@@ -486,6 +544,60 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             return alerts;
+        }
+
+        private async Task<bool> HasDetailedQueueAccessAsync()
+        {
+            if (User?.Identity?.IsAuthenticated != true)
+            {
+                return false;
+            }
+
+            if (User.Claims.Any(c =>
+                    string.Equals(c.Type, ClaimTypes.Role, StringComparison.OrdinalIgnoreCase) &&
+                    DetailedQueueRoles.Contains(c.Value)))
+            {
+                return true;
+            }
+
+            if (DetailedQueuePermissions.Any(HasPermissionClaim))
+            {
+                return true;
+            }
+
+            if (TryGetCurrentUserId(out var userId))
+            {
+                return await _permissionService.HasAnyPermissionAsync(userId, DetailedQueuePermissions);
+            }
+
+            var username = User.FindFirstValue(ClaimTypes.Name) ??
+                           User.FindFirstValue("username") ??
+                           User.Identity?.Name;
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                foreach (var permission in DetailedQueuePermissions)
+                {
+                    if (await _permissionService.HasPermissionAsync(username, permission))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool HasPermissionClaim(string permission)
+        {
+            return User.Claims.Any(c =>
+                string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private bool TryGetCurrentUserId(out int userId)
+        {
+            var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(userIdClaim, out userId);
         }
     }
 

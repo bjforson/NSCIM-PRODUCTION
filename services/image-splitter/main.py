@@ -10,17 +10,24 @@ Runs independently from the main NSCIM app on port 5310.
 import logging
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 from typing import Optional
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import Response, FileResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from config import SERVICE_HOST, SERVICE_PORT
+from config import (
+    SERVICE_HOST,
+    SERVICE_PORT,
+    MAX_IMAGE_SIZE_MB,
+    ALLOW_IMAGE_URL_FETCHES,
+    ALLOWED_IMAGE_URL_HOSTS,
+)
 from models.database import (
     get_db, create_tables, ImageSplitJob, ImageSplitResult, ImageSplitAssignment
 )
@@ -30,6 +37,8 @@ from models.schemas import (
 )
 from pipeline.orchestrator import run_pipeline, get_best_result, get_all_strategies
 from pipeline.image_utils import base64_to_bytes, get_image_dimensions, crop_and_encode
+from pipeline.visual_eligibility import classify_visual_eligibility
+from strategies.base import SplitResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("image-splitter")
@@ -38,7 +47,7 @@ logger = logging.getLogger("image-splitter")
 async def resume_pending_jobs():
     """On startup, process any jobs left in 'pending' or stuck 'processing' state.
 
-    A 'processing' job that hasn't been touched in over 1 hour is assumed to be
+    A 'processing' job that is older than a short grace window is assumed to be
     orphaned from a previous crash or force-stop, and reset back to 'pending'
     so this startup task can pick it up.
     """
@@ -47,7 +56,8 @@ async def resume_pending_jobs():
     # Small delay so uvicorn's event loop is fully running before we start
     await asyncio.sleep(1)
 
-    stuck_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+    stale_minutes = max(1, int(os.environ.get("SPLITTER_PROCESSING_STALE_MINUTES", "2")))
+    stuck_threshold = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
     async with AsyncSessionLocal() as db:
         # Reset any orphaned 'processing' jobs back to 'pending'
         stuck_result = await db.execute(
@@ -58,7 +68,11 @@ async def resume_pending_jobs():
         )
         stuck = stuck_result.scalars().all()
         if stuck:
-            logger.warning(f"Found {len(stuck)} orphaned 'processing' jobs older than 1h — resetting to pending")
+            logger.warning(
+                "Found %s orphaned 'processing' jobs older than %s minute(s) — resetting to pending",
+                len(stuck),
+                stale_minutes,
+            )
             for job in stuck:
                 job.status = "pending"
                 job.error_message = (job.error_message or "") + " | Auto-reset from stuck 'processing' state"
@@ -184,7 +198,155 @@ from inspector.routes import router as inspector_router  # noqa: E402
 app.include_router(inspector_router)
 
 
+# -- Ingress validation -------------------------------------------------------
+
+MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
+UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _raise_image_too_large(source: str) -> None:
+    raise HTTPException(413, f"{source} exceeds maximum image size of {MAX_IMAGE_SIZE_MB} MB")
+
+
+def _enforce_image_size(image_data: bytes, source: str) -> None:
+    if len(image_data) > MAX_IMAGE_SIZE_BYTES:
+        _raise_image_too_large(source)
+
+
+def _estimate_base64_payload_size(b64_string: str) -> int:
+    payload = b64_string.split(",", 1)[1] if "," in b64_string else b64_string
+    payload = "".join(payload.split())
+    padding = payload.count("=")
+    return max(0, (len(payload) * 3) // 4 - padding)
+
+
+def _validate_image_url(image_url: str) -> None:
+    if not ALLOW_IMAGE_URL_FETCHES:
+        raise HTTPException(400, "image_url fetches are disabled; upload image data directly")
+
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "image_url must be an absolute http(s) URL")
+    if parsed.username or parsed.password:
+        raise HTTPException(400, "image_url must not include embedded credentials")
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    if ALLOWED_IMAGE_URL_HOSTS and hostname not in ALLOWED_IMAGE_URL_HOSTS:
+        raise HTTPException(400, "image_url host is not allowed")
+
+
+async def _fetch_image_url(image_url: str) -> bytes:
+    import httpx
+
+    _validate_image_url(image_url)
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            async with client.stream("GET", image_url) as resp:
+                resp.raise_for_status()
+                content_length = resp.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length) > MAX_IMAGE_SIZE_BYTES:
+                            _raise_image_too_large("image_url response")
+                    except ValueError:
+                        pass
+
+                chunks = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > MAX_IMAGE_SIZE_BYTES:
+                        _raise_image_too_large("image_url response")
+                    chunks.append(chunk)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"image_url fetch failed with status {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "image_url fetch failed") from exc
+
+    return b"".join(chunks)
+
+
+async def _read_upload_with_limit(file: UploadFile) -> bytes:
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_IMAGE_SIZE_BYTES:
+            _raise_image_too_large("uploaded image")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 # ── Background processing ─────────────────────────────────────────────
+
+def ensure_minimum_split_candidates(results: list[SplitResult], image_data: bytes, image_width: Optional[int]) -> list[SplitResult]:
+    """Return at least two candidate splits when the image can be cropped."""
+    if len(results) >= 2:
+        return results
+
+    try:
+        width = image_width or get_image_dimensions(image_data)[0]
+    except Exception:
+        logger.warning("Could not determine image width for fallback split candidates", exc_info=True)
+        return results
+
+    if width < 4:
+        return results
+
+    existing = [r.split_x for r in results]
+    best = get_best_result(results)
+    base_x = best.split_x if best else width // 2
+    base_confidence = best.confidence if best else 0.33
+    min_separation = max(12, int(width * 0.01))
+    offset = max(24, int(width * 0.03))
+
+    candidate_points = [
+        base_x - offset,
+        base_x + offset,
+        width // 2,
+        (width // 2) - offset,
+        (width // 2) + offset,
+    ]
+
+    for split_x in candidate_points:
+        if len(results) >= 2:
+            break
+
+        split_x = max(1, min(int(split_x), width - 1))
+        if any(abs(split_x - existing_x) < min_separation for existing_x in existing):
+            continue
+
+        try:
+            left_bytes, right_bytes = crop_and_encode(image_data, split_x)
+        except Exception:
+            logger.warning("Could not crop fallback split candidate at x=%s", split_x, exc_info=True)
+            continue
+
+        strategy_name = "fallback_midpoint" if not best else "fallback_offset"
+        if any(r.strategy_name == strategy_name for r in results):
+            strategy_name = f"{strategy_name}_{len(results) + 1}"
+
+        results.append(SplitResult(
+            strategy_name=strategy_name,
+            split_x=split_x,
+            confidence=max(0.05, min(0.95, base_confidence * 0.75)),
+            processing_ms=0,
+            metadata={
+                "fallback": True,
+                "basis_strategy": best.strategy_name if best else "geometric_midpoint",
+                "basis_split_x": base_x,
+                "reasoning": "Generated to provide a second analyst-review candidate when only one strategy result was available.",
+            },
+            left_image=left_bytes,
+            right_image=right_bytes
+        ))
+        existing.append(split_x)
+
+    return results
+
 
 async def process_job(job_id: UUID):
     """Background task: run the splitting pipeline on a job."""
@@ -200,8 +362,41 @@ async def process_job(job_id: UUID):
             job.status = "processing"
             await db.commit()
 
+            # FS6000 metadata can legitimately list two container numbers even
+            # when the rendered image is visually single-container or too
+            # ambiguous to split. Gate on pixels before creating any crop
+            # assignments so downstream analysts do not receive bogus halves.
+            container_count = len([
+                token for token in job.container_numbers.replace(";", ",").split(",")
+                if token.strip() and token.strip().upper() != "UNKNOWN"
+            ])
+            if (job.scanner_type or "").upper() == "FS6000" and container_count >= 2:
+                gate = classify_visual_eligibility(job.image_data, job.scanner_type)
+                if not gate.should_split:
+                    metadata = gate.to_metadata()
+                    job.best_strategy = "visual_eligibility"
+                    job.best_score = gate.confidence
+                    job.split_x = None
+                    job.status = "visual_single" if gate.label == "single_container" else "uncertain"
+                    job.error_message = (
+                        f"Visual eligibility gate classified image as {gate.label}; "
+                        f"reasons={','.join(gate.reason_codes)}; "
+                        f"metadata={metadata}"
+                    )
+                    job.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    logger.info(
+                        "Job %s skipped by visual eligibility gate: label=%s confidence=%.3f reasons=%s",
+                        job_id,
+                        gate.label,
+                        gate.confidence,
+                        ",".join(gate.reason_codes),
+                    )
+                    return
+
             # Run all strategies
             results = await run_pipeline(job.image_data)
+            results = ensure_minimum_split_candidates(results, job.image_data, job.image_width)
 
             # Store results
             for r in results:
@@ -312,16 +507,15 @@ async def create_split_job(
     image_data = None
 
     if request.image_base64:
-        image_data = base64_to_bytes(request.image_base64)
+        if _estimate_base64_payload_size(request.image_base64) > MAX_IMAGE_SIZE_BYTES:
+            _raise_image_too_large("image_base64")
+        try:
+            image_data = base64_to_bytes(request.image_base64)
+        except Exception as exc:
+            raise HTTPException(400, "Invalid image_base64 payload") from exc
+        _enforce_image_size(image_data, "image_base64")
     elif request.image_url:
-        import httpx
-        # SECURITY: TLS validation is enforced. If a caller needs to fetch from an
-        # internal endpoint with a self-signed cert, it must be on the trust store —
-        # do NOT disable verification.
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(request.image_url)
-            resp.raise_for_status()
-            image_data = resp.content
+        image_data = await _fetch_image_url(request.image_url)
 
     if not image_data:
         raise HTTPException(400, "Either image_base64 or image_url must be provided")
@@ -359,14 +553,23 @@ async def create_split_job_upload(
     file: UploadFile = File(...),
     container_numbers: str = Form(...),
     scanner_type: Optional[str] = Form(None),
+    source_image_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db)
 ):
     """Submit a split job with direct file upload."""
-    image_data = await file.read()
+    image_data = await _read_upload_with_limit(file)
     w, h = get_image_dimensions(image_data)
+
+    parsed_source_image_id = None
+    if source_image_id:
+        try:
+            parsed_source_image_id = UUID(source_image_id)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid source_image_id") from exc
 
     job = ImageSplitJob(
         container_numbers=container_numbers,
+        source_image_id=parsed_source_image_id,
         scanner_type=scanner_type,
         image_data=image_data,
         image_width=w,
@@ -429,17 +632,46 @@ async def search_jobs_by_containers(container_numbers: str, db: AsyncSession = D
 
 
 @app.get("/api/split/pending")
-async def list_pending_jobs(db: AsyncSession = Depends(get_db)):
-    """List jobs awaiting analyst review (completed but not yet approved or rejected)."""
-    from sqlalchemy import or_
+async def list_pending_jobs(
+    mode: str = Query(
+        "legacy",
+        pattern="^(legacy|active|recent|reviewable)$",
+        description=(
+            "legacy returns the historical 200-row backlog; active returns only "
+            "pending/processing; recent/reviewable return actionable recent jobs."
+        ),
+    ),
+    limit: int = Query(200, ge=1, le=500),
+    since_hours: int | None = Query(None, ge=1, le=24 * 31),
+    db: AsyncSession = Depends(get_db)
+):
+    """List split jobs for operational review.
+
+    The original endpoint returned a hard-coded 200-row historical backlog.
+    The split-review UI now calls mode=recent so operators see the current queue,
+    while legacy remains the default for older helper paths that use this route
+    as a broad lookup fallback.
+    """
+    filters = [
+        ImageSplitJob.analyst_verdict.is_(None),
+    ]
+    mode_norm = mode.lower()
+    if mode_norm == "active":
+        filters.append(ImageSplitJob.status.in_(["pending", "processing"]))
+    elif mode_norm in ("recent", "reviewable"):
+        filters.append(ImageSplitJob.status.in_(["pending", "processing", "completed"]))
+        cutoff_hours = since_hours or 72
+        filters.append(
+            ImageSplitJob.created_at >= datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
+        )
+    else:
+        filters.append(ImageSplitJob.status.in_(["pending", "processing", "completed", "failed"]))
+
     result = await db.execute(
         select(ImageSplitJob)
-        .where(
-            ImageSplitJob.status.in_(["pending", "processing", "completed", "failed"]),
-            ImageSplitJob.analyst_verdict.is_(None)
-        )
+        .where(*filters)
         .order_by(ImageSplitJob.created_at.desc())
-        .limit(200)  # was 50, bumped to show all pending jobs
+        .limit(limit)
     )
     jobs = result.scalars().all()
 

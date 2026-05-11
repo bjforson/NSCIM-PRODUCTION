@@ -194,6 +194,7 @@ public static class SignedImageUrl
                 if (tail == "/image" || tail.StartsWith("/image/")) return true;
             }
         }
+        if (p.StartsWith("/api/image-splitter/jobs/") && p.EndsWith("/original")) return true;
 
         // ImageAnalysisController: /api/image-analysis/{container}/enhanced
         // and /api/image-analysis/{container}/annotations/enhance

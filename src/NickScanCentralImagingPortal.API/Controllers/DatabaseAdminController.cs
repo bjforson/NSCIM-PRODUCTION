@@ -1,8 +1,10 @@
 using System.Data;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using NickScanCentralImagingPortal.API.Authorization;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 
@@ -13,18 +15,24 @@ namespace NickScanCentralImagingPortal.API.Controllers
     [Route("api/[controller]")]
     public class DatabaseAdminController : ControllerBase
     {
+        private const int DefaultQueryTimeoutSeconds = 30;
+        private const int MaxQueryTimeoutSeconds = 300;
+
         private readonly ILogger<DatabaseAdminController> _logger;
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly IWebHostEnvironment _environment;
 
         public DatabaseAdminController(
             ILogger<DatabaseAdminController> logger,
             ApplicationDbContext context,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IWebHostEnvironment environment)
         {
             _logger = logger;
             _context = context;
             _configuration = configuration;
+            _environment = environment;
         }
 
         [HttpGet("connections")]
@@ -73,6 +81,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return BadRequest(new { error = "Query cannot be empty" });
                 }
 
+                if (IsFreeFormSqlExecutionDisabled())
+                {
+                    _logger.LogWarning("[DB-ADMIN] Free-form SQL execution blocked in production for user {User}",
+                        User.Identity?.Name ?? "Unknown");
+                    return StatusCode(403, new
+                    {
+                        error = "Free-form database admin SQL execution is disabled in production. Set Admin:Database:AllowFreeFormSqlExecution=true to enable it."
+                    });
+                }
+
                 // Security: Only allow SELECT statements for safety
                 var trimmedQuery = request.Query.Trim().ToUpper();
                 if (!trimmedQuery.StartsWith("SELECT"))
@@ -93,13 +111,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 };
 
                 var startTime = DateTime.Now;
+                var queryTimeoutSeconds = GetDatabaseQueryTimeoutSeconds();
 
                 using (var connection = new NpgsqlConnection(connectionString))
                 {
                     await connection.OpenAsync();
                     using (var command = new NpgsqlCommand(request.Query, connection))
                     {
-                        command.CommandTimeout = 30; // 30 second timeout
+                        command.CommandTimeout = queryTimeoutSeconds;
 
                         using (var reader = await command.ExecuteReaderAsync())
                         {
@@ -173,6 +192,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     await conn.OpenAsync();
                     using (var cmd = new NpgsqlCommand(query, conn))
                     {
+                        cmd.CommandTimeout = GetDatabaseQueryTimeoutSeconds();
+
                         using (var reader = await cmd.ExecuteReaderAsync())
                         {
                             while (await reader.ReadAsync())
@@ -226,6 +247,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     await conn.OpenAsync();
                     using (var cmd = new NpgsqlCommand(query, conn))
                     {
+                        cmd.CommandTimeout = GetDatabaseQueryTimeoutSeconds();
                         cmd.Parameters.AddWithValue("@Schema", schema);
                         cmd.Parameters.AddWithValue("@TableName", tableName);
 
@@ -319,6 +341,26 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 return "Unknown";
             }
+        }
+
+        private bool IsFreeFormSqlExecutionDisabled()
+        {
+            return _environment.IsProduction()
+                && !_configuration.GetValue<bool>("Admin:Database:AllowFreeFormSqlExecution", false);
+        }
+
+        private int GetDatabaseQueryTimeoutSeconds()
+        {
+            var configuredTimeout = _configuration.GetValue<int?>("Admin:Database:QueryTimeoutSeconds")
+                ?? _configuration.GetValue<int?>("Database:CommandTimeoutSeconds")
+                ?? DefaultQueryTimeoutSeconds;
+
+            if (configuredTimeout <= 0)
+            {
+                return DefaultQueryTimeoutSeconds;
+            }
+
+            return Math.Min(configuredTimeout, MaxQueryTimeoutSeconds);
         }
     }
 

@@ -3,6 +3,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
+using System.Security.Claims;
+using NickScanCentralImagingPortal.API.Authorization;
+using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
@@ -28,8 +32,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ILogger<ImageAnalysisDecisionController> _logger;
         private readonly ReadyGroupsCacheService? _readyGroupsCache;
         private readonly IMemoryCache? _memoryCache;
+        private readonly IConfiguration? _configuration;
         private readonly IAiWorkflowLineageService _aiLineage;
         private readonly IManifestSnapshotService _manifestSnapshot;
+        private readonly DecisionSideEffectsService _decisionSideEffects;
         // v2.9.6: used to tag each typed ContainerAnnotation row with the
         // dimensions of the image it was drawn against, so CocoExport /
         // future scalers can map fractional coords back to real pixels on
@@ -47,8 +53,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IAiWorkflowLineageService aiLineage,
             IManifestSnapshotService manifestSnapshot,
             IImageProcessingService imageProcessingService,
+            DecisionSideEffectsService decisionSideEffects,
             ReadyGroupsCacheService? readyGroupsCache = null,
-            IMemoryCache? memoryCache = null)
+            IMemoryCache? memoryCache = null,
+            IConfiguration? configuration = null)
         {
             _context = context;
             _icumDb = icumDb;
@@ -56,8 +64,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _aiLineage = aiLineage;
             _manifestSnapshot = manifestSnapshot;
             _imageProcessingService = imageProcessingService;
+            _decisionSideEffects = decisionSideEffects;
             _readyGroupsCache = readyGroupsCache;
             _memoryCache = memoryCache;
+            _configuration = configuration;
         }
 
         /// <summary>
@@ -79,17 +89,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// but in a focused, per-group fashion, so that recently completed groups flow
         /// cleanly into the audit queue without waiting for background maintenance.
         /// </summary>
-        private async Task EnsureGroupStatusFromWorkflowStageAsync(string groupIdentifier)
+        private async Task EnsureGroupStatusFromWorkflowStageAsync(string groupIdentifier, string? scannerType = null)
         {
             if (string.IsNullOrWhiteSpace(groupIdentifier))
                 return;
 
             try
             {
-                // ✅ CRITICAL: Load with tracking to ensure changes persist
-                var group = await _context.AnalysisGroups
-                    .AsTracking()
-                    .FirstOrDefaultAsync(g => g.GroupIdentifier == groupIdentifier);
+                var group = await ResolveAnalysisGroupForDecisionAsync(groupIdentifier, scannerType);
 
                 if (group == null)
                     return;
@@ -102,8 +109,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 // Get all containers for this group from completeness table
-                var containers = await _context.ContainerCompletenessStatuses
-                    .Where(c => c.GroupIdentifier == groupIdentifier)
+                var normalizedGroupIdentifier = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+                var groupScannerType = group.ScannerType ?? scannerType;
+
+                var containersQuery = _context.ContainerCompletenessStatuses
+                    .Where(c => c.GroupIdentifier == normalizedGroupIdentifier);
+
+                if (!string.IsNullOrWhiteSpace(groupScannerType))
+                {
+                    var scannerBase = BaseScannerType(groupScannerType) ?? groupScannerType;
+                    containersQuery = containersQuery.Where(c =>
+                        c.ScannerType == groupScannerType
+                        || c.ScannerType == scannerBase
+                        || c.ScannerType.StartsWith(scannerBase + "-"));
+                }
+
+                var containers = await containersQuery
                     .Select(c => new { c.ContainerNumber, c.WorkflowStage })
                     .ToListAsync();
 
@@ -126,9 +147,26 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .Distinct()
                     .ToList();
 
-                var decidedContainers = await _context.ImageAnalysisDecisions
-                    .Where(d => d.GroupIdentifier == groupIdentifier &&
-                                (d.Decision == "Normal" || d.Decision == "Abnormal"))
+                var decisionGroupIdentifiers = new[] { groupIdentifier, normalizedGroupIdentifier, group.GroupIdentifier, group.NormalizedGroupIdentifier }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var decisionsQuery = _context.ImageAnalysisDecisions
+                    .Where(d => d.GroupIdentifier != null
+                        && decisionGroupIdentifiers.Contains(d.GroupIdentifier)
+                        && (d.Decision == "Normal" || d.Decision == "Abnormal"));
+
+                if (!string.IsNullOrWhiteSpace(groupScannerType))
+                {
+                    var scannerBase = BaseScannerType(groupScannerType) ?? groupScannerType;
+                    decisionsQuery = decisionsQuery.Where(d =>
+                        d.ScannerType == groupScannerType
+                        || d.ScannerType == scannerBase
+                        || d.ScannerType.StartsWith(scannerBase + "-"));
+                }
+
+                var decidedContainers = await decisionsQuery
                     .Select(d => d.ContainerNumber)
                     .Distinct()
                     .ToListAsync();
@@ -154,12 +192,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     assignment.UpdatedAtUtc = DateTime.UtcNow;
                 }
 
+                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
+
                 // Sprint 5G2 / B1: route through the state-machine facade. Both Ready and AnalystAssigned
                 // are legal predecessors to AnalystCompleted in the validator table.
                 await AnalysisGroupStateMachine.TransitionAsync(
                     _context, group, AnalysisStatuses.AnalystCompleted,
                     triggerName: "WorkflowStagePromotionAllContainersDecided",
-                    actor: User?.Identity?.Name ?? "anonymous",
+                    actor: GetAuthenticatedActor(),
                     reason: $"All containers for group {groupIdentifier} have decisions and have moved past ImageAnalysis stage.",
                     correlationId: HttpContext?.TraceIdentifier);
                 group.UpdatedAtUtc = DateTime.UtcNow;
@@ -192,6 +232,361 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return value.Length <= maxLen ? value : value.Substring(0, maxLen);
         }
 
+        private static string? BaseScannerType(string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return null;
+
+            var trimmed = scannerType.Trim();
+            var dashIndex = trimmed.IndexOf('-');
+            return dashIndex > 0 ? trimmed.Substring(0, dashIndex) : trimmed;
+        }
+
+        private static bool ScannerMatches(string? candidate, string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return true;
+
+            if (string.IsNullOrWhiteSpace(candidate))
+                return true;
+
+            var candidateTrimmed = candidate.Trim();
+            var requestedTrimmed = requested.Trim();
+            var requestedBase = BaseScannerType(requestedTrimmed);
+
+            return string.Equals(candidateTrimmed, requestedTrimmed, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(requestedBase) &&
+                    (string.Equals(candidateTrimmed, requestedBase, StringComparison.OrdinalIgnoreCase)
+                     || candidateTrimmed.StartsWith(requestedBase + "-", StringComparison.OrdinalIgnoreCase)))
+                || requestedTrimmed.StartsWith(candidateTrimmed + "-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task<AnalysisGroup?> ResolveAnalysisGroupForDecisionAsync(string? groupIdentifier, string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(groupIdentifier))
+                return null;
+
+            var normalizedGroupIdentifier = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier) ?? groupIdentifier;
+            var candidates = await _context.AnalysisGroups
+                .AsTracking()
+                .Where(g => g.GroupIdentifier == groupIdentifier
+                    || g.NormalizedGroupIdentifier == groupIdentifier
+                    || g.GroupIdentifier == normalizedGroupIdentifier
+                    || g.NormalizedGroupIdentifier == normalizedGroupIdentifier)
+                .ToListAsync();
+
+            return candidates
+                .OrderByDescending(g => ScannerMatches(g.ScannerType, scannerType))
+                .ThenByDescending(g => string.Equals(g.GroupIdentifier, groupIdentifier, StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault();
+        }
+
+        private static List<string> BuildDecisionGroupIdentifiers(params string?[] groupIdentifiers)
+        {
+            var identifiers = new List<string>();
+
+            foreach (var groupIdentifier in groupIdentifiers)
+            {
+                if (string.IsNullOrWhiteSpace(groupIdentifier))
+                    continue;
+
+                identifiers.Add(groupIdentifier);
+
+                var normalized = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    identifiers.Add(normalized);
+            }
+
+            return identifiers
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool DecisionGroupMatches(string? decisionGroupIdentifier, IReadOnlyCollection<string> groupIdentifiers)
+        {
+            if (groupIdentifiers.Count == 0)
+                return true;
+
+            if (string.IsNullOrWhiteSpace(decisionGroupIdentifier))
+                return false;
+
+            if (groupIdentifiers.Contains(decisionGroupIdentifier, StringComparer.OrdinalIgnoreCase))
+                return true;
+
+            var normalizedDecisionGroup = GroupIdentifierHelper.GetNormalizedGroupIdentifier(decisionGroupIdentifier);
+            if (!string.IsNullOrWhiteSpace(normalizedDecisionGroup)
+                && groupIdentifiers.Contains(normalizedDecisionGroup, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return groupIdentifiers.Any(g =>
+                !string.IsNullOrWhiteSpace(g)
+                && decisionGroupIdentifier.StartsWith(g + "_", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task<ImageAnalysisDecision?> FindExistingDecisionForSaveAsync(
+            string containerNumber,
+            string scannerType,
+            IReadOnlyCollection<string> groupIdentifiers)
+        {
+            var candidates = await _context.ImageAnalysisDecisions
+                .Where(d => d.ContainerNumber == containerNumber
+                    && d.ScannerType == scannerType)
+                .ToListAsync();
+
+            var scoped = candidates
+                .Where(d => DecisionGroupMatches(d.GroupIdentifier, groupIdentifiers))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .FirstOrDefault();
+
+            if (scoped != null)
+                return scoped;
+
+            var legacyUngrouped = candidates
+                .Where(d => string.IsNullOrWhiteSpace(d.GroupIdentifier))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .ToList();
+
+            return legacyUngrouped.Count == 1 ? legacyUngrouped[0] : null;
+        }
+
+        private string? GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "username", StringComparison.OrdinalIgnoreCase))?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "preferred_username", StringComparison.OrdinalIgnoreCase))?.Value;
+        }
+
+        private string GetAuthenticatedActor()
+        {
+            var actor = GetAuthenticatedUsername()
+                ?? User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                ?? User?.Claims.FirstOrDefault(c => string.Equals(c.Type, "sub", StringComparison.OrdinalIgnoreCase))?.Value;
+
+            return Truncate(string.IsNullOrWhiteSpace(actor) ? "System" : actor.Trim(), 100);
+        }
+
+        private bool HasPermissionClaim(params string[] permissionNames)
+        {
+            if (User == null || permissionNames.Length == 0)
+                return false;
+
+            var permissionSet = new HashSet<string>(permissionNames, StringComparer.OrdinalIgnoreCase);
+            return User.Claims.Any(c =>
+                string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase)
+                && permissionSet.Contains(c.Value));
+        }
+
+        private bool IsSystemOrPrivilegedDecisionCaller(string? username)
+        {
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                var normalized = username.Trim();
+                if (string.Equals(normalized, "System", StringComparison.OrdinalIgnoreCase)
+                    || normalized.StartsWith("SYSTEM-", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Contains("agent", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Contains("service", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return User?.IsInRole("Admin") == true
+                || User?.IsInRole("SuperAdmin") == true
+                || User?.IsInRole("Manager") == true
+                || User?.IsInRole("Supervisor") == true
+                || HasPermissionClaim(
+                    Permissions.ControllersImageAnalysisAssign,
+                    Permissions.ControllersImageAnalysisManagementSettings,
+                    Permissions.ControllersImageAnalysisDecisionAudit);
+        }
+
+        private async Task<ActionResult<object>?> ValidateDecisionAssignmentOwnershipAsync(AnalysisGroup? group, string operationName)
+        {
+            if (group == null)
+                return null;
+
+            var username = GetAuthenticatedUsername();
+            var now = DateTime.UtcNow;
+            var activeAssignments = await _context.AnalysisAssignments
+                .AsNoTracking()
+                .Where(a => a.GroupId == group.Id
+                    && a.Role == "Analyst"
+                    && a.State == "Active"
+                    && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                .ToListAsync();
+
+            if (!activeAssignments.Any())
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(username)
+                && activeAssignments.Any(a => string.Equals(a.AssignedTo, username, StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            if (IsSystemOrPrivilegedDecisionCaller(username))
+                return null;
+
+            _logger.LogWarning(
+                "{Operation} denied for user {User}: group {GroupIdentifier} is actively assigned to {AssignedUsers}",
+                operationName,
+                username ?? "(unknown)",
+                group.GroupIdentifier,
+                string.Join(", ", activeAssignments.Select(a => a.AssignedTo).Distinct()));
+
+            return StatusCode(403, new
+            {
+                success = false,
+                error = "This group is assigned to another analyst."
+            });
+        }
+
+        private async Task RemoveQueueEntriesForAssignmentsAsync(IEnumerable<AnalysisAssignment> assignments, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache == null)
+                return;
+
+            foreach (var assignment in assignments)
+            {
+                try
+                {
+                    await _readyGroupsCache.RemoveQueueEntryAsync(_context, assignment.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to remove queue entry for released assignment {AssignmentId}", assignment.Id);
+                }
+            }
+        }
+
+        private async Task UpsertQueueEntryBestEffortAsync(AnalysisAssignment assignment, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache != null)
+            {
+                try
+                {
+                    await _readyGroupsCache.UpsertQueueEntryAsync(_context, assignment.Id, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to upsert queue entry for assignment {AssignmentId}", assignment.Id);
+                }
+            }
+
+            InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+        }
+
+        private void InvalidateMyAssignmentsCache(string? username, string? role)
+        {
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role))
+                return;
+
+            _memoryCache?.Remove($"my-assignments:{username}:{role}");
+        }
+
+        private async Task<List<string>> GetReadyUsersForImmediateAssignmentAsync(
+            string roleName,
+            DateTime now,
+            CancellationToken ct = default)
+        {
+            var roleNameUpper = roleName.ToUpperInvariant();
+            var maxIdleMinutes = _configuration?.GetValue<int>("ImageAnalysis:MaxIdleMinutesForReadiness", 60) ?? 60;
+            var maxIdleTime = TimeSpan.FromMinutes(maxIdleMinutes);
+            var dbMaxIdle = now.AddMinutes(-maxIdleMinutes);
+
+            var dbReadyUsers = await _context.UserReadiness
+                .AsNoTracking()
+                .Where(r => r.Role.ToUpper() == roleNameUpper
+                    && r.IsReady
+                    && r.LastHeartbeat >= dbMaxIdle)
+                .Select(r => r.Username)
+                .ToListAsync(ct);
+
+            var signalRReadyUsers = UserReadinessStateProvider.GetReadyUsers(roleName, maxIdleTime);
+            var readyUserSet = new HashSet<string>(
+                dbReadyUsers.Concat(signalRReadyUsers),
+                StringComparer.OrdinalIgnoreCase);
+
+            if (readyUserSet.Count == 0)
+                return new List<string>();
+
+            var matchingRoleIds = await _context.Roles
+                .AsNoTracking()
+                .Where(r => r.IsActive && r.Name.ToUpper() == roleNameUpper)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+
+            if (matchingRoleIds.Count == 0)
+                return new List<string>();
+
+            var matchingRoleSet = matchingRoleIds.ToHashSet();
+            var activeUsers = await _context.Users
+                .AsNoTracking()
+                .Where(u => u.IsActive && u.RoleId != null)
+                .Select(u => new { u.Username, u.RoleId })
+                .ToListAsync(ct);
+
+            return activeUsers
+                .Where(u => readyUserSet.Contains(u.Username)
+                    && u.RoleId.HasValue
+                    && matchingRoleSet.Contains(u.RoleId.Value))
+                .Select(u => u.Username)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private async Task<List<AnalysisGroup>> GetEligibleGroupsForImmediateAssignmentAsync(
+            string roleName,
+            string eligibleStatus,
+            int take,
+            CancellationToken ct = default)
+        {
+            if (take <= 0)
+                return new List<AnalysisGroup>();
+
+            if (_readyGroupsCache != null)
+            {
+                await _readyGroupsCache.InvalidateCacheAsync(roleName, eligibleStatus, ct);
+                return await _readyGroupsCache.GetReadyGroupsForRoleAsync(roleName, eligibleStatus, ct);
+            }
+
+            return await _context.AnalysisGroups
+                .AsNoTracking()
+                .Where(g => g.Status == eligibleStatus)
+                .OrderByDescending(g => g.Priority)
+                .Take(take)
+                .ToListAsync(ct);
+        }
+
+        private async Task<List<AnalysisGroup>> LoadTrackedGroupsInEligibilityOrderAsync(
+            IEnumerable<Guid> groupIds,
+            string eligibleStatus,
+            CancellationToken ct = default)
+        {
+            var orderedIds = groupIds.ToList();
+            if (orderedIds.Count == 0)
+                return new List<AnalysisGroup>();
+
+            var groups = await _context.AnalysisGroups
+                .AsTracking()
+                .Where(g => orderedIds.Contains(g.Id) && g.Status == eligibleStatus)
+                .ToListAsync(ct);
+
+            var order = orderedIds
+                .Select((id, index) => new { id, index })
+                .ToDictionary(x => x.id, x => x.index);
+
+            return groups
+                .OrderBy(g => order.GetValueOrDefault(g.Id, int.MaxValue))
+                .ToList();
+        }
+
         /// <summary>
         /// Check if analyst has completed ALL their assignments and trigger immediate assignment if in Auto mode
         /// </summary>
@@ -201,6 +596,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Checking immediate assignment eligibility for analyst {Username}", analystUsername);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if analyst has any remaining active assignments
                 var remainingActiveAssignments = await _context.AnalysisAssignments
@@ -258,31 +654,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // Find available "Ready" groups (without active assignments)
-                // First, get all Ready groups
-                var allReadyGroups = await _context.AnalysisGroups
-                    .AsTracking()
-                    .Where(g => g.Status == AnalysisStatuses.Ready)
-                    .OrderByDescending(g => g.Priority)
-                    .ToListAsync();
+                var readyUsers = await GetReadyUsersForImmediateAssignmentAsync("Analyst", now, ct);
+                if (!readyUsers.Contains(analystUsername, StringComparer.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("[IMMEDIATE-ASSIGNMENT] Analyst {Username} is not Ready for Analyst assignments - skipping", analystUsername);
+                    return;
+                }
 
-                _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} total Ready groups in system", allReadyGroups.Count);
+                var eligibleGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Analyst",
+                    AnalysisStatuses.Ready,
+                    settings.MaxConcurrentPerUser - activeCount,
+                    ct);
+
+                _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} eligible Ready groups from ReadyGroupsCache path", eligibleGroups.Count);
 
                 // Get group IDs that have active assignments
                 var groupIdsWithActiveAssignments = await _context.AnalysisAssignments
-                    .Where(a => a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                    .Where(a => a.State == "Active")
                     .Select(a => a.GroupId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToListAsync(ct);
+                var activeGroupIdSet = groupIdsWithActiveAssignments.ToHashSet();
 
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} groups with active assignments", groupIdsWithActiveAssignments.Count);
 
                 // Filter out groups with active assignments and take up to max
-                var readyGroups = allReadyGroups
-                    .Where(g => !groupIdsWithActiveAssignments.Contains(g.Id))
+                var readyGroupIds = eligibleGroups
+                    .Where(g => !activeGroupIdSet.Contains(g.Id))
                     .Take(settings.MaxConcurrentPerUser - activeCount) // Fill up to max
+                    .Select(g => g.Id)
                     .ToList();
+                var readyGroups = await LoadTrackedGroupsInEligibilityOrderAsync(readyGroupIds, AnalysisStatuses.Ready, ct);
 
                 _logger.LogInformation("🔍 [IMMEDIATE-ASSIGNMENT] Found {Count} available Ready groups for analyst {Username} (will assign up to {Max})",
                     readyGroups.Count, analystUsername, settings.MaxConcurrentPerUser - activeCount);
@@ -290,16 +693,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!readyGroups.Any())
                 {
                     _logger.LogWarning("⚠️ [IMMEDIATE-ASSIGNMENT] No Ready groups available for immediate assignment to analyst {Username} (Total Ready: {Total}, With Active Assignments: {Active})",
-                        analystUsername, allReadyGroups.Count, groupIdsWithActiveAssignments.Count);
+                        analystUsername, eligibleGroups.Count, groupIdsWithActiveAssignments.Count);
                     return;
                 }
 
                 // Assign groups immediately
                 var assignedCount = 0;
+                var createdAssignments = new List<AnalysisAssignment>();
                 foreach (var group in readyGroups)
                 {
                     var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                    _context.AnalysisAssignments.Add(new AnalysisAssignment
+                    var assignment = new AnalysisAssignment
                     {
                         GroupId = group.Id,
                         AssignedTo = analystUsername,
@@ -307,7 +711,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         LeaseUntilUtc = leaseUntil,
                         State = "Active",
                         CreatedAtUtc = now
-                    });
+                    };
+                    _context.AnalysisAssignments.Add(assignment);
 
                     // Sprint 5G2 / B1: route through the state-machine facade. Ready → AnalystAssigned
                     // is in the legal table.
@@ -318,7 +723,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         reason: $"Auto-assignment to analyst {analystUsername} after they completed all prior assignments.",
                         correlationId: null);
                     group.UpdatedAtUtc = now;
+                    createdAssignments.Add(assignment);
                     assignedCount++;
+                }
+
+                foreach (var assignment in createdAssignments)
+                {
+                    await UpsertQueueEntryBestEffortAsync(assignment, ct);
+                }
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Analyst", AnalysisStatuses.Ready, ct);
                 }
 
                 _logger.LogInformation("✅ Immediately assigned {Count} new groups to analyst {Username} after completing all previous work",
@@ -340,6 +756,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Triggering immediate audit assignment for group {GroupId}", groupId);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if Auto mode is enabled
                 var settings = await _context.AnalysisSettings.FirstOrDefaultAsync() ?? new AnalysisSettings();
@@ -365,8 +782,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 var hasActiveAssignment = await _context.AnalysisAssignments
                     .AnyAsync(a => a.GroupId == groupId
                         && a.Role == "Audit"
-                        && a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now));
+                        && a.State == "Active", ct);
 
                 if (hasActiveAssignment)
                 {
@@ -374,50 +790,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // Verify containers are in Audit WorkflowStage
-                if (string.IsNullOrEmpty(group.GroupIdentifier))
+                var eligibleAuditGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Audit",
+                    AnalysisStatuses.AnalystCompleted,
+                    settings.MaxConcurrentPerUser,
+                    ct);
+                if (!eligibleAuditGroups.Any(g => g.Id == groupId))
                 {
-                    _logger.LogWarning("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} has no GroupIdentifier - skipping", groupId);
+                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} is not eligible by ReadyGroupsCache Audit rules - skipping", groupId);
                     return;
                 }
 
-                var containers = await _context.ContainerCompletenessStatuses
-                    .Where(c => c.GroupIdentifier == group.GroupIdentifier)
-                    .ToListAsync();
-
-                var auditContainers = containers.Count(c => c.WorkflowStage == "Audit");
-                var totalContainers = containers.Count;
-
-                if (auditContainers == 0 || auditContainers < totalContainers)
+                var readyAuditUsers = await GetReadyUsersForImmediateAssignmentAsync("Audit", now, ct);
+                if (!readyAuditUsers.Any())
                 {
-                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] Group {GroupId} has {AuditCount}/{TotalCount} containers in Audit stage - not ready",
-                        groupId, auditContainers, totalContainers);
-                    return;
-                }
-
-                // ✅ FIX: Load roles first, then filter users to avoid Join() generating CTE
-                var auditRoleIds = await _context.Roles
-                    .Where(r => r.IsActive && r.Name == "Audit")
-                    .Select(r => r.Id)
-                    .ToListAsync();
-
-                var auditUsers = auditRoleIds.Any()
-                    ? await _context.Users
-                        .Where(u => u.IsActive && u.RoleId != null && auditRoleIds.Contains(u.RoleId.Value))
-                        .Select(u => u.Username)
-                        .Distinct()
-                        .ToListAsync()
-                    : new List<string>();
-
-                if (!auditUsers.Any())
-                {
-                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] No audit users available - skipping");
+                    _logger.LogDebug("[IMMEDIATE-AUDIT-ASSIGNMENT] No ready audit users available - skipping");
                     return;
                 }
 
                 // Find user with fewest active assignments
                 var userAssignmentCounts = new Dictionary<string, int>();
-                foreach (var username in auditUsers)
+                foreach (var username in readyAuditUsers)
                 {
                     // ✅ FIX: Load assignments first, then filter groups in memory to avoid Join() generating CTE
                     var assignments = await _context.AnalysisAssignments
@@ -426,7 +819,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             && a.State == "Active"
                             && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
                         .Select(a => a.GroupId)
-                        .ToListAsync();
+                        .ToListAsync(ct);
 
                     if (!assignments.Any())
                     {
@@ -439,7 +832,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             g.Status != AnalysisStatuses.AuditCompleted
                             && g.Status != AnalysisStatuses.Completed)
                         .Select(g => g.Id)
-                        .ToListAsync();
+                        .ToListAsync(ct);
 
                     var count = validGroupIds.Count;
 
@@ -463,7 +856,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 // Assign group immediately
                 var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                _context.AnalysisAssignments.Add(new AnalysisAssignment
+                var assignment = new AnalysisAssignment
                 {
                     GroupId = groupId,
                     AssignedTo = selectedUser,
@@ -471,7 +864,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     LeaseUntilUtc = leaseUntil,
                     State = "Active",
                     CreatedAtUtc = now
-                });
+                };
+                _context.AnalysisAssignments.Add(assignment);
 
                 // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
                 // is in the legal table.
@@ -482,6 +876,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     reason: $"Group reached AnalystCompleted; auto-assigned to auditor {selectedUser}.",
                     correlationId: null);
                 group.UpdatedAtUtc = now;
+
+                await UpsertQueueEntryBestEffortAsync(assignment, ct);
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
+                }
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned group {GroupId} ({GroupIdentifier}) to auditor {Username}",
                     groupId, group.GroupIdentifier, selectedUser);
@@ -502,6 +903,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Checking immediate assignment eligibility for auditor {Username}", auditorUsername);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if auditor has any remaining active assignments
                 var remainingActiveAssignments = await _context.AnalysisAssignments
@@ -559,65 +961,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // ✅ FIX: Load groups and containers separately, then join in memory to avoid CTE generation
-                var analystCompletedGroups = await _context.AnalysisGroups
-                    .AsTracking()
-                    .Where(g => g.Status == AnalysisStatuses.AnalystCompleted && !string.IsNullOrEmpty(g.GroupIdentifier))
-                    .ToListAsync();
-
-                var groupIdentifiers = analystCompletedGroups.Select(g => g.GroupIdentifier).Distinct().ToList();
-
-                // ✅ FIX: Batch Contains() to avoid CTE generation
-                var containers = new List<ContainerCompletenessStatus>();
-                const int containerBatchSize2 = 1000;
-
-                if (groupIdentifiers.Count > 0)
+                var readyUsers = await GetReadyUsersForImmediateAssignmentAsync("Audit", now, ct);
+                if (!readyUsers.Contains(auditorUsername, StringComparer.OrdinalIgnoreCase))
                 {
-                    for (int i = 0; i < groupIdentifiers.Count; i += containerBatchSize2)
-                    {
-                        var batch = groupIdentifiers.Skip(i).Take(containerBatchSize2).Where(g => g != null).ToList();
-                        var batchContainers = await _context.ContainerCompletenessStatuses
-                            .Where(c => c.GroupIdentifier != null && batch.Contains(c.GroupIdentifier))
-                            .ToListAsync();
-                        containers.AddRange(batchContainers);
-                    }
+                    _logger.LogInformation("[IMMEDIATE-AUDIT-ASSIGNMENT] Auditor {Username} is not Ready for Audit assignments - skipping", auditorUsername);
+                    return;
                 }
 
-                // ✅ Join and group in memory
-                var allAnalystCompletedGroups = analystCompletedGroups
-                    .GroupJoin(
-                        containers,
-                        g => g.GroupIdentifier,
-                        c => c.GroupIdentifier,
-                        (g, containerGroup) => new
-                        {
-                            Group = g,
-                            TotalContainers = containerGroup.Count(),
-                            AuditContainers = containerGroup.Count(c => c.WorkflowStage == "Audit"),
-                            CompletedContainers = containerGroup.Count(c => c.WorkflowStage == "Completed")
-                        })
-                    .Where(w => w.AuditContainers > 0 && w.CompletedContainers < w.TotalContainers)
-                    .Select(x => x.Group)
-                    .OrderByDescending(g => g.Priority)
-                    .ToList();
+                var eligibleGroups = await GetEligibleGroupsForImmediateAssignmentAsync(
+                    "Audit",
+                    AnalysisStatuses.AnalystCompleted,
+                    settings.MaxConcurrentPerUser - activeCount,
+                    ct);
 
-                _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} total AnalystCompleted groups with Audit WorkflowStage", allAnalystCompletedGroups.Count);
+                _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} eligible AnalystCompleted groups from ReadyGroupsCache path", eligibleGroups.Count);
 
                 // Get group IDs that have active assignments
                 var groupIdsWithActiveAssignments = await _context.AnalysisAssignments
-                    .Where(a => a.State == "Active"
-                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                    .Where(a => a.State == "Active")
                     .Select(a => a.GroupId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToListAsync(ct);
+                var activeGroupIdSet = groupIdsWithActiveAssignments.ToHashSet();
 
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} groups with active assignments", groupIdsWithActiveAssignments.Count);
 
                 // Filter out groups with active assignments and take up to max
-                var readyGroups = allAnalystCompletedGroups
-                    .Where(g => !groupIdsWithActiveAssignments.Contains(g.Id))
+                var readyGroupIds = eligibleGroups
+                    .Where(g => !activeGroupIdSet.Contains(g.Id))
                     .Take(settings.MaxConcurrentPerUser - activeCount) // Fill up to max
+                    .Select(g => g.Id)
                     .ToList();
+                var readyGroups = await LoadTrackedGroupsInEligibilityOrderAsync(readyGroupIds, AnalysisStatuses.AnalystCompleted, ct);
 
                 _logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Found {Count} available AnalystCompleted groups for auditor {Username} (will assign up to {Max})",
                     readyGroups.Count, auditorUsername, settings.MaxConcurrentPerUser - activeCount);
@@ -625,16 +1000,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!readyGroups.Any())
                 {
                     _logger.LogWarning("⚠️ [IMMEDIATE-AUDIT-ASSIGNMENT] No AnalystCompleted groups available for immediate assignment to auditor {Username} (Total: {Total}, With Active Assignments: {Active})",
-                        auditorUsername, allAnalystCompletedGroups.Count, groupIdsWithActiveAssignments.Count);
+                        auditorUsername, eligibleGroups.Count, groupIdsWithActiveAssignments.Count);
                     return;
                 }
 
                 // Assign groups immediately
                 var assignedCount = 0;
+                var createdAssignments = new List<AnalysisAssignment>();
                 foreach (var group in readyGroups)
                 {
                     var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                    _context.AnalysisAssignments.Add(new AnalysisAssignment
+                    var assignment = new AnalysisAssignment
                     {
                         GroupId = group.Id,
                         AssignedTo = auditorUsername,
@@ -642,7 +1018,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         LeaseUntilUtc = leaseUntil,
                         State = "Active",
                         CreatedAtUtc = now
-                    });
+                    };
+                    _context.AnalysisAssignments.Add(assignment);
 
                     // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
                     // is in the legal table.
@@ -653,7 +1030,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         reason: $"Auto-assignment to auditor {auditorUsername} after they completed all prior assignments.",
                         correlationId: null);
                     group.UpdatedAtUtc = now;
+                    createdAssignments.Add(assignment);
                     assignedCount++;
+                }
+
+                foreach (var assignment in createdAssignments)
+                {
+                    await UpsertQueueEntryBestEffortAsync(assignment, ct);
+                }
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
                 }
 
                 _logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned {Count} new groups to auditor {Username} after completing all previous work",
@@ -670,6 +1058,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Save or update suspicious area rectangles only (does not change WorkflowStage)
         /// </summary>
         [HttpPost("rectangles")]
+        [HasPermission(Permissions.ImagesAnnotate)]
         public async Task<ActionResult<object>> SaveRectangles([FromBody] RectangleSaveRequest request)
         {
             try
@@ -679,9 +1068,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return BadRequest(new { success = false, error = "ContainerNumber and ScannerType are required" });
                 }
 
+                var actor = GetAuthenticatedActor();
                 var decision = await _context.ImageAnalysisDecisions
                     .AsTracking()
                     .FirstOrDefaultAsync(d => d.ContainerNumber == request.ContainerNumber && d.ScannerType == request.ScannerType);
+
+                var rectangleGroupIdentifier = string.IsNullOrWhiteSpace(request.GroupIdentifier)
+                    ? decision?.GroupIdentifier
+                    : request.GroupIdentifier;
+                var rectangleGroup = await ResolveAnalysisGroupForDecisionAsync(rectangleGroupIdentifier, request.ScannerType);
+                if (rectangleGroup == null)
+                {
+                    var record = await _context.AnalysisRecords
+                        .AsNoTracking()
+                        .Where(r => r.ContainerNumber == request.ContainerNumber
+                            && (r.ScannerType == request.ScannerType || string.IsNullOrEmpty(r.ScannerType)))
+                        .OrderByDescending(r => r.CreatedAtUtc)
+                        .FirstOrDefaultAsync();
+
+                    if (record != null)
+                    {
+                        rectangleGroup = await _context.AnalysisGroups
+                            .AsTracking()
+                            .FirstOrDefaultAsync(g => g.Id == record.GroupId);
+                    }
+                }
+
+                var ownershipFailure = await ValidateDecisionAssignmentOwnershipAsync(rectangleGroup, nameof(SaveRectangles));
+                if (ownershipFailure != null)
+                {
+                    return ownershipFailure;
+                }
 
                 _logger.LogInformation("[SaveRectangles] Container={Container}, Scanner={Scanner}, Existing={Exists}, AreasLength={Length}",
                     request.ContainerNumber, request.ScannerType, decision != null, request.SuspiciousAreas?.Length ?? 0);
@@ -700,7 +1117,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p0", request.ContainerNumber),
                         new NpgsqlParameter("@p1", request.ScannerType),
                         new NpgsqlParameter("@p2", (object?)request.SuspiciousAreas ?? DBNull.Value),
-                        new NpgsqlParameter("@p3", request.ReviewedBy ?? "System"),
+                        new NpgsqlParameter("@p3", actor),
                         new NpgsqlParameter("@p4", DateTime.UtcNow),
                         new NpgsqlParameter("@p5", (object?)request.GroupIdentifier ?? DBNull.Value),
                         new NpgsqlParameter("@p6", request.IsConsolidated)
@@ -709,8 +1126,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
                 else
                 {
+                    var nowUtc = DateTime.UtcNow;
                     decision.SuspiciousAreas = request.SuspiciousAreas;
-                    decision.UpdatedAt = DateTime.UtcNow;
+                    decision.ReviewedBy = actor;
+                    decision.ReviewedAt = nowUtc;
+                    decision.UpdatedAt = nowUtc;
                     await _context.SaveChangesAsync();
                     _logger.LogInformation("[SaveRectangles] UPDATED existing decision for {Container}, SuspiciousAreas={Areas}",
                         request.ContainerNumber, request.SuspiciousAreas?.Substring(0, Math.Min(100, request.SuspiciousAreas?.Length ?? 0)));
@@ -793,9 +1213,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // ✅ FIX AUTO-PROGRESSION: Filter decisions by scanner type if provided
                 // Since groups are separated by scanner type, we should only count decisions for the group's scanner type
                 // ✅ SCANNER TYPE FIX: Normalize scanner type comparison (handle "FS6000-Main" vs "FS6000")
+                var decisionGroupIdentifiers = new[] { groupIdentifier, resolvedGroupIdentifierForBackwardCompat }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
                 var decidedContainersQuery = _context.ImageAnalysisDecisions
-                    .Where(d => d.GroupIdentifier == groupIdentifier &&
-                               (d.Decision == "Normal" || d.Decision == "Abnormal"));
+                    .Where(d => d.GroupIdentifier != null
+                        && decisionGroupIdentifiers.Contains(d.GroupIdentifier)
+                        && (d.Decision == "Normal" || d.Decision == "Abnormal"));
 
                 // Add scanner type filter if provided (normalize to handle image-specific variants)
                 if (!string.IsNullOrEmpty(scannerType))
@@ -920,6 +1346,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Save or update an image decision
         /// </summary>
         [HttpPost]
+        [HasPermission(Permissions.ControllersImageAnalysisDecisionAnalyst)]
         public async Task<ActionResult<object>> SaveDecision([FromBody] ImageDecisionRequest request)
         {
             try
@@ -941,7 +1368,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 request.Comments = Truncate((request.Comments ?? string.Empty).Trim(), 500);
                 request.Tags = Truncate((request.Tags ?? string.Empty).Trim(), 500);
                 request.GroupIdentifier = Truncate((request.GroupIdentifier ?? string.Empty).Trim(), 100);
-                request.ReviewedBy = Truncate((request.ReviewedBy ?? "System").Trim(), 100);
+                request.ReviewedBy = GetAuthenticatedActor();
 
                 // ✅ BULLETPROOF FIX: Validate and normalize decision value
                 // Normalize to proper case and validate it's a valid decision
@@ -1073,13 +1500,32 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // This ensures decisions match ContainerCompletenessStatus records (which use original GroupIdentifier)
                 var normalizedGroupIdentifierForStorage = originalGroupIdentifier;
 
+                if (analysisGroup == null && !string.IsNullOrWhiteSpace(resolvedGroupIdentifier))
+                {
+                    analysisGroup = await ResolveAnalysisGroupForDecisionAsync(resolvedGroupIdentifier, request.ScannerType);
+                }
+
+                var ownershipFailure = await ValidateDecisionAssignmentOwnershipAsync(analysisGroup, nameof(SaveDecision));
+                if (ownershipFailure != null)
+                {
+                    return ownershipFailure;
+                }
+
+                var decisionGroupIdentifiersForSave = BuildDecisionGroupIdentifiers(
+                    normalizedGroupIdentifierForStorage,
+                    resolvedGroupIdentifier,
+                    analysisGroup?.GroupIdentifier,
+                    analysisGroup?.NormalizedGroupIdentifier);
+
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync<ActionResult<object>>(async () =>
                 {
                 using var tx = await _context.Database.BeginTransactionAsync();
 
-                var existing = await _context.ImageAnalysisDecisions
-                    .FirstOrDefaultAsync(d => d.ContainerNumber == request.ContainerNumber && d.ScannerType == request.ScannerType);
+                var existing = await FindExistingDecisionForSaveAsync(
+                    request.ContainerNumber,
+                    request.ScannerType,
+                    decisionGroupIdentifiersForSave);
 
                 // Captured below in both branches so the manifest-snapshot hook
                 // (Gap 0) can fire against the right decision id after the upsert.
@@ -1195,12 +1641,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new NpgsqlParameter("@p13", (object?)splitResultIdForIad ?? DBNull.Value)
                     );
 
-                    // Resolve the just-inserted id by the unique (ContainerNumber, ScannerType)
-                    // tuple. The raw INSERT path can't return a generated id directly, but
-                    // the controller already enforces a single decision row per pair.
+                    // Resolve the just-inserted id by container/scanner/group. Container
+                    // numbers can recur across groups, so the group predicate is required
+                    // to avoid attaching snapshots or annotations to an older wave.
                     decisionIdForSnapshot = await _context.ImageAnalysisDecisions
                         .Where(d => d.ContainerNumber == request.ContainerNumber &&
-                                    d.ScannerType == request.ScannerType)
+                                    d.ScannerType == request.ScannerType &&
+                                    d.GroupIdentifier == normalizedGroupIdentifierForStorage)
+                        .OrderByDescending(d => d.Id)
                         .Select(d => d.Id)
                         .FirstOrDefaultAsync();
                 }
@@ -1330,8 +1778,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // ✅ Centralized side effects: update AnalysisRecord, release assignments, advance workflow
                 if (normalizedDecision != null && !string.IsNullOrWhiteSpace(request.ContainerNumber))
                 {
-                    var sideEffects = new NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionSideEffectsService(_logger);
-                    await sideEffects.ApplyAsync(_context, request.ContainerNumber,
+                    await _decisionSideEffects.ApplyAsync(_context, request.ContainerNumber,
                         resolvedGroupIdentifier ?? request.GroupIdentifier ?? "", request.ScannerType);
                 }
 
@@ -1364,9 +1811,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         // groups to stick because we miss the container-without-image in the progression check.
                         if (analysisGroup == null)
                         {
-                            analysisGroup = await _context.AnalysisGroups
-                                .AsTracking()
-                                .FirstOrDefaultAsync(g => g.GroupIdentifier == resolvedGroupIdentifier);
+                            analysisGroup = await ResolveAnalysisGroupForDecisionAsync(resolvedGroupIdentifier, request.ScannerType);
                         }
 
                         var normalizedForCompleteness = GroupIdentifierHelper.GetNormalizedGroupIdentifier(resolvedGroupIdentifier) ?? resolvedGroupIdentifier;
@@ -1458,8 +1903,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ SCANNER TYPE FIX: Normalize scanner type comparison (handle "FS6000-Main" vs "FS6000")
                             var groupContainersHashSet = new HashSet<string>(groupContainers, StringComparer.OrdinalIgnoreCase);
                             var baseScannerType = request.ScannerType.Split('-')[0]; // Extract base scanner type (e.g., "FS6000" from "FS6000-Main")
+                            var decisionGroupIdentifiers = new[] { decisionGroupIdentifier, resolvedGroupIdentifier }
+                                .Where(g => !string.IsNullOrWhiteSpace(g))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
                             var allMatchingDecisions = await _context.ImageAnalysisDecisions
                                 .Where(d => (d.ScannerType == request.ScannerType || d.ScannerType.StartsWith(baseScannerType + "-") || d.ScannerType == baseScannerType) &&
+                                           (d.GroupIdentifier == null || decisionGroupIdentifiers.Contains(d.GroupIdentifier)) &&
                                            (d.Decision == "Normal" || d.Decision == "Abnormal"))
                                 .Select(d => d.ContainerNumber)
                                 .Distinct()
@@ -1699,7 +2149,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     await AnalysisGroupStateMachine.TransitionAsync(
                                         _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
                                         triggerName: "AutoProgressionAllContainersImageless",
-                                        actor: User?.Identity?.Name ?? "anonymous",
+                                        actor: request.ReviewedBy,
                                         reason: $"All {containersWithoutImages.Count} containers in group {resolvedGroupIdentifier} have no images - marked PartiallyCompleted.",
                                         correlationId: HttpContext?.TraceIdentifier);
                                     analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -1722,6 +2172,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         _logger.LogInformation("Released Analyst assignment {AssignmentId} for group {Group} (all containers have no images)",
                                             assignment.Id, resolvedGroupIdentifier);
                                     }
+
+                                    await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
                                 }
                             }
                             // ✅ STEP 5: Find next undecided container (only from containers WITH images)
@@ -1808,7 +2260,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ DATE-BASED GROUPING FIX: Use original GroupIdentifier for validation
                             // ContainerCompletenessStatus and ImageAnalysisDecisions use original GroupIdentifier
                             var validationPassed = await ValidateAllContainersWithImagesHaveDecisionsAsync(
-                                originalGroupIdentifier, groupContainers, groupScannerType);
+                                originalGroupIdentifier, groupContainers, groupScannerType, resolvedGroupIdentifier);
 
                             if (!validationPassed)
                             {
@@ -1836,7 +2288,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 await AnalysisGroupStateMachine.TransitionAsync(
                                     _context, analysisGroup, AnalysisStatuses.PartiallyCompleted,
                                     triggerName: "AutoProgressionMixedImageContainers",
-                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    actor: request.ReviewedBy,
                                     reason: $"All {containersWithImages.Count} containers with images decided; {containersWithoutImages.Count} have no images - marked PartiallyCompleted.",
                                     correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -1857,16 +2309,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         assignment.Id, resolvedGroupIdentifier);
                                 }
 
+                                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
+
                                 await _context.SaveChangesAsync();
 
                                 // ✅ FIX: Update WorkflowStage for containers WITHOUT images to 'PartiallyCompleted'
                                 // Use LINQ to update entities directly (safer than raw SQL)
                                 if (containersWithoutImages.Any())
                                 {
+                                    var scannerBaseForCompleteness = BaseScannerType(groupScannerType) ?? groupScannerType;
                                     var containersWithoutImagesStatuses = await _context.ContainerCompletenessStatuses
                                         .AsTracking()
                                         .Where(c => containersWithoutImages.Contains(c.ContainerNumber) &&
                                                    c.GroupIdentifier == normalizedForCompleteness &&
+                                                   (c.ScannerType == groupScannerType ||
+                                                    c.ScannerType == scannerBaseForCompleteness ||
+                                                    c.ScannerType.StartsWith(scannerBaseForCompleteness + "-")) &&
                                                    c.WorkflowStage != "Completed")
                                         .ToListAsync();
 
@@ -1884,10 +2342,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 // ✅ FIX: Update WorkflowStage for containers WITH images to 'Audit' (they have decisions)
                                 if (containersWithImages.Any())
                                 {
+                                    var scannerBaseForCompleteness = BaseScannerType(groupScannerType) ?? groupScannerType;
                                     var containersWithImagesStatuses = await _context.ContainerCompletenessStatuses
                                         .AsTracking()
                                         .Where(c => containersWithImages.Contains(c.ContainerNumber) &&
                                                    c.GroupIdentifier == normalizedForCompleteness &&
+                                                   (c.ScannerType == groupScannerType ||
+                                                    c.ScannerType == scannerBaseForCompleteness ||
+                                                    c.ScannerType.StartsWith(scannerBaseForCompleteness + "-")) &&
                                                    c.WorkflowStage != "Completed")
                                         .ToListAsync();
 
@@ -1914,7 +2376,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 await AnalysisGroupStateMachine.TransitionAsync(
                                     _context, analysisGroup, AnalysisStatuses.AnalystCompleted,
                                     triggerName: "AnalystSubmittedAllContainerDecisions",
-                                    actor: User?.Identity?.Name ?? "anonymous",
+                                    actor: request.ReviewedBy,
                                     reason: $"All {containersWithImages.Count} containers with images in group {resolvedGroupIdentifier} now have decisions.",
                                     correlationId: HttpContext?.TraceIdentifier);
                                 analysisGroup.UpdatedAtUtc = DateTime.UtcNow;
@@ -1941,6 +2403,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     _logger.LogInformation("[ASSIGNMENT-EVENT] Released | AssignmentId={AssignmentId} | GroupId={GroupId} | User={User} | Role={Role} | Reason=AnalystCompleted",
                                         assignment.Id, assignment.GroupId, assignment.AssignedTo, assignment.Role);
                                 }
+
+                                await RemoveQueueEntriesForAssignmentsAsync(analystAssignments);
 
                                 await _context.SaveChangesAsync();
 
@@ -1988,10 +2452,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ CRITICAL FIX: ALWAYS update WorkflowStage to 'Audit' when all containers are decided
                             // Use NORMALIZED GroupIdentifier - ContainerCompletenessStatus never has date suffix
                             // resolvedGroupIdentifier can be date-suffixed (e.g. 41025634146_20250101_20250131)
-                            var sql = "UPDATE ContainerCompletenessStatuses SET WorkflowStage = @p0, UpdatedAt = now() AT TIME ZONE 'UTC' WHERE GroupIdentifier = @p1 AND WorkflowStage <> @p0 AND WorkflowStage <> 'Completed'";
+                            var workflowScannerType = groupScannerType ?? request.ScannerType;
+                            var workflowScannerBase = BaseScannerType(workflowScannerType) ?? workflowScannerType;
+                            var sql = @"
+                                UPDATE ContainerCompletenessStatuses
+                                SET WorkflowStage = @p0, UpdatedAt = now() AT TIME ZONE 'UTC'
+                                WHERE GroupIdentifier = @p1
+                                  AND WorkflowStage <> @p0
+                                  AND WorkflowStage <> 'Completed'
+                                  AND (ScannerType = @p2 OR ScannerType = @p3 OR ScannerType LIKE @p4)";
                             var affected = await _context.Database.ExecuteSqlRawAsync(sql,
                                 new NpgsqlParameter("@p0", "Audit"),
-                                new NpgsqlParameter("@p1", normalizedForCompleteness));
+                                new NpgsqlParameter("@p1", normalizedForCompleteness),
+                                new NpgsqlParameter("@p2", workflowScannerType),
+                                new NpgsqlParameter("@p3", workflowScannerBase),
+                                new NpgsqlParameter("@p4", workflowScannerBase + "-%"));
                             advanced = affected > 0;
 
                             _logger.LogInformation("All containers in group {Group} have decisions. WorkflowStage updated to 'Audit': {Count} records (skipped containers already in 'Completed' stage)",
@@ -2002,7 +2477,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             {
                                 // Check WorkflowStage distribution for this group (use normalized - Completeness uses base identifier)
                                 var workflowStats = await _context.ContainerCompletenessStatuses
-                                    .Where(c => c.GroupIdentifier == normalizedForCompleteness)
+                                    .Where(c => c.GroupIdentifier == normalizedForCompleteness
+                                        && (c.ScannerType == workflowScannerType
+                                            || c.ScannerType == workflowScannerBase
+                                            || c.ScannerType.StartsWith(workflowScannerBase + "-")))
                                     .GroupBy(c => c.WorkflowStage)
                                     .Select(g => new { WorkflowStage = g.Key, Count = g.Count() })
                                     .ToListAsync();
@@ -2050,7 +2528,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // FixStuckAnalystGroups behaviour but only for the current group.
                 if (!string.IsNullOrWhiteSpace(resolvedGroupIdentifier))
                 {
-                    await EnsureGroupStatusFromWorkflowStageAsync(resolvedGroupIdentifier);
+                    await EnsureGroupStatusFromWorkflowStageAsync(resolvedGroupIdentifier, request.ScannerType);
                 }
 
                 await tx.CommitAsync();
@@ -2231,6 +2709,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Delete a decision
         /// </summary>
         [HttpDelete("{id}")]
+        [HasPermission(Permissions.ControllersImageAnalysisManagementSettings)]
         public async Task<IActionResult> DeleteDecision(int id)
         {
             try

@@ -148,7 +148,6 @@ namespace NickScanCentralImagingPortal.Infrastructure.Repositories
                     item.Status = QueueStatus.Processing;
                     item.FirstAttemptAt ??= DateTime.UtcNow;
                     item.LastAttemptAt = DateTime.UtcNow;
-                    item.RetryCount++;
 
                     // ✅ CRITICAL FIX: Explicitly mark entity as modified to ensure SaveChanges works
                     _context.Entry(item).State = Microsoft.EntityFrameworkCore.EntityState.Modified;

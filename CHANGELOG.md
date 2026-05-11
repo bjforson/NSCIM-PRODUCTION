@@ -22,6 +22,301 @@ For each release, this file records:
 
 ---
 
+## [2.17.4] - 2026-05-11 - Splitter orphan processing recovery
+
+Patch release for raw-engine recovery during deploys and restarts.
+
+### What landed
+
+- The Python splitter now resets orphaned `processing` jobs after a short
+  configurable startup grace window (`SPLITTER_PROCESSING_STALE_MINUTES`,
+  default 2 minutes), instead of waiting 1 hour.
+- Reprocessed the May 10 FS6000 backfill job that was interrupted during the
+  deploy window.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Recover orphaned splitter processing jobs
+
+## [2.17.3] - 2026-05-11 - Two-container split intake backfill
+
+Patch release for scanner originals that were valid two-container images but
+did not appear on the split review page because no splitter job had been
+submitted yet.
+
+### What landed
+
+- Added an admin-only `POST /api/image-splitter/jobs/backfill-originals`
+  recovery endpoint for dated two-container `OriginalScanRecord` backfills.
+- The two-container intake worker now submits valid two-container originals
+  even when analysis rows have not been created yet, while still avoiding
+  duplicate splitter jobs for container pairs already present in the splitter.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Backfill two-container split intake jobs
+
+## [2.17.2] - 2026-05-11 - Split review queue and image loading
+
+Patch release for the standalone image split review page.
+
+### What landed
+
+- The split review page now requests a recent 72-hour review queue capped at 50
+  jobs instead of the legacy 200-row historical backlog.
+- The API proxy now forwards query strings to the Python splitter pending/jobs
+  endpoint.
+- The Python splitter pending/jobs endpoint now supports explicit `mode`,
+  `limit`, and `since_hours` query parameters while preserving the legacy
+  default for older helper paths.
+- Split review original and preview images now use signed image URLs, avoiding
+  blank previews when authenticated byte fetches fail or token context is stale.
+- Signed-image middleware now allows the splitter original-image endpoint.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Fix split review queue and signed images
+
+## [2.17.1] - 2026-05-11 - Split choice UI terminal statuses
+
+Patch release to finish wiring the FS6000 visual split gate into the analyst
+split-choice UI.
+
+### What landed
+
+- The inline split-choice component now recognizes `VisualSingle`, `Uncertain`,
+  and `NotApplicable` as resolved split statuses.
+- Analysts now see a clear banner when the splitter intentionally does not offer
+  crop choices, and the normal original-image workflow remains available.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Wire split choice UI terminal statuses
+
+## [2.17.0] - 2026-05-11 - FS6000 visual split eligibility gate
+
+Feature release for FS6000 scanner images where metadata lists two container
+numbers but the image itself is visually single-container or too ambiguous to
+split safely.
+
+### What landed
+
+#### Splitter visual eligibility - added
+
+Added an independent pixel-first FS6000 visual eligibility gate that runs before
+normal split candidate generation. The gate returns `dual_container`,
+`single_container`, or `uncertain` with confidence, reason codes, and candidate
+frame positions. Only `dual_container` jobs continue into the regular split
+pipeline.
+
+#### Analyst assignment flow - hardened
+
+FS6000 images classified as visually single-container or uncertain no longer
+produce split crops, split assignments, or `Ready` split options for analysts.
+The .NET intake, orchestrator, and splitter controller now recognize
+`VisualSingle`, `Uncertain`, and `NotApplicable` as terminal non-choice split
+statuses and clear stale split options when a job is not actually splittable.
+
+#### FS6000 audit tooling - added
+
+Added `tools/staging/audit_fs6000_splitter_contamination.py`, a read-only audit
+tool for existing FS6000 splitter jobs. It writes CSV/JSON summaries and only
+mutates database notes when both `--write-audit-notes` and
+`--allow-db-mutations` are explicitly supplied.
+
+### Tests / verification
+
+- `python -m py_compile` for `services/image-splitter/main.py`,
+  `pipeline/visual_eligibility.py`, and
+  `tools/staging/audit_fs6000_splitter_contamination.py`.
+- Replayed the known bad FS6000 job
+  `c4bb9db5-b3ce-4622-bb5d-12be5784123f`; it now classifies as `uncertain`
+  with `should_split=false`.
+- Replayed known good FS6000 dual-container jobs; the checked samples remain
+  `dual_container`.
+- Ran a read-only runtime-gate audit over the 25 most recent completed FS6000
+  jobs: 23 `dual_container`, 1 `single_container`, 1 `uncertain`, 2 high-risk
+  completed jobs flagged for follow-up.
+- `dotnet test src\NickScanCentralImagingPortal.Tests\NickScanCentralImagingPortal.Tests.csproj --no-restore --filter FullyQualifiedName~SplitAnalysisStatusTests`:
+  8 passed.
+- `dotnet build src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj -c Release --no-restore /p:UseSharedCompilation=false`:
+  passed with existing warnings.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add FS6000 visual split eligibility gate
+
+## [2.16.14] - 2026-05-11 - Splitter candidate ranker and polarity-aware seam detection
+
+Patch release for operator-reported wrong split suggestions on two-container
+scanner images.
+
+### What landed
+
+#### Splitter candidate generation - improved
+
+Added a new `foreground_seam` strategy that detects image polarity from the
+scan itself, then searches for the low-foreground seam between two large
+container masses. This covers ASE images where the visual polarity differs from
+FS6000 and the old "air is bright" assumption can place a confident cut inside
+the right-hand container.
+
+#### Splitter best-candidate selection - hardened
+
+The splitter now runs all strategies for each job instead of short-circuiting
+after `steel_wall_midpoint` succeeds. A deterministic ranker clusters nearby
+candidate split points, applies strategy priors and metadata quality signals,
+and penalizes singleton outliers such as isolated `corner_fitting`,
+`container_gap`, or `density_profile` picks. The chosen result preserves its raw
+confidence in metadata while being surfaced first to existing confidence-sorted
+clients.
+
+#### Edge detection strategy - fixed
+
+Fixed an `edge_detection` indexing bug that raised
+`'list' object has no attribute 'tolist'`, preventing that strategy from
+contributing candidate evidence.
+
+### Tests / verification
+
+- `python -m py_compile` for `pipeline/orchestrator.py`,
+  `strategies/foreground_seam.py`, and `strategies/edge_detection.py`.
+- Replayed 59 labelled splitter jobs from the local production database:
+  mean absolute split error improved from `13.56px` to `7.32px`; within-15px
+  jobs improved from `42/59` to `46/59`.
+- Replayed the fresh ASE failure `NYKU3808732,TRHU2102211`; selected split moved
+  from `steel_wall_midpoint x=790` to `foreground_seam x=667`.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add polarity-aware splitter ranker
+
+## [2.16.13] - 2026-05-10 - Two-container scanner split intake
+
+Feature and reliability release for scanner events that contain exactly two
+physical containers in one X-ray image.
+
+### What landed
+
+#### Two-container split intake - added
+
+Added a durable intake service that can ensure a split job for a two-container
+`OriginalScanRecord`, then link the latest per-container `AnalysisRecord` rows to
+the split job and top candidate result IDs once the splitter completes. This
+allows the analyst flow to show the two best split options for each side instead
+of waiting on late, UI-triggered detection.
+
+#### Scanner ingestion hooks - added
+
+FS6000 ingestion now requests split intake after JPEG persistence for original
+scan groups with exactly two containers. ASE ingestion now requests split intake
+after the ASE source blob is saved and the comma-split queue items are published.
+ASE split submission uses the original `AseScan.OriginalScanRecordId` and source
+image blob, so child queue tokens no longer need an exact `AseScan.ContainerNumber`
+match.
+
+#### Splitter API contract - fixed
+
+The Python splitter upload endpoint already returned `id`; the C# client expected
+`job_id`. The client now accepts both response shapes, can search existing jobs
+by container pair, and can fetch the top split result IDs for analysis-record
+linking. The upload endpoint also persists optional `source_image_id` for audit
+lineage.
+
+#### Two-candidate analyst review - hardened
+
+Some completed jobs can legitimately produce only one strategy result. The
+splitter now adds a low-confidence deterministic fallback candidate when the
+image can be cropped, so the analyst dialog has two choices whenever the source
+image dimensions allow it. The intake sweep also revisits Ready records with a
+missing Option B so backfilled fallback candidates are linked to the analyst UI.
+
+### Tests / verification
+
+- `python -m py_compile services/image-splitter/main.py`
+- `dotnet build src/NickScanCentralImagingPortal.API/NickScanCentralImagingPortal.API.csproj --no-restore`
+- `dotnet test src/NickScanCentralImagingPortal.Tests/NickScanCentralImagingPortal.Tests.csproj --no-build`
+- `dotnet list ... package --vulnerable --include-transitive` for API, WebApp, and test projects: no vulnerable packages reported from NuGet.
+- Live splitter probes: `/api/health` returned healthy and `/api/split/search` returned an empty array for a harmless non-existent pair.
+- Post-deploy intake proof: the worker submitted and completed a fresh two-container job for `NYKU3808732,TRHU2102211`.
+- One-time data backfill added fallback candidates to 11 completed, unreviewed jobs that previously had only one result.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add two-container split intake for scanner images
+- (follow-up commit) - Ensure splitter emits two review candidates when possible
+- (follow-up commit) - Relink Ready records missing split Option B
+
+## [2.16.12] - 2026-05-10 - ASE scanner-tab image loading for encoded container routes
+
+Patch release for an ASE image-loading regression found after the image URL
+signing hardening was deployed.
+
+### What landed
+
+#### ASE signed image URLs with comma-separated containers - closed
+
+ASE source rows can carry comma-separated container numbers in one inspection
+record, for example `CAXU6863152, MSBU3047832`. The scanner/detail UI correctly
+URL-encoded those route values before building image links, but the shared
+signature algorithm signed the encoded path while ASP.NET Core validates against
+the decoded `HttpRequest.Path`. Result: signed browser image requests for those
+ASE scanner-tab routes could 401 even though the same image rendered correctly
+for single-container ASE rows.
+
+**Fix:** moved both API-side signing and WebApp URL building onto the shared
+`SignedImageUrlCanonical.ComputeSignature` path, and made that canonicalizer
+decode percent-encoded route values before lowercasing/signing. This keeps
+normal single-container image URLs unchanged while making encoded ASE routes
+validate against the same path shape the middleware receives.
+
+### Tests / verification
+
+- `dotnet build src/NickScanCentralImagingPortal.Core/NickScanCentralImagingPortal.Core.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- `dotnet build src/NickScanCentralImagingPortal.API/NickScanCentralImagingPortal.API.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- `dotnet build src/NickScanWebApp.New/NickScanWebApp.New.csproj -c Release --no-restore`
+- `dotnet test tests/NickScanCentralImagingPortal.Core.Tests/NickScanCentralImagingPortal.Core.Tests.csproj -c Release --no-restore /p:UseSharedCompilation=false`
+- Production deploy via `.\Deploy.ps1` (API + WebApp)
+- Live probe: signed ASE thumbnail/full image requests returned `200 image/jpeg`
+  for both single-container and comma-separated ASE paths.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- `e06ece6` - Fix signed ASE image URLs with encoded containers
+- (this commit) - chore(release): bump to 2.16.12 + ASE scanner image changelog
+
 ## [2.16.11] — 2026-05-05 — Operator-reported observations: Scanner column + Tag persistence + audit-spotty triage
 
 Three operator observations triaged after 2.16.10. Two were real bugs with

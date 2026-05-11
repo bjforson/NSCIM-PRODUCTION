@@ -23,6 +23,7 @@ SET SERVICE_DESC=Raw X-ray image decoding, 16-bit rendering, analysis tools, and
 SET WORK_DIR=C:\Shared\NSCIM_PRODUCTION\services\image-splitter
 SET PYTHON=%WORK_DIR%\venv\Scripts\python.exe
 SET LOG_DIR=%WORK_DIR%\logs
+if "%SPLITTER_HOST%"=="" set "SPLITTER_HOST=127.0.0.1"
 
 :: Also remove old service name if it exists
 SET OLD_SERVICE_NAME=NSCIM_ImageSplitter
@@ -57,7 +58,7 @@ nssm stop %SERVICE_NAME% 2>nul
 nssm remove %SERVICE_NAME% confirm 2>nul
 
 echo Installing service: %SERVICE_NAME%...
-nssm install %SERVICE_NAME% "%PYTHON%" "-m" "uvicorn" "main:app" "--host" "0.0.0.0" "--port" "5320"
+nssm install %SERVICE_NAME% "%PYTHON%" "-m" "uvicorn" "main:app" "--host" "%SPLITTER_HOST%" "--port" "5320"
 
 nssm set %SERVICE_NAME% DisplayName "%SERVICE_DISPLAY%"
 nssm set %SERVICE_NAME% Description "%SERVICE_DESC%"

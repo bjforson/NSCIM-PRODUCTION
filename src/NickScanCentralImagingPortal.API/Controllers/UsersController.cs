@@ -3,6 +3,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using NickScanCentralImagingPortal.API.Authorization;
+using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Services.Permissions;
@@ -19,17 +21,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
     {
         private readonly IUserRepository _userRepository;
         private readonly IRoleService _roleService;
+        private readonly IPermissionService _permissionService;
         private readonly ILogger<UsersController> _logger;
         private readonly IConfiguration _configuration;
 
         public UsersController(
             IUserRepository userRepository,
             IRoleService roleService,
+            IPermissionService permissionService,
             ILogger<UsersController> logger,
             IConfiguration configuration)
         {
             _userRepository = userRepository;
             _roleService = roleService;
+            _permissionService = permissionService;
             _logger = logger;
             _configuration = configuration;
         }
@@ -39,41 +44,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// </summary>
         private bool IsValidServiceApiKey(string? providedKey)
         {
-            var expected = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")
-                ?? _configuration["ServiceAuth:ApiKey"]
-                ?? string.Empty;
-            return !string.IsNullOrEmpty(expected) && providedKey == expected;
+            return ServiceApiKeyValidator.IsValid(_configuration, providedKey);
         }
 
         [HttpGet]
-        public async Task<ActionResult<List<object>>> GetAllUsers()
+        [HasPermission(Permissions.ControllersUsersView)]
+        public async Task<ActionResult<List<UserManagementDto>>> GetAllUsers()
         {
             try
             {
                 var users = await _userRepository.GetAllUsersAsync();
-
-                // Map to DTO to avoid circular reference issues with navigation properties
-                var userDtos = users.Select(u => new
-                {
-                    u.Id,
-                    UserId = u.Username, // Map Username to UserId for frontend compatibility
-                    u.Username,
-                    u.UserNumber, // ✅ Include UserNumber for anonymized reporting
-                    u.Email,
-                    u.FirstName,
-                    u.LastName,
-                    u.Department,
-                    u.PhoneNumber,
-                    RoleName = u.AssignedRole?.Name ?? u.Role.ToString(),
-                    RoleDisplayName = u.AssignedRole?.DisplayName ?? u.Role.ToString(),
-                    u.RoleId, // ✅ Include RoleId for new role system
-                    u.IsActive,
-                    LastLogin = u.LastLoginAt,
-                    u.CreatedAt,
-                    u.CreatedBy,
-                    u.UpdatedAt,
-                    u.UpdatedBy
-                }).ToList();
+                var userDtos = users.Select(ToUserManagementDto).ToList();
 
                 return Ok(userDtos);
             }
@@ -85,12 +66,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("active")]
-        public async Task<ActionResult<List<User>>> GetActiveUsers()
+        [HasPermission(Permissions.ControllersUsersView)]
+        public async Task<ActionResult<List<UserManagementDto>>> GetActiveUsers()
         {
             try
             {
                 var users = await _userRepository.GetActiveUsersAsync();
-                return Ok(users);
+                return Ok(users.Select(ToUserManagementDto).ToList());
             }
             catch (Exception ex)
             {
@@ -100,16 +82,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("{id}")]
-        public async Task<ActionResult<User>> GetUserById(int id)
+        public async Task<ActionResult<UserManagementDto>> GetUserById(int id)
         {
             try
             {
+                if (!IsCurrentUser(id) && !await HasUserManagementPermissionAsync(Permissions.ControllersUsersView))
+                {
+                    return Forbid();
+                }
+
                 var user = await _userRepository.GetUserByIdAsync(id);
                 if (user == null)
                 {
                     return NotFound();
                 }
-                return Ok(user);
+                return Ok(ToUserManagementDto(user));
             }
             catch (Exception ex)
             {
@@ -119,16 +106,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("username/{username}")]
-        public async Task<ActionResult<User>> GetUserByUsername(string username)
+        public async Task<ActionResult<UserManagementDto>> GetUserByUsername(string username)
         {
             try
             {
+                if (!IsCurrentUsername(username) && !await HasUserManagementPermissionAsync(Permissions.ControllersUsersView))
+                {
+                    return Forbid();
+                }
+
                 var user = await _userRepository.GetUserByUsernameAsync(username);
                 if (user == null)
                 {
                     return NotFound();
                 }
-                return Ok(user);
+                return Ok(ToUserManagementDto(user));
             }
             catch (Exception ex)
             {
@@ -138,16 +130,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("email/{email}")]
-        public async Task<ActionResult<User>> GetUserByEmail(string email)
+        public async Task<ActionResult<UserManagementDto>> GetUserByEmail(string email)
         {
             try
             {
+                if (!IsCurrentEmail(email) && !await HasUserManagementPermissionAsync(Permissions.ControllersUsersView))
+                {
+                    return Forbid();
+                }
+
                 var user = await _userRepository.GetUserByEmailAsync(email);
                 if (user == null)
                 {
                     return NotFound();
                 }
-                return Ok(user);
+                return Ok(ToUserManagementDto(user));
             }
             catch (Exception ex)
             {
@@ -160,8 +157,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Create new user (Admin only)
         /// </summary>
         [HttpPost]
-        [Authorize(Policy = "AdminOnly")]
-        public async Task<ActionResult<User>> CreateUser([FromBody] CreateUserRequest request)
+        [HasPermission(Permissions.ControllersUsersCreate)]
+        public async Task<ActionResult<UserManagementDto>> CreateUser([FromBody] CreateUserRequest request)
         {
             try
             {
@@ -183,7 +180,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return Conflict("Email already exists");
                 }
                 var user = await _userRepository.CreateUserAsync(request);
-                return CreatedAtAction(nameof(GetUserById), new { id = user.Id }, user);
+                return CreatedAtAction(nameof(GetUserById), new { id = user.Id }, ToUserManagementDto(user));
             }
             catch (ArgumentException ex)
             {
@@ -201,14 +198,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Update user (Admin or self)
         /// </summary>
         [HttpPut("{id}")]
-        public async Task<ActionResult<User>> UpdateUser(int id, [FromBody] UpdateUserRequest request)
+        public async Task<ActionResult<UserManagementDto>> UpdateUser(int id, [FromBody] UpdateUserRequest request)
         {
             try
             {
+                var canEditUsers = await HasUserManagementPermissionAsync(Permissions.ControllersUsersEdit);
+                if (!canEditUsers && !IsCurrentUser(id))
+                {
+                    return Forbid();
+                }
+
                 _logger.LogInformation("🎯 UsersController.UpdateUser called for user ID: {UserId}", id);
                 _logger.LogInformation("   Request Email: {Email}", request.Email);
-                _logger.LogInformation("   Request Role: {Role}", request.Role ?? "NULL");
-                _logger.LogInformation("   Request IsActive: {IsActive}", request.IsActive);
 
                 // Validate request
                 if (string.IsNullOrEmpty(request.Email))
@@ -227,16 +228,24 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 _logger.LogInformation("   Found existing user: {Username}, Current Role: {CurrentRole}", existingUser.Username, existingUser.Role);
 
-                if (existingUser.Email != request.Email && await _userRepository.EmailExistsAsync(request.Email))
+                var updateRequest = canEditUsers ? request : BuildSelfUpdateRequest(request);
+                if (!canEditUsers && HasPrivilegedUserUpdates(request))
+                {
+                    _logger.LogWarning(
+                        "Blocked self-update attempt for user {UserId} containing privileged fields Role/RoleId/IsActive",
+                        id);
+                }
+
+                if (existingUser.Email != updateRequest.Email && await _userRepository.EmailExistsAsync(updateRequest.Email!))
                 {
                     _logger.LogWarning("   ❌ Email conflict detected");
                     return Conflict("Email already exists");
                 }
 
                 _logger.LogInformation("   ✅ Validation passed - calling repository UpdateUserAsync");
-                var user = await _userRepository.UpdateUserAsync(id, request);
+                var user = await _userRepository.UpdateUserAsync(id, updateRequest);
                 _logger.LogInformation("   ✅ Repository returned updated user with Role: {Role}", user.Role);
-                return Ok(user);
+                return Ok(ToUserManagementDto(user));
             }
             catch (ArgumentException ex)
             {
@@ -254,7 +263,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Delete user (Admin only)
         /// </summary>
         [HttpDelete("{id}")]
-        [Authorize(Policy = "AdminOnly")]
+        [HasPermission(Permissions.ControllersUsersDelete)]
         public async Task<ActionResult> DeleteUser(int id)
         {
             try
@@ -278,6 +287,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                if (!IsCurrentUsername(request.Username) &&
+                    !await HasUserManagementPermissionAsync(Permissions.ControllersUsersPassword))
+                {
+                    return Forbid();
+                }
+
                 var isValid = await _userRepository.ValidatePasswordAsync(request.Username, request.Password);
                 return Ok(isValid);
             }
@@ -293,6 +308,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                if (!IsCurrentUser(id) && !await HasUserManagementPermissionAsync(Permissions.ControllersUsersEdit))
+                {
+                    return Forbid();
+                }
+
                 await _userRepository.UpdateLastLoginAsync(id);
                 return Ok();
             }
@@ -337,7 +357,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Reset user password to a temporary password (Admin only)
         /// </summary>
         [HttpPost("{id}/reset-password")]
-        [Authorize(Policy = "AdminOnly")]
+        [HasPermission(Permissions.ControllersUsersPassword)]
         public async Task<ActionResult<object>> ResetPassword(int id)
         {
             try
@@ -379,7 +399,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <param name="request">Role assignment request</param>
         /// <returns>Success message</returns>
         [HttpPut("{id}/role")]
-        [Authorize(Policy = "AdminOnly")]
+        [HasPermission(Permissions.ControllersUsersRoles)]
         public async Task<ActionResult> AssignRole(int id, [FromBody] AssignRoleRequest request)
         {
             try
@@ -433,15 +453,123 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private string GenerateTemporaryPassword()
         {
             const string validChars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789!@#$%";
-            var random = new Random();
             var chars = new char[12];
 
             for (int i = 0; i < 12; i++)
             {
-                chars[i] = validChars[random.Next(validChars.Length)];
+                chars[i] = validChars[RandomNumberGenerator.GetInt32(validChars.Length)];
             }
 
             return new string(chars);
+        }
+
+        private static UserManagementDto ToUserManagementDto(User user)
+        {
+            return new UserManagementDto
+            {
+                Id = user.Id,
+                UserId = user.Username,
+                Username = user.Username,
+                UserNumber = user.UserNumber,
+                Email = user.Email,
+                FirstName = user.FirstName,
+                LastName = user.LastName,
+                Department = user.Department,
+                PhoneNumber = user.PhoneNumber,
+                RoleName = user.AssignedRole?.Name ?? user.Role.ToString(),
+                RoleDisplayName = user.AssignedRole?.DisplayName ?? user.Role.ToString(),
+                RoleId = user.RoleId,
+                IsActive = user.IsActive,
+                LastLogin = user.LastLoginAt,
+                CreatedAt = user.CreatedAt,
+                CreatedBy = user.CreatedBy,
+                UpdatedAt = user.UpdatedAt,
+                UpdatedBy = user.UpdatedBy
+            };
+        }
+
+        private UpdateUserRequest BuildSelfUpdateRequest(UpdateUserRequest request)
+        {
+            return new UpdateUserRequest
+            {
+                Email = request.Email,
+                FirstName = request.FirstName,
+                LastName = request.LastName,
+                Department = request.Department,
+                PhoneNumber = request.PhoneNumber,
+                UpdatedBy = GetCurrentUsername() ?? "SelfService"
+            };
+        }
+
+        private static bool HasPrivilegedUserUpdates(UpdateUserRequest request)
+        {
+            return request.RoleId.HasValue ||
+                   request.IsActive.HasValue ||
+                   !string.IsNullOrWhiteSpace(request.Role);
+        }
+
+        private bool IsCurrentUser(int userId)
+        {
+            return TryGetCurrentUserId(out var currentUserId) && currentUserId == userId;
+        }
+
+        private bool IsCurrentUsername(string username)
+        {
+            return string.Equals(GetCurrentUsername(), username, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsCurrentEmail(string email)
+        {
+            var currentEmail = User.FindFirstValue(ClaimTypes.Email);
+            return !string.IsNullOrWhiteSpace(currentEmail) &&
+                   string.Equals(currentEmail, email, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string? GetCurrentUsername()
+        {
+            return User.FindFirstValue(ClaimTypes.Name) ??
+                   User.FindFirstValue("username") ??
+                   User.Identity?.Name;
+        }
+
+        private bool TryGetCurrentUserId(out int userId)
+        {
+            var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(userIdClaim, out userId);
+        }
+
+        private async Task<bool> HasUserManagementPermissionAsync(params string[] permissions)
+        {
+            if (permissions.Any(HasPermissionClaim))
+            {
+                return true;
+            }
+
+            if (TryGetCurrentUserId(out var userId))
+            {
+                return await _permissionService.HasAnyPermissionAsync(userId, permissions);
+            }
+
+            var username = GetCurrentUsername();
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                foreach (var permission in permissions)
+                {
+                    if (await _permissionService.HasPermissionAsync(username, permission))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool HasPermissionClaim(string permission)
+        {
+            return User.Claims.Any(c =>
+                string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
         }
 
         // ===== SERVICE-TO-SERVICE ENDPOINTS (Central Provisioning) =====
@@ -456,7 +584,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> ServiceProvisionUser([FromBody] ServiceProvisionRequest request)
         {
-            if (!IsValidServiceApiKey(request.ServiceApiKey))
+            var providedServiceKey = ServiceApiKeyValidator.GetProvidedKey(Request, request.ServiceApiKey);
+            if (!IsValidServiceApiKey(providedServiceKey))
             {
                 _logger.LogWarning("🔒 service/provision: Invalid service API key from {IP}",
                     HttpContext.Connection.RemoteIpAddress);
@@ -545,7 +674,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> ServiceDeactivateUser(string username, [FromBody] ServiceApiKeyRequest request)
         {
-            if (!IsValidServiceApiKey(request.ServiceApiKey))
+            var providedServiceKey = ServiceApiKeyValidator.GetProvidedKey(Request, request.ServiceApiKey);
+            if (!IsValidServiceApiKey(providedServiceKey))
             {
                 return Unauthorized(new { error = "Invalid service API key" });
             }
@@ -607,6 +737,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
     {
         public string Username { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
+    }
+
+    public class UserManagementDto
+    {
+        public int Id { get; set; }
+        public string UserId { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
+        public string? UserNumber { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public string FirstName { get; set; } = string.Empty;
+        public string LastName { get; set; } = string.Empty;
+        public string? Department { get; set; }
+        public string? PhoneNumber { get; set; }
+        public string RoleName { get; set; } = string.Empty;
+        public string RoleDisplayName { get; set; } = string.Empty;
+        public int? RoleId { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime? LastLogin { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public string? CreatedBy { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+        public string? UpdatedBy { get; set; }
     }
 
     public class AssignRoleRequest

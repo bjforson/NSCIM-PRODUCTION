@@ -460,7 +460,8 @@ else
 
             if (_serviceHealthy)
             {
-                _jobs = await ApiService.GetAsync<List<SplitJobDto>>("/api/image-splitter/jobs/pending") ?? new();
+                _jobs = await ApiService.GetAsync<List<SplitJobDto>>(
+                    "/api/image-splitter/jobs/pending?mode=recent&since_hours=72&limit=50") ?? new();
             }
         }
         catch (Exception ex)
@@ -504,49 +505,25 @@ else
 
         try
         {
-            // Load results + image bytes in parallel. ApiService.GetBytesAsync()
-            // uses the authenticated client (token attached in Blazor context),
-            // and the bytes are embedded as a base64 data URL so the <img> tag
-            // doesn't need to make a cross-origin authenticated request.
+            // Use signed image URLs for browser <img> tags. The split-review
+            // page previously fetched bytes through ApiService; when the token
+            // was unavailable or expired, the UI showed a blank image even
+            // though the splitter still had the JPEG bytes.
             var resultsTask = ApiService.GetAsync<List<SplitResultDto>>($"/api/image-splitter/jobs/{job.Id}/results");
-            var imageBytesTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/original");
-
             state.Results = await resultsTask ?? new();
-
-            var imageBytes = await imageBytesTask;
-            if (imageBytes != null && imageBytes.Length > 0)
-            {
-                state.OriginalImageUrl = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}";
-            }
-            else
-            {
-                state.OriginalImageUrl = null;
-                Logger.LogWarning("Could not fetch original image bytes for job {JobId}", job.Id);
-            }
+            state.OriginalImageUrl = UrlBuilder.Build(
+                $"/api/image-splitter/jobs/{job.Id}/original",
+                _currentUser);
 
             state.ImageWidth = job.ImageWidth > 0 ? job.ImageWidth : 1621;  // fallback to common ASE scan width
 
-            // Load split preview thumbnails as base64 data URLs.
-            // Raw <img src="..."> tags can't carry auth tokens for the
-            // cross-origin API, so we fetch the bytes server-side via
-            // ApiService (which has the auth context) and embed them.
+            // Load split preview thumbnails via signed URLs. Raw <img src="...">
+            // tags can't carry bearer headers, so the signed URL middleware
+            // authenticates these short-lived image requests.
             foreach (var r in state.Results.Where(r => r.HasLeftImage && r.HasRightImage))
             {
-                try
-                {
-                    var leftTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/results/{r.Id}/image/left");
-                    var rightTask = ApiService.GetBytesAsync($"/api/image-splitter/jobs/{job.Id}/results/{r.Id}/image/right");
-                    var leftBytes = await leftTask;
-                    var rightBytes = await rightTask;
-                    r.LeftPreviewDataUrl = leftBytes?.Length > 0
-                        ? $"data:image/jpeg;base64,{Convert.ToBase64String(leftBytes)}" : null;
-                    r.RightPreviewDataUrl = rightBytes?.Length > 0
-                        ? $"data:image/jpeg;base64,{Convert.ToBase64String(rightBytes)}" : null;
-                }
-                catch (Exception imgEx)
-                {
-                    Logger.LogWarning(imgEx, "Could not load preview images for result {ResultId}", r.Id);
-                }
+                r.LeftPreviewDataUrl = GetResultImageUrl(job.Id, r.Id, "left");
+                r.RightPreviewDataUrl = GetResultImageUrl(job.Id, r.Id, "right");
             }
         }
         catch (Exception ex)

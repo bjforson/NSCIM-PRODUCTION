@@ -10,6 +10,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageAnalysis;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
@@ -27,6 +28,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IcumDownloadsDbContext _icumDb;
         private readonly ILogger<ImageAnalysisManagementController> _logger;
         private readonly IMemoryCache _cache;
+        private readonly ReadyGroupsCacheService? _readyGroupsCache;
         private const string ReadyGroupsCacheKey = "ready-groups";
         private static readonly TimeSpan ReadyGroupsCacheExpiration = TimeSpan.FromMinutes(2); // ✅ FIX: Increased to 2 minutes to reduce database load
 
@@ -42,12 +44,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
             ApplicationDbContext db,
             IcumDownloadsDbContext icumDb,
             ILogger<ImageAnalysisManagementController> logger,
-            IMemoryCache cache)
+            IMemoryCache cache,
+            ReadyGroupsCacheService? readyGroupsCache = null)
         {
             _db = db;
             _icumDb = icumDb;
             _logger = logger;
             _cache = cache;
+            _readyGroupsCache = readyGroupsCache;
         }
 
         // GET /api/image-analysis/service-state
@@ -909,6 +913,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 await _db.SaveChangesAsync();
             }
+
+            await UpsertQueueEntryBestEffortAsync(assignment, HttpContext?.RequestAborted ?? CancellationToken.None);
             return Ok();
         }
 
@@ -940,6 +946,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
             };
             _db.AnalysisAssignments.Add(assignment);
             await _db.SaveChangesAsync();
+
+            foreach (var released in active)
+            {
+                await RemoveQueueEntryBestEffortAsync(released, HttpContext?.RequestAborted ?? CancellationToken.None);
+            }
+
+            await UpsertQueueEntryBestEffortAsync(assignment, HttpContext?.RequestAborted ?? CancellationToken.None);
             return Ok();
         }
 
@@ -989,6 +1002,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // No matching group — still persist the assignment-state changes from earlier.
                 await _db.SaveChangesAsync();
             }
+
+            foreach (var released in active)
+            {
+                await RemoveQueueEntryBestEffortAsync(released, HttpContext?.RequestAborted ?? CancellationToken.None);
+            }
+
             return Ok();
         }
 
@@ -1038,6 +1057,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             var leaseUntil = DateTime.UtcNow.AddMinutes(Math.Max(1, settings.LeaseMinutes));
+            AnalysisAssignment assignmentForQueue;
 
             // If exists, update; otherwise create new
             if (existingAssignment != null)
@@ -1045,6 +1065,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 existingAssignment.AssignedTo = username;
                 existingAssignment.LeaseUntilUtc = leaseUntil;
                 existingAssignment.UpdatedAtUtc = DateTime.UtcNow;
+                assignmentForQueue = existingAssignment;
             }
             else
             {
@@ -1058,6 +1079,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     CreatedAtUtc = DateTime.UtcNow
                 };
                 _db.AnalysisAssignments.Add(assignment);
+                assignmentForQueue = assignment;
             }
 
             // Move group to Assigned if it was Ready
@@ -1077,6 +1099,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 await _db.SaveChangesAsync();
             }
+            await UpsertQueueEntryBestEffortAsync(assignmentForQueue, HttpContext?.RequestAborted ?? CancellationToken.None);
             _logger.LogInformation("Assigned group {GroupIdentifier} to {User} (backward compatibility endpoint)", groupId, username);
             return Ok(new { success = true });
         }
@@ -1129,6 +1152,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 await _db.SaveChangesAsync();
             }
+
+            foreach (var released in active)
+            {
+                await RemoveQueueEntryBestEffortAsync(released, HttpContext?.RequestAborted ?? CancellationToken.None);
+            }
+
             _logger.LogInformation("Released group {GroupIdentifier} (backward compatibility endpoint)", groupId);
             return Ok(new { success = true });
         }
@@ -1189,8 +1218,59 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _db.AnalysisAssignments.Add(assignment);
 
             await _db.SaveChangesAsync();
+            foreach (var released in active)
+            {
+                await RemoveQueueEntryBestEffortAsync(released, HttpContext?.RequestAborted ?? CancellationToken.None);
+            }
+
+            await UpsertQueueEntryBestEffortAsync(assignment, HttpContext?.RequestAborted ?? CancellationToken.None);
             _logger.LogInformation("Reassigned group {GroupIdentifier} to {User} (backward compatibility endpoint)", groupId, username);
             return Ok(new { success = true });
+        }
+
+        private async Task UpsertQueueEntryBestEffortAsync(AnalysisAssignment assignment, CancellationToken ct = default)
+        {
+            await InvalidateReadyCachesBestEffortAsync(ct);
+            if (_readyGroupsCache == null) return;
+
+            try
+            {
+                await _readyGroupsCache.UpsertQueueEntryAsync(_db, assignment.Id, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[QUEUE] Failed to upsert queue entry for assignment {AssignmentId}", assignment.Id);
+            }
+        }
+
+        private async Task RemoveQueueEntryBestEffortAsync(AnalysisAssignment assignment, CancellationToken ct = default)
+        {
+            await InvalidateReadyCachesBestEffortAsync(ct);
+            if (_readyGroupsCache == null) return;
+
+            try
+            {
+                await _readyGroupsCache.RemoveQueueEntryAsync(_db, assignment.Id, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[QUEUE] Failed to remove queue entry for assignment {AssignmentId}", assignment.Id);
+            }
+        }
+
+        private async Task InvalidateReadyCachesBestEffortAsync(CancellationToken ct = default)
+        {
+            _cache.Remove(ReadyGroupsCacheKey);
+            if (_readyGroupsCache == null) return;
+
+            try
+            {
+                await _readyGroupsCache.InvalidateAllCachesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[CACHE] Failed to invalidate ready groups cache");
+            }
         }
 
         public sealed class UpdateServiceStateRequest

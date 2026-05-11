@@ -24,6 +24,15 @@ else if (_splitStatus == "Pending")
         </MudStack>
     </MudAlert>
 }
+else if (IsTerminalNoChoice)
+{
+    <MudAlert Severity="@TerminalNoChoiceSeverity" Variant="Variant.Outlined" Class="mb-4" Dense="true">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@TerminalNoChoiceIcon" />
+            <MudText>@TerminalNoChoiceText</MudText>
+        </MudStack>
+    </MudAlert>
+}
 else if (_splitStatus == "Ready" && _options?.Count > 0)
 {
     <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mb-4" Dense="true">
@@ -284,7 +293,35 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
     /// (status is "Ready" with options), or a pending banner.
     /// Returns false if the normal viewer should take over.
     /// </summary>
-    public bool NeedsSplitInteraction => _splitStatus == "Ready" && _options.Count > 0;
-    public bool IsPending => _splitStatus == "Pending";
-    public bool IsResolved => _splitStatus == null || _splitStatus == "Chosen" || _splitStatus == "Skipped";
+    public bool NeedsSplitInteraction => StatusEquals("Ready") && _options.Count > 0;
+    public bool IsPending => StatusEquals("Pending");
+    public bool IsResolved => _splitStatus == null || StatusEquals("Chosen") || StatusEquals("Skipped") || IsTerminalNoChoice;
+
+    private bool IsTerminalNoChoice =>
+        StatusEquals("VisualSingle") || StatusEquals("Uncertain") || StatusEquals("NotApplicable");
+
+    private Severity TerminalNoChoiceSeverity =>
+        StatusEquals("Uncertain") ? Severity.Warning : Severity.Info;
+
+    private string TerminalNoChoiceIcon =>
+        StatusEquals("Uncertain")
+            ? Icons.Material.Outlined.HelpOutline
+            : Icons.Material.Outlined.ImageNotSupported;
+
+    private string TerminalNoChoiceText
+    {
+        get
+        {
+            if (StatusEquals("VisualSingle"))
+                return "Splitter classified this as visually single-container. Showing the original image.";
+            if (StatusEquals("Uncertain"))
+                return "Splitter could not identify a safe two-container split. Showing the original image.";
+            if (StatusEquals("NotApplicable"))
+                return "Split review is not applicable for this image. Showing the original image.";
+            return "Split review is not required for this image. Showing the original image.";
+        }
+    }
+
+    private bool StatusEquals(string status) =>
+        string.Equals(_splitStatus, status, StringComparison.OrdinalIgnoreCase);
 }

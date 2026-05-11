@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Services.ImageAnalysis;
@@ -19,7 +20,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
 
         public override Task OnConnectedAsync()
         {
-            var username = Context.User?.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (!string.IsNullOrEmpty(username))
             {
                 _logger.LogDebug("UserReadinessHub: Client connected: {Username} (ConnectionId: {ConnectionId})",
@@ -30,7 +31,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
 
         public override Task OnDisconnectedAsync(Exception? exception)
         {
-            var username = Context.User?.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (!string.IsNullOrEmpty(username))
             {
                 // ✅ FIX: Remove user from tracking when they disconnect (indicates logout or session expired)
@@ -47,7 +48,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
         /// </summary>
         public async Task SetReadyForAssignment(string role, bool isReady, string? sessionId = null)
         {
-            var username = Context.User?.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
             {
                 _logger.LogWarning("UserReadinessHub: SetReadyForAssignment called but user is not authenticated");
@@ -69,7 +70,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
         /// </summary>
         public async Task SendHeartbeat(string role)
         {
-            var username = Context.User?.Identity?.Name;
+            var username = GetAuthenticatedUsername();
             if (string.IsNullOrEmpty(username))
                 return;
 
@@ -78,6 +79,16 @@ namespace NickScanCentralImagingPortal.API.Hubs
             _logger.LogDebug("UserReadinessHub: Received heartbeat from {Username} (Role: {Role})", username, role);
 
             await Task.CompletedTask;
+        }
+
+        private string GetAuthenticatedUsername()
+        {
+            return Context.User?.Identity?.Name
+                ?? Context.User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? Context.User?.FindFirst("username")?.Value
+                ?? Context.User?.FindFirst("name")?.Value
+                ?? Context.User?.FindFirst("preferred_username")?.Value
+                ?? string.Empty;
         }
 
     }

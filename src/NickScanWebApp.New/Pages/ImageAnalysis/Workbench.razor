@@ -428,20 +428,7 @@
 
         Console.WriteLine("🚀 [ImageAnalysis] OnInitializedAsync START");
         Logger?.LogInformation("🚀 [ImageAnalysis] OnInitializedAsync START");
-        
-        try
-        {
-            await LoadData();
-            Console.WriteLine("✅ [ImageAnalysis] LoadData completed");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"❌ [ImageAnalysis] Error in OnInitializedAsync: {ex.Message}");
-            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
-            Logger?.LogError(ex, "❌ [ImageAnalysis] Error in OnInitializedAsync");
-            _errorMessage = $"Initialization error: {ex.Message}";
-        }
-        
+
         // Detect user role and initialize readiness tracking
         await DetectUserRole();
 
@@ -486,6 +473,19 @@
             // Already Ready — still ensure the heartbeat is fresh so the orchestrator's
             // 60-min idle window resets immediately on page-open.
             try { await SendHeartbeatAsync(); } catch { /* failure-isolated */ }
+        }
+
+        try
+        {
+            await LoadData();
+            Console.WriteLine("✅ [ImageAnalysis] LoadData completed");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [ImageAnalysis] Error in OnInitializedAsync: {ex.Message}");
+            Console.WriteLine($"❌ [ImageAnalysis] Stack trace: {ex.StackTrace}");
+            Logger?.LogError(ex, "❌ [ImageAnalysis] Error in OnInitializedAsync");
+            _errorMessage = $"Initialization error: {ex.Message}";
         }
 
         var refreshSeconds = Configuration.GetValue<int>("UI:AutoRefreshSeconds", 30);
@@ -739,6 +739,10 @@
     {
         _isReadyForAssignment = isReady;
         await SetReadyForAssignment(isReady);
+        if (isReady)
+        {
+            await LoadData();
+        }
     }
 
     private async Task SetReadyForAssignment(bool ready)
@@ -829,17 +833,14 @@
             Console.WriteLine("🔍 [ImageAnalysis] LoadData START");
             Logger?.LogInformation("🔍 [ImageAnalysis] LoadData START - Loading image analysis data...");
 
-            // 2026-05-09 (Phase B / B7 UX): parallelize settings + my-assignments + (optional)
-            // available-groups via Task.WhenAll. ~max(call) total instead of ~sum(call).
-            // Eager-fire available-groups even in Manual mode and discard if not needed —
-            // the extra GET is dwarfed by the sequential round-trip saved in UserClaim mode.
+            // Keep settings + my-assignments parallel, then gate the available-groups
+            // request on the resolved assignment mode. /available is only valid in
+            // UserClaim mode, so avoid creating a guaranteed 400 in Manual/Auto.
+            var roleQuery = Uri.EscapeDataString(_userRole);
             var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
-            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Analyst");
-            // /available returns 400 outside UserClaim mode by design — wrap it so its
-            // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
-            var availableTask = TryGetAvailableAsync("/api/image-analysis/available?role=Analyst");
-            await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
-            var settings = settingsTask.Result;
+            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>($"/api/image-analysis/my-assignments?role={roleQuery}");
+
+            var settings = await settingsTask;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
             if (settings != null)
             {
@@ -859,8 +860,19 @@
                 Logger?.LogWarning("Could not load analysis settings");
             }
 
-            // 2026-05-09 (Phase B / B7 UX): assignments + available results consumed
-            // from the parallel WhenAll fired at the top of LoadData.
+            Task<List<MyAssignmentDto>?>? availableTask = null;
+            if (_assignmentMode == "UserClaim")
+            {
+                // /available can still fail if the mode changes between calls; keep
+                // it isolated so assignment loading continues.
+                availableTask = TryGetAvailableAsync($"/api/image-analysis/available?role={roleQuery}");
+                await Task.WhenAll(assignmentsTask, availableTask);
+            }
+            else
+            {
+                await assignmentsTask;
+            }
+
             var assignments = assignmentsTask.Result;
             Console.WriteLine($"✅ [ImageAnalysis] Assignments loaded: {assignments?.Count ?? 0} items");
             if (assignments != null && assignments.Any())
@@ -882,7 +894,7 @@
 
             if (_assignmentMode == "UserClaim")
             {
-                var available = availableTask.Result;
+                var available = availableTask?.Result;
                 _availableGroups = available ?? new();
                 Logger?.LogInformation("Loaded {Count} available groups", _availableGroups.Count);
             }
@@ -911,8 +923,8 @@
         }
     }
 
-    // /available returns 400 outside UserClaim mode by design. Decouple its fault
-    // from Task.WhenAll so the mode-aware guard above can drop the result quietly.
+    // /available can fail if assignment mode changes during refresh. Decouple its
+    // fault from Task.WhenAll so the rest of the workbench can still render.
     private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
     {
         try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }
@@ -1012,6 +1024,11 @@
                 // Previously did `await Task.Delay(1000); await LoadData();` — analyst stared at the
                 // dialog for ~1.7s. Now the AG vanishes from the list in the same frame the dialog
                 // closes; LoadData reconciles in the background. AG.GroupIdentifier is the dedup key.
+                if (dialogRef != null)
+                {
+                    dialogRef.Close(DialogResult.Ok(true));
+                }
+
                 _myAssignments = _myAssignments
                     .Where(a => a.GroupIdentifier != assignment.GroupIdentifier)
                     .ToList();

@@ -1,16 +1,20 @@
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using NickScanCentralImagingPortal.API.Authorization;
+using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageAnalysis;
 
 namespace NickScanCentralImagingPortal.API.Controllers
 {
@@ -22,15 +26,173 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ApplicationDbContext _dbContext;
         private readonly ILogger<AuditReviewController> _logger;
         private readonly IMemoryCache _memoryCache;
+        private readonly ReadyGroupsCacheService? _readyGroupsCache;
 
         public AuditReviewController(
             ApplicationDbContext dbContext,
             ILogger<AuditReviewController> logger,
-            IMemoryCache memoryCache)
+            IMemoryCache memoryCache,
+            ReadyGroupsCacheService? readyGroupsCache = null)
         {
             _dbContext = dbContext;
             _logger = logger;
             _memoryCache = memoryCache;
+            _readyGroupsCache = readyGroupsCache;
+        }
+
+        private string GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.FindFirst("username")?.Value
+                ?? string.Empty;
+        }
+
+        private bool HasPermissionClaim(params string[] permissions)
+        {
+            var permissionSet = new HashSet<string>(permissions, StringComparer.OrdinalIgnoreCase);
+            return User?.Claims.Any(c =>
+                string.Equals(c.Type, "Permission", StringComparison.OrdinalIgnoreCase) &&
+                permissionSet.Contains(c.Value)) == true;
+        }
+
+        private bool HasElevatedAuditOverride()
+        {
+            return User?.Claims.Any(c =>
+                    string.Equals(c.Type, "platform_admin", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(c.Value, "true", StringComparison.OrdinalIgnoreCase)) == true
+                || User?.IsInRole("SuperAdmin") == true
+                || User?.IsInRole("Admin") == true
+                || User?.IsInRole("Manager") == true
+                || User?.IsInRole("Supervisor") == true
+                || User?.IsInRole("Lead") == true
+                || HasPermissionClaim(
+                    Permissions.ControllersImageAnalysisAssign,
+                    Permissions.ControllersImageAnalysisManagementSettings);
+        }
+
+        private static bool IsCompletedAnalystDecisionValue(string? decision)
+        {
+            return string.Equals(decision, "Normal", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(decision, "Abnormal", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasCompletedAnalystDecision(ImageAnalysisDecision decision)
+        {
+            return IsCompletedAnalystDecisionValue(decision.Decision);
+        }
+
+        private static string? BaseScannerType(string? scannerType)
+        {
+            if (string.IsNullOrWhiteSpace(scannerType))
+                return null;
+
+            var trimmed = scannerType.Trim();
+            var dashIndex = trimmed.IndexOf('-');
+            return dashIndex > 0 ? trimmed.Substring(0, dashIndex) : trimmed;
+        }
+
+        private static bool ScannerMatches(string? candidate, string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return true;
+
+            if (string.IsNullOrWhiteSpace(candidate))
+                return true;
+
+            var candidateTrimmed = candidate.Trim();
+            var requestedTrimmed = requested.Trim();
+            var requestedBase = BaseScannerType(requestedTrimmed);
+
+            return string.Equals(candidateTrimmed, requestedTrimmed, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrWhiteSpace(requestedBase) &&
+                    (string.Equals(candidateTrimmed, requestedBase, StringComparison.OrdinalIgnoreCase)
+                     || candidateTrimmed.StartsWith(requestedBase + "-", StringComparison.OrdinalIgnoreCase)))
+                || requestedTrimmed.StartsWith(candidateTrimmed + "-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static List<string> BuildAuditDecisionGroupIdentifiers(params string?[] groupIdentifiers)
+        {
+            var identifiers = new List<string>();
+
+            foreach (var groupIdentifier in groupIdentifiers)
+            {
+                if (string.IsNullOrWhiteSpace(groupIdentifier))
+                    continue;
+
+                identifiers.Add(groupIdentifier);
+
+                var normalized = GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    identifiers.Add(normalized);
+            }
+
+            return identifiers
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool AnalystDecisionGroupMatches(string? decisionGroupIdentifier, IReadOnlyCollection<string> auditGroupIdentifiers)
+        {
+            if (auditGroupIdentifiers.Count == 0)
+                return true;
+
+            if (string.IsNullOrWhiteSpace(decisionGroupIdentifier))
+                return false;
+
+            if (auditGroupIdentifiers.Contains(decisionGroupIdentifier, StringComparer.OrdinalIgnoreCase))
+                return true;
+
+            var normalizedDecisionGroup = GroupIdentifierHelper.GetNormalizedGroupIdentifier(decisionGroupIdentifier);
+            if (!string.IsNullOrWhiteSpace(normalizedDecisionGroup)
+                && auditGroupIdentifiers.Contains(normalizedDecisionGroup, StringComparer.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return auditGroupIdentifiers.Any(g =>
+                !string.IsNullOrWhiteSpace(g)
+                && decisionGroupIdentifier.StartsWith(g + "_", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsAuditableAnalystDecision(
+            ImageAnalysisDecision decision,
+            IReadOnlyCollection<string> auditGroupIdentifiers,
+            string? scannerType)
+        {
+            return HasCompletedAnalystDecision(decision)
+                && ScannerMatches(decision.ScannerType, scannerType)
+                && AnalystDecisionGroupMatches(decision.GroupIdentifier, auditGroupIdentifiers);
+        }
+
+        private async Task<ImageAnalysisDecision?> FindCompletedAnalystDecisionForAuditAsync(
+            string containerNumber,
+            IReadOnlyCollection<string> auditGroupIdentifiers,
+            string? scannerType)
+        {
+            var completedCandidates = await _dbContext.ImageAnalysisDecisions
+                .Where(d => d.ContainerNumber == containerNumber
+                    && (d.Decision == "Normal" || d.Decision == "Abnormal"))
+                .ToListAsync();
+
+            var scoped = completedCandidates
+                .Where(d => IsAuditableAnalystDecision(d, auditGroupIdentifiers, scannerType))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .FirstOrDefault();
+
+            if (scoped != null)
+                return scoped;
+
+            var legacyUngrouped = completedCandidates
+                .Where(d => string.IsNullOrWhiteSpace(d.GroupIdentifier)
+                    && ScannerMatches(d.ScannerType, scannerType))
+                .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                .ThenByDescending(d => d.Id)
+                .ToList();
+
+            return legacyUngrouped.Count == 1 ? legacyUngrouped[0] : null;
         }
 
         /// <summary>
@@ -655,6 +817,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Submit audit decisions for a group
         /// </summary>
         [HttpPost("submit")]
+        [HasPermission(Permissions.ControllersImageAnalysisDecisionAudit)]
         public async Task<ActionResult<AuditSubmissionResponse>> SubmitAudit([FromBody] AuditSubmissionRequest request)
         {
             try
@@ -677,7 +840,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     });
                 }
 
-                var username = User?.Identity?.Name ?? request.AuditedBy ?? "Unknown";
+                var username = GetAuthenticatedUsername();
+                if (string.IsNullOrWhiteSpace(username))
+                {
+                    return Unauthorized(new AuditSubmissionResponse
+                    {
+                        Success = false,
+                        Message = "Authenticated username is required to submit an audit.",
+                        OverallDecision = null,
+                        AuditedCount = 0,
+                        NextContainerNumber = null,
+                        AllContainersAudited = false
+                    });
+                }
+
                 var now = DateTime.UtcNow;
                 var auditedCount = 0;
                 var hasRejected = false;
@@ -743,6 +919,58 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     });
                 }
 
+                var guardNormalizedGroupIdentifier = GroupIdentifierHelper.GetNormalizedGroupIdentifier(request.GroupIdentifier);
+                var resolvedGroupIdentifier = group.GroupIdentifier;
+                var matchingAssignmentGroupIds = await _dbContext.AnalysisGroups
+                    .AsNoTracking()
+                    .Where(g => g.Id == group.Id
+                        || (!string.IsNullOrEmpty(request.GroupIdentifier) && g.GroupIdentifier == request.GroupIdentifier)
+                        || (!string.IsNullOrEmpty(resolvedGroupIdentifier) && g.GroupIdentifier == resolvedGroupIdentifier)
+                        || (!string.IsNullOrEmpty(guardNormalizedGroupIdentifier) && g.GroupIdentifier == guardNormalizedGroupIdentifier)
+                        || (!string.IsNullOrEmpty(request.GroupIdentifier)
+                            && g.GroupIdentifier != null
+                            && g.GroupIdentifier.StartsWith(request.GroupIdentifier + "_")))
+                    .Select(g => g.Id)
+                    .Distinct()
+                    .ToListAsync();
+
+                if (!matchingAssignmentGroupIds.Contains(group.Id))
+                {
+                    matchingAssignmentGroupIds.Add(group.Id);
+                }
+
+                var activeAuditAssignments = await _dbContext.AnalysisAssignments
+                    .AsNoTracking()
+                    .Where(a => matchingAssignmentGroupIds.Contains(a.GroupId)
+                        && a.Role == "Audit"
+                        && a.State == "Active")
+                    .ToListAsync();
+
+                var ownsActiveAuditAssignment = activeAuditAssignments.Any(a =>
+                    string.Equals(a.AssignedTo, username, StringComparison.OrdinalIgnoreCase));
+                var hasElevatedOverride = HasElevatedAuditOverride();
+
+                if (!ownsActiveAuditAssignment && !hasElevatedOverride)
+                {
+                    var assignmentState = activeAuditAssignments.Any()
+                        ? "an active audit assignment exists for another user"
+                        : "no active audit assignment exists";
+
+                    _logger.LogWarning(
+                        "SubmitAudit denied for {User} on group {GroupIdentifier}: {AssignmentState}",
+                        username, request.GroupIdentifier, assignmentState);
+
+                    return StatusCode(403, new AuditSubmissionResponse
+                    {
+                        Success = false,
+                        Message = $"Audit submission denied: {assignmentState}.",
+                        OverallDecision = null,
+                        AuditedCount = 0,
+                        NextContainerNumber = null,
+                        AllContainersAudited = false
+                    });
+                }
+
                 // ✅ FIX: Fallback when group.ScannerType is null (legacy groups) - use request, then completeness, then decision
                 var scannerType = group.ScannerType ?? request.ScannerType ?? "";
                 if (string.IsNullOrEmpty(scannerType) && request.ContainerDecisions.Any())
@@ -773,6 +1001,53 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 _logger.LogInformation("SubmitAudit: GroupId={GroupId}, GroupIdentifier={GroupIdentifier}, ScannerType={ScannerType}",
                     group.Id, group.GroupIdentifier, string.IsNullOrEmpty(scannerType) ? "(empty)" : scannerType);
+
+                var auditDecisionGroupIdentifiers = BuildAuditDecisionGroupIdentifiers(
+                    request.GroupIdentifier,
+                    guardNormalizedGroupIdentifier,
+                    resolvedGroupIdentifier,
+                    group.NormalizedGroupIdentifier);
+
+                var requestedContainerNumbers = request.ContainerDecisions
+                    .Select(c => c.ContainerNumber)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var completedAnalystDecisionsByContainer = new Dictionary<string, ImageAnalysisDecision>(StringComparer.OrdinalIgnoreCase);
+                string? missingCompletedAnalystDecision = null;
+                foreach (var container in requestedContainerNumbers)
+                {
+                    var completedDecision = await FindCompletedAnalystDecisionForAuditAsync(
+                        container,
+                        auditDecisionGroupIdentifiers,
+                        scannerType);
+
+                    if (completedDecision == null)
+                    {
+                        missingCompletedAnalystDecision = container;
+                        break;
+                    }
+
+                    completedAnalystDecisionsByContainer[container] = completedDecision;
+                }
+
+                if (missingCompletedAnalystDecision != null)
+                {
+                    _logger.LogWarning(
+                        "SubmitAudit rejected before writes: missing completed ImageAnalysisDecision for container {Container} in group {GroupIdentifier}",
+                        missingCompletedAnalystDecision, request.GroupIdentifier);
+
+                    return BadRequest(new AuditSubmissionResponse
+                    {
+                        Success = false,
+                        Message = $"Missing analyst decision for container {missingCompletedAnalystDecision}. Complete image analysis before submitting audit.",
+                        OverallDecision = null,
+                        AuditedCount = 0,
+                        NextContainerNumber = null,
+                        AllContainersAudited = false
+                    });
+                }
 
                 // Process each container decision
                 foreach (var containerDecision in request.ContainerDecisions)
@@ -847,25 +1122,38 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         }
                     }
 
-                    // ✅ FALLBACK: Create ImageAnalysisDecision when missing (e.g. record reached Audit via CCS but analyst path didn't create one)
-                    if (imageDecision == null)
+                    if (imageDecision == null || !HasCompletedAnalystDecision(imageDecision))
                     {
-                        _logger.LogInformation("Creating ImageAnalysisDecision for container {Container} in group {GroupIdentifier} (ScannerType={ScannerType}) - none found",
-                            containerDecision.ContainerNumber, request.GroupIdentifier, scannerType);
-                        var storageGroupId = group.GroupIdentifier ?? request.GroupIdentifier;
-                        imageDecision = new ImageAnalysisDecision
+                        if (!completedAnalystDecisionsByContainer.TryGetValue(containerDecision.ContainerNumber, out var completedDecision))
                         {
-                            ContainerNumber = containerDecision.ContainerNumber,
-                            ScannerType = scannerType,
-                            GroupIdentifier = storageGroupId,
-                            Decision = "Pending",
-                            ReviewedBy = username,
-                            ReviewedAt = now,
-                            CreatedAt = now,
-                            IsConsolidated = request.IsConsolidated
-                        };
-                        _dbContext.ImageAnalysisDecisions.Add(imageDecision);
-                        await _dbContext.SaveChangesAsync();
+                            completedDecision = await FindCompletedAnalystDecisionForAuditAsync(
+                                containerDecision.ContainerNumber,
+                                auditDecisionGroupIdentifiers,
+                                scannerType);
+                        }
+
+                        imageDecision = completedDecision;
+                        if (imageDecision != null && string.IsNullOrEmpty(scannerType))
+                            scannerType = imageDecision.ScannerType ?? "";
+                    }
+
+                    // Audit must be based on a real analyst decision. Do not synthesize
+                    // placeholder "Pending" rows here; that hides incomplete analysis.
+                    if (imageDecision == null
+                        || !IsAuditableAnalystDecision(imageDecision, auditDecisionGroupIdentifiers, scannerType))
+                    {
+                        _logger.LogWarning("SubmitAudit rejected: missing completed ImageAnalysisDecision for container {Container} in group {GroupIdentifier} (ScannerType={ScannerType}, Decision={Decision})",
+                            containerDecision.ContainerNumber, request.GroupIdentifier, scannerType, imageDecision?.Decision ?? "(none)");
+
+                        return BadRequest(new AuditSubmissionResponse
+                        {
+                            Success = false,
+                            Message = $"Missing analyst decision for container {containerDecision.ContainerNumber}. Complete image analysis before submitting audit.",
+                            OverallDecision = null,
+                            AuditedCount = auditedCount,
+                            NextContainerNumber = null,
+                            AllContainersAudited = false
+                        });
                     }
 
                     // Normalize decision value (handle both "APPROVED"/"REJECTED" and "Approved"/"Rejected")
@@ -1260,10 +1548,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             releaseCount += await _dbContext.Database.ExecuteSqlRawAsync(
                                 "UPDATE AnalysisAssignments SET State = 'Released', UpdatedAtUtc = now() AT TIME ZONE 'UTC' WHERE GroupId = {0} AND Role = 'Audit' AND State = 'Active'",
                                 groupId);
+
+                            if (_readyGroupsCache != null)
+                            {
+                                await _readyGroupsCache.RemoveQueueEntriesForGroupAsync(_dbContext, groupId);
+                            }
+                            else
+                            {
+                                await _dbContext.Database.ExecuteSqlRawAsync(
+                                    "DELETE FROM analysisqueueentries WHERE groupid = {0}",
+                                    groupId);
+                            }
                         }
 
                         if (releaseCount > 0)
-                            _logger.LogInformation("🔔 [AuditReview] Released {Count} Audit assignment(s) for completed groups", releaseCount);
+                            _logger.LogInformation("🔔 [AuditReview] Released {Count} Audit assignment(s) and removed materialized queue entries for completed groups", releaseCount);
                     }
 
                     // ✅ FIX: Invalidate my-assignments cache so completed record disappears from queue immediately

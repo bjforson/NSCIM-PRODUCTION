@@ -34,20 +34,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         private bool IsValidServiceApiKey(string? providedKey)
         {
-            var expected = Environment.GetEnvironmentVariable("NICKSCAN_SERVICE_API_KEY")
-                ?? _configuration["ServiceAuth:ApiKey"]
-                ?? string.Empty;
-            return !string.IsNullOrEmpty(expected) && providedKey == expected;
+            return ServiceApiKeyValidator.IsValid(_configuration, providedKey);
         }
 
         /// <summary>
         /// Service-to-service: Get list of active roles (for NickHR to populate dropdowns).
-        /// Protected by NICKSCAN_SERVICE_API_KEY via ?apiKey=... query parameter.
+        /// Protected by NICKSCAN_SERVICE_API_KEY via X-Service-Key header.
         /// </summary>
         [HttpGet("service/list")]
         [AllowAnonymous]
-        public async Task<ActionResult<List<RoleDto>>> ServiceListRoles([FromQuery] string apiKey)
+        public async Task<ActionResult<List<RoleDto>>> ServiceListRoles()
         {
+            var allowQueryFallback = _configuration.GetValue("ServiceAuth:AllowQueryStringApiKey", false);
+            var apiKey = ServiceApiKeyValidator.GetProvidedKey(Request, allowQueryStringFallback: allowQueryFallback);
             if (!IsValidServiceApiKey(apiKey))
             {
                 return Unauthorized(new { error = "Invalid service API key" });

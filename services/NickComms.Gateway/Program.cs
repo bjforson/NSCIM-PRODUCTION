@@ -142,7 +142,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CommsDbContext>();
     await db.Database.MigrateAsync();
-    await SeedApiKeysAsync(db, builder.Configuration);
+    await SeedApiKeysAsync(db, builder.Configuration, app.Environment);
 }
 
 // Middleware
@@ -197,7 +197,7 @@ Log.Information("NickComms Gateway starting on port 5220");
 app.Run();
 
 // --- Helper: Seed API keys from config ---
-static async Task SeedApiKeysAsync(CommsDbContext db, IConfiguration config)
+static async Task SeedApiKeysAsync(CommsDbContext db, IConfiguration config, IHostEnvironment environment)
 {
     var clients = config.GetSection("ApiKeys:Clients").GetChildren();
     foreach (var client in clients)
@@ -207,10 +207,18 @@ static async Task SeedApiKeysAsync(CommsDbContext db, IConfiguration config)
         if (string.IsNullOrWhiteSpace(appName) || string.IsNullOrWhiteSpace(key))
             continue;
 
+        var isPlaceholder = IsDefaultOrPlaceholderSeedKey(key);
         var keyHash = ApiKeyAuthHandler.HashKey(key);
-        var exists = await db.ApiKeys.AnyAsync(k => k.AppName == appName);
-        if (!exists)
+        var existing = await db.ApiKeys.FirstOrDefaultAsync(k => k.AppName == appName);
+        if (existing == null)
         {
+            if (environment.IsProduction() && isPlaceholder)
+            {
+                throw new InvalidOperationException(
+                    $"Production NickComms API key seed for '{appName}' uses a placeholder/default value. " +
+                    "Set a real key via configuration or remove the seed entry.");
+            }
+
             db.ApiKeys.Add(new ApiKey
             {
                 AppName = appName,
@@ -220,6 +228,27 @@ static async Task SeedApiKeysAsync(CommsDbContext db, IConfiguration config)
             });
             Log.Information("Seeded API key for {AppName}", appName);
         }
+        else if (environment.IsProduction() && isPlaceholder)
+        {
+            if (string.Equals(existing.KeyHash, keyHash, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Production NickComms API key for '{appName}' still matches a placeholder/default seed. " +
+                    "Rotate this key before starting the gateway.");
+            }
+
+            Log.Warning(
+                "Ignoring placeholder/default NickComms API key seed for {AppName}; an existing non-placeholder key is already stored.",
+                appName);
+        }
     }
     await db.SaveChangesAsync();
+}
+
+static bool IsDefaultOrPlaceholderSeedKey(string key)
+{
+    return string.Equals(key, "nscim-img-key-change-me-in-production", StringComparison.Ordinal)
+        || string.Equals(key, "nickhr-key-change-me-in-production", StringComparison.Ordinal)
+        || key.Contains("change-me-in-production", StringComparison.OrdinalIgnoreCase)
+        || (key.StartsWith("***", StringComparison.Ordinal) && key.EndsWith("***", StringComparison.Ordinal));
 }

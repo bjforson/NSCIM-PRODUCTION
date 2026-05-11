@@ -225,6 +225,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.Role).IsRequired().HasMaxLength(20);
                 entity.Property(e => e.State).IsRequired().HasMaxLength(20);
                 entity.HasIndex(e => new { e.GroupId, e.Role, e.State });
+                entity.HasIndex(e => e.GroupId)
+                    .IsUnique()
+                    .HasFilter("\"state\" = 'Active'")
+                    .HasDatabaseName("ux_analysisassignments_active_group");
                 entity.HasIndex(e => e.AssignedTo);
             });
 
@@ -532,7 +536,8 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
 
                 entity.HasIndex(e => e.ContainerNumber);
                 entity.HasIndex(e => e.ScannerType);
-                entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType });
+                entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType, e.InspectionId })
+                    .HasDatabaseName("IX_ContainerCompletenessStatuses_Container_Scanner_Inspection");
                 entity.HasIndex(e => e.Status);
                 entity.HasIndex(e => e.HasICUMSData);
                 // Index for COUNT queries: Status LIKE 'Complete%' AND WorkflowStage IN ('', 'Pending', 'ImageAnalysis')

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -35,7 +36,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
     public class PublicStatsController : ControllerBase
     {
         private const string CacheKey = "public.system-stats.v1";
+        private const string SnapshotCacheKey = "public.system-stats.snapshot.v1";
+        private const int SlowMetricWarningThresholdMs = 500;
+        private const int DefaultScannerCount = 3;
         private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan SnapshotCacheTtl = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan ColdBuildTimeout = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan HealthProbeTimeout = TimeSpan.FromMilliseconds(300);
+        private static readonly SemaphoreSlim BuildLock = new(1, 1);
 
         // Captured once at controller-type load — used for the "uptime" metric.
         // Process.GetCurrentProcess().StartTime also works but is marginally
@@ -48,7 +56,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ApplicationDbContext _db;
         private readonly IMemoryCache _cache;
         private readonly IImageProcessingOrchestrator _orchestrator;
-        private readonly IComprehensiveDashboardService? _dashboard;
         private readonly ILogger<PublicStatsController> _logger;
 
         public PublicStatsController(
@@ -62,32 +69,134 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _cache = cache;
             _orchestrator = orchestrator;
             _logger = logger;
-            _dashboard = dashboard;
         }
 
         [HttpGet]
         [ProducesResponseType(200, Type = typeof(PublicSystemStats))]
         public async Task<ActionResult<PublicSystemStats>> Get()
         {
-            if (_cache.TryGetValue(CacheKey, out PublicSystemStats? cached) && cached != null)
+            if (TryGetStats(CacheKey, out var cached))
             {
+                Response.Headers["X-Public-Stats-Cache"] = "HIT";
                 return Ok(cached);
             }
 
-            var stats = await BuildStatsAsync();
-            _cache.Set(CacheKey, stats, new MemoryCacheEntryOptions
+            var lockHeld = await BuildLock.WaitAsync(0);
+            if (!lockHeld)
             {
-                AbsoluteExpirationRelativeToNow = CacheTtl,
-                Priority = CacheItemPriority.Low,
-                // The app's MemoryCache is configured with SizeLimit = 1000 in
-                // Program.cs; every entry must declare its relative size. One
-                // slot is appropriate — this cache holds a single compact DTO.
-                Size = 1,
-            });
-            return Ok(stats);
+                if (TryGetStats(SnapshotCacheKey, out var snapshot))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "STALE";
+                    _logger.LogDebug("[public-stats] serving stale snapshot while refresh is already running");
+                    return Ok(snapshot);
+                }
+
+                Response.Headers["X-Public-Stats-Cache"] = "DEFAULT-BUILDING";
+                _logger.LogDebug("[public-stats] refresh is already running and no snapshot exists; serving safe defaults");
+                return Ok(CreateDefaultStats());
+            }
+
+            try
+            {
+                if (TryGetStats(CacheKey, out var cachedAfterWait))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "HIT-AFTER-WAIT";
+                    return Ok(cachedAfterWait);
+                }
+
+                using var buildTimeout = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+                buildTimeout.CancelAfter(ColdBuildTimeout);
+
+                var stats = await BuildTimedStatsAsync(buildTimeout.Token);
+                CacheStats(stats);
+                Response.Headers["X-Public-Stats-Cache"] = "MISS";
+                return Ok(stats);
+            }
+            catch (OperationCanceledException ex) when (!HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                if (TryGetStats(SnapshotCacheKey, out var snapshot))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "STALE-TIMEOUT";
+                    _logger.LogWarning(ex, "[public-stats] refresh exceeded {TimeoutMs} ms; serving stale snapshot", ColdBuildTimeout.TotalMilliseconds);
+                    return Ok(snapshot);
+                }
+
+                Response.Headers["X-Public-Stats-Cache"] = "DEFAULT-TIMEOUT";
+                _logger.LogWarning(ex, "[public-stats] cold refresh exceeded {TimeoutMs} ms and no snapshot exists; serving safe defaults", ColdBuildTimeout.TotalMilliseconds);
+                return Ok(CreateDefaultStats());
+            }
+            catch (Exception ex)
+            {
+                if (TryGetStats(SnapshotCacheKey, out var snapshot))
+                {
+                    Response.Headers["X-Public-Stats-Cache"] = "STALE-ERROR";
+                    _logger.LogWarning(ex, "[public-stats] refresh failed; serving stale snapshot");
+                    return Ok(snapshot);
+                }
+
+                throw;
+            }
+            finally
+            {
+                if (lockHeld)
+                {
+                    BuildLock.Release();
+                }
+            }
         }
 
-        private async Task<PublicSystemStats> BuildStatsAsync()
+        private async Task<PublicSystemStats> BuildTimedStatsAsync(CancellationToken cancellationToken)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                return await BuildStatsAsync(cancellationToken);
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming("BuildStats", stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private bool TryGetStats(string cacheKey, out PublicSystemStats? stats)
+        {
+            return _cache.TryGetValue(cacheKey, out stats) && stats != null;
+        }
+
+        private void CacheStats(PublicSystemStats stats)
+        {
+            _cache.Set(CacheKey, stats, CreateCacheOptions(CacheTtl, CacheItemPriority.Low));
+            _cache.Set(SnapshotCacheKey, stats, CreateCacheOptions(SnapshotCacheTtl, CacheItemPriority.Normal));
+        }
+
+        private static MemoryCacheEntryOptions CreateCacheOptions(TimeSpan ttl, CacheItemPriority priority)
+        {
+            return new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = ttl,
+                Priority = priority,
+                // The app's MemoryCache is configured with SizeLimit = 1000 in
+                // Program.cs; every entry must declare its relative size. One
+                // slot is appropriate - this cache holds a single compact DTO.
+                Size = 1,
+            };
+        }
+
+        private static PublicSystemStats CreateDefaultStats()
+        {
+            return new PublicSystemStats
+            {
+                AsOf = DateTime.UtcNow,
+                SuccessRatePercent = 100.0,
+                ScannersTotal = DefaultScannerCount,
+                ScannersOnline = DefaultScannerCount,
+                SystemsOperational = true,
+                UptimeDays = Math.Max(0, (DateTime.UtcNow - ProcessStartUtc).TotalDays),
+            };
+        }
+
+        private async Task<PublicSystemStats> BuildStatsAsync(CancellationToken cancellationToken)
         {
             // Calendar-day cutoffs in UTC (matches DashboardService convention).
             var todayStart = DateTime.UtcNow.Date;
@@ -112,12 +221,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         .Where(s => s.ContainerNumber != null && s.ContainerNumber != "")
                         .Select(s => s.ContainerNumber!)
                         .Distinct()
-                        .CountAsync();
+                        .CountAsync(cancellationToken);
                     var ase = await _db.AseScans
                         .Where(s => s.ContainerNumber != null && s.ContainerNumber != "")
                         .Select(s => s.ContainerNumber!)
                         .Distinct()
-                        .CountAsync();
+                        .CountAsync(cancellationToken);
                     // Close-enough total — a container scanned by both scanners is
                     // counted twice, which only overstates the figure by single digits
                     // at current volumes. Pulling a true UNION + DISTINCT would require
@@ -129,8 +238,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "TodaysScans",
                 async () =>
                 {
-                    var fs6000 = await _db.FS6000Scans.CountAsync(s => s.ScanTime >= todayStart && s.ScanTime < todayEnd);
-                    var ase = await _db.AseScans.CountAsync(s => s.ScanTime >= todayStart && s.ScanTime < todayEnd);
+                    var fs6000 = await _db.FS6000Scans.CountAsync(s => s.ScanTime >= todayStart && s.ScanTime < todayEnd, cancellationToken);
+                    var ase = await _db.AseScans.CountAsync(s => s.ScanTime >= todayStart && s.ScanTime < todayEnd, cancellationToken);
                     return fs6000 + ase;
                 });
 
@@ -138,7 +247,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "CompletenessPercent",
                 async () =>
                 {
-                    var total = await _db.RecordCompletenessStatuses.CountAsync();
+                    var total = await _db.RecordCompletenessStatuses.CountAsync(cancellationToken);
                     if (total == 0) return 0;
                     // "Ready or better" — any record that has completed the minimum
                     // data-gathering step counts toward completeness.
@@ -148,7 +257,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         r.Status == "InAudit" ||
                         r.Status == "Submitted" ||
                         r.Status == "Completed" ||
-                        r.Status == "Archived");
+                        r.Status == "Archived", cancellationToken);
                     return Math.Round((double)ready / total * 100.0, 1);
                 });
 
@@ -160,13 +269,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     // means the sync succeeded (the ingester writes the record
                     // atomically with the image blob). So we only check FS6000's
                     // SyncStatus and treat every ASE row as a success.
-                    var fsTotal = await _db.FS6000Scans.CountAsync(s => s.ScanTime >= sevenDaysAgo);
-                    var aseOk = await _db.AseScans.CountAsync(s => s.ScanTime >= sevenDaysAgo);
+                    var fsTotal = await _db.FS6000Scans.CountAsync(s => s.ScanTime >= sevenDaysAgo, cancellationToken);
+                    var aseOk = await _db.AseScans.CountAsync(s => s.ScanTime >= sevenDaysAgo, cancellationToken);
                     var total = fsTotal + aseOk;
                     if (total == 0) return 100.0; // No scans = no failures = green by convention
                     var fsOk = await _db.FS6000Scans.CountAsync(s =>
                         s.ScanTime >= sevenDaysAgo &&
-                        (s.SyncStatus == "Completed" || s.SyncStatus == "Synced" || s.SyncStatus == "Success"));
+                        (s.SyncStatus == "Completed" || s.SyncStatus == "Synced" || s.SyncStatus == "Success"), cancellationToken);
                     return Math.Round((double)(fsOk + aseOk) / total * 100.0, 1);
                 });
 
@@ -174,19 +283,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
             stats.AiDecisionsToday = await SafeCountAsync(
                 "AiDecisionsToday",
                 () => _db.ImageAnalysisDecisions.CountAsync(d =>
-                    d.CreatedAt >= todayStart && d.CreatedAt < todayEnd));
+                    d.CreatedAt >= todayStart && d.CreatedAt < todayEnd, cancellationToken));
 
             stats.AuditsCompletedToday = await SafeCountAsync(
                 "AuditsCompletedToday",
                 () => _db.AuditDecisions.CountAsync(a =>
                     a.IsCompleted && a.CompletedAt != null &&
-                    a.CompletedAt >= todayStart && a.CompletedAt < todayEnd));
+                    a.CompletedAt >= todayStart && a.CompletedAt < todayEnd, cancellationToken));
 
             stats.ContainersClearedToday = await SafeCountAsync(
                 "ContainersClearedToday",
                 () => _db.RecordCompletenessStatuses.CountAsync(r =>
                     (r.Status == "Submitted" || r.Status == "Completed" || r.Status == "Archived") &&
-                    r.UpdatedAtUtc >= todayStart && r.UpdatedAtUtc < todayEnd));
+                    r.UpdatedAtUtc >= todayStart && r.UpdatedAtUtc < todayEnd, cancellationToken));
 
             stats.AvgHoursToClear = await SafeValueAsync(
                 "AvgHoursToClear",
@@ -202,7 +311,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             r.UpdatedAtUtc >= sevenDaysAgo &&
                             r.CreatedAtUtc != default)
                         .Select(r => new { r.CreatedAtUtc, r.UpdatedAtUtc })
-                        .ToListAsync();
+                        .ToListAsync(cancellationToken);
                     if (rows.Count == 0) return 0.0;
                     var avgHours = rows
                         .Select(r => (r.UpdatedAtUtc - r.CreatedAtUtc).TotalHours)
@@ -213,39 +322,60 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 });
 
             // ── Tier 3: system health ───────────────────────────────────
+            var scannerStatusStopwatch = Stopwatch.StartNew();
             try
             {
-                if (_dashboard != null)
+                stats.ScannersTotal = await _db.ScannerAssets.CountAsync(cancellationToken);
+                if (stats.ScannersTotal > 0)
                 {
-                    var dash = await _dashboard.GetComprehensiveDashboardDataAsync();
-                    if (dash.Scanners != null && dash.Scanners.Count > 0)
-                    {
-                        stats.ScannersTotal = dash.Scanners.Count;
-                        stats.ScannersOnline = dash.Scanners.Values.Count(s =>
-                            string.Equals(s.Status, "Online", StringComparison.OrdinalIgnoreCase));
-                    }
+                    stats.ScannersOnline = await _db.ScannerAssets.CountAsync(s =>
+                        s.Status == "ACTIVE" ||
+                        s.Status == "ONLINE" ||
+                        s.Status == "READY" ||
+                        s.Status == "Online" ||
+                        s.Status == "Ready" ||
+                        s.Status == "Active", cancellationToken);
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] scanner status lookup failed — using defaults");
             }
+            finally
+            {
+                scannerStatusStopwatch.Stop();
+                LogMetricTiming("ScannerStatus", scannerStatusStopwatch.ElapsedMilliseconds);
+            }
             if (stats.ScannersTotal == 0)
             {
                 // Safe static default: three scanner families we know exist.
-                stats.ScannersTotal = 3;
-                stats.ScannersOnline = 3;
+                stats.ScannersTotal = DefaultScannerCount;
+                stats.ScannersOnline = DefaultScannerCount;
             }
 
             stats.ActiveOperators = await SafeCountAsync(
                 "ActiveOperators",
                 () => _db.Users.CountAsync(u =>
-                    u.LastLoginAt != null && u.LastLoginAt >= fifteenMinAgo));
+                    u.LastLoginAt != null && u.LastLoginAt >= fifteenMinAgo, cancellationToken));
 
+            var healthStopwatch = Stopwatch.StartNew();
             try
             {
-                var health = await _orchestrator.GetSystemHealthAsync();
+                var health = await _orchestrator.GetSystemHealthAsync().WaitAsync(HealthProbeTimeout, cancellationToken);
                 stats.SystemsOperational = health != null && health.Values.All(v => v);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (TimeoutException ex)
+            {
+                _logger.LogDebug(ex, "[public-stats] orchestrator health probe timed out — assuming operational for UI");
+                stats.SystemsOperational = true;
             }
             catch (Exception ex)
             {
@@ -253,6 +383,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // A failure here shouldn't paint the login page red just because
                 // the orchestrator is under load — default optimistic.
                 stats.SystemsOperational = true;
+            }
+            finally
+            {
+                healthStopwatch.Stop();
+                LogMetricTiming("SystemHealth", healthStopwatch.ElapsedMilliseconds);
             }
 
             return stats;
@@ -263,32 +398,64 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         private async Task<int> SafeCountAsync(string metric, Func<Task<int>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to 0", metric);
                 return 0;
+            }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
             }
         }
 
         private async Task<double> SafePercentAsync(string metric, Func<Task<double>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to 0", metric);
                 return 0;
             }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
+            }
         }
 
         private async Task<double> SafeValueAsync(string metric, double fallback, Func<Task<double>> fn)
         {
+            var stopwatch = Stopwatch.StartNew();
             try { return await fn(); }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "[public-stats] metric {Metric} failed — defaulting to {Fallback}", metric, fallback);
                 return fallback;
             }
+            finally
+            {
+                stopwatch.Stop();
+                LogMetricTiming(metric, stopwatch.ElapsedMilliseconds);
+            }
+        }
+
+        private void LogMetricTiming(string metric, long elapsedMs)
+        {
+            if (elapsedMs >= SlowMetricWarningThresholdMs)
+            {
+                _logger.LogWarning("[public-stats] metric {Metric} took {ElapsedMs} ms", metric, elapsedMs);
+                return;
+            }
+
+            _logger.LogDebug("[public-stats] metric {Metric} took {ElapsedMs} ms", metric, elapsedMs);
         }
     }
 

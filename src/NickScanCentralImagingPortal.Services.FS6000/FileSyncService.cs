@@ -259,7 +259,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 var foldersProcessed = 0;
 
                 // Get year folders from go-live year onwards
-                var yearFolders = Directory.GetDirectories(_config.SourcePath)
+                var yearFolders = (await GetDirectoriesWithRetryAsync(_config.SourcePath, "source year folders"))
                     .Where(d =>
                     {
                         var yearName = Path.GetFileName(d);
@@ -288,7 +288,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     _logger.LogDebug("Processing year folder: {Year}", year);
 
                     // Get month-day folders — for the go-live year, only from go-live day onwards
-                    var monthDayFolders = Directory.GetDirectories(yearFolder)
+                    var monthDayFolders = (await GetDirectoriesWithRetryAsync(yearFolder, "source month-day folders"))
                         .Where(d =>
                         {
                             var monthDay = Path.GetFileName(d);
@@ -320,7 +320,7 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                         _logger.LogDebug("Processing month-day folder: {MonthDay}", monthDay);
 
                         // Get all serial number folders (0001, 0002, etc.)
-                        var serialFolders = Directory.GetDirectories(monthDayFolder)
+                        var serialFolders = (await GetDirectoriesWithRetryAsync(monthDayFolder, "source serial folders"))
                             .Where(d => Path.GetFileName(d).Length == 4 && int.TryParse(Path.GetFileName(d), out _))
                             .OrderBy(d => d)
                             .ToList();
@@ -397,12 +397,12 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                 // Belt-and-suspenders: confirm the resolved absolute paths still sit
                 // inside the configured roots. Path.GetFullPath canonicalises ".."
                 // sequences; if either resolved path escapes its base we abort.
-                var destRoot = Path.GetFullPath(_config.DestinationPath);
-                var procRoot = Path.GetFullPath(_config.ProcessedPath);
+                var destRoot = EnsureTrailingDirectorySeparator(_config.DestinationPath);
+                var procRoot = EnsureTrailingDirectorySeparator(_config.ProcessedPath);
                 var destResolved = Path.GetFullPath(destinationFolder);
                 var procResolved = Path.GetFullPath(processedFolder);
-                if (!destResolved.StartsWith(destRoot, StringComparison.OrdinalIgnoreCase)
-                    || !procResolved.StartsWith(procRoot, StringComparison.OrdinalIgnoreCase))
+                if (!IsPathInsideRoot(destResolved, destRoot)
+                    || !IsPathInsideRoot(procResolved, procRoot))
                 {
                     _logger.LogWarning(
                         "Rejecting FS6000 path that escapes its root: dest={Dest} proc={Proc}",
@@ -419,31 +419,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     return true; // Consider this successful since it's already done
                 }
 
-                // Check if already synced but not yet processed
-                // FIXED: Check if folder has files, not just if it exists
-                if (Directory.Exists(destinationFolder))
-                {
-                    var existingFiles = Directory.GetFiles(destinationFolder);
-                    if (existingFiles.Length > 0)
-                    {
-                        _logger.LogDebug("Folder already synced with {FileCount} files: {RelativePath}", existingFiles.Length, relativePath);
-                        return true; // Consider this successful since it's already synced with files
-                    }
-                    else
-                    {
-                        _logger.LogDebug("Folder exists but is empty, will re-sync: {RelativePath}", relativePath);
-                        // Continue to sync files
-                    }
-                }
-
-                // Create destination directory
-                Directory.CreateDirectory(destinationFolder);
-                _logger.LogDebug("Created destination directory: {DestinationFolder}", destinationFolder);
-
                 // Find XML, JPEG, and raw .img files
-                var xmlFiles = Directory.GetFiles(sourceFolder, "*.xml");
-                var jpegFiles = Directory.GetFiles(sourceFolder, "*.jpg");
-                var imgFiles = Directory.GetFiles(sourceFolder, "*.img");
+                var xmlFiles = await GetFilesWithRetryAsync(sourceFolder, "*.xml", "source XML files");
+                var jpegFiles = await GetFilesWithRetryAsync(sourceFolder, "*.jpg", "source JPEG files");
+                var imgFiles = await GetFilesWithRetryAsync(sourceFolder, "*.img", "source raw channel files");
 
                 if (xmlFiles.Length == 0)
                 {
@@ -468,73 +447,89 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     .First();
 
                 var xmlFile = xmlFiles[0]; // Take the first XML file
+                var expectedCopies = new List<(string SourcePath, string DestinationPath)>
+                {
+                    (xmlFile, Path.Combine(destinationFolder, Path.GetFileName(xmlFile))),
+                    (largestJpeg, Path.Combine(destinationFolder, Path.GetFileName(largestJpeg)))
+                };
+
+                expectedCopies.AddRange(imgFiles.Select(imgFile =>
+                    (imgFile, Path.Combine(destinationFolder, Path.GetFileName(imgFile)))));
 
                 _logger.LogDebug("Found XML: {XmlFile}, JPEG: {JpegFile}, .img files: {ImgCount}", xmlFile, largestJpeg, imgFiles.Length);
 
-                // ✅ IMPROVEMENT 1: Wait for file stability before copying
-                // The scanner may still be writing files, so wait for them to stabilize
                 _logger.LogDebug("Waiting for file stability before copying...");
-                var xmlStable = await WaitForFileStabilityAsync(xmlFile, maxWaitMs: 5000);
-                var jpegStable = await WaitForFileStabilityAsync(largestJpeg, maxWaitMs: 5000);
+                var unstableFiles = new List<string>();
 
-                if (!xmlStable)
+                foreach (var (sourcePath, _) in expectedCopies)
                 {
-                    _logger.LogWarning("XML file may still be writing: {XmlFile}", xmlFile);
-                }
-                if (!jpegStable)
-                {
-                    _logger.LogWarning("JPEG file may still be writing: {JpegFile}", largestJpeg);
+                    if (!await WaitForFileStabilityAsync(sourcePath, maxWaitMs: 15000))
+                    {
+                        unstableFiles.Add(sourcePath);
+                    }
                 }
 
-                // Wait for .img file stability
-                foreach (var imgFile in imgFiles)
+                if (unstableFiles.Count > 0)
                 {
-                    var imgStable = await WaitForFileStabilityAsync(imgFile, maxWaitMs: 5000);
-                    if (!imgStable)
-                        _logger.LogWarning(".img file may still be writing: {ImgFile}", imgFile);
+                    _logger.LogInformation(
+                        "Deferring FS6000 sync for {RelativePath}; {Count} source file(s) were not stable after bounded wait: {Files}",
+                        relativePath,
+                        unstableFiles.Count,
+                        string.Join(", ", unstableFiles.Select(Path.GetFileName)));
+                    return false;
                 }
 
-                // Copy XML file with retry (now uses FileShare.ReadWrite)
+                if (Directory.Exists(destinationFolder))
+                {
+                    if (ExpectedCopiesAlreadyPresent(expectedCopies))
+                    {
+                        _logger.LogDebug("Folder already synced with complete files: {RelativePath}", relativePath);
+                        return true;
+                    }
+
+                    _logger.LogWarning("Folder exists but staged files are incomplete or stale, will re-sync: {RelativePath}", relativePath);
+                }
+
+                Directory.CreateDirectory(destinationFolder);
+                _logger.LogDebug("Ensured destination directory exists: {DestinationFolder}", destinationFolder);
+
+                // Copy XML file with retry
                 var xmlFileName = Path.GetFileName(xmlFile);
-                var xmlDestination = Path.Combine(destinationFolder, xmlFileName);
-                await CopyFileWithRetryAsync(xmlFile, xmlDestination);
+                await CopyFileWithRetryAsync(xmlFile, Path.Combine(destinationFolder, xmlFileName));
                 _logger.LogDebug("Copied XML file: {XmlFileName}", xmlFileName);
 
-                // Copy JPEG file with retry (now uses FileShare.ReadWrite)
+                // Copy JPEG file with retry
                 var jpegFileName = Path.GetFileName(largestJpeg);
-                var jpegDestination = Path.Combine(destinationFolder, jpegFileName);
-                await CopyFileWithRetryAsync(largestJpeg, jpegDestination);
+                await CopyFileWithRetryAsync(largestJpeg, Path.Combine(destinationFolder, jpegFileName));
                 _logger.LogDebug("Copied JPEG file: {JpegFileName}", jpegFileName);
 
                 // Copy raw .img channel files (high, low, material)
                 foreach (var imgFile in imgFiles)
                 {
                     var imgFileName = Path.GetFileName(imgFile);
-                    var imgDestination = Path.Combine(destinationFolder, imgFileName);
-                    await CopyFileWithRetryAsync(imgFile, imgDestination);
+                    await CopyFileWithRetryAsync(imgFile, Path.Combine(destinationFolder, imgFileName));
                     _logger.LogDebug("Copied .img file: {ImgFileName}", imgFileName);
                 }
                 if (imgFiles.Length > 0)
                     _logger.LogInformation("Copied {Count} .img channel file(s) to staging", imgFiles.Length);
 
                 // ✅ IMPROVEMENT 3: Validate copied files exist and have content before marking as Completed
-                var copiedFiles = Directory.GetFiles(destinationFolder);
-                if (copiedFiles.Length < 2)
+                foreach (var (sourcePath, copiedFile) in expectedCopies)
                 {
-                    throw new InvalidOperationException($"File copy incomplete: Expected 2 files (XML + JPG), found {copiedFiles.Length} files in {destinationFolder}");
-                }
-
-                // Verify files have content (not empty)
-                foreach (var copiedFile in copiedFiles)
-                {
-                    var fileInfo = new FileInfo(copiedFile);
-                    if (fileInfo.Length == 0)
+                    if (!File.Exists(copiedFile))
                     {
-                        throw new InvalidOperationException($"Copied file is empty: {copiedFile}");
+                        throw new InvalidOperationException($"File copy incomplete: Expected copied file is missing: {copiedFile}");
+                    }
+
+                    var sourceInfo = new FileInfo(sourcePath);
+                    var copiedInfo = new FileInfo(copiedFile);
+                    if (copiedInfo.Length == 0 || copiedInfo.Length != sourceInfo.Length)
+                    {
+                        throw new InvalidOperationException($"Copied file length mismatch: {copiedFile} ({copiedInfo.Length} bytes) vs {sourcePath} ({sourceInfo.Length} bytes)");
                     }
                 }
 
-                _logger.LogInformation("✅ Validated {FileCount} copied files with content", copiedFiles.Length);
+                _logger.LogInformation("✅ Validated {FileCount} copied files with source-length match", expectedCopies.Count);
 
                 // Log successful sync
                 var syncLog = new FS6000SyncLog
@@ -585,9 +580,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
         }
 
         /// <summary>
-        /// ✅ IMPROVEMENT 1: Check if a file is stable (finished writing) by monitoring file size
+        /// Check if a file is stable (finished writing) by monitoring size,
+        /// last-write time, and whether a writer still holds the file open.
         /// </summary>
-        private async Task<bool> WaitForFileStabilityAsync(string filePath, int maxWaitMs = 5000)
+        private async Task<bool> WaitForFileStabilityAsync(string filePath, int maxWaitMs = 15000)
         {
             try
             {
@@ -595,8 +591,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     return false;
 
                 long previousSize = -1;
+                DateTime previousLastWriteUtc = DateTime.MinValue;
                 int stableCount = 0;
-                int checkIntervalMs = 200;
+                const int requiredStableChecks = 4;
+                const int checkIntervalMs = 500;
                 int totalWaitMs = 0;
 
                 while (totalWaitMs < maxWaitMs)
@@ -605,12 +603,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     {
                         var fileInfo = new FileInfo(filePath);
                         long currentSize = fileInfo.Length;
+                        var currentLastWriteUtc = fileInfo.LastWriteTimeUtc;
 
-                        if (currentSize == previousSize && currentSize > 0)
+                        if (currentSize == previousSize
+                            && currentLastWriteUtc == previousLastWriteUtc
+                            && currentSize > 0
+                            && CanOpenForStableRead(filePath))
                         {
                             stableCount++;
-                            // File size hasn't changed for 2 consecutive checks = stable
-                            if (stableCount >= 2)
+                            if (stableCount >= requiredStableChecks)
                             {
                                 return true;
                             }
@@ -619,14 +620,15 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                         {
                             stableCount = 0;
                             previousSize = currentSize;
+                            previousLastWriteUtc = currentLastWriteUtc;
                         }
 
                         await Task.Delay(checkIntervalMs);
                         totalWaitMs += checkIntervalMs;
                     }
-                    catch (IOException)
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                     {
-                        // File locked, wait and try again
+                        stableCount = 0;
                         await Task.Delay(checkIntervalMs);
                         totalWaitMs += checkIntervalMs;
                     }
@@ -641,61 +643,164 @@ namespace NickScanCentralImagingPortal.Services.FS6000
         }
 
         /// <summary>
-        /// ✅ IMPROVEMENT 2: Copy file with retry logic using FileShare.ReadWrite to handle concurrent access.
-        /// ✅ IMPROVEMENT 3 (2026-04-19): Also retry on transient network errors (UNC share briefly unavailable).
+        /// Copy file with bounded retry. The file is copied to a temp file first,
+        /// then promoted only if the source did not change during the copy.
         /// </summary>
-        private async Task CopyFileWithRetryAsync(string sourcePath, string destinationPath, int maxRetries = 3)
+        private async Task CopyFileWithRetryAsync(string sourcePath, string destinationPath, int maxRetries = 4)
         {
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
+                var tempDestinationPath = $"{destinationPath}.{Guid.NewGuid():N}.tmp";
                 try
                 {
-                    if (attempt > 1)
+                    var sourceBefore = new FileInfo(sourcePath);
+                    if (!sourceBefore.Exists || sourceBefore.Length <= 0)
                     {
-                        var delay = TimeSpan.FromMilliseconds(100 * Math.Pow(2, attempt - 2)); // Start at 100ms, then 200ms, 400ms
-                        _logger.LogDebug("Retrying file copy in {Delay}ms (attempt {Attempt}/{MaxRetries})", delay.TotalMilliseconds, attempt, maxRetries);
-                        await Task.Delay(delay);
+                        throw new IOException($"Source file is missing or empty: {sourcePath}");
                     }
 
-                    // ✅ IMPROVEMENT 2: Use FileShare.ReadWrite to allow concurrent access
-                    // This allows the scanner to continue writing while we read/copy
-                    using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true))
+                    using (var sourceStream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true))
                     {
-                        using (var destinationStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+                        using (var destinationStream = new FileStream(tempDestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
                         {
                             await sourceStream.CopyToAsync(destinationStream);
+                            await destinationStream.FlushAsync();
                         }
                     }
 
+                    var sourceAfter = new FileInfo(sourcePath);
+                    var tempFileInfo = new FileInfo(tempDestinationPath);
+                    if (sourceBefore.Length != sourceAfter.Length
+                        || sourceBefore.LastWriteTimeUtc != sourceAfter.LastWriteTimeUtc
+                        || tempFileInfo.Length != sourceAfter.Length)
+                    {
+                        throw new IOException($"Source changed while copying: {sourcePath}");
+                    }
+
+                    File.Move(tempDestinationPath, destinationPath, overwrite: true);
                     _logger.LogDebug("Successfully copied file: {SourcePath} -> {DestinationPath}", sourcePath, destinationPath);
                     return;
                 }
-                catch (IOException ex) when (ex.Message.Contains("being used by another process") || ex.HResult == -2147024864) // 0x80070020 ERROR_SHARING_VIOLATION
+                catch (Exception ex) when (IsRetryableCopyException(ex) && attempt < maxRetries)
                 {
-                    _logger.LogWarning("🔒 File is being used by another process (attempt {Attempt}/{MaxRetries}): {SourcePath}", attempt, maxRetries, sourcePath);
-                    if (attempt == maxRetries)
-                    {
-                        throw new IOException($"Failed to copy file after {maxRetries} attempts: {sourcePath}", ex);
-                    }
-                }
-                // NEW: Transient network errors on UNC shares (network path not found, name no longer available, etc.)
-                catch (IOException ex) when (IsTransientNetworkError(ex))
-                {
-                    // Longer backoff for network errors (likely share momentarily unreachable)
-                    var netDelay = TimeSpan.FromSeconds(2 * Math.Pow(2, attempt - 1)); // 2s, 4s, 8s
-                    _logger.LogWarning("🌐 Transient network error (attempt {Attempt}/{MaxRetries}) copying {SourcePath}: {Msg}. Waiting {Delay}s before retry",
-                        attempt, maxRetries, sourcePath, ex.Message, netDelay.TotalSeconds);
-                    if (attempt == maxRetries)
-                    {
-                        throw new IOException($"Failed to copy file after {maxRetries} network retries: {sourcePath}", ex);
-                    }
-                    await Task.Delay(netDelay);
+                    TryDeleteFile(tempDestinationPath);
+                    var delay = GetRetryDelay(ex, attempt);
+                    _logger.LogWarning(
+                        ex,
+                        "Retryable file copy error (attempt {Attempt}/{MaxRetries}) copying {SourcePath}. Waiting {DelayMs}ms before retry",
+                        attempt,
+                        maxRetries,
+                        sourcePath,
+                        delay.TotalMilliseconds);
+                    await Task.Delay(delay);
                 }
                 catch (Exception ex)
                 {
+                    TryDeleteFile(tempDestinationPath);
                     _logger.LogError(ex, "Unexpected error copying file (attempt {Attempt}/{MaxRetries}): {SourcePath}", attempt, maxRetries, sourcePath);
                     throw;
                 }
+            }
+        }
+
+        private async Task<string[]> GetDirectoriesWithRetryAsync(string path, string operationName)
+        {
+            return await RunFileSystemOperationWithRetryAsync(() => Directory.GetDirectories(path), operationName, path);
+        }
+
+        private async Task<string[]> GetFilesWithRetryAsync(string path, string searchPattern, string operationName)
+        {
+            return await RunFileSystemOperationWithRetryAsync(() => Directory.GetFiles(path, searchPattern), operationName, path);
+        }
+
+        private async Task<T> RunFileSystemOperationWithRetryAsync<T>(Func<T> operation, string operationName, string path, int maxRetries = 4)
+        {
+            for (var attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    return operation();
+                }
+                catch (IOException ex) when (IsTransientNetworkError(ex) && attempt < maxRetries)
+                {
+                    var delay = GetRetryDelay(ex, attempt);
+                    _logger.LogWarning(
+                        ex,
+                        "Transient file-system error during {OperationName} for {Path} (attempt {Attempt}/{MaxRetries}). Waiting {DelayMs}ms before retry",
+                        operationName,
+                        path,
+                        attempt,
+                        maxRetries,
+                        delay.TotalMilliseconds);
+                    await Task.Delay(delay);
+                }
+            }
+
+            return operation();
+        }
+
+        private static bool ExpectedCopiesAlreadyPresent(IEnumerable<(string SourcePath, string DestinationPath)> expectedCopies)
+        {
+            foreach (var (sourcePath, destinationPath) in expectedCopies)
+            {
+                if (!File.Exists(destinationPath))
+                {
+                    return false;
+                }
+
+                var sourceInfo = new FileInfo(sourcePath);
+                var destinationInfo = new FileInfo(destinationPath);
+                if (sourceInfo.Length <= 0 || destinationInfo.Length != sourceInfo.Length)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool CanOpenForStableRead(string filePath)
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return stream.Length > 0;
+        }
+
+        private static bool IsRetryableCopyException(Exception ex)
+        {
+            if (ex is UnauthorizedAccessException)
+            {
+                return true;
+            }
+
+            return ex is IOException ioEx
+                && (IsTransientNetworkError(ioEx)
+                    || ioEx.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase)
+                    || unchecked((uint)ioEx.HResult) == 0x80070020U
+                    || ioEx.Message.Contains("Source changed while copying", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static TimeSpan GetRetryDelay(Exception ex, int attempt)
+        {
+            if (ex is IOException ioEx && IsTransientNetworkError(ioEx))
+            {
+                return TimeSpan.FromSeconds(Math.Min(8, Math.Pow(2, attempt)));
+            }
+
+            return TimeSpan.FromMilliseconds(Math.Min(2000, 500 * Math.Pow(2, attempt - 1)));
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // Best effort cleanup for temp copy files.
             }
         }
 
@@ -710,11 +815,13 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             if (msg.Contains("network path was not found", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("network name is no longer available", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("network name cannot be found", StringComparison.OrdinalIgnoreCase)) return true;
+            if (msg.Contains("could not find a part of the path", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("did not respond", StringComparison.OrdinalIgnoreCase)) return true;
             if (msg.Contains("remote system is not available", StringComparison.OrdinalIgnoreCase)) return true;
             // HRESULTs: 0x80070035 (path not found), 0x80070040 (network name deleted), 0x8007003B (unexpected error on network)
             switch (unchecked((uint)ex.HResult))
             {
+                case 0x80070003U:
                 case 0x80070035U:
                 case 0x80070040U:
                 case 0x8007003BU:
@@ -886,6 +993,20 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             // Reserved Windows device names + control chars get caught by Path.GetFullPath
             // when we resolve the combined path against the root anyway.
             return true;
+        }
+
+        private static string EnsureTrailingDirectorySeparator(string path)
+        {
+            var fullPath = Path.GetFullPath(path);
+            return Path.EndsInDirectorySeparator(fullPath)
+                ? fullPath
+                : fullPath + Path.DirectorySeparatorChar;
+        }
+
+        private static bool IsPathInsideRoot(string path, string rootWithTrailingSeparator)
+        {
+            var fullPath = Path.GetFullPath(path);
+            return fullPath.StartsWith(rootWithTrailingSeparator, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

@@ -340,6 +340,10 @@ namespace NickScanCentralImagingPortal.Services.ASE
                     {
                         _logger.LogWarning("{ServiceId} ⚠️ IContainerScanQueuePublisher not available - scans saved but not queued", SERVICE_ID);
                     }
+
+                    await EnsureTwoContainerSplitJobsAsync(
+                        scope.ServiceProvider,
+                        originalRecords.Where(record => record.DerivedRecordCount == 2).Select(record => record.Id).ToList());
                 }
                 else
                 {
@@ -357,6 +361,34 @@ namespace NickScanCentralImagingPortal.Services.ASE
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing new records");
+            }
+        }
+
+        private async Task EnsureTwoContainerSplitJobsAsync(IServiceProvider serviceProvider, IReadOnlyCollection<int> originalScanRecordIds)
+        {
+            if (originalScanRecordIds.Count == 0)
+                return;
+
+            var splitIntake = serviceProvider.GetService<ITwoContainerSplitIntakeService>();
+            if (splitIntake == null)
+            {
+                _logger.LogDebug("{ServiceId} Two-container split intake service is not registered", SERVICE_ID);
+                return;
+            }
+
+            foreach (var originalScanRecordId in originalScanRecordIds)
+            {
+                try
+                {
+                    await splitIntake.EnsureSplitJobForOriginalAsync(originalScanRecordId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "{ServiceId} Failed to ensure split job for OriginalScanRecord {OriginalScanRecordId}",
+                        SERVICE_ID,
+                        originalScanRecordId);
+                }
             }
         }
 

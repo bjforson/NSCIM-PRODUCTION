@@ -660,6 +660,8 @@ namespace NickScanCentralImagingPortal.Services
             var rawImageEngineUrl = configuration.GetValue<string>("RawImageEngine:BaseUrl")
                 ?? configuration.GetValue<string>("ImageSplitter:BaseUrl")
                 ?? "http://localhost:5320";
+            services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ITwoContainerSplitIntakeService,
+                NickScanCentralImagingPortal.Services.ImageSplitter.TwoContainerSplitIntakeService>();
             services.AddHttpClient<NickScanCentralImagingPortal.Services.ImageSplitter.IImageSplitterService,
                 NickScanCentralImagingPortal.Services.ImageSplitter.ImageSplitterService>((serviceProvider, client) =>
             {
@@ -673,6 +675,7 @@ namespace NickScanCentralImagingPortal.Services
                 client.BaseAddress = new Uri(rawImageEngineUrl);
                 client.Timeout = TimeSpan.FromSeconds(30);
             });
+            services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.TwoContainerSplitIntakeWorker>();
 
             return services;
         }

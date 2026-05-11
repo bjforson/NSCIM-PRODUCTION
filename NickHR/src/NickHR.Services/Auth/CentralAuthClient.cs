@@ -11,6 +11,8 @@ namespace NickHR.Services.Auth;
 /// </summary>
 public class CentralAuthClient : ICentralAuthClient
 {
+    private const string ServiceApiKeyHeaderName = "X-Service-Key";
+
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
     private readonly ILogger<CentralAuthClient> _logger;
@@ -42,14 +44,14 @@ public class CentralAuthClient : ICentralAuthClient
             var request = new
             {
                 username = usernameOrEmail,
-                password,
-                serviceApiKey = apiKey
+                password
             };
 
             var timeoutSeconds = _configuration.GetValue<int>("CentralAuth:TimeoutSeconds", 10);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
 
-            var response = await _httpClient.PostAsJsonAsync("/api/auth/validate-credentials", request, cts.Token);
+            using var message = CreateServiceRequest(HttpMethod.Post, "/api/auth/validate-credentials", request, apiKey);
+            var response = await _httpClient.SendAsync(message, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -103,7 +105,8 @@ public class CentralAuthClient : ICentralAuthClient
             if (string.IsNullOrEmpty(apiKey)) return new List<NscisRole>();
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GetTimeout()));
-            var response = await _httpClient.GetAsync($"/api/roles/service/list?apiKey={Uri.EscapeDataString(apiKey)}", cts.Token);
+            using var message = CreateServiceRequest(HttpMethod.Get, "/api/roles/service/list", body: null, apiKey: apiKey);
+            var response = await _httpClient.SendAsync(message, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -145,12 +148,12 @@ public class CentralAuthClient : ICentralAuthClient
                 firstName = request.FirstName,
                 lastName = request.LastName,
                 roleId = request.RoleId,
-                isActive = request.IsActive,
-                serviceApiKey = apiKey
+                isActive = request.IsActive
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GetTimeout()));
-            var response = await _httpClient.PostAsJsonAsync("/api/users/service/provision", body, cts.Token);
+            using var message = CreateServiceRequest(HttpMethod.Post, "/api/users/service/provision", body, apiKey);
+            var response = await _httpClient.SendAsync(message, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -198,10 +201,14 @@ public class CentralAuthClient : ICentralAuthClient
             var apiKey = GetApiKey();
             if (string.IsNullOrEmpty(apiKey)) return false;
 
-            var body = new { serviceApiKey = apiKey };
+            var body = new { };
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(GetTimeout()));
-            var response = await _httpClient.PutAsJsonAsync(
-                $"/api/users/service/{Uri.EscapeDataString(username)}/deactivate", body, cts.Token);
+            using var message = CreateServiceRequest(
+                HttpMethod.Put,
+                $"/api/users/service/{Uri.EscapeDataString(username)}/deactivate",
+                body,
+                apiKey);
+            var response = await _httpClient.SendAsync(message, cts.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -226,6 +233,22 @@ public class CentralAuthClient : ICentralAuthClient
         ?? string.Empty;
 
     private int GetTimeout() => _configuration.GetValue<int>("CentralAuth:TimeoutSeconds", 10);
+
+    private static HttpRequestMessage CreateServiceRequest(
+        HttpMethod method,
+        string requestUri,
+        object? body,
+        string apiKey)
+    {
+        var message = new HttpRequestMessage(method, requestUri);
+        message.Headers.TryAddWithoutValidation(ServiceApiKeyHeaderName, apiKey);
+        if (body is not null)
+        {
+            message.Content = JsonContent.Create(body);
+        }
+
+        return message;
+    }
 
     private class CentralAuthResponseDto
     {

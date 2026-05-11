@@ -1,7 +1,7 @@
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Security;
 
 namespace NickScanWebApp.New.Services;
 
@@ -121,9 +121,6 @@ public class SignedImageUrlBuilder
     // Keep in sync; any change requires coordinated redeploy of both services.
     private static string ComputeSignature(byte[] key, string path, string exp, string uid)
     {
-        var payload = $"{path.ToLowerInvariant()}|{exp}|{uid}";
-        using var hmac = new HMACSHA256(key);
-        var bytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
-        return Convert.ToHexString(bytes);
+        return SignedImageUrlCanonical.ComputeSignature(key, path, exp, uid);
     }
 }

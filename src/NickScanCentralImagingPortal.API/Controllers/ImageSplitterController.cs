@@ -1,7 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using NickScanCentralImagingPortal.Core.Entities.Analysis;
+using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageSplitter;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -16,24 +20,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ILogger<ImageSplitterController> _logger;
         private readonly ApplicationDbContext _db;
         private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
+        private readonly ITwoContainerSplitIntakeService _splitIntake;
 
         public ImageSplitterController(
             IHttpClientFactory httpClientFactory,
             ILogger<ImageSplitterController> logger,
             ApplicationDbContext db,
-            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
+            NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner,
+            ITwoContainerSplitIntakeService splitIntake)
         {
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _db = db;
             _urlSigner = urlSigner;
+            _splitIntake = splitIntake;
         }
 
         [HttpGet("health")]
         public async Task<IActionResult> GetHealth() => await ForwardGetAsync("/api/health");
 
         [HttpGet("jobs/pending")]
-        public async Task<IActionResult> GetPendingJobs() => await ForwardGetAsync("/api/split/pending");
+        public async Task<IActionResult> GetPendingJobs()
+            => await ForwardGetAsync($"/api/split/pending{Request.QueryString}");
 
         [HttpGet("jobs/{jobId}")]
         public async Task<IActionResult> GetJob(string jobId) => await ForwardGetAsync($"/api/split/{jobId}");
@@ -89,6 +97,119 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
         }
 
+        /// <summary>
+        /// Admin recovery path for scanner originals that have two containers and source
+        /// bytes but did not reach the splitter intake during ingestion.
+        /// </summary>
+        [HttpPost("jobs/backfill-originals")]
+        [Authorize(Policy = "AdminOnly")]
+        public async Task<IActionResult> BackfillOriginalScanRecords(
+            [FromQuery] string? scanDate = null,
+            [FromQuery] string? scannerType = null,
+            [FromQuery] int limit = 100,
+            [FromQuery] bool dryRun = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (limit < 1 || limit > 500)
+                return BadRequest(new { error = "limit must be between 1 and 500" });
+
+            var targetDate = TryParseScanDate(scanDate);
+            if (targetDate == null)
+                return BadRequest(new { error = "scanDate must be yyyy-MM-dd when supplied" });
+
+            var localZone = TimeZoneInfo.Local;
+            var localStart = targetDate.Value.ToDateTime(TimeOnly.MinValue);
+            var localEnd = localStart.AddDays(1);
+            var queryStartUtc = TimeZoneInfo.ConvertTimeToUtc(localStart, localZone);
+            var queryEndUtc = TimeZoneInfo.ConvertTimeToUtc(localEnd, localZone);
+
+            var query = _db.OriginalScanRecords
+                .AsNoTracking()
+                .Where(original => original.DerivedRecordCount == 2
+                    && original.ScanTime >= queryStartUtc
+                    && original.ScanTime < queryEndUtc);
+
+            if (!string.IsNullOrWhiteSpace(scannerType))
+            {
+                var normalizedScanner = scannerType.Trim();
+                query = query.Where(original => original.ScannerType == normalizedScanner);
+            }
+
+            var candidates = (await query
+                    .OrderBy(original => original.ScanTime)
+                    .Take(limit)
+                    .ToListAsync(cancellationToken))
+                .Where(original => ToLocalDate(original.ScanTime, localZone) == targetDate.Value)
+                .Where(original => ParseTwoContainerNumbers(original.OriginalContainerNumbers).Count == 2)
+                .ToList();
+
+            var items = new List<object>();
+            var applicable = 0;
+            var jobsCreated = 0;
+            var jobsFound = 0;
+            var linked = 0;
+            var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var original in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (dryRun)
+                {
+                    items.Add(new
+                    {
+                        original.Id,
+                        original.ScannerType,
+                        original.OriginalContainerNumbers,
+                        original.ScanTime,
+                        original.IngestedAt,
+                        status = "DryRun"
+                    });
+                    continue;
+                }
+
+                var result = await _splitIntake.EnsureSplitJobForOriginalAsync(original.Id, cancellationToken);
+                if (result.IsApplicable)
+                    applicable++;
+                if (result.SplitJobCreated)
+                    jobsCreated++;
+                if (result.SplitJobFound)
+                    jobsFound++;
+                linked += result.LinkedAnalysisRecords;
+
+                statusCounts[result.Status] = statusCounts.GetValueOrDefault(result.Status) + 1;
+
+                items.Add(new
+                {
+                    original.Id,
+                    original.ScannerType,
+                    original.OriginalContainerNumbers,
+                    original.ScanTime,
+                    original.IngestedAt,
+                    result.IsApplicable,
+                    result.SplitJobCreated,
+                    result.SplitJobFound,
+                    result.LinkedAnalysisRecords,
+                    result.Status
+                });
+            }
+
+            return Ok(new
+            {
+                scanDate = targetDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                scannerType,
+                dryRun,
+                limit,
+                candidates = candidates.Count,
+                applicable,
+                jobsCreated,
+                jobsFound,
+                analysisRecordsLinked = linked,
+                statusCounts,
+                items
+            });
+        }
+
         // ── Container-level split integration endpoints ──
 
         /// <summary>
@@ -135,23 +256,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         {
                             record.SplitJobId = splitterJobId;
                             var jobStatus = await GetSplitterJobStatusAsync(splitterJobId.Value);
-                            if (jobStatus == "completed")
-                            {
-                                record.SplitStatus = "Ready";
-                                await PopulateSplitCandidatesAsync(record);
-                            }
-                            else if (jobStatus == "failed")
-                            {
-                                record.SplitStatus = "Skipped";
-                            }
+                            if (jobStatus != null)
+                                await ApplySplitJobStatusAsync(record, jobStatus);
                             else
-                            {
-                                record.SplitStatus = "Pending";
-                            }
+                                record.SplitStatus = SplitAnalysisStatus.Pending;
                         }
                         else
                         {
-                            record.SplitStatus = "Pending";
+                            record.SplitStatus = SplitAnalysisStatus.Pending;
                             // No split job exists — will need to be submitted
                             // (orchestrator or backfill handles this)
                         }
@@ -193,7 +305,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // Build options from the splitter API if we have candidates
                 var options = new List<object>();
                 if (record.SplitJobId.HasValue &&
-                    (record.SplitStatus == "Ready" || record.SplitStatus == "Chosen"))
+                    (string.Equals(record.SplitStatus, SplitAnalysisStatus.Ready, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(record.SplitStatus, SplitAnalysisStatus.Chosen, StringComparison.OrdinalIgnoreCase)))
                 {
                     var client = _httpClientFactory.CreateClient("RawImageEngine");
                     var resultsResponse = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
@@ -290,7 +403,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 // Update this container's record
                 record.SplitResultId = resultGuid;
-                record.SplitStatus = "Chosen";
+                record.SplitStatus = SplitAnalysisStatus.Chosen;
 
                 // Update the sibling container (same SplitJobId, opposite position)
                 if (record.SplitJobId.HasValue)
@@ -305,7 +418,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     if (sibling != null)
                     {
                         sibling.SplitResultId = resultGuid;
-                        sibling.SplitStatus = "Chosen";
+                        sibling.SplitStatus = SplitAnalysisStatus.Chosen;
                     }
 
                     // Forward approval to the splitter for consensus corpus recording
@@ -335,7 +448,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     "Split chosen for container {Container}: result {ResultId} by {Analyst}",
                     containerNumber, resultId, approvedBy);
 
-                return Ok(new { success = true, containerNumber, resultId, splitStatus = "Chosen" });
+                return Ok(new { success = true, containerNumber, resultId, splitStatus = SplitAnalysisStatus.Chosen });
             }
             catch (Exception ex)
             {
@@ -362,11 +475,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (record == null)
                     return NotFound(new { error = $"No multi-container AnalysisRecord found for {containerNumber}" });
 
-                record.SplitStatus = "Skipped";
+                record.SplitStatus = SplitAnalysisStatus.Skipped;
                 await _db.SaveChangesAsync();
 
                 _logger.LogInformation("Split skipped for container {Container} by {Analyst}", containerNumber, skippedBy);
-                return Ok(new { success = true, containerNumber, splitStatus = "Skipped" });
+                return Ok(new { success = true, containerNumber, splitStatus = SplitAnalysisStatus.Skipped });
             }
             catch (Exception ex)
             {
@@ -429,7 +542,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
         }
 
-        private async Task<string?> GetSplitterJobStatusAsync(Guid jobId)
+        private async Task<SplitJobStatus?> GetSplitterJobStatusAsync(Guid jobId)
         {
             try
             {
@@ -438,7 +551,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!response.IsSuccessStatusCode) return null;
                 var json = await response.Content.ReadAsStringAsync();
                 var job = JsonSerializer.Deserialize<JsonElement>(json);
-                return job.TryGetProperty("status", out var s) ? s.GetString() : null;
+                return TryReadSplitJobStatus(job, jobId);
             }
             catch (Exception ex)
             {
@@ -452,27 +565,29 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <summary>
         /// Populate the top 2 split candidates on an AnalysisRecord from the splitter results.
         /// </summary>
-        private async Task PopulateSplitCandidatesAsync(NickScanCentralImagingPortal.Core.Entities.Analysis.AnalysisRecord record)
+        private async Task<IReadOnlyList<SplitResultReference>> PopulateSplitCandidatesAsync(AnalysisRecord record)
         {
-            if (!record.SplitJobId.HasValue) return;
+            if (!record.SplitJobId.HasValue) return Array.Empty<SplitResultReference>();
 
             try
             {
                 var client = _httpClientFactory.CreateClient("RawImageEngine");
                 var response = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
-                if (!response.IsSuccessStatusCode) return;
+                if (!response.IsSuccessStatusCode) return Array.Empty<SplitResultReference>();
 
                 var json = await response.Content.ReadAsStringAsync();
                 var results = JsonSerializer.Deserialize<JsonElement>(json);
 
-                if (results.ValueKind != JsonValueKind.Array) return;
+                if (results.ValueKind != JsonValueKind.Array) return Array.Empty<SplitResultReference>();
 
                 // Get top 2 results by confidence
                 var sorted = results.EnumerateArray()
                     .Select(r => new
                     {
                         Id = r.TryGetProperty("id", out var id) ? id.GetString() : null,
-                        Confidence = r.TryGetProperty("confidence", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetDouble() : 0.0
+                        Confidence = r.TryGetProperty("confidence", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetDouble() : 0.0,
+                        Strategy = TryGetString(r, "strategy_name"),
+                        Outcome = TryGetOutcome(r)
                     })
                     .Where(r => r.Id != null)
                     .OrderByDescending(r => r.Confidence)
@@ -483,11 +598,178 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     record.SplitOptionA_ResultId = Guid.Parse(sorted[0].Id!);
                 if (sorted.Count >= 2)
                     record.SplitOptionB_ResultId = Guid.Parse(sorted[1].Id!);
+
+                return sorted
+                    .Select(result => new SplitResultReference(
+                        Guid.Parse(result.Id!),
+                        result.Strategy,
+                        result.Confidence,
+                        result.Outcome))
+                    .ToList();
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to populate split candidates for job {JobId}", record.SplitJobId);
+                return Array.Empty<SplitResultReference>();
             }
+        }
+
+        private async Task ApplySplitJobStatusAsync(AnalysisRecord record, SplitJobStatus jobStatus)
+        {
+            var explicitNonChoice = SplitAnalysisStatus.TryMapNonChoiceOutcome(new[]
+            {
+                jobStatus.SplitOutcome,
+                jobStatus.Status,
+                jobStatus.BestStrategy,
+                jobStatus.ErrorMessage
+            });
+            var shouldFetchCandidates = explicitNonChoice == null
+                && SplitAnalysisStatus.IsCompletedJobStatus(jobStatus.Status);
+
+            var candidates = shouldFetchCandidates
+                ? await PopulateSplitCandidatesAsync(record)
+                : Array.Empty<SplitResultReference>();
+
+            var targetStatus = SplitAnalysisStatus.ResolveForAnalysisRecord(
+                jobStatus,
+                fetchedCandidateCount: candidates.Count,
+                candidateFetchAttempted: shouldFetchCandidates,
+                candidateOutcomes: candidates.Select(candidate => candidate.SplitOutcome));
+
+            if (!string.Equals(targetStatus, SplitAnalysisStatus.Ready, StringComparison.OrdinalIgnoreCase))
+            {
+                record.SplitOptionA_ResultId = null;
+                record.SplitOptionB_ResultId = null;
+            }
+
+            record.SplitStatus = targetStatus;
+        }
+
+        private static SplitJobStatus? TryReadSplitJobStatus(JsonElement job, Guid? fallbackJobId = null)
+        {
+            var jobId = fallbackJobId ?? TryGetGuid(job, "id") ?? TryGetGuid(job, "job_id");
+            if (!jobId.HasValue)
+                return null;
+
+            return new SplitJobStatus(
+                jobId.Value,
+                TryGetString(job, "status") ?? "unknown",
+                TryGetString(job, "best_strategy"),
+                TryGetDouble(job, "best_confidence") ?? TryGetDouble(job, "best_score"),
+                TryGetInt(job, "split_x"),
+                TryGetInt(job, "result_count") ?? 0,
+                TryGetOutcome(job),
+                TryGetString(job, "error_message"));
+        }
+
+        private static Guid? TryGetGuid(JsonElement element, string propertyName)
+        {
+            var value = TryGetString(element, propertyName);
+            return Guid.TryParse(value, out var guid) ? guid : null;
+        }
+
+        private static int? TryGetInt(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.Number)
+                return null;
+
+            return prop.TryGetInt32(out var value) ? value : null;
+        }
+
+        private static double? TryGetDouble(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.Number)
+                return null;
+
+            return prop.TryGetDouble(out var value) ? value : null;
+        }
+
+        private static string? TryGetString(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.String)
+                return null;
+
+            return prop.GetString();
+        }
+
+        private static string? TryGetOutcome(JsonElement element)
+        {
+            foreach (var propertyName in new[]
+            {
+                "split_outcome",
+                "splitOutcome",
+                "outcome",
+                "visual_outcome",
+                "visualOutcome",
+                "classification",
+                "resolution"
+            })
+            {
+                var value = TryGetString(element, propertyName);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            foreach (var propertyName in new[]
+            {
+                "not_applicable",
+                "notApplicable",
+                "visual_single",
+                "visualSingle",
+                "single_container",
+                "singleContainer",
+                "uncertain"
+            })
+            {
+                if (element.TryGetProperty(propertyName, out var prop)
+                    && prop.ValueKind == JsonValueKind.True)
+                {
+                    return propertyName;
+                }
+            }
+
+            if (element.TryGetProperty("metadata", out var metadata) && metadata.ValueKind == JsonValueKind.Object)
+                return TryGetOutcome(metadata);
+
+            return null;
+        }
+
+        private static DateOnly? TryParseScanDate(string? scanDate)
+        {
+            if (string.IsNullOrWhiteSpace(scanDate))
+                return DateOnly.FromDateTime(DateTime.Now.AddDays(-1));
+
+            return DateOnly.TryParseExact(
+                scanDate.Trim(),
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsed)
+                ? parsed
+                : null;
+        }
+
+        private static DateOnly ToLocalDate(DateTime value, TimeZoneInfo localZone)
+        {
+            var utc = value.Kind switch
+            {
+                DateTimeKind.Utc => value,
+                DateTimeKind.Local => value.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            };
+
+            return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, localZone));
+        }
+
+        private static IReadOnlyList<string> ParseTwoContainerNumbers(string? raw)
+        {
+            return (raw ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(token => !string.IsNullOrWhiteSpace(token))
+                .Where(token => !string.Equals(token, "Unknown", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(3)
+                .ToList();
         }
 
         private async Task<IActionResult> ForwardGetAsync(string path)

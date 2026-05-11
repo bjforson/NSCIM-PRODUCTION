@@ -16,6 +16,7 @@ using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Core.DTOs.ImageProcessing;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageAnalysis;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
 
@@ -33,6 +34,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IMemoryCache _memoryCache;
         private readonly IImageAnalysisFacade _imageAnalysis;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ReadyGroupsCacheService? _readyGroupsCache;
         private static readonly Regex _safeKeyRegex = new Regex("[^A-Za-z0-9_-]+", RegexOptions.Compiled);
         private static readonly TimeSpan MyAssignmentsCacheDuration = TimeSpan.FromSeconds(15);
 
@@ -43,7 +45,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IConfiguration configuration,
             IMemoryCache memoryCache,
             IImageAnalysisFacade imageAnalysis,
-            IServiceScopeFactory scopeFactory)
+            IServiceScopeFactory scopeFactory,
+            ReadyGroupsCacheService? readyGroupsCache = null)
         {
             _db = db;
             _icumDb = icumDb;
@@ -52,6 +55,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _memoryCache = memoryCache;
             _imageAnalysis = imageAnalysis;
             _scopeFactory = scopeFactory;
+            _readyGroupsCache = readyGroupsCache;
         }
 
         // DTOs
@@ -154,8 +158,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("my-assignments")]
         public async Task<ActionResult<List<MyAssignmentResponse>>> GetMyAssignments([FromQuery] string? role = null)
         {
-            var username = User.Identity?.Name ?? "unknown";
+            var username = GetAuthenticatedUsername();
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                return Unauthorized(new { error = "User is not authenticated" });
+            }
+
             var now = DateTime.UtcNow;
+            var requestAborted = HttpContext?.RequestAborted ?? CancellationToken.None;
 
             // Determine user role from claims or query parameter
             var userRole = role ?? "Analyst"; // Default to Analyst
@@ -168,62 +178,161 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             // ✅ PERFORMANCE: Per-user cache (15s TTL) to reduce repeated heavy queries while staying responsive
-            var cacheKey = $"my-assignments:{username}:{userRole}";
+            var cacheKey = GetMyAssignmentsCacheKey(username, userRole);
             if (_memoryCache.TryGetValue(cacheKey, out List<MyAssignmentResponse>? cachedResult) && cachedResult != null)
             {
-                _logger.LogDebug("[GetMyAssignments] Cache hit for user {Username}, role {Role}", username, userRole);
-                _ = Task.Run(async () => await UpdateLastAccessedForCachedAssignments(username, userRole, cachedResult.Select(a => a.GroupId).ToList()));
-                return Ok(cachedResult);
+                if (cachedResult.Any(a => a.LeaseUntilUtc.HasValue && a.LeaseUntilUtc <= now))
+                {
+                    _memoryCache.Remove(cacheKey);
+                    _logger.LogDebug("[GetMyAssignments] Dropped expired cache entry for user {Username}, role {Role}", username, userRole);
+                }
+                else
+                {
+                    var cachedGroupIds = cachedResult
+                        .Select(a => a.GroupId)
+                        .ToHashSet();
+                    var activeGroupIds = await _db.AnalysisAssignments
+                        .AsNoTracking()
+                        .Where(a => a.AssignedTo == username
+                            && a.Role == userRole
+                            && a.State == "Active"
+                            && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                        .Select(a => a.GroupId)
+                        .ToListAsync(requestAborted);
+
+                    if (activeGroupIds.Any(id => !cachedGroupIds.Contains(id))
+                        || cachedGroupIds.Any(id => !activeGroupIds.Contains(id)))
+                    {
+                        _memoryCache.Remove(cacheKey);
+                        _logger.LogInformation("[GetMyAssignments] Dropped partial/stale cache entry for user {Username}, role {Role}", username, userRole);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("[GetMyAssignments] Cache hit for user {Username}, role {Role}", username, userRole);
+                        _ = Task.Run(async () => await UpdateLastAccessedForCachedAssignments(username, userRole, cachedResult.Select(a => a.GroupId).ToList()));
+                        return Ok(cachedResult);
+                    }
+                }
             }
 
             _logger.LogInformation("Getting assignments for user: {Username}, Role: {Role}", username, userRole);
             var startTime = DateTime.UtcNow;
+            var queueFallbackReason = "queue table empty";
 
             // ═══ FAST PATH: Read from materialized queue table (single query) ═══
-            var queueEntries = await _db.AnalysisQueueEntries
-                .Where(e => e.AssignedTo == username && e.Role == userRole)
+            var queueRows = await (
+                    from entry in _db.AnalysisQueueEntries.AsNoTracking()
+                    join assignment in _db.AnalysisAssignments.AsNoTracking()
+                        on entry.AssignmentId equals assignment.Id into assignmentJoin
+                    from assignment in assignmentJoin.DefaultIfEmpty()
+                    where entry.AssignedTo == username && entry.Role == userRole
+                    select new { Entry = entry, Assignment = assignment })
                 .AsNoTracking()
                 .ToListAsync();
 
-            if (queueEntries.Any())
+            if (queueRows.Any())
             {
-                var fastResult = queueEntries.Select(e => new MyAssignmentResponse
+                var validQueueRows = new List<(AnalysisQueueEntry Entry, AnalysisAssignment Assignment)>();
+                var staleQueueEntryIds = new List<int>();
+
+                foreach (var row in queueRows)
                 {
-                    GroupId = e.GroupId,
-                    GroupIdentifier = e.GroupIdentifier,
-                    ScannerType = e.ScannerType ?? string.Empty,
-                    Status = e.GroupStatus,
-                    ContainerCount = e.ContainerCount,
-                    Containers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(e.ContainersJson ?? "[]") ?? new(),
-                    LeaseUntilUtc = e.LeaseUntilUtc,
-                    CreatedAtUtc = e.AssignmentCreatedAtUtc,
-                    IsConsolidated = e.IsConsolidated,
-                    ContainersWithImages = e.ContainersWithImages > 0 ? e.ContainersWithImages : null,
-                    ContainersWithoutImages = e.ContainersWithoutImages > 0 ? e.ContainersWithoutImages : null,
-                    DecidedCount = e.DecidedCount,
-                    TotalContainerCount = e.TotalContainerCount,
-                    SubmittedContainerCount = e.SubmittedContainerCount,
-                    PendingContainerCount = e.PendingContainerCount,
-                    PartiallyCompletedDate = e.PartiallyCompletedDate,
-                    UpdatedAtUtc = e.GroupUpdatedAtUtc
-                }).ToList();
+                    var assignment = row.Assignment;
+                    if (assignment == null
+                        || assignment.State != "Active"
+                        || assignment.AssignedTo != username
+                        || assignment.Role != userRole
+                        || assignment.GroupId != row.Entry.GroupId
+                        || (assignment.LeaseUntilUtc.HasValue && assignment.LeaseUntilUtc <= now))
+                    {
+                        staleQueueEntryIds.Add(row.Entry.AssignmentId);
+                        continue;
+                    }
 
-                // Fire-and-forget LastAccessedAtUtc update
-                _ = Task.Run(async () => await UpdateLastAccessedForCachedAssignments(username, userRole, fastResult.Select(a => a.GroupId).ToList()));
+                    validQueueRows.Add((row.Entry, assignment));
+                }
 
-                _memoryCache.Set(cacheKey, fastResult, new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
-                    .SetSize(1));
+                await RemoveStaleQueueEntriesAsync(staleQueueEntryIds, username, userRole);
 
-                var fastDuration = (DateTime.UtcNow - startTime).TotalSeconds;
-                _logger.LogInformation("[GetMyAssignments] FAST PATH: {Count} entries from queue table in {Duration:F3}s for {Username}",
-                    fastResult.Count, fastDuration, username);
+                if (validQueueRows.Any())
+                {
+                    var validQueueAssignmentIds = validQueueRows
+                        .Select(row => row.Assignment.Id)
+                        .ToHashSet();
 
-                return Ok(fastResult);
+                    var activeAssignmentIds = await _db.AnalysisAssignments
+                        .AsNoTracking()
+                        .Where(a => a.AssignedTo == username
+                            && a.Role == userRole
+                            && a.State == "Active"
+                            && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                        .Select(a => a.Id)
+                        .ToListAsync(requestAborted);
+
+                    var missingQueueAssignmentIds = activeAssignmentIds
+                        .Where(id => !validQueueAssignmentIds.Contains(id))
+                        .ToList();
+
+                    if (missingQueueAssignmentIds.Count > 0)
+                    {
+                        queueFallbackReason = $"queue partial ({missingQueueAssignmentIds.Count} active assignment(s) missing)";
+                        _logger.LogWarning(
+                            "[GetMyAssignments] Queue fast path partial for {Username}/{Role}: {ValidCount} queued, {MissingCount} active missing. Repairing queue rows and using legacy path for this request.",
+                            username,
+                            userRole,
+                            validQueueRows.Count,
+                            missingQueueAssignmentIds.Count);
+
+                        foreach (var missingAssignmentId in missingQueueAssignmentIds.Take(50))
+                        {
+                            await UpsertQueueEntryBestEffortAsync(missingAssignmentId, requestAborted);
+                        }
+                    }
+                    else
+                    {
+                        var fastResult = validQueueRows.Select(row => new MyAssignmentResponse
+                        {
+                            GroupId = row.Entry.GroupId,
+                            GroupIdentifier = row.Entry.GroupIdentifier,
+                            ScannerType = row.Entry.ScannerType ?? string.Empty,
+                            Status = row.Entry.GroupStatus,
+                            ContainerCount = row.Entry.ContainerCount,
+                            Containers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(row.Entry.ContainersJson ?? "[]") ?? new(),
+                            LeaseUntilUtc = row.Assignment.LeaseUntilUtc,
+                            CreatedAtUtc = row.Assignment.CreatedAtUtc,
+                            IsConsolidated = row.Entry.IsConsolidated,
+                            ContainersWithImages = row.Entry.ContainersWithImages > 0 ? row.Entry.ContainersWithImages : null,
+                            ContainersWithoutImages = row.Entry.ContainersWithoutImages > 0 ? row.Entry.ContainersWithoutImages : null,
+                            DecidedCount = row.Entry.DecidedCount,
+                            TotalContainerCount = row.Entry.TotalContainerCount,
+                            SubmittedContainerCount = row.Entry.SubmittedContainerCount,
+                            PendingContainerCount = row.Entry.PendingContainerCount,
+                            PartiallyCompletedDate = row.Entry.PartiallyCompletedDate,
+                            UpdatedAtUtc = row.Entry.GroupUpdatedAtUtc
+                        }).ToList();
+
+                        // Fire-and-forget LastAccessedAtUtc update
+                        _ = Task.Run(async () => await UpdateLastAccessedForCachedAssignments(username, userRole, fastResult.Select(a => a.GroupId).ToList()));
+
+                        _memoryCache.Set(cacheKey, fastResult, new MemoryCacheEntryOptions()
+                            .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
+                            .SetSize(1));
+
+                        var fastDuration = (DateTime.UtcNow - startTime).TotalSeconds;
+                        _logger.LogInformation("[GetMyAssignments] FAST PATH: {Count} entries from queue table in {Duration:F3}s for {Username}",
+                            fastResult.Count, fastDuration, username);
+
+                        return Ok(fastResult);
+                    }
+                }
+                else
+                {
+                    queueFallbackReason = "queue rows stale";
+                }
             }
 
-            // ═══ SLOW FALLBACK: Legacy multi-query path (used when queue table is empty) ═══
-            _logger.LogInformation("[GetMyAssignments] Queue table empty for {Username}/{Role} — falling back to legacy path", username, userRole);
+            // ═══ SLOW FALLBACK: Legacy multi-query path (used when queue table is empty or partial) ═══
+            _logger.LogInformation("[GetMyAssignments] Queue fast path unavailable for {Username}/{Role} ({Reason}) — falling back to legacy path", username, userRole, queueFallbackReason);
 
             // Get active assignments for this user with matching role
             var assignments = await _db.AnalysisAssignments
@@ -284,9 +393,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 try
                 {
-                    var orphanedIds = string.Join(",", orphanedAssignments.Select(a => $"'{a.Id}'"));
-                    var expireSql = $"UPDATE AnalysisAssignments SET State = 'Expired', UpdatedAtUtc = now() AT TIME ZONE 'UTC' WHERE Id IN ({orphanedIds})";
-                    var released = await _db.Database.ExecuteSqlRawAsync(expireSql);
+                    var orphanedIds = orphanedAssignments.Select(a => a.Id).ToList();
+                    var updatedAtUtc = DateTime.UtcNow;
+                    var released = await _db.AnalysisAssignments
+                        .Where(a => orphanedIds.Contains(a.Id))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.State, "Expired")
+                            .SetProperty(a => a.UpdatedAtUtc, updatedAtUtc),
+                            requestAborted);
+
                     _logger.LogInformation("[GetMyAssignments] Auto-released {Count} orphaned assignments for user {Username} — capacity freed",
                         released, username);
                 }
@@ -304,18 +419,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             if (assignmentsToUpdate.Any())
             {
-                // ✅ PERFORMANCE FIX: Use parameterized SQL with table-valued parameter instead of string concatenation
-                // This is safer and potentially faster for large ID lists
+                // ✅ PERFORMANCE FIX: Batch parameterized updates; bind UTC values directly to timestamptz columns.
                 var assignmentIds = assignmentsToUpdate.Select(a => a.Id).ToList();
+                var lastAccessedAtUtc = DateTime.UtcNow;
                 const int updateBatchSize = 500;
 
                 // Batch the updates to avoid very long SQL statements
                 for (int i = 0; i < assignmentIds.Count; i += updateBatchSize)
                 {
-                    var batch = assignmentIds.Skip(i).Take(updateBatchSize);
-                    var batchIds = string.Join(",", batch);
-                    var updateSql = $"UPDATE AnalysisAssignments SET LastAccessedAtUtc = now() AT TIME ZONE 'UTC' WHERE Id IN ({batchIds})";
-                    await _db.Database.ExecuteSqlRawAsync(updateSql);
+                    var batch = assignmentIds.Skip(i).Take(updateBatchSize).ToList();
+                    await _db.AnalysisAssignments
+                        .Where(a => batch.Contains(a.Id))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.LastAccessedAtUtc, lastAccessedAtUtc),
+                            requestAborted);
                 }
 
                 _logger.LogDebug("[GetMyAssignments] Updated LastAccessedAtUtc for {Count} assignments for user {Username}",
@@ -661,6 +778,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     "UPDATE AnalysisAssignments SET State = 'Released', UpdatedAtUtc = now() AT TIME ZONE 'UTC' WHERE GroupId = {0} AND Role = 'Audit' AND State = 'Active'",
                                     grp.Id);
 
+                                await db.AnalysisQueueEntries
+                                    .Where(e => e.GroupId == grp.Id && e.Role == "Audit")
+                                    .ExecuteDeleteAsync();
+
                                 // Mark audit decisions as completed
                                 await db.Database.ExecuteSqlRawAsync(
                                     "UPDATE AuditDecisions SET IsCompleted = true, CompletedAt = now() AT TIME ZONE 'UTC', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE GroupIdentifier = {0} AND IsCompleted = false",
@@ -715,13 +836,104 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     username);
             }
 
-            // ✅ PERFORMANCE: Cache result for 15s to reduce repeated heavy queries
-            // SetSize(1) required when MemoryCache.SizeLimit is configured (prevents unbounded growth)
-            _memoryCache.Set(cacheKey, enhancedResult, new MemoryCacheEntryOptions()
-                .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
-                .SetSize(1));
+            // ✅ PERFORMANCE: Cache non-empty results for 15s to reduce repeated heavy queries.
+            // Do not cache empty results: the workbench can mark the user Ready immediately
+            // after the first request, and an empty cache would hide the newly-created assignment.
+            if (enhancedResult.Any())
+            {
+                _memoryCache.Set(cacheKey, enhancedResult, new MemoryCacheEntryOptions()
+                    .SetAbsoluteExpiration(MyAssignmentsCacheDuration)
+                    .SetSize(1));
+            }
 
             return Ok(enhancedResult);
+        }
+
+        private string GetAuthenticatedUsername()
+        {
+            return User?.Identity?.Name
+                ?? User?.FindFirst(ClaimTypes.Name)?.Value
+                ?? User?.FindFirst("username")?.Value
+                ?? User?.FindFirst("name")?.Value
+                ?? User?.FindFirst("preferred_username")?.Value
+                ?? string.Empty;
+        }
+
+        private static string GetMyAssignmentsCacheKey(string username, string role) => $"my-assignments:{username}:{role}";
+
+        private void InvalidateMyAssignmentsCache(string? username, string? role)
+        {
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role)) return;
+            _memoryCache.Remove(GetMyAssignmentsCacheKey(username, role));
+        }
+
+        private async Task UpsertQueueEntryBestEffortAsync(int assignmentId, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache == null) return;
+
+            try
+            {
+                await _readyGroupsCache.UpsertQueueEntryAsync(_db, assignmentId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[QUEUE] Failed to upsert queue entry for assignment {AssignmentId}", assignmentId);
+            }
+        }
+
+        private async Task RemoveQueueEntryBestEffortAsync(int assignmentId, CancellationToken ct = default)
+        {
+            if (_readyGroupsCache != null)
+            {
+                try
+                {
+                    await _readyGroupsCache.RemoveQueueEntryAsync(_db, assignmentId, ct);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[QUEUE] Failed to remove queue entry for assignment {AssignmentId}", assignmentId);
+                }
+            }
+
+            try
+            {
+                await _db.AnalysisQueueEntries
+                    .Where(e => e.AssignmentId == assignmentId)
+                    .ExecuteDeleteAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[QUEUE] Fallback queue entry delete failed for assignment {AssignmentId}", assignmentId);
+            }
+        }
+
+        private async Task RemoveStaleQueueEntriesAsync(List<int> assignmentIds, string username, string role)
+        {
+            if (assignmentIds.Count == 0) return;
+
+            try
+            {
+                var removed = await _db.AnalysisQueueEntries
+                    .Where(e => assignmentIds.Contains(e.AssignmentId))
+                    .ExecuteDeleteAsync(HttpContext?.RequestAborted ?? CancellationToken.None);
+
+                InvalidateMyAssignmentsCache(username, role);
+                _logger.LogInformation(
+                    "[GetMyAssignments] Removed {Count} stale queue row(s) for user {Username}, role {Role}",
+                    removed,
+                    username,
+                    role);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "[GetMyAssignments] Failed to remove {Count} stale queue entries for user {Username}, role {Role}; ignoring stale rows",
+                    assignmentIds.Count,
+                    username,
+                    role);
+            }
         }
 
         /// <summary>
@@ -737,18 +949,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
             if (groupIds.Count == 0) return;
             try
             {
-                using var scope = HttpContext.RequestServices.CreateScope();
+                using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var lastAccessedAtUtc = DateTime.UtcNow;
 
                 const int batchSize = 500;
                 for (int i = 0; i < groupIds.Count; i += batchSize)
                 {
                     var batch = groupIds.Skip(i).Take(batchSize).ToList();
-                    var placeholders = string.Join(",", batch.Select(g => $"'{g}'"));
-#pragma warning disable EF1002 // FromSqlRaw/ExecuteSqlRaw - username/role from User.Identity, GUIDs from our data
-                    var updateSql = $"UPDATE AnalysisAssignments SET LastAccessedAtUtc = now() AT TIME ZONE 'UTC' WHERE AssignedTo = '{username.Replace("'", "''")}' AND Role = '{userRole.Replace("'", "''")}' AND State = 'Active' AND GroupId IN ({placeholders})";
-                    await db.Database.ExecuteSqlRawAsync(updateSql);
-#pragma warning restore EF1002
+                    await db.AnalysisAssignments
+                        .Where(a => a.AssignedTo == username
+                            && a.Role == userRole
+                            && a.State == "Active"
+                            && batch.Contains(a.GroupId))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(a => a.LastAccessedAtUtc, lastAccessedAtUtc));
                 }
             }
             catch (Exception ex)
@@ -1024,6 +1239,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 return Conflict(new { error = "Group is no longer in a claimable state. Refresh and try again." });
             }
 
+            await UpsertQueueEntryBestEffortAsync(assignment.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+            InvalidateMyAssignmentsCache(username, userRole);
+
             await WriteAudit("ImageAnalysis", "Claim", $"User {username} claimed group {groupId}", nameof(AnalysisAssignment), groupId);
 
             return Ok(new { success = true, leaseUntilUtc = assignment.LeaseUntilUtc });
@@ -1084,6 +1302,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .Where(a => a.GroupId == group.Id && a.State == "Active")
                 .AsTracking()
                 .ToListAsync();
+            var replacedAssignments = existingActive
+                .Select(a => new { a.Id, a.AssignedTo, a.Role })
+                .ToList();
 
             foreach (var existing in existingActive)
             {
@@ -1151,6 +1372,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // persist the assignment record on its own.
                 await _db.SaveChangesAsync();
             }
+
+            foreach (var replaced in replacedAssignments)
+            {
+                await RemoveQueueEntryBestEffortAsync(replaced.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+                InvalidateMyAssignmentsCache(replaced.AssignedTo, replaced.Role);
+            }
+
+            await UpsertQueueEntryBestEffortAsync(assignment.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+            InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+
             await WriteAudit("ImageAnalysis", "Assign", $"Admin {username} assigned group {groupId} to {request.AssignedTo ?? "unassigned"} ({assignRole})", nameof(AnalysisAssignment), groupId);
 
             return Ok(new { success = true, assignment = new { assignment.AssignedTo, assignment.Role, assignment.LeaseUntilUtc } });
@@ -1294,6 +1525,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             active.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(leaseMinutes);
             active.UpdatedAtUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync();
+            await UpsertQueueEntryBestEffortAsync(active.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+            InvalidateMyAssignmentsCache(active.AssignedTo, active.Role);
             await WriteAudit("ImageAnalysis", "LeaseRenew", $"Lease renewed for group {groupId}", nameof(AnalysisAssignment), groupId);
             return Ok(new { success = true, leaseUntilUtc = active.LeaseUntilUtc });
         }
@@ -1314,13 +1547,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             foreach (var r in records)
             {
-                var existing = await _db.ImageAnalysisDecisions.AsTracking().FirstOrDefaultAsync(d => d.ContainerNumber == r.ContainerNumber && d.ScannerType == (r.ScannerType ?? group.ScannerType ?? string.Empty));
+                var scannerTypeForRecord = r.ScannerType ?? group.ScannerType ?? string.Empty;
+                var groupIdentifiersForDecision = new[]
+                    {
+                        group.GroupIdentifier,
+                        group.NormalizedGroupIdentifier,
+                        GroupIdentifierHelper.GetNormalizedGroupIdentifier(group.GroupIdentifier)
+                    }
+                    .Where(g => !string.IsNullOrWhiteSpace(g))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var existingCandidates = await _db.ImageAnalysisDecisions
+                    .AsTracking()
+                    .Where(d => d.ContainerNumber == r.ContainerNumber && d.ScannerType == scannerTypeForRecord)
+                    .ToListAsync();
+
+                var legacyUngroupedCandidates = existingCandidates
+                    .Where(d => string.IsNullOrWhiteSpace(d.GroupIdentifier))
+                    .ToList();
+
+                var existing = existingCandidates.FirstOrDefault(d =>
+                        d.GroupIdentifier != null &&
+                        groupIdentifiersForDecision.Contains(d.GroupIdentifier, StringComparer.OrdinalIgnoreCase))
+                    ?? (legacyUngroupedCandidates.Count == 1 ? legacyUngroupedCandidates[0] : null);
+
                 if (existing == null)
                 {
                     existing = new ImageAnalysisDecision
                     {
                         ContainerNumber = r.ContainerNumber,
-                        ScannerType = (r.ScannerType ?? group.ScannerType ?? string.Empty),
+                        ScannerType = scannerTypeForRecord,
                         Decision = string.IsNullOrWhiteSpace(req.Decision) ? "Pending" : req.Decision,
                         ReviewedBy = username,
                         ReviewedAt = now,
@@ -1357,9 +1614,31 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 correlationId: HttpContext?.TraceIdentifier);
             group.UpdatedAtUtc = now;
 
+            var analystAssignmentsToRelease = await _db.AnalysisAssignments
+                .AsNoTracking()
+                .Where(a => a.GroupId == gid
+                    && a.Role == "Analyst"
+                    && a.State == "Active")
+                .Select(a => new { a.Id, a.AssignedTo, a.Role })
+                .ToListAsync();
+
             // Centralized side effects for all containers in this group
-            var sideEffects = new NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionSideEffectsService(_logger);
+            var sideEffects = new DecisionSideEffectsService(_logger, _readyGroupsCache);
             await sideEffects.ApplyForGroupAsync(_db, group.GroupIdentifier, group.ScannerType);
+
+            var analystAssignmentIds = analystAssignmentsToRelease.Select(a => a.Id).ToList();
+            var releasedAnalystAssignmentIds = await _db.AnalysisAssignments
+                .AsNoTracking()
+                .Where(a => analystAssignmentIds.Contains(a.Id) && a.State != "Active")
+                .Select(a => a.Id)
+                .ToListAsync();
+            var releasedAnalystAssignmentIdSet = releasedAnalystAssignmentIds.ToHashSet();
+
+            foreach (var assignment in analystAssignmentsToRelease.Where(a => releasedAnalystAssignmentIdSet.Contains(a.Id)))
+            {
+                await RemoveQueueEntryBestEffortAsync(assignment.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+                InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+            }
 
             await WriteAudit("ImageAnalysis", "AnalystDecision", $"Analyst decision saved for group {groupId}", nameof(ImageAnalysisDecision), groupId);
             return Ok(new { success = true });
@@ -1463,6 +1742,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             await _db.SaveChangesAsync();
+
+            foreach (var assignment in auditAssignments)
+            {
+                await RemoveQueueEntryBestEffortAsync(assignment.Id, HttpContext?.RequestAborted ?? CancellationToken.None);
+                InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+            }
+
             await WriteAudit("ImageAnalysis", "AuditDecision", $"Audit decision saved for group {groupId}", nameof(AuditDecision), groupId);
 
             // ✅ NEW: Trigger immediate assignment check for auditor if they completed all work
@@ -1503,6 +1789,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 logger.LogInformation("🔍 [IMMEDIATE-AUDIT-ASSIGNMENT] Checking immediate assignment eligibility for auditor {Username}", auditorUsername);
                 var now = DateTime.UtcNow;
+                var ct = CancellationToken.None;
 
                 // Check if auditor has any remaining active assignments
                 var remainingActiveAssignments = await db.AnalysisAssignments
@@ -1541,59 +1828,53 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return;
                 }
 
-                // ✅ FIX: Load groups and containers separately, then join in memory to avoid CTE generation
-                var analystCompletedGroups = await db.AnalysisGroups
-                    .Where(g => g.Status == AnalysisStatuses.AnalystCompleted && !string.IsNullOrEmpty(g.GroupIdentifier))
-                    .AsTracking()
-                    .ToListAsync();
-
-                var groupIdentifiers = analystCompletedGroups.Select(g => g.GroupIdentifier).Distinct().ToList();
-
-                // ✅ FIX: Batch Contains() to avoid CTE generation
-                var containers = new List<ContainerCompletenessStatus>();
-                const int containerBatchSize = 1000;
-
-                if (groupIdentifiers.Count > 0)
+                if (!await IsUserReadyForAssignmentAsync(db, auditorUsername, "Audit", now, ct))
                 {
-                    for (int i = 0; i < groupIdentifiers.Count; i += containerBatchSize)
-                    {
-                        var batch = groupIdentifiers.Skip(i).Take(containerBatchSize).Where(g => g != null).ToList();
-                        var batchContainers = await db.ContainerCompletenessStatuses
-                            .Where(c => c.GroupIdentifier != null && batch.Contains(c.GroupIdentifier))
-                            .ToListAsync();
-                        containers.AddRange(batchContainers);
-                    }
+                    logger.LogInformation("[IMMEDIATE-AUDIT-ASSIGNMENT] Auditor {Username} is not Ready for Audit assignments - skipping", auditorUsername);
+                    return;
                 }
 
-                // ✅ Join and group in memory
-                var allAnalystCompletedGroups = analystCompletedGroups
-                    .GroupJoin(
-                        containers,
-                        g => g.GroupIdentifier,
-                        c => c.GroupIdentifier,
-                        (g, containerGroup) => new
-                        {
-                            Group = g,
-                            TotalContainers = containerGroup.Count(),
-                            AuditContainers = containerGroup.Count(c => c.WorkflowStage == "Audit"),
-                            CompletedContainers = containerGroup.Count(c => c.WorkflowStage == "PendingSubmission" || c.WorkflowStage == "Submitted" || c.WorkflowStage == "Completed")
-                        })
-                    .Where(w => w.AuditContainers > 0 && w.CompletedContainers < w.TotalContainers)
-                    .Select(x => x.Group)
-                    .OrderByDescending(g => g.Priority)
-                    .ToList();
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
+                }
+
+                var eligibleGroups = _readyGroupsCache != null
+                    ? await _readyGroupsCache.GetReadyGroupsForRoleAsync("Audit", AnalysisStatuses.AnalystCompleted, ct)
+                    : await db.AnalysisGroups
+                        .AsNoTracking()
+                        .Where(g => g.Status == AnalysisStatuses.AnalystCompleted && !string.IsNullOrEmpty(g.GroupIdentifier))
+                        .OrderByDescending(g => g.Priority)
+                        .Take(settings.MaxConcurrentPerUser - activeCount)
+                        .ToListAsync(ct);
 
                 // Get group IDs with active assignments
                 var groupIdsWithActiveAssignments = await db.AnalysisAssignments
-                    .Where(a => a.State == "Active" && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > now))
+                    .Where(a => a.State == "Active")
                     .Select(a => a.GroupId)
                     .Distinct()
-                    .ToListAsync();
+                    .ToListAsync(ct);
+                var activeGroupIdSet = groupIdsWithActiveAssignments.ToHashSet();
 
                 // Filter and take up to max
-                var readyGroups = allAnalystCompletedGroups
-                    .Where(g => !groupIdsWithActiveAssignments.Contains(g.Id))
+                var readyGroupIds = eligibleGroups
+                    .Where(g => !activeGroupIdSet.Contains(g.Id))
                     .Take(settings.MaxConcurrentPerUser - activeCount)
+                    .Select(g => g.Id)
+                    .ToList();
+
+                var readyGroups = readyGroupIds.Count == 0
+                    ? new List<AnalysisGroup>()
+                    : await db.AnalysisGroups
+                        .AsTracking()
+                        .Where(g => readyGroupIds.Contains(g.Id) && g.Status == AnalysisStatuses.AnalystCompleted)
+                        .ToListAsync(ct);
+
+                var readyOrder = readyGroupIds
+                    .Select((id, index) => new { id, index })
+                    .ToDictionary(x => x.id, x => x.index);
+                readyGroups = readyGroups
+                    .OrderBy(g => readyOrder.GetValueOrDefault(g.Id, int.MaxValue))
                     .ToList();
 
                 if (!readyGroups.Any())
@@ -1603,10 +1884,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 // Assign groups immediately
                 var assignedCount = 0;
+                var createdAssignments = new List<AnalysisAssignment>();
                 foreach (var group in readyGroups)
                 {
                     var leaseUntil = now.AddMinutes(Math.Max(1, settings.LeaseMinutes));
-                    db.AnalysisAssignments.Add(new AnalysisAssignment
+                    var assignment = new AnalysisAssignment
                     {
                         GroupId = group.Id,
                         AssignedTo = auditorUsername,
@@ -1614,7 +1896,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         LeaseUntilUtc = leaseUntil,
                         State = "Active",
                         CreatedAtUtc = now
-                    });
+                    };
+                    db.AnalysisAssignments.Add(assignment);
 
                     // Sprint 5G2 / B1: route through the state-machine facade. AnalystCompleted → AuditAssigned
                     // is already in the legal table.
@@ -1625,10 +1908,35 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         reason: $"Auto-assignment to auditor {auditorUsername} after they completed all prior assignments.",
                         correlationId: null);
                     group.UpdatedAtUtc = now;
+                    createdAssignments.Add(assignment);
                     assignedCount++;
                 }
 
                 await db.SaveChangesAsync();
+
+                foreach (var assignment in createdAssignments)
+                {
+                    if (_readyGroupsCache != null)
+                    {
+                        try
+                        {
+                            await _readyGroupsCache.UpsertQueueEntryAsync(db, assignment.Id, ct);
+                        }
+                        catch (Exception upsertEx)
+                        {
+                            logger.LogWarning(upsertEx,
+                                "[IMMEDIATE-AUDIT-ASSIGNMENT] Failed to upsert queue entry for assignment {AssignmentId}; reconciler will catch up",
+                                assignment.Id);
+                        }
+                    }
+
+                    InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+                }
+
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync("Audit", AnalysisStatuses.AnalystCompleted, ct);
+                }
 
                 logger.LogInformation("✅ [IMMEDIATE-AUDIT-ASSIGNMENT] Immediately assigned {Count} new groups to auditor {Username}",
                     assignedCount, auditorUsername);
@@ -1637,6 +1945,52 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 logger.LogError(ex, "Error checking/triggering immediate assignment for auditor {Username}", auditorUsername);
             }
+        }
+
+        private async Task<bool> IsUserReadyForAssignmentAsync(
+            ApplicationDbContext db,
+            string username,
+            string roleName,
+            DateTime now,
+            CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(username))
+                return false;
+
+            var roleNameUpper = roleName.ToUpperInvariant();
+            var maxIdleMinutes = _configuration.GetValue<int>("ImageAnalysis:MaxIdleMinutesForReadiness", 60);
+            var maxIdleTime = TimeSpan.FromMinutes(maxIdleMinutes);
+            var dbMaxIdle = now.AddMinutes(-maxIdleMinutes);
+
+            var dbReady = await db.UserReadiness
+                .AsNoTracking()
+                .AnyAsync(r => r.Username == username
+                    && r.Role.ToUpper() == roleNameUpper
+                    && r.IsReady
+                    && r.LastHeartbeat >= dbMaxIdle, ct);
+
+            var signalRReady = UserReadinessStateProvider
+                .GetReadyUsers(roleName, maxIdleTime)
+                .Contains(username, StringComparer.OrdinalIgnoreCase);
+
+            if (!dbReady && !signalRReady)
+                return false;
+
+            var roleIds = await db.Roles
+                .AsNoTracking()
+                .Where(r => r.IsActive && r.Name.ToUpper() == roleNameUpper)
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+
+            if (roleIds.Count == 0)
+                return false;
+
+            return await db.Users
+                .AsNoTracking()
+                .AnyAsync(u => u.IsActive
+                    && u.Username == username
+                    && u.RoleId.HasValue
+                    && roleIds.Contains(u.RoleId.Value), ct);
         }
 
         [HttpPost("groups/{groupId}/submit-icums")]

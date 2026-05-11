@@ -4,6 +4,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 DB_PASSWORD = os.getenv("NICKSCAN_DB_PASSWORD", "")
 DB_PASSWORD_ENCODED = quote_plus(DB_PASSWORD)
 DATABASE_URL = f"postgresql+asyncpg://postgres:{DB_PASSWORD_ENCODED}@localhost:5432/nickscan_production"
@@ -18,8 +36,18 @@ SERVICE_PORT = int(os.getenv("SPLITTER_PORT", "5320"))
 SERVICE_HOST = os.getenv("SPLITTER_HOST", "127.0.0.1")
 
 # Image processing
-MAX_IMAGE_SIZE_MB = 100
+MAX_IMAGE_SIZE_MB = max(1, _env_int("MAX_IMAGE_SIZE_MB", 100))
 TESSERACT_CMD = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+
+# Remote image fetching is disabled by default to avoid SSRF-style arbitrary URL
+# fetches. Set SPLITTER_ALLOW_IMAGE_URL_FETCHES=true to enable, and optionally
+# restrict hosts with SPLITTER_ALLOWED_IMAGE_URL_HOSTS=host1,host2.
+ALLOW_IMAGE_URL_FETCHES = _env_bool("SPLITTER_ALLOW_IMAGE_URL_FETCHES", False)
+ALLOWED_IMAGE_URL_HOSTS = {
+    host.strip().lower().rstrip(".")
+    for host in os.getenv("SPLITTER_ALLOWED_IMAGE_URL_HOSTS", "").split(",")
+    if host.strip()
+}
 
 # Main app callback (optional)
 MAIN_APP_CALLBACK_URL = os.getenv("MAIN_APP_CALLBACK_URL", "")

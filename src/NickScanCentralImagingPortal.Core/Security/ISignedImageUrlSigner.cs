@@ -43,15 +43,34 @@ public interface ISignedImageUrlSigner
 public static class SignedImageUrlCanonical
 {
     /// <summary>
-    /// HMAC-SHA256 of <c>"{path.ToLowerInvariant()}|{exp}|{uid}"</c>, hex-
-    /// encoded uppercase. Any change to this format is a protocol break —
-    /// every issuer must upgrade atomically with every validator.
+    /// HMAC-SHA256 of <c>"{Uri.UnescapeDataString(path).ToLowerInvariant()}|{exp}|{uid}"</c>,
+    /// hex-encoded uppercase. ASP.NET Core exposes <c>HttpRequest.Path</c> in decoded
+    /// form for route values like comma-separated ASE container numbers, so issuers
+    /// canonicalize percent-encoded paths the same way before signing.
     /// </summary>
     public static string ComputeSignature(byte[] key, string path, string exp, string uid)
     {
-        var payload = $"{path.ToLowerInvariant()}|{exp}|{uid}";
+        var canonicalPath = CanonicalizePath(path);
+        var payload = $"{canonicalPath.ToLowerInvariant()}|{exp}|{uid}";
         using var hmac = new System.Security.Cryptography.HMACSHA256(key);
         var bytes = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(payload));
         return Convert.ToHexString(bytes);
+    }
+
+    private static string CanonicalizePath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Uri.UnescapeDataString(path);
+        }
+        catch (UriFormatException)
+        {
+            return path;
+        }
     }
 }

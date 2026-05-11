@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageSplitter;
 using NickScanCentralImagingPortal.Services.Logging;
 using NickScanCentralImagingPortal.Services.Monitoring;
 
@@ -5092,39 +5093,47 @@ RETURNING (xmax = 0)::int;";
                         var json = await searchResponse.Content.ReadAsStringAsync(ct);
                         var jobData = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
 
-                        Guid? jobId = null;
-                        string? jobStatus = null;
+                        SplitJobStatus? splitJobStatus = null;
 
-                        if (jobData.ValueKind == System.Text.Json.JsonValueKind.Object &&
-                            jobData.TryGetProperty("id", out var idProp))
+                        if (jobData.ValueKind == System.Text.Json.JsonValueKind.Object)
                         {
-                            jobId = Guid.Parse(idProp.GetString()!);
-                            jobStatus = jobData.TryGetProperty("status", out var sp) ? sp.GetString() : null;
+                            splitJobStatus = TryReadSplitJobStatus(jobData);
                         }
                         else if (jobData.ValueKind == System.Text.Json.JsonValueKind.Array)
                         {
                             foreach (var j in jobData.EnumerateArray())
                             {
                                 var jCn = j.TryGetProperty("container_numbers", out var cnp) ? cnp.GetString()?.Replace(" ", "") : "";
-                                if (jCn == normalized && j.TryGetProperty("id", out var jId))
+                                if (jCn == normalized)
                                 {
-                                    jobId = Guid.Parse(jId.GetString()!);
-                                    jobStatus = j.TryGetProperty("status", out var js) ? js.GetString() : null;
+                                    splitJobStatus = TryReadSplitJobStatus(j);
                                     break;
                                 }
                             }
                         }
 
-                        if (jobId.HasValue)
+                        if (splitJobStatus != null)
                         {
-                            record.SplitJobId = jobId;
-                            if (jobStatus == "completed")
+                            record.SplitJobId = splitJobStatus.JobId;
+                            var explicitNonChoice = SplitAnalysisStatus.TryMapNonChoiceOutcome(new[]
                             {
-                                record.SplitStatus = "Ready";
+                                splitJobStatus.SplitOutcome,
+                                splitJobStatus.Status,
+                                splitJobStatus.BestStrategy,
+                                splitJobStatus.ErrorMessage
+                            });
+                            var shouldFetchCandidates = explicitNonChoice == null
+                                && SplitAnalysisStatus.IsCompletedJobStatus(splitJobStatus.Status);
+
+                            var candidateOutcomes = Array.Empty<string?>();
+                            var fetchedCandidateCount = 0;
+
+                            if (shouldFetchCandidates)
+                            {
                                 // Fetch top 2 results
                                 try
                                 {
-                                    var resultsResp = await client.GetAsync($"/api/split/{jobId}/results", ct);
+                                    var resultsResp = await client.GetAsync($"/api/split/{splitJobStatus.JobId}/results", ct);
                                     if (resultsResp.IsSuccessStatusCode)
                                     {
                                         var resultsJson = await resultsResp.Content.ReadAsStringAsync(ct);
@@ -5135,13 +5144,16 @@ RETURNING (xmax = 0)::int;";
                                                 .Select(r => new
                                                 {
                                                     Id = r.TryGetProperty("id", out var id) ? id.GetString() : null,
-                                                    Conf = r.TryGetProperty("confidence", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.Number ? c.GetDouble() : 0.0
+                                                    Conf = r.TryGetProperty("confidence", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.Number ? c.GetDouble() : 0.0,
+                                                    Outcome = TryGetOutcome(r)
                                                 })
                                                 .Where(r => r.Id != null)
                                                 .OrderByDescending(r => r.Conf)
                                                 .Take(2)
                                                 .ToList();
 
+                                            fetchedCandidateCount = sorted.Count;
+                                            candidateOutcomes = sorted.Select(r => r.Outcome).ToArray();
                                             if (sorted.Count >= 1)
                                                 record.SplitOptionA_ResultId = Guid.Parse(sorted[0].Id!);
                                             if (sorted.Count >= 2)
@@ -5151,13 +5163,17 @@ RETURNING (xmax = 0)::int;";
                                 }
                                 catch { /* Non-fatal: candidates can be populated later by the API */ }
                             }
-                            else if (jobStatus == "failed")
+
+                            record.SplitStatus = SplitAnalysisStatus.ResolveForAnalysisRecord(
+                                splitJobStatus,
+                                fetchedCandidateCount,
+                                shouldFetchCandidates,
+                                candidateOutcomes);
+
+                            if (!string.Equals(record.SplitStatus, SplitAnalysisStatus.Ready, StringComparison.OrdinalIgnoreCase))
                             {
-                                record.SplitStatus = "Skipped";
-                            }
-                            else
-                            {
-                                record.SplitStatus = "Pending";
+                                record.SplitOptionA_ResultId = null;
+                                record.SplitOptionB_ResultId = null;
                             }
                         }
                         else
@@ -5256,6 +5272,95 @@ RETURNING (xmax = 0)::int;";
                 await db.SaveChangesAsync(ct);
                 _logger.LogInformation("[SPLIT-DETECTION] Populated split fields for {Count} AnalysisRecords", updated);
             }
+        }
+
+        private static SplitJobStatus? TryReadSplitJobStatus(JsonElement job)
+        {
+            var jobId = TryGetGuid(job, "id") ?? TryGetGuid(job, "job_id");
+            if (!jobId.HasValue)
+                return null;
+
+            return new SplitJobStatus(
+                jobId.Value,
+                TryGetString(job, "status") ?? "unknown",
+                TryGetString(job, "best_strategy"),
+                TryGetDouble(job, "best_confidence") ?? TryGetDouble(job, "best_score"),
+                TryGetInt(job, "split_x"),
+                TryGetInt(job, "result_count") ?? 0,
+                TryGetOutcome(job),
+                TryGetString(job, "error_message"));
+        }
+
+        private static Guid? TryGetGuid(JsonElement element, string propertyName)
+        {
+            var value = TryGetString(element, propertyName);
+            return Guid.TryParse(value, out var guid) ? guid : null;
+        }
+
+        private static int? TryGetInt(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.Number)
+                return null;
+
+            return prop.TryGetInt32(out var value) ? value : null;
+        }
+
+        private static double? TryGetDouble(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.Number)
+                return null;
+
+            return prop.TryGetDouble(out var value) ? value : null;
+        }
+
+        private static string? TryGetString(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.String)
+                return null;
+
+            return prop.GetString();
+        }
+
+        private static string? TryGetOutcome(JsonElement element)
+        {
+            foreach (var propertyName in new[]
+            {
+                "split_outcome",
+                "splitOutcome",
+                "outcome",
+                "visual_outcome",
+                "visualOutcome",
+                "classification",
+                "resolution"
+            })
+            {
+                var value = TryGetString(element, propertyName);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            foreach (var propertyName in new[]
+            {
+                "not_applicable",
+                "notApplicable",
+                "visual_single",
+                "visualSingle",
+                "single_container",
+                "singleContainer",
+                "uncertain"
+            })
+            {
+                if (element.TryGetProperty(propertyName, out var prop)
+                    && prop.ValueKind == JsonValueKind.True)
+                {
+                    return propertyName;
+                }
+            }
+
+            if (element.TryGetProperty("metadata", out var metadata) && metadata.ValueKind == JsonValueKind.Object)
+                return TryGetOutcome(metadata);
+
+            return null;
         }
 
         #endregion

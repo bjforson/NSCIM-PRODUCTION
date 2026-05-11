@@ -46,7 +46,7 @@ namespace NickScanCentralImagingPortal.Core.Entities.Analysis
         [StringLength(10)]
         public string? SplitPosition { get; set; }
 
-        /// <summary>null | "Pending" | "Ready" | "Chosen" | "Skipped"</summary>
+        /// <summary>null | "Pending" | "Ready" | "Chosen" | "Skipped" | "NotApplicable" | "VisualSingle" | "Uncertain"</summary>
         [StringLength(20)]
         public string? SplitStatus { get; set; }
 

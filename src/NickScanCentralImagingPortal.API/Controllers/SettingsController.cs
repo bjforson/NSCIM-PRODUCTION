@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -16,6 +17,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
     [HasPermission(Permissions.ControllersSystemSettings)]
     public class SettingsController : ControllerBase
     {
+        private const string RedactedValue = "***REDACTED***";
+
+        private static readonly string[] SecretPathTokens =
+        {
+            "password",
+            "pwd",
+            "secret",
+            "apikey",
+            "serviceapikey",
+            "accesstoken",
+            "refreshtoken",
+            "token",
+            "connectionstring",
+            "connectionstrings",
+            "privatekey",
+            "clientsecret",
+            "sharedaccesskey",
+            "credential",
+            "certificate",
+            "jwtsecret"
+        };
+
         private readonly ISettingsService _settingsService;
         private readonly ILogger<SettingsController> _logger;
 
@@ -34,7 +57,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var categories = await _settingsService.GetAllCategoriesAsync();
-                return Ok(categories);
+                return Ok(categories.Select(RedactCategory).ToList());
             }
             catch (Exception ex)
             {
@@ -55,7 +78,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (settings == null)
                     return NotFound($"Category '{category}' not found");
 
-                return Ok(settings);
+                return Ok(RedactCategory(settings));
             }
             catch (Exception ex)
             {
@@ -76,7 +99,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (setting == null)
                     return NotFound($"Setting '{category}.{key}' not found");
 
-                return Ok(setting);
+                return Ok(RedactSetting(setting));
             }
             catch (Exception ex)
             {
@@ -93,13 +116,29 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                if (IsRedactedPlaceholder(update.SettingValue))
+                {
+                    var existing = await _settingsService.GetSettingAsync(update.Category, update.SettingKey);
+                    if (existing != null && ShouldRedactSetting(existing))
+                    {
+                        _logger.LogInformation(
+                            "Skipped unchanged redacted setting {Category}.{Key} posted by {User}",
+                            update.Category,
+                            update.SettingKey,
+                            update.ChangedBy);
+                        return Ok(RedactSetting(existing));
+                    }
+
+                    return BadRequest(new { Error = "Redacted placeholders cannot be saved as setting values." });
+                }
+
                 var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
                 var updated = await _settingsService.UpdateSettingAsync(update, ipAddress);
 
                 _logger.LogInformation("Setting {Category}.{Key} updated by {User}",
                     update.Category, update.SettingKey, update.ChangedBy);
 
-                return Ok(updated);
+                return Ok(RedactSetting(updated));
             }
             catch (Exception ex)
             {
@@ -116,13 +155,51 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                var settingsToUpdate = new Dictionary<string, string>();
+                var skippedRedactedSettings = new List<SystemSettingDto>();
+
+                foreach (var setting in bulkUpdate.Settings)
+                {
+                    if (!IsRedactedPlaceholder(setting.Value))
+                    {
+                        settingsToUpdate[setting.Key] = setting.Value;
+                        continue;
+                    }
+
+                    var existing = await _settingsService.GetSettingAsync(bulkUpdate.Category, setting.Key);
+                    if (existing != null && ShouldRedactSetting(existing))
+                    {
+                        skippedRedactedSettings.Add(RedactSetting(existing));
+                        continue;
+                    }
+
+                    return BadRequest(new
+                    {
+                        Error = "Redacted placeholders cannot be saved as setting values.",
+                        SettingKey = setting.Key
+                    });
+                }
+
                 var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-                var updated = await _settingsService.BulkUpdateSettingsAsync(bulkUpdate, ipAddress);
+                var updated = new List<SystemSettingDto>();
+
+                if (settingsToUpdate.Count > 0)
+                {
+                    var sanitizedBulkUpdate = new BulkSettingsUpdateDto
+                    {
+                        Category = bulkUpdate.Category,
+                        Settings = settingsToUpdate,
+                        Reason = bulkUpdate.Reason,
+                        ChangedBy = bulkUpdate.ChangedBy
+                    };
+
+                    updated = await _settingsService.BulkUpdateSettingsAsync(sanitizedBulkUpdate, ipAddress);
+                }
 
                 _logger.LogInformation("Bulk updated {Count} settings in category {Category} by {User}",
-                    bulkUpdate.Settings.Count, bulkUpdate.Category, bulkUpdate.ChangedBy);
+                    settingsToUpdate.Count, bulkUpdate.Category, bulkUpdate.ChangedBy);
 
-                return Ok(updated);
+                return Ok(updated.Select(RedactSetting).Concat(skippedRedactedSettings).ToList());
             }
             catch (Exception ex)
             {
@@ -140,7 +217,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var history = await _settingsService.GetSettingHistoryAsync(category, key, limit);
-                return Ok(history);
+                return Ok(history.Select(RedactHistory).ToList());
             }
             catch (Exception ex)
             {
@@ -158,7 +235,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var changes = await _settingsService.GetRecentChangesAsync(limit);
-                return Ok(changes);
+                return Ok(changes.Select(RedactHistory).ToList());
             }
             catch (Exception ex)
             {
@@ -176,6 +253,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var result = await _settingsService.ValidateSettingAsync(request.Category, request.Key, request.Value);
+                RedactValidationResult(result, request.Category);
                 return Ok(result);
             }
             catch (Exception ex)
@@ -194,7 +272,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var result = await _settingsService.TestConnectionAsync(category);
-                return Ok(result);
+                return Ok(RedactConnectionTestResult(category, result));
             }
             catch (Exception ex)
             {
@@ -230,7 +308,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             try
             {
                 var export = await _settingsService.ExportSettingsAsync(category);
-                return Ok(export);
+                return Ok(RedactExport(export));
             }
             catch (Exception ex)
             {
@@ -247,8 +325,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                var sanitizedExport = RemoveRedactedExportValues(request.Export);
                 var success = await _settingsService.ImportSettingsAsync(
-                    request.Export,
+                    sanitizedExport,
                     request.ImportedBy,
                     request.OverwriteExisting);
 
@@ -490,7 +569,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
                 else
                 {
-                    data[child.Key] = child.Value;
+                    data[child.Key] = RedactConfigValue($"{sectionName}:{child.Key}", child.Value);
                 }
             }
 
@@ -555,7 +634,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
             var sectionDict = new Dictionary<string, object>();
             foreach (var setting in settings)
             {
-                sectionDict[setting.Key] = setting.Value;
+                var settingPath = $"{section}:{setting.Key}";
+                if (IsRedactedObjectValue(setting.Value) && IsSecretLikePath(settingPath))
+                {
+                    var existingValue = GetExistingSectionValue(root, section, setting.Key);
+                    if (existingValue == null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Cannot save redacted placeholder for missing appsettings key '{settingPath}'.");
+                    }
+
+                    sectionDict[setting.Key] = existingValue;
+                }
+                else
+                {
+                    sectionDict[setting.Key] = setting.Value;
+                }
             }
             newRoot[section] = sectionDict;
 
@@ -568,6 +662,256 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             var newJson = System.Text.Json.JsonSerializer.Serialize(newRoot, options);
             await System.IO.File.WriteAllTextAsync(filePath, newJson);
+        }
+
+        private static CategorySettingsDto RedactCategory(CategorySettingsDto category)
+        {
+            return new CategorySettingsDto
+            {
+                Category = category.Category,
+                DisplayName = category.DisplayName,
+                Description = category.Description,
+                Settings = category.Settings.Select(RedactSetting).ToList(),
+                RequiresRestart = category.RequiresRestart,
+                SettingCount = category.SettingCount
+            };
+        }
+
+        private static SystemSettingDto RedactSetting(SystemSettingDto setting)
+        {
+            var redactValue = ShouldRedactSetting(setting);
+            var redactDefault = !string.IsNullOrWhiteSpace(setting.DefaultValue) &&
+                                ShouldRedactValue($"{setting.Category}:{setting.SettingKey}:DefaultValue", setting.DefaultValue);
+
+            return new SystemSettingDto
+            {
+                Id = setting.Id,
+                Category = setting.Category,
+                SettingKey = setting.SettingKey,
+                SettingValue = redactValue ? RedactedValue : setting.SettingValue,
+                DataType = setting.DataType,
+                Description = setting.Description,
+                DefaultValue = redactDefault ? RedactedValue : setting.DefaultValue,
+                IsEncrypted = setting.IsEncrypted,
+                RequiresRestart = setting.RequiresRestart,
+                AllowedRoles = setting.AllowedRoles,
+                IsActive = setting.IsActive,
+                DisplayOrder = setting.DisplayOrder,
+                ValidationRules = setting.ValidationRules,
+                LastModifiedBy = setting.LastModifiedBy,
+                LastModifiedAt = setting.LastModifiedAt
+            };
+        }
+
+        private static SettingsHistoryDto RedactHistory(SettingsHistoryDto history)
+        {
+            var path = $"{history.Category}:{history.SettingKey}";
+            return new SettingsHistoryDto
+            {
+                Id = history.Id,
+                Category = history.Category,
+                SettingKey = history.SettingKey,
+                OldValue = ShouldRedactValue(path, history.OldValue) ? RedactedValue : history.OldValue,
+                NewValue = ShouldRedactValue(path, history.NewValue) ? RedactedValue : history.NewValue,
+                ChangedBy = history.ChangedBy,
+                Reason = history.Reason,
+                IpAddress = history.IpAddress,
+                ChangedAt = history.ChangedAt
+            };
+        }
+
+        private static SettingsExportDto RedactExport(SettingsExportDto export)
+        {
+            var redacted = new SettingsExportDto
+            {
+                ExportedAt = export.ExportedAt,
+                ExportedBy = export.ExportedBy,
+                Version = export.Version
+            };
+
+            foreach (var category in export.Settings)
+            {
+                redacted.Settings[category.Key] = category.Value.ToDictionary(
+                    setting => setting.Key,
+                    setting => ShouldRedactValue($"{category.Key}:{setting.Key}", setting.Value)
+                        ? RedactedValue
+                        : setting.Value);
+            }
+
+            return redacted;
+        }
+
+        private static SettingsExportDto RemoveRedactedExportValues(SettingsExportDto export)
+        {
+            var sanitized = new SettingsExportDto
+            {
+                ExportedAt = export.ExportedAt,
+                ExportedBy = export.ExportedBy,
+                Version = export.Version
+            };
+
+            foreach (var category in export.Settings)
+            {
+                var settings = category.Value
+                    .Where(setting => !IsRedactedPlaceholder(setting.Value))
+                    .ToDictionary(setting => setting.Key, setting => setting.Value);
+
+                if (settings.Count > 0)
+                {
+                    sanitized.Settings[category.Key] = settings;
+                }
+            }
+
+            return sanitized;
+        }
+
+        private static Core.DTOs.Settings.ConnectionTestResult RedactConnectionTestResult(
+            string category,
+            Core.DTOs.Settings.ConnectionTestResult result)
+        {
+            return new Core.DTOs.Settings.ConnectionTestResult
+            {
+                Success = result.Success,
+                Message = ShouldRedactValue($"{category}:Message", result.Message) ? RedactedValue : result.Message,
+                ResponseTime = result.ResponseTime,
+                Details = RedactObjectDictionary(result.Details, category)
+            };
+        }
+
+        private static Dictionary<string, object> RedactObjectDictionary(Dictionary<string, object> values, string pathPrefix)
+        {
+            var redacted = new Dictionary<string, object>();
+            foreach (var value in values)
+            {
+                var path = $"{pathPrefix}:{value.Key}";
+                if (value.Value is Dictionary<string, object> nested)
+                {
+                    redacted[value.Key] = RedactObjectDictionary(nested, path);
+                }
+                else
+                {
+                    redacted[value.Key] = RedactConfigValue(path, value.Value);
+                }
+            }
+
+            return redacted;
+        }
+
+        private static void RedactValidationResult(SettingsValidationResult result, string category)
+        {
+            foreach (var key in result.ValidatedValues.Keys.ToList())
+            {
+                var value = result.ValidatedValues[key];
+                if (ShouldRedactValue($"{category}:{key}", value))
+                {
+                    result.ValidatedValues[key] = RedactedValue;
+                }
+            }
+        }
+
+        private static object RedactConfigValue(string path, object? value)
+        {
+            if (value is null)
+            {
+                return string.Empty;
+            }
+
+            if (value is JsonElement jsonElement)
+            {
+                if (jsonElement.ValueKind == JsonValueKind.String)
+                {
+                    var jsonStringValue = jsonElement.GetString();
+                    return ShouldRedactValue(path, jsonStringValue) ? RedactedValue : jsonStringValue ?? string.Empty;
+                }
+
+                return jsonElement;
+            }
+
+            var scalarStringValue = value.ToString();
+            return ShouldRedactValue(path, scalarStringValue) ? RedactedValue : value;
+        }
+
+        private static bool ShouldRedactSetting(SystemSettingDto setting)
+        {
+            return setting.IsEncrypted ||
+                   ShouldRedactValue($"{setting.Category}:{setting.SettingKey}", setting.SettingValue);
+        }
+
+        private static bool ShouldRedactValue(string path, string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || IsSafePlaceholder(value))
+            {
+                return false;
+            }
+
+            return IsSecretLikePath(path) || LooksSecretLikeValue(value);
+        }
+
+        private static bool IsSecretLikePath(string path)
+        {
+            var normalized = NormalizeSecretText(path);
+            return SecretPathTokens.Any(normalized.Contains);
+        }
+
+        private static bool LooksSecretLikeValue(string value)
+        {
+            if (IsSafePlaceholder(value))
+            {
+                return false;
+            }
+
+            var normalized = value.Trim().ToLowerInvariant();
+            return normalized.Contains("password=") ||
+                   normalized.Contains("pwd=") ||
+                   normalized.Contains("sharedaccesskey=") ||
+                   normalized.Contains("accountkey=") ||
+                   normalized.Contains("client_secret") ||
+                   normalized.Contains("apikey=") ||
+                   normalized.Contains("api_key") ||
+                   normalized.Contains("access_token") ||
+                   normalized.Contains("refresh_token") ||
+                   normalized.Contains("bearer ");
+        }
+
+        private static bool IsSafePlaceholder(string value)
+        {
+            return value.Contains("***USE_ENV_VAR", StringComparison.OrdinalIgnoreCase) ||
+                   value.Contains("USE_ENV_VAR_", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsRedactedPlaceholder(string? value)
+        {
+            return string.Equals(value, RedactedValue, StringComparison.Ordinal);
+        }
+
+        private static bool IsRedactedObjectValue(object? value)
+        {
+            return value switch
+            {
+                string stringValue => IsRedactedPlaceholder(stringValue),
+                JsonElement { ValueKind: JsonValueKind.String } jsonElement => IsRedactedPlaceholder(jsonElement.GetString()),
+                _ => false
+            };
+        }
+
+        private static string NormalizeSecretText(string value)
+        {
+            return new string(value
+                .Where(char.IsLetterOrDigit)
+                .Select(char.ToLowerInvariant)
+                .ToArray());
+        }
+
+        private static object? GetExistingSectionValue(JsonElement root, string section, string key)
+        {
+            if (!root.TryGetProperty(section, out var sectionElement) ||
+                sectionElement.ValueKind != JsonValueKind.Object ||
+                !sectionElement.TryGetProperty(key, out var existingValue))
+            {
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<object>(existingValue.GetRawText());
         }
 
         #endregion
