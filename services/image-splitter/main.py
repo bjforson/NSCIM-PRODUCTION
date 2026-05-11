@@ -37,6 +37,7 @@ from models.schemas import (
 )
 from pipeline.orchestrator import run_pipeline, get_best_result, get_all_strategies
 from pipeline.image_utils import base64_to_bytes, get_image_dimensions, crop_and_encode
+from pipeline.visual_eligibility import classify_visual_eligibility
 from strategies.base import SplitResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -355,6 +356,38 @@ async def process_job(job_id: UUID):
         try:
             job.status = "processing"
             await db.commit()
+
+            # FS6000 metadata can legitimately list two container numbers even
+            # when the rendered image is visually single-container or too
+            # ambiguous to split. Gate on pixels before creating any crop
+            # assignments so downstream analysts do not receive bogus halves.
+            container_count = len([
+                token for token in job.container_numbers.replace(";", ",").split(",")
+                if token.strip() and token.strip().upper() != "UNKNOWN"
+            ])
+            if (job.scanner_type or "").upper() == "FS6000" and container_count >= 2:
+                gate = classify_visual_eligibility(job.image_data, job.scanner_type)
+                if not gate.should_split:
+                    metadata = gate.to_metadata()
+                    job.best_strategy = "visual_eligibility"
+                    job.best_score = gate.confidence
+                    job.split_x = None
+                    job.status = "visual_single" if gate.label == "single_container" else "uncertain"
+                    job.error_message = (
+                        f"Visual eligibility gate classified image as {gate.label}; "
+                        f"reasons={','.join(gate.reason_codes)}; "
+                        f"metadata={metadata}"
+                    )
+                    job.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    logger.info(
+                        "Job %s skipped by visual eligibility gate: label=%s confidence=%.3f reasons=%s",
+                        job_id,
+                        gate.label,
+                        gate.confidence,
+                        ",".join(gate.reason_codes),
+                    )
+                    return
 
             # Run all strategies
             results = await run_pipeline(job.image_data)

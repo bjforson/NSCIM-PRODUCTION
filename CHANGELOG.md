@@ -22,6 +22,63 @@ For each release, this file records:
 
 ---
 
+## [2.17.0] - 2026-05-11 - FS6000 visual split eligibility gate
+
+Feature release for FS6000 scanner images where metadata lists two container
+numbers but the image itself is visually single-container or too ambiguous to
+split safely.
+
+### What landed
+
+#### Splitter visual eligibility - added
+
+Added an independent pixel-first FS6000 visual eligibility gate that runs before
+normal split candidate generation. The gate returns `dual_container`,
+`single_container`, or `uncertain` with confidence, reason codes, and candidate
+frame positions. Only `dual_container` jobs continue into the regular split
+pipeline.
+
+#### Analyst assignment flow - hardened
+
+FS6000 images classified as visually single-container or uncertain no longer
+produce split crops, split assignments, or `Ready` split options for analysts.
+The .NET intake, orchestrator, and splitter controller now recognize
+`VisualSingle`, `Uncertain`, and `NotApplicable` as terminal non-choice split
+statuses and clear stale split options when a job is not actually splittable.
+
+#### FS6000 audit tooling - added
+
+Added `tools/staging/audit_fs6000_splitter_contamination.py`, a read-only audit
+tool for existing FS6000 splitter jobs. It writes CSV/JSON summaries and only
+mutates database notes when both `--write-audit-notes` and
+`--allow-db-mutations` are explicitly supplied.
+
+### Tests / verification
+
+- `python -m py_compile` for `services/image-splitter/main.py`,
+  `pipeline/visual_eligibility.py`, and
+  `tools/staging/audit_fs6000_splitter_contamination.py`.
+- Replayed the known bad FS6000 job
+  `c4bb9db5-b3ce-4622-bb5d-12be5784123f`; it now classifies as `uncertain`
+  with `should_split=false`.
+- Replayed known good FS6000 dual-container jobs; the checked samples remain
+  `dual_container`.
+- Ran a read-only runtime-gate audit over the 25 most recent completed FS6000
+  jobs: 23 `dual_container`, 1 `single_container`, 1 `uncertain`, 2 high-risk
+  completed jobs flagged for follow-up.
+- `dotnet test src\NickScanCentralImagingPortal.Tests\NickScanCentralImagingPortal.Tests.csproj --no-restore --filter FullyQualifiedName~SplitAnalysisStatusTests`:
+  8 passed.
+- `dotnet build src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj -c Release --no-restore /p:UseSharedCompilation=false`:
+  passed with existing warnings.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Add FS6000 visual split eligibility gate
+
 ## [2.16.14] - 2026-05-11 - Splitter candidate ranker and polarity-aware seam detection
 
 Patch release for operator-reported wrong split suggestions on two-container

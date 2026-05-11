@@ -114,7 +114,9 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                     root.TryGetProperty("best_strategy", out var bs) ? bs.GetString() : null,
                     TryGetDouble(root, "best_confidence") ?? TryGetDouble(root, "best_score"),
                     root.TryGetProperty("split_x", out var sx) ? sx.GetInt32() : null,
-                    root.TryGetProperty("result_count", out var rc) ? rc.GetInt32() : 0
+                    root.TryGetProperty("result_count", out var rc) ? rc.GetInt32() : 0,
+                    TryGetOutcome(root),
+                    TryGetString(root, "error_message")
                 );
             }
             catch (Exception ex)
@@ -145,7 +147,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                         var strategy = result.TryGetProperty("strategy_name", out var strategyProp)
                             ? strategyProp.GetString()
                             : null;
-                        return new SplitResultReference(id.Value, strategy, confidence);
+                        return new SplitResultReference(id.Value, strategy, confidence, TryGetOutcome(result));
                     })
                     .Where(result => result != null)
                     .OrderByDescending(result => result!.Confidence ?? 0.0)
@@ -189,6 +191,56 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 return null;
 
             return prop.TryGetDouble(out var value) ? value : null;
+        }
+
+        private static string? TryGetString(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var prop) || prop.ValueKind != JsonValueKind.String)
+                return null;
+
+            return prop.GetString();
+        }
+
+        private static string? TryGetOutcome(JsonElement element)
+        {
+            foreach (var propertyName in new[]
+            {
+                "split_outcome",
+                "splitOutcome",
+                "outcome",
+                "visual_outcome",
+                "visualOutcome",
+                "classification",
+                "resolution"
+            })
+            {
+                var value = TryGetString(element, propertyName);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            foreach (var propertyName in new[]
+            {
+                "not_applicable",
+                "notApplicable",
+                "visual_single",
+                "visualSingle",
+                "single_container",
+                "singleContainer",
+                "uncertain"
+            })
+            {
+                if (element.TryGetProperty(propertyName, out var prop)
+                    && prop.ValueKind == JsonValueKind.True)
+                {
+                    return propertyName;
+                }
+            }
+
+            if (element.TryGetProperty("metadata", out var metadata) && metadata.ValueKind == JsonValueKind.Object)
+                return TryGetOutcome(metadata);
+
+            return null;
         }
 
         private static string NormalizeContainerNumbers(string? containerNumbers)

@@ -362,17 +362,35 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             if (latestRecords.Count == 0)
                 return 0;
 
-            var status = job.Status;
-            if (!IsCompleted(status) && !IsFailed(status))
+            var liveStatus = await _splitter.GetJobStatusAsync(job.JobId, cancellationToken);
+            var statusForFetch = liveStatus?.Status ?? job.Status;
+            var explicitNonChoice = SplitAnalysisStatus.TryMapNonChoiceOutcome(new[]
             {
-                var liveStatus = await _splitter.GetJobStatusAsync(job.JobId, cancellationToken);
-                if (liveStatus != null)
-                    status = liveStatus.Status;
-            }
+                liveStatus?.SplitOutcome,
+                statusForFetch,
+                liveStatus?.BestStrategy,
+                liveStatus?.ErrorMessage
+            });
+            var shouldFetchCandidates = explicitNonChoice == null
+                && SplitAnalysisStatus.IsCompletedJobStatus(statusForFetch);
 
-            var topResults = IsCompleted(status)
+            var topResults = shouldFetchCandidates
                 ? await _splitter.GetTopSplitResultsAsync(job.JobId, 2, cancellationToken)
                 : Array.Empty<SplitResultReference>();
+
+            var effectiveStatus = liveStatus ?? new SplitJobStatus(
+                job.JobId,
+                job.Status,
+                BestStrategy: null,
+                BestConfidence: null,
+                SplitX: null,
+                ResultCount: shouldFetchCandidates && topResults.Count == 0 ? 1 : topResults.Count);
+
+            var targetStatus = SplitAnalysisStatus.ResolveForAnalysisRecord(
+                effectiveStatus,
+                fetchedCandidateCount: topResults.Count,
+                candidateFetchAttempted: shouldFetchCandidates,
+                candidateOutcomes: topResults.Select(result => result.SplitOutcome));
 
             var linked = 0;
             foreach (var record in latestRecords)
@@ -386,19 +404,21 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                     : "right";
                 changed |= SetIfChanged(record, r => r.SplitPosition, position, value => record.SplitPosition = value);
 
-                if (topResults.Count > 0)
-                    changed |= SetIfChanged(record, r => r.SplitOptionA_ResultId, (Guid?)topResults[0].ResultId, value => record.SplitOptionA_ResultId = value);
-                if (topResults.Count > 1)
-                    changed |= SetIfChanged(record, r => r.SplitOptionB_ResultId, (Guid?)topResults[1].ResultId, value => record.SplitOptionB_ResultId = value);
-
-                if (!string.Equals(record.SplitStatus, "Chosen", StringComparison.OrdinalIgnoreCase)
-                    && !(string.Equals(record.SplitStatus, "Skipped", StringComparison.OrdinalIgnoreCase) && record.SplitJobId == job.JobId))
+                if (!SplitAnalysisStatus.ShouldPreserveExistingResolution(record.SplitStatus, record.SplitJobId, job.JobId))
                 {
-                    var targetStatus = IsCompleted(status)
-                        ? "Ready"
-                        : IsFailed(status)
-                            ? "Skipped"
-                            : "Pending";
+                    if (string.Equals(targetStatus, SplitAnalysisStatus.Ready, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (topResults.Count > 0)
+                            changed |= SetIfChanged(record, r => r.SplitOptionA_ResultId, (Guid?)topResults[0].ResultId, value => record.SplitOptionA_ResultId = value);
+                        if (topResults.Count > 1)
+                            changed |= SetIfChanged(record, r => r.SplitOptionB_ResultId, (Guid?)topResults[1].ResultId, value => record.SplitOptionB_ResultId = value);
+                    }
+                    else
+                    {
+                        changed |= SetIfChanged(record, r => r.SplitOptionA_ResultId, (Guid?)null, value => record.SplitOptionA_ResultId = value);
+                        changed |= SetIfChanged(record, r => r.SplitOptionB_ResultId, (Guid?)null, value => record.SplitOptionB_ResultId = value);
+                    }
+
                     changed |= SetIfChanged(record, r => r.SplitStatus, targetStatus, value => record.SplitStatus = value);
                 }
 

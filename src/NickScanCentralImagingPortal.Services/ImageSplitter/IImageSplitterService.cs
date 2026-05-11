@@ -5,8 +5,16 @@ using System.Threading.Tasks;
 namespace NickScanCentralImagingPortal.Services.ImageSplitter
 {
     public record SplitJobReference(Guid JobId, string Status);
-    public record SplitJobStatus(Guid JobId, string Status, string? BestStrategy, double? BestConfidence, int? SplitX, int ResultCount);
-    public record SplitResultReference(Guid ResultId, string? StrategyName, double? Confidence);
+    public record SplitJobStatus(
+        Guid JobId,
+        string Status,
+        string? BestStrategy,
+        double? BestConfidence,
+        int? SplitX,
+        int ResultCount,
+        string? SplitOutcome = null,
+        string? ErrorMessage = null);
+    public record SplitResultReference(Guid ResultId, string? StrategyName, double? Confidence, string? SplitOutcome = null);
 
     public interface IImageSplitterService
     {
