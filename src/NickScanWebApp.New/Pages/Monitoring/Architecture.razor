@@ -2,6 +2,11 @@
 @page "/services/architecture"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDiagnostics)]
 @using MudBlazor
+@using System.Text.Json
+@implements IDisposable
+@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject IJSRuntime JS
+@inject ILogger<Architecture> Logger
 
 <PageTitle>NICKSCAN ERP - NSCIS - Architecture Map</PageTitle>
 
@@ -11,18 +16,28 @@
             <MudIcon Icon="@Icons.Material.Filled.AccountTree" />
             <MudText Typo="Typo.h4">Architecture Map</MudText>
         </MudStack>
-        <MudButton Href="/architecture/architecture-interactive.html"
-                   Target="_blank"
-                   Variant="Variant.Outlined"
-                   Color="Color.Primary"
-                   StartIcon="@Icons.Material.Filled.OpenInNew">
-            Open Fullscreen
-        </MudButton>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudChip T="string" Color="@(_telemetryHealthy ? Color.Success : Color.Warning)" Size="Size.Small">
+                @(_telemetryHealthy ? "Live" : "Refreshing")
+            </MudChip>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Last update: @(_lastTelemetryAt?.ToLocalTime().ToString("HH:mm:ss") ?? "pending")
+            </MudText>
+            <MudButton Href="/architecture/architecture-interactive.html"
+                       Target="_blank"
+                       Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.OpenInNew">
+                Open Fullscreen
+            </MudButton>
+        </MudStack>
     </MudStack>
 
-    <iframe class="architecture-frame"
+    <iframe id="@FrameId"
+            class="architecture-frame"
             title="NSCIM production architecture"
-            src="/architecture/architecture-interactive.html"></iframe>
+            src="/architecture/architecture-interactive.html"
+            @onload="OnFrameLoadedAsync"></iframe>
 </MudContainer>
 
 <style>
@@ -56,3 +71,227 @@
         }
     }
 </style>
+
+@code {
+    private const string FrameId = "architecture-live-frame";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private System.Timers.Timer? _refreshTimer;
+    private bool _frameLoaded;
+    private bool _telemetryHealthy;
+    private DateTime? _lastTelemetryAt;
+    private int _refreshVersion;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshTelemetryAsync();
+
+        _refreshTimer = new System.Timers.Timer(30000);
+        _refreshTimer.Elapsed += async (_, _) => await InvokeAsync(RefreshTelemetryAsync);
+        _refreshTimer.Start();
+    }
+
+    private async Task OnFrameLoadedAsync()
+    {
+        _frameLoaded = true;
+        await RefreshTelemetryAsync();
+    }
+
+    private async Task RefreshTelemetryAsync()
+    {
+        var version = ++_refreshVersion;
+
+        try
+        {
+            var healthTask = ApiService.GetAsync<JsonElement>("/api/monitoring/health/overview");
+            var servicesTask = ApiService.GetAsync<Dictionary<string, JsonElement>>("/api/monitoring/health/services");
+            var databaseTask = ApiService.GetAsync<JsonElement>("/api/monitoring/database/statistics");
+            var queueTask = ApiService.GetAsync<JsonElement>("/api/QueueHealth");
+
+            await Task.WhenAll(healthTask, servicesTask, databaseTask, queueTask);
+
+            var health = await healthTask;
+            var services = await servicesTask;
+            var database = await databaseTask;
+            var queue = await queueTask;
+
+            var telemetry = BuildTelemetry(health, services, database, queue);
+            _lastTelemetryAt = DateTime.UtcNow;
+            _telemetryHealthy = true;
+
+            if (_frameLoaded)
+            {
+                await JS.InvokeVoidAsync("architectureTelemetry.post", FrameId, telemetry);
+            }
+
+            if (version == _refreshVersion)
+            {
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            _telemetryHealthy = false;
+            Logger.LogWarning(ex, "Architecture telemetry refresh failed");
+
+            if (_frameLoaded)
+            {
+                await JS.InvokeVoidAsync("architectureTelemetry.post", FrameId, new
+                {
+                    type = "nscim-architecture-telemetry",
+                    timestamp = DateTime.UtcNow,
+                    health = "Degraded",
+                    summary = "Telemetry refresh failed",
+                    nodes = new Dictionary<string, object?>
+                    {
+                        ["nscimWeb"] = Node("Degraded", "Architecture telemetry refresh failed", ("Error", ex.Message))
+                    }
+                });
+            }
+
+            StateHasChanged();
+        }
+    }
+
+    private object BuildTelemetry(
+        JsonElement? health,
+        Dictionary<string, JsonElement>? services,
+        JsonElement? database,
+        JsonElement? queue)
+    {
+        var serviceTotals = CountServices(services);
+        var overallStatus = ReadString(health, "systemHealth", "overallStatus")
+            ?? ReadString(health, "SystemHealth", "OverallStatus")
+            ?? (serviceTotals.Unhealthy > 0 ? "Unhealthy" : serviceTotals.Degraded > 0 ? "Degraded" : "Healthy");
+
+        var dbStatus = ReadString(database, "databaseStatus")
+            ?? ReadString(database, "DatabaseStatus")
+            ?? "Healthy";
+
+        var queueStatus = ReadString(queue, "status")
+            ?? ReadString(queue, "Status")
+            ?? "Unknown";
+
+        var totalContainers = ReadNumber(database, "totalContainers") ?? ReadNumber(database, "TotalContainers");
+        var totalImages = ReadNumber(database, "totalContainerImages") ?? ReadNumber(database, "TotalContainerImages");
+        var fs6000Scans = ReadNumber(database, "totalFS6000Scans") ?? ReadNumber(database, "TotalFS6000Scans");
+        var aseScans = ReadNumber(database, "totalAseScans") ?? ReadNumber(database, "TotalAseScans");
+
+        var queueStats = ReadProperty(queue, "statistics") ?? ReadProperty(queue, "Statistics");
+        var pending = ReadNumber(queueStats, "pending") ?? ReadNumber(queueStats, "Pending");
+        var completed = ReadNumber(queueStats, "completed") ?? ReadNumber(queueStats, "Completed");
+        var failed = ReadNumber(queueStats, "failed") ?? ReadNumber(queueStats, "Failed");
+
+        return new
+        {
+            type = "nscim-architecture-telemetry",
+            timestamp = DateTime.UtcNow,
+            health = overallStatus,
+            summary = $"{serviceTotals.Healthy}/{serviceTotals.Total} services healthy",
+            nodes = new Dictionary<string, object?>
+            {
+                ["nscimWeb"] = Node("Healthy", "Frontend service published and running", ("Mode", "Blazor Server"), ("Refresh", "30s")),
+                ["nscimApi"] = Node(overallStatus, "API and worker host health", ("Services", $"{serviceTotals.Healthy}/{serviceTotals.Total} healthy"), ("Issues", $"{serviceTotals.Degraded + serviceTotals.Unhealthy}")),
+                ["nscimWorkers"] = Node(overallStatus, "Hosted background worker health", ("Healthy", serviceTotals.Healthy), ("Unhealthy", serviceTotals.Unhealthy)),
+                ["completenessEngine"] = Node(StatusFromQueue(queueStatus, failed), "Record/container completeness queue posture", ("Pending", pending), ("Failed", failed)),
+                ["pgProduction"] = Node(dbStatus, "Application database activity", ("Containers", FormatCount(totalContainers)), ("Images", FormatCount(totalImages))),
+                ["scannerVendors"] = Node("Healthy", "Scanner source totals from database", ("FS6000", FormatCount(fs6000Scans)), ("ASE", FormatCount(aseScans))),
+                ["fsShare"] = Node("Healthy", "FS6000 ingest source tracked by monitoring", ("Scans", FormatCount(fs6000Scans))),
+                ["aseSql"] = Node("Healthy", "ASE sync source tracked by monitoring", ("Scans", FormatCount(aseScans))),
+                ["signalr"] = Node("Healthy", "Monitoring hub and dashboard hubs active", ("Updates", "live/poll")),
+                ["icumsFiles"] = Node(StatusFromQueue(queueStatus, failed), "Queue status from container scan health", ("Completed", completed), ("Pending", pending))
+            }
+        };
+    }
+
+    private static object Node(string? status, string summary, params (string Label, object? Value)[] metrics) => new
+    {
+        status = NormalizeStatus(status),
+        summary,
+        metrics = metrics
+            .Where(metric => metric.Value is not null)
+            .Select(metric => new { label = metric.Label, value = metric.Value?.ToString() })
+            .ToArray()
+    };
+
+    private static string StatusFromQueue(string? status, double? failed)
+    {
+        if ((failed ?? 0) > 0) return "Degraded";
+        return NormalizeStatus(status);
+    }
+
+    private static string NormalizeStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return "Unknown";
+        if (status.Equals("0", StringComparison.OrdinalIgnoreCase)) return "Healthy";
+        if (status.Contains("unhealthy", StringComparison.OrdinalIgnoreCase) || status.Contains("error", StringComparison.OrdinalIgnoreCase)) return "Unhealthy";
+        if (status.Contains("degraded", StringComparison.OrdinalIgnoreCase) || status.Contains("warning", StringComparison.OrdinalIgnoreCase)) return "Degraded";
+        if (status.Contains("healthy", StringComparison.OrdinalIgnoreCase) || status.Contains("ok", StringComparison.OrdinalIgnoreCase)) return "Healthy";
+        return status;
+    }
+
+    private static string FormatCount(double? value) => value.HasValue ? value.Value.ToString("N0") : "n/a";
+
+    private static (int Total, int Healthy, int Degraded, int Unhealthy) CountServices(Dictionary<string, JsonElement>? services)
+    {
+        if (services is null || services.Count == 0) return (0, 0, 0, 0);
+
+        var healthy = 0;
+        var degraded = 0;
+        var unhealthy = 0;
+
+        foreach (var service in services.Values)
+        {
+            var status = NormalizeStatus(ReadString(service, "status") ?? ReadString(service, "Status"));
+            if (status.Equals("Healthy", StringComparison.OrdinalIgnoreCase)) healthy++;
+            else if (status.Equals("Degraded", StringComparison.OrdinalIgnoreCase)) degraded++;
+            else if (status.Equals("Unhealthy", StringComparison.OrdinalIgnoreCase)) unhealthy++;
+        }
+
+        return (services.Count, healthy, degraded, unhealthy);
+    }
+
+    private static JsonElement? ReadProperty(JsonElement? source, params string[] path)
+    {
+        if (source is null) return null;
+        var current = source.Value;
+
+        foreach (var segment in path)
+        {
+            if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out current))
+            {
+                return null;
+            }
+        }
+
+        return current;
+    }
+
+    private static string? ReadString(JsonElement? source, params string[] path)
+    {
+        var value = ReadProperty(source, path);
+        if (value is null) return null;
+        return value.Value.ValueKind switch
+        {
+            JsonValueKind.String => value.Value.GetString(),
+            JsonValueKind.Number => value.Value.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => null
+        };
+    }
+
+    private static double? ReadNumber(JsonElement? source, params string[] path)
+    {
+        var value = ReadProperty(source, path);
+        if (value is null) return null;
+        if (value.Value.ValueKind == JsonValueKind.Number && value.Value.TryGetDouble(out var numeric)) return numeric;
+        if (value.Value.ValueKind == JsonValueKind.String && double.TryParse(value.Value.GetString(), out numeric)) return numeric;
+        return null;
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+    }
+}

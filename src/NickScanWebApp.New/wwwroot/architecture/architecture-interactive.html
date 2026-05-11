@@ -289,6 +289,129 @@
       line-height: 1.28;
     }
 
+    .live-badge {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #94a3b8;
+      box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.18);
+    }
+
+    .node.live-healthy .live-badge {
+      background: #16a34a;
+      box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+    }
+
+    .node.live-degraded .live-badge,
+    .node.live-warning .live-badge {
+      background: #d97706;
+      box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2);
+    }
+
+    .node.live-unhealthy .live-badge,
+    .node.live-error .live-badge {
+      background: #dc2626;
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.18);
+    }
+
+    .live-summary {
+      margin-top: 8px;
+      display: none;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px;
+    }
+
+    .node.has-live .live-summary {
+      display: grid;
+    }
+
+    .live-metric {
+      min-width: 0;
+      padding: 4px 5px;
+      border: 1px solid #e2e8f0;
+      border-radius: 5px;
+      background: #f8fafc;
+      text-align: left;
+    }
+
+    .live-metric span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #64748b;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .live-metric strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #0f172a;
+      font-size: 12px;
+      line-height: 1.15;
+    }
+
+    .live-panel {
+      border: 1px solid #dbe4ef;
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 10px;
+    }
+
+    .live-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .live-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: #e2e8f0;
+      color: #334155;
+      font-size: 11px;
+      font-weight: 760;
+    }
+
+    .live-status::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .live-status.healthy { background: #dcfce7; color: #166534; }
+    .live-status.degraded,
+    .live-status.warning { background: #fef3c7; color: #92400e; }
+    .live-status.unhealthy,
+    .live-status.error { background: #fee2e2; color: #991b1b; }
+
+    .live-panel p {
+      margin: 0 0 8px;
+      color: #475569;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .live-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
     .node.edge { border-left-color: var(--edge); }
     .node.edge .dot { background: var(--edge); }
     .node.app { border-left-color: var(--app); }
@@ -1222,6 +1345,7 @@
     let dragging = false;
     let dragStart = { x: 0, y: 0 };
     let panStart = { x: 0, y: 0 };
+    let liveTelemetry = null;
 
     function escapeHtml(value) {
       return String(value)
@@ -1242,9 +1366,11 @@
         el.style.left = `${node.x}px`;
         el.style.top = `${node.y}px`;
         el.innerHTML = `
+          <span class="live-badge" title="No live telemetry yet"></span>
           <div class="kicker"><span class="dot"></span>${escapeHtml(categoryLabels[node.category])}</div>
           <div class="title">${escapeHtml(node.title)}</div>
           <div class="meta">${escapeHtml(node.meta)}</div>
+          <div class="live-summary" aria-live="polite"></div>
         `;
         el.addEventListener("click", event => {
           event.stopPropagation();
@@ -1324,6 +1450,77 @@
       `;
     }
 
+    function statusClass(status) {
+      return String(status || "unknown").trim().toLowerCase().replace(/[^a-z0-9-]/g, "-") || "unknown";
+    }
+
+    function renderMetric(metric) {
+      return `
+        <div class="live-metric">
+          <span>${escapeHtml(metric.label || "")}</span>
+          <strong>${escapeHtml(metric.value ?? "")}</strong>
+        </div>
+      `;
+    }
+
+    function renderLivePanel(nodeId) {
+      const live = liveTelemetry?.nodes?.[nodeId];
+      if (!live) {
+        return `
+          <div class="body-section">
+            <h2>Live Status</h2>
+            <p class="mini">No live telemetry has been received for this node yet.</p>
+          </div>
+        `;
+      }
+
+      const status = statusClass(live.status);
+      const updated = liveTelemetry?.timestamp
+        ? new Date(liveTelemetry.timestamp).toLocaleTimeString()
+        : "unknown";
+
+      return `
+        <div class="body-section">
+          <h2>Live Status</h2>
+          <div class="live-panel">
+            <div class="live-panel-header">
+              <span class="live-status ${status}">${escapeHtml(live.status || "Unknown")}</span>
+              <span class="mini">${escapeHtml(updated)}</span>
+            </div>
+            <p>${escapeHtml(live.summary || liveTelemetry.summary || "Live telemetry received.")}</p>
+            ${(live.metrics || []).length ? `<div class="live-metrics">${live.metrics.slice(0, 4).map(renderMetric).join("")}</div>` : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    function applyLiveTelemetry(payload) {
+      if (!payload || payload.type !== "nscim-architecture-telemetry") return;
+      liveTelemetry = payload;
+
+      document.querySelectorAll(".node").forEach(el => {
+        const live = payload.nodes?.[el.dataset.id];
+        el.classList.remove("has-live", "live-healthy", "live-degraded", "live-warning", "live-unhealthy", "live-error", "live-unknown");
+
+        const badge = el.querySelector(".live-badge");
+        const summary = el.querySelector(".live-summary");
+        if (!live) {
+          badge.title = "No live telemetry for this node";
+          summary.innerHTML = "";
+          return;
+        }
+
+        const cls = statusClass(live.status);
+        el.classList.add("has-live", `live-${cls}`);
+        badge.title = `${live.status || "Unknown"} - ${live.summary || "Live telemetry"}`;
+        summary.innerHTML = (live.metrics || []).slice(0, 2).map(renderMetric).join("");
+      });
+
+      if (selectedNodeId) {
+        renderInspectorForNode(nodeById[selectedNodeId]);
+      }
+    }
+
     function renderInspectorForNode(node) {
       inspectorTitle.textContent = node.title;
       inspectorMeta.textContent = `${categoryLabels[node.category]} - ${node.meta}`;
@@ -1348,6 +1545,7 @@
           <h2>Responsibilities</h2>
           <ul>${node.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </div>
+        ${renderLivePanel(node.id)}
         ${node.path ? `
           <div class="body-section">
             <h2>Repo Area</h2>
@@ -1524,6 +1722,11 @@
     categorySelect.addEventListener("change", applyFilters);
     document.querySelectorAll(".flow-btn").forEach(btn => {
       btn.addEventListener("click", () => setFlow(btn.dataset.flow));
+    });
+
+    window.addEventListener("message", event => {
+      if (event.origin !== window.location.origin) return;
+      applyLiveTelemetry(event.data);
     });
 
     renderNodes();
