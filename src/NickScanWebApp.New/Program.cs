@@ -339,7 +339,9 @@ app.Use(async (context, next) =>
 
     // Security headers
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    context.Response.Headers["X-Frame-Options"] = "DENY";
+    // The in-app architecture view embeds a same-origin static map in an iframe.
+    // SAMEORIGIN still blocks external clickjacking while allowing that internal surface.
+    context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
     context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
 
