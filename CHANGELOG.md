@@ -22,6 +22,26 @@ For each release, this file records:
 
 ---
 
+## [2.17.4] - 2026-05-11 - Splitter orphan processing recovery
+
+Patch release for raw-engine recovery during deploys and restarts.
+
+### What landed
+
+- The Python splitter now resets orphaned `processing` jobs after a short
+  configurable startup grace window (`SPLITTER_PROCESSING_STALE_MINUTES`,
+  default 2 minutes), instead of waiting 1 hour.
+- Reprocessed the May 10 FS6000 backfill job that was interrupted during the
+  deploy window.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Recover orphaned splitter processing jobs
+
 ## [2.17.3] - 2026-05-11 - Two-container split intake backfill
 
 Patch release for scanner originals that were valid two-container images but

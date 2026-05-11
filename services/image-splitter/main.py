@@ -47,7 +47,7 @@ logger = logging.getLogger("image-splitter")
 async def resume_pending_jobs():
     """On startup, process any jobs left in 'pending' or stuck 'processing' state.
 
-    A 'processing' job that hasn't been touched in over 1 hour is assumed to be
+    A 'processing' job that is older than a short grace window is assumed to be
     orphaned from a previous crash or force-stop, and reset back to 'pending'
     so this startup task can pick it up.
     """
@@ -56,7 +56,8 @@ async def resume_pending_jobs():
     # Small delay so uvicorn's event loop is fully running before we start
     await asyncio.sleep(1)
 
-    stuck_threshold = datetime.now(timezone.utc) - timedelta(hours=1)
+    stale_minutes = max(1, int(os.environ.get("SPLITTER_PROCESSING_STALE_MINUTES", "2")))
+    stuck_threshold = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
     async with AsyncSessionLocal() as db:
         # Reset any orphaned 'processing' jobs back to 'pending'
         stuck_result = await db.execute(
@@ -67,7 +68,11 @@ async def resume_pending_jobs():
         )
         stuck = stuck_result.scalars().all()
         if stuck:
-            logger.warning(f"Found {len(stuck)} orphaned 'processing' jobs older than 1h — resetting to pending")
+            logger.warning(
+                "Found %s orphaned 'processing' jobs older than %s minute(s) — resetting to pending",
+                len(stuck),
+                stale_minutes,
+            )
             for job in stuck:
                 job.status = "pending"
                 job.error_message = (job.error_message or "") + " | Auto-reset from stuck 'processing' state"
