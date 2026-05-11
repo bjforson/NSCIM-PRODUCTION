@@ -85,7 +85,7 @@
     {
         await RefreshTelemetryAsync();
 
-        _refreshTimer = new System.Timers.Timer(30000);
+        _refreshTimer = new System.Timers.Timer(10000);
         _refreshTimer.Elapsed += async (_, _) => await InvokeAsync(RefreshTelemetryAsync);
         _refreshTimer.Start();
     }
@@ -189,7 +189,7 @@
             summary = $"{serviceTotals.Healthy}/{serviceTotals.Total} services healthy",
             nodes = new Dictionary<string, object?>
             {
-                ["nscimWeb"] = Node("Healthy", "Frontend service published and running", ("Mode", "Blazor Server"), ("Refresh", "30s")),
+                ["nscimWeb"] = Node("Healthy", "Frontend service published and running", ("Mode", "Blazor Server"), ("Refresh", "10s")),
                 ["nscimApi"] = Node(overallStatus, "API and worker host health", ("Services", $"{serviceTotals.Healthy}/{serviceTotals.Total} healthy"), ("Issues", $"{serviceTotals.Degraded + serviceTotals.Unhealthy}")),
                 ["nscimWorkers"] = Node(overallStatus, "Hosted background worker health", ("Healthy", serviceTotals.Healthy), ("Unhealthy", serviceTotals.Unhealthy)),
                 ["completenessEngine"] = Node(StatusFromQueue(queueStatus, failed), "Record/container completeness queue posture", ("Pending", pending), ("Failed", failed)),
