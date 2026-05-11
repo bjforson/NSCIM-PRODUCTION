@@ -35,7 +35,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         public async Task<IActionResult> GetHealth() => await ForwardGetAsync("/api/health");
 
         [HttpGet("jobs/pending")]
-        public async Task<IActionResult> GetPendingJobs() => await ForwardGetAsync("/api/split/pending");
+        public async Task<IActionResult> GetPendingJobs()
+            => await ForwardGetAsync($"/api/split/pending{Request.QueryString}");
 
         [HttpGet("jobs/{jobId}")]
         public async Task<IActionResult> GetJob(string jobId) => await ForwardGetAsync($"/api/split/{jobId}");

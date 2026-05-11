@@ -10,13 +10,13 @@ Runs independently from the main NSCIM app on port 5310.
 import logging
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import UUID
 from typing import Optional
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import Response, FileResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -627,17 +627,46 @@ async def search_jobs_by_containers(container_numbers: str, db: AsyncSession = D
 
 
 @app.get("/api/split/pending")
-async def list_pending_jobs(db: AsyncSession = Depends(get_db)):
-    """List jobs awaiting analyst review (completed but not yet approved or rejected)."""
-    from sqlalchemy import or_
+async def list_pending_jobs(
+    mode: str = Query(
+        "legacy",
+        pattern="^(legacy|active|recent|reviewable)$",
+        description=(
+            "legacy returns the historical 200-row backlog; active returns only "
+            "pending/processing; recent/reviewable return actionable recent jobs."
+        ),
+    ),
+    limit: int = Query(200, ge=1, le=500),
+    since_hours: int | None = Query(None, ge=1, le=24 * 31),
+    db: AsyncSession = Depends(get_db)
+):
+    """List split jobs for operational review.
+
+    The original endpoint returned a hard-coded 200-row historical backlog.
+    The split-review UI now calls mode=recent so operators see the current queue,
+    while legacy remains the default for older helper paths that use this route
+    as a broad lookup fallback.
+    """
+    filters = [
+        ImageSplitJob.analyst_verdict.is_(None),
+    ]
+    mode_norm = mode.lower()
+    if mode_norm == "active":
+        filters.append(ImageSplitJob.status.in_(["pending", "processing"]))
+    elif mode_norm in ("recent", "reviewable"):
+        filters.append(ImageSplitJob.status.in_(["pending", "processing", "completed"]))
+        cutoff_hours = since_hours or 72
+        filters.append(
+            ImageSplitJob.created_at >= datetime.now(timezone.utc) - timedelta(hours=cutoff_hours)
+        )
+    else:
+        filters.append(ImageSplitJob.status.in_(["pending", "processing", "completed", "failed"]))
+
     result = await db.execute(
         select(ImageSplitJob)
-        .where(
-            ImageSplitJob.status.in_(["pending", "processing", "completed", "failed"]),
-            ImageSplitJob.analyst_verdict.is_(None)
-        )
+        .where(*filters)
         .order_by(ImageSplitJob.created_at.desc())
-        .limit(200)  # was 50, bumped to show all pending jobs
+        .limit(limit)
     )
     jobs = result.scalars().all()
 

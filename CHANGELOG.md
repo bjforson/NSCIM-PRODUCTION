@@ -22,6 +22,31 @@ For each release, this file records:
 
 ---
 
+## [2.17.2] - 2026-05-11 - Split review queue and image loading
+
+Patch release for the standalone image split review page.
+
+### What landed
+
+- The split review page now requests a recent 72-hour review queue capped at 50
+  jobs instead of the legacy 200-row historical backlog.
+- The API proxy now forwards query strings to the Python splitter pending/jobs
+  endpoint.
+- The Python splitter pending/jobs endpoint now supports explicit `mode`,
+  `limit`, and `since_hours` query parameters while preserving the legacy
+  default for older helper paths.
+- Split review original and preview images now use signed image URLs, avoiding
+  blank previews when authenticated byte fetches fail or token context is stale.
+- Signed-image middleware now allows the splitter original-image endpoint.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Fix split review queue and signed images
+
 ## [2.17.1] - 2026-05-11 - Split choice UI terminal statuses
 
 Patch release to finish wiring the FS6000 visual split gate into the analyst
