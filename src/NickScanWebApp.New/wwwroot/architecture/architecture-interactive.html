@@ -1,0 +1,1537 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NickERP / NSCIM Production Architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #eef2f7;
+      --text: #1f2937;
+      --muted: #667085;
+      --line: #cfd7e3;
+      --edge: #0f766e;
+      --app: #2563eb;
+      --api: #7c3aed;
+      --worker: #b45309;
+      --data: #059669;
+      --external: #dc2626;
+      --platform: #475569;
+      --file: #c2410c;
+      --shadow: 0 10px 28px rgba(15, 23, 42, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid #d9e0ea;
+      padding: 16px 20px 14px;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 21px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+    }
+
+    input,
+    select,
+    button {
+      height: 34px;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0 10px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    input {
+      width: 210px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+
+    button:hover,
+    select:hover,
+    input:focus,
+    select:focus,
+    button:focus {
+      border-color: #64748b;
+      outline: none;
+    }
+
+    button.primary {
+      color: #fff;
+      background: #111827;
+      border-color: #111827;
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      min-height: 0;
+    }
+
+    .diagram-wrap {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      border-right: 1px solid #d9e0ea;
+    }
+
+    .flowbar {
+      background: #f8fafc;
+      border-bottom: 1px solid #d9e0ea;
+      padding: 10px 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .flowbar .label {
+      font-size: 12px;
+      font-weight: 760;
+      color: #475569;
+      margin-right: 4px;
+      text-transform: uppercase;
+    }
+
+    .flow-btn {
+      height: 30px;
+      font-size: 12px;
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .flow-btn.active {
+      color: #fff;
+      background: #0f172a;
+      border-color: #0f172a;
+    }
+
+    .viewport {
+      position: relative;
+      overflow: hidden;
+      min-height: 0;
+      background:
+        linear-gradient(#e8edf4 1px, transparent 1px),
+        linear-gradient(90deg, #e8edf4 1px, transparent 1px);
+      background-size: 28px 28px;
+      cursor: grab;
+    }
+
+    .viewport.dragging {
+      cursor: grabbing;
+    }
+
+    .stage {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1820px;
+      height: 1230px;
+      transform-origin: 0 0;
+    }
+
+    .edges {
+      position: absolute;
+      inset: 0;
+      width: 1820px;
+      height: 1230px;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    .connector {
+      fill: none;
+      stroke: #9aa8ba;
+      stroke-width: 2.2;
+      opacity: 0.68;
+      marker-end: url(#arrow);
+      transition: opacity 140ms ease, stroke-width 140ms ease, stroke 140ms ease;
+    }
+
+    .connector.edge-http { stroke: #2563eb; }
+    .connector.edge-data { stroke: #059669; }
+    .connector.edge-file { stroke: #c2410c; }
+    .connector.edge-auth { stroke: #0f766e; }
+    .connector.edge-event { stroke: #b45309; stroke-dasharray: 7 5; }
+    .connector.edge-platform { stroke: #64748b; stroke-dasharray: 4 5; }
+    .connector.edge-external { stroke: #dc2626; }
+
+    .edge-label {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      padding: 2px 6px;
+      border: 1px solid #d6dee9;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.92);
+      color: #475569;
+      font-size: 11px;
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+    }
+
+    .node {
+      position: absolute;
+      width: 190px;
+      min-height: 80px;
+      border: 1px solid #cfd8e6;
+      border-left: 5px solid var(--platform);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+      padding: 10px 10px 9px;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease, border-color 120ms ease;
+    }
+
+    .node:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow);
+    }
+
+    .node.selected {
+      border-color: #0f172a;
+      box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.11), var(--shadow);
+    }
+
+    .node.dimmed,
+    .connector.dimmed,
+    .edge-label.dimmed {
+      opacity: 0.12;
+    }
+
+    .node.hidden,
+    .connector.hidden,
+    .edge-label.hidden {
+      display: none;
+    }
+
+    .node .kicker {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 780;
+    }
+
+    .node .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--platform);
+    }
+
+    .node .title {
+      margin-top: 5px;
+      font-size: 14px;
+      font-weight: 780;
+      line-height: 1.18;
+    }
+
+    .node .meta {
+      margin-top: 4px;
+      color: #475569;
+      font-size: 11px;
+      line-height: 1.28;
+    }
+
+    .node.edge { border-left-color: var(--edge); }
+    .node.edge .dot { background: var(--edge); }
+    .node.app { border-left-color: var(--app); }
+    .node.app .dot { background: var(--app); }
+    .node.api { border-left-color: var(--api); }
+    .node.api .dot { background: var(--api); }
+    .node.worker { border-left-color: var(--worker); }
+    .node.worker .dot { background: var(--worker); }
+    .node.data { border-left-color: var(--data); }
+    .node.data .dot { background: var(--data); }
+    .node.external { border-left-color: var(--external); }
+    .node.external .dot { background: var(--external); }
+    .node.file { border-left-color: var(--file); }
+    .node.file .dot { background: var(--file); }
+    .node.platform { border-left-color: var(--platform); }
+    .node.platform .dot { background: var(--platform); }
+
+    .section-title {
+      position: absolute;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    aside {
+      min-width: 0;
+      background: var(--surface);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .inspector-head {
+      padding: 18px 18px 12px;
+      border-bottom: 1px solid #d9e0ea;
+    }
+
+    .inspector-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .inspector-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .inspector-body {
+      overflow: auto;
+      padding: 16px 18px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0 0 14px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      background: #eef2f7;
+      color: #344054;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .body-section {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+
+    .body-section:first-of-type {
+      border-top: 0;
+      margin-top: 0;
+      padding-top: 0;
+    }
+
+    .body-section h2 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 820;
+      color: #334155;
+      text-transform: uppercase;
+    }
+
+    .body-section p,
+    .body-section li {
+      color: #344054;
+      font-size: 13px;
+      line-height: 1.46;
+    }
+
+    .body-section ul {
+      padding-left: 18px;
+      margin: 0;
+    }
+
+    .body-section li + li {
+      margin-top: 5px;
+    }
+
+    .relations {
+      display: grid;
+      gap: 8px;
+    }
+
+    .relation {
+      padding: 9px;
+      border: 1px solid #e2e8f0;
+      border-radius: 7px;
+      background: #fbfdff;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .relation strong {
+      display: block;
+      color: #111827;
+      margin-bottom: 2px;
+    }
+
+    .legend {
+      border-top: 1px solid #d9e0ea;
+      padding: 12px 18px 14px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px 10px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 680;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: var(--platform);
+    }
+
+    .mini {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .zoom {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .zoom input {
+      width: 104px;
+      padding: 0;
+    }
+
+    @media (max-width: 1100px) {
+      header {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        justify-content: flex-start;
+      }
+
+      .main {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(620px, 1fr) auto;
+      }
+
+      aside {
+        border-top: 1px solid #d9e0ea;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1>NickERP / NSCIM Production Architecture</h1>
+        <div class="subtitle">Current v1 production topology from `bjforson/NSCIM-PRODUCTION`, updated after the 2026-05-11 main merge and production completeness repair.</div>
+      </div>
+      <div class="controls">
+        <input id="search" type="search" placeholder="Search services" autocomplete="off" />
+        <select id="category">
+          <option value="all">All layers</option>
+          <option value="edge">Edge</option>
+          <option value="app">Apps</option>
+          <option value="api">APIs and gateways</option>
+          <option value="worker">Workers</option>
+          <option value="data">Databases</option>
+          <option value="file">Files and shares</option>
+          <option value="external">External</option>
+          <option value="platform">Platform libs</option>
+        </select>
+        <div class="zoom">
+          Zoom
+          <input id="zoom" type="range" min="45" max="120" value="72" />
+        </div>
+        <button id="fit" type="button">Fit</button>
+        <button id="reset" type="button" class="primary">Reset</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="diagram-wrap">
+        <div class="flowbar">
+          <span class="label">Flows</span>
+          <button class="flow-btn active" type="button" data-flow="all">All</button>
+          <button class="flow-btn" type="button" data-flow="edge">Edge and login</button>
+          <button class="flow-btn" type="button" data-flow="scan">Scanner ingest</button>
+          <button class="flow-btn" type="button" data-flow="completeness">Completeness</button>
+          <button class="flow-btn" type="button" data-flow="icums">ICUMS lifecycle</button>
+          <button class="flow-btn" type="button" data-flow="analysis">Image analysis</button>
+          <button class="flow-btn" type="button" data-flow="comms">Comms</button>
+          <button class="flow-btn" type="button" data-flow="hrfinance">HR and Finance</button>
+          <button class="flow-btn" type="button" data-flow="ops">Ops and observability</button>
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="stage" id="stage">
+            <svg class="edges" id="edges" viewBox="0 0 1820 1230" aria-hidden="true">
+              <defs>
+                <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M 0 0 L 8 4 L 0 8 z" fill="#7b8797"></path>
+                </marker>
+              </defs>
+            </svg>
+            <div class="section-title" style="left: 64px; top: 34px;">Users</div>
+            <div class="section-title" style="left: 282px; top: 34px;">Cloud edge</div>
+            <div class="section-title" style="left: 510px; top: 34px;">User apps</div>
+            <div class="section-title" style="left: 742px; top: 34px;">APIs and gateways</div>
+            <div class="section-title" style="left: 982px; top: 34px;">Runtime workers</div>
+            <div class="section-title" style="left: 1222px; top: 34px;">Data and files</div>
+            <div class="section-title" style="left: 1532px; top: 34px;">Outside systems</div>
+          </div>
+        </div>
+      </section>
+
+      <aside>
+        <div class="inspector-head">
+          <h2 id="inspectorTitle" class="inspector-title">System Overview</h2>
+          <div id="inspectorMeta" class="inspector-meta">Select a service or flow to inspect responsibilities, ports, data ownership, and connections.</div>
+        </div>
+        <div class="inspector-body" id="inspectorBody"></div>
+        <div class="legend">
+          <div class="legend-item"><span class="swatch" style="background: var(--edge);"></span>Edge</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--app);"></span>App</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--api);"></span>API</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--worker);"></span>Worker</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--data);"></span>Database</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--file);"></span>File/share</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--external);"></span>External</div>
+          <div class="legend-item"><span class="swatch" style="background: var(--platform);"></span>Platform</div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const nodes = [
+      {
+        id: "operator",
+        title: "Operators and admins",
+        category: "edge",
+        x: 60,
+        y: 110,
+        meta: "Browsers, mobile devices, internal users",
+        tags: ["users", "browser", "operators"],
+        details: [
+          "Human entry point for ERP portal, HR, scan portal, API diagnostics, and finance.",
+          "Public access is fronted by Cloudflare Access where hostnames are public.",
+          "NSCIM and HR still keep app-level auth behind Access in v1."
+        ]
+      },
+      {
+        id: "cf",
+        title: "Cloudflare Access and Tunnel",
+        category: "edge",
+        x: 282,
+        y: 110,
+        meta: "erp/hr/lan/scan/api.nickscan.net",
+        tags: ["cloudflare", "access", "tunnel", "otp"],
+        details: [
+          "Single Cloudflare Tunnel connector on TEST-SERVER.",
+          "One Access app per hostname: erp, hr, lan, scan, and api.",
+          "Identity provider is Email OTP with nickscan.com domain policy and 24 hour session."
+        ]
+      },
+      {
+        id: "portal",
+        title: "NickERP.Portal",
+        category: "app",
+        x: 506,
+        y: 82,
+        meta: "Port 5400, Blazor Server",
+        tags: ["portal", "launcher", "stats", "5400"],
+        details: [
+          "Launcher and live stats surface.",
+          "Reads HR data and NSCIM API stats.",
+          "Currently anonymous inside the edge boundary."
+        ],
+        path: "platform/NickERP.Portal"
+      },
+      {
+        id: "nscimWeb",
+        title: "NSCIM WebApp",
+        category: "app",
+        x: 506,
+        y: 244,
+        meta: "Ports 5299/5300, Blazor Server",
+        tags: ["scan", "webapp", "blazor", "5299", "5300"],
+        details: [
+          "Main scan-portal UI for dashboards, containers, image analysis, ICUMS, monitoring, admin, reports, and role-gated pages.",
+          "Uses JWT-backed auth state in the Blazor app and sends API calls through typed services.",
+          "Receives real-time updates through NSCIM SignalR hubs.",
+          "This architecture map is now available inside the app under Operations & Monitoring."
+        ],
+        path: "src/NickScanWebApp.New"
+      },
+      {
+        id: "nickhrWeb",
+        title: "NickHR WebApp",
+        category: "app",
+        x: 506,
+        y: 430,
+        meta: "Ports 5310/5311, Blazor Server",
+        tags: ["hr", "people", "payroll", "attendance", "5310", "5311"],
+        details: [
+          "People, payroll, attendance, self-service, and access provisioning UI.",
+          "Uses its own cookie auth in v1.",
+          "Also talks to NickHR API for service/mobile flows."
+        ],
+        path: "NickHR/src/NickHR.WebApp"
+      },
+      {
+        id: "financeWeb",
+        title: "NickFinance WebApp",
+        category: "app",
+        x: 506,
+        y: 620,
+        meta: "Port 5500, Blazor Server",
+        tags: ["finance", "ledger", "ap", "ar", "banking", "tax", "5500"],
+        details: [
+          "Finance module covering ledger, petty cash, AP, AR, banking, fixed assets, budgeting, reporting, PDFs, FX, and tax exports.",
+          "Runs as NT SERVICE\\NickFinance_WebApp rather than LocalSystem.",
+          "Uses finance schemas in the shared Postgres deployment and platform identity abstractions."
+        ],
+        path: "finance/NickFinance.WebApp"
+      },
+      {
+        id: "nscimApi",
+        title: "NSCIM API",
+        category: "api",
+        x: 742,
+        y: 244,
+        meta: "Ports 5205/5206, API + worker host",
+        tags: ["api", "nscim", "5205", "5206", "signalr", "workers"],
+        details: [
+          "Central container, scanner, image, ICUMS, analysis, admin, monitoring, reports, and auth API.",
+          "Hosts all NSCIM background workers in-process.",
+          "Uses dual authentication: cookie or JWT bearer.",
+          "Exposes health endpoints and module manifest endpoint.",
+          "As of 2026-05-11, main includes the state-ownership invariants and historical CCS repair work."
+        ],
+        path: "src/NickScanCentralImagingPortal.API"
+      },
+      {
+        id: "nickhrApi",
+        title: "NickHR API",
+        category: "api",
+        x: 742,
+        y: 430,
+        meta: "Port 5215, REST API",
+        tags: ["hr", "api", "5215", "jwt"],
+        details: [
+          "REST API for NickHR mobile/service access.",
+          "Uses JWT bearer auth and the nickhr Postgres database.",
+          "Has health endpoints for live/ready checks."
+        ],
+        path: "NickHR/src/NickHR.API"
+      },
+      {
+        id: "comms",
+        title: "NickComms Gateway",
+        category: "api",
+        x: 742,
+        y: 620,
+        meta: "Port 5220, API-key gateway",
+        tags: ["comms", "sms", "email", "otp", "hubtel", "smtp", "5220"],
+        details: [
+          "Central SMS, email, OTP, and message-history gateway.",
+          "Authenticates clients with X-Api-Key.",
+          "Owns SMS and email queue services plus nick_comms storage."
+        ],
+        path: "services/NickComms.Gateway"
+      },
+      {
+        id: "platformLibs",
+        title: "NickERP.Platform.*",
+        category: "platform",
+        x: 742,
+        y: 82,
+        meta: "Core, tenancy, identity, observability, web shared",
+        tags: ["platform", "tenancy", "identity", "observability", "shared"],
+        details: [
+          "Shared platform contracts and libraries referenced by modules.",
+          "Current live pieces include tenancy, identity extraction, observability, core contracts, and shared web surfaces.",
+          "Platform contract defines module manifests, health endpoints, tenant ownership, gateway clients, and configuration posture."
+        ],
+        path: "platform"
+      },
+      {
+        id: "nscimWorkers",
+        title: "NSCIM worker host",
+        category: "worker",
+        x: 986,
+        y: 188,
+        meta: "Hosted inside NSCIM_API",
+        tags: ["workers", "orchestrator", "background"],
+        details: [
+          "NSCIM_API hosts the operational background services.",
+          "Major loops include ImageAnalysisOrchestrator, IcumPipelineOrchestrator, ContainerCompletenessOrchestrator, RecordCompletenessOrchestrator, FS6000, ASE, monitoring, drift, and health services.",
+          "Completeness state ownership is now split by surface: record completeness owns record-level readiness, while container completeness owns scanner/CCS evidence readiness.",
+          "Restarting NSCIM_API restarts the full worker set."
+        ]
+      },
+      {
+        id: "completenessEngine",
+        title: "Completeness services",
+        category: "worker",
+        x: 986,
+        y: 24,
+        meta: "Record, container, cargo group, CCS ownership",
+        tags: ["completeness", "record completeness", "container completeness", "ccs", "cargo groups"],
+        details: [
+          "Record completeness evaluates declaration/BOE-driven readiness and record-level lifecycle.",
+          "Container completeness evaluates scanner evidence, CCS identity, container scan queues, and export-hold style states.",
+          "The 2026-05-11 invariant work prevents unrelated services from marking CCS rows Complete without scanner evidence.",
+          "Historical CCS rows were repaired after snapshot: 14 CMR rows, 13 export-hold rows, and 12 missing-evidence rows were moved out of Complete."
+        ],
+        path: "src/NickScanCentralImagingPortal.Services/Completeness"
+      },
+      {
+        id: "signalr",
+        title: "SignalR hubs",
+        category: "worker",
+        x: 986,
+        y: 338,
+        meta: "Dashboard, analysis, readiness, scan queue",
+        tags: ["signalr", "live", "dashboard", "readiness"],
+        details: [
+          "Hubs include dashboard, comprehensive dashboard, imageAnalysisDashboard, userReadiness, and containerScanQueue.",
+          "Used for real-time queue updates, readiness state, dashboard refresh, and operations visibility.",
+          "The production share contains a local ImageAnalysisDashboardHub amendment that scopes integrity checks to in-flight, non-CMR containers and counts distinct unhealthy rows."
+        ]
+      },
+      {
+        id: "splitter",
+        title: "Image Splitter / Raw Engine",
+        category: "worker",
+        x: 986,
+        y: 500,
+        meta: "FastAPI child process, port 5320",
+        tags: ["python", "fastapi", "image splitter", "raw engine", "5320"],
+        details: [
+          "Python FastAPI service for raw image work, splitting, diagnostics, and scanner image utilities.",
+          "Supervised directly by NSCIM_API through ImageSplitterSupervisorService.",
+          "Uses OpenCV, Pillow, numpy, OCR, scikit-image, and optional Claude Vision."
+        ],
+        path: "services/image-splitter"
+      },
+      {
+        id: "aiAssist",
+        title: "AI assist providers",
+        category: "worker",
+        x: 986,
+        y: 660,
+        meta: "Stub, Ollama, Claude Vision",
+        tags: ["ai", "ollama", "claude", "image assist"],
+        details: [
+          "NSCIM AI workflow routes to StubModelProvider, OllamaVisionProvider, or ClaudeVisionProvider by configuration.",
+          "Used for image assistance, cargo summaries, suggestion triggering, ops triage, and dataset export lineage."
+        ],
+        path: "src/NickScanCentralImagingPortal.Services/AiWorkflow"
+      },
+      {
+        id: "pgProduction",
+        title: "nickscan_production",
+        category: "data",
+        x: 1224,
+        y: 94,
+        meta: "Main NSCIM database",
+        tags: ["postgres", "nscim", "applicationdbcontext", "tenant"],
+        details: [
+          "ApplicationDbContext database for containers, scanner rows, image analysis, assignments, completeness, audit/admin tables, settings, HR-adjacent entities, and monitoring.",
+          "Most tables are tenant/RLS aware after the phase-1 tenancy retrofit.",
+          "Holds operational queues such as analysisqueueentries, analysisassignments, containerscanqueues, and ICUMS submission/download mirrors.",
+          "CCS identity now has scanner-inspection uniqueness and lookup indexes to keep container-scanner evidence distinct."
+        ]
+      },
+      {
+        id: "pgDownloads",
+        title: "nickscan_downloads",
+        category: "data",
+        x: 1224,
+        y: 224,
+        meta: "ICUMS BOE download store",
+        tags: ["postgres", "icums", "boedocuments", "downloads"],
+        details: [
+          "IcumDownloadsDbContext database for downloaded files, BOEDocuments, manifest items, vehicles, ingestion logs, CMR redownloads, and failed processing queues.",
+          "Primary source for BOE document and manifest data used by cargo grouping and completeness."
+        ]
+      },
+      {
+        id: "pgIcums",
+        title: "nickscan_icums",
+        category: "data",
+        x: 1224,
+        y: 354,
+        meta: "ICUMS staging/projection store",
+        tags: ["postgres", "icums", "staging", "projection"],
+        details: [
+          "IcumDbContext database for ICUMS container data, documents, manifest items, and batch logs.",
+          "Used as a staging/projection surface by the ingestion and transfer pipeline."
+        ]
+      },
+      {
+        id: "pgComms",
+        title: "nick_comms",
+        category: "data",
+        x: 1224,
+        y: 484,
+        meta: "NickComms database",
+        tags: ["postgres", "comms", "sms", "email", "apikey"],
+        details: [
+          "Stores API keys, SMS messages, OTP sessions, email messages, and NickComms EF migrations.",
+          "NickComms queue services write outbox state here."
+        ]
+      },
+      {
+        id: "publishOutputs",
+        title: "Published service outputs",
+        category: "file",
+        x: 742,
+        y: 812,
+        meta: "publish/API, WebApp, Portal, HR, Finance, Comms",
+        tags: ["publish", "deployment", "service outputs", "artifacts"],
+        details: [
+          "Share-only deployment output folder under publish/.",
+          "Contains published artifacts for API, WebApp, Portal, NickHR.API, NickFinance.WebApp, and NickComms.",
+          "Directory.Build.props explicitly excludes publish/** from source globs so deploy artifacts do not break solution builds."
+        ],
+        path: "publish"
+      },
+      {
+        id: "sourceRoot",
+        title: "Production code share",
+        category: "file",
+        x: 986,
+        y: 962,
+        meta: "\\\\10.0.1.254\\Shared\\NSCIM_PRODUCTION",
+        tags: ["source", "share", "code root", "production", "ops"],
+        details: [
+          "Operational code root provided as the production/source-of-truth location.",
+          "It is a git checkout at the same HEAD as GitHub, with a few local working-tree amendments and share-only operational artifacts.",
+          "Share-only folders include publish/, operational_outputs/, bootstrap logs, migration logs, and the Interactive Architecture export."
+        ]
+      },
+      {
+        id: "pgHrFinance",
+        title: "nickhr + finance schemas",
+        category: "data",
+        x: 1224,
+        y: 614,
+        meta: "HR database and Finance schemas",
+        tags: ["postgres", "nickhr", "finance", "identity", "rls"],
+        details: [
+          "NickHR owns employee, payroll, attendance, and HR identity data.",
+          "NickFinance uses finance schemas deployed in the same Postgres environment.",
+          "Platform identity extraction has started from the finance/HR side."
+        ]
+      },
+      {
+        id: "pgBackup",
+        title: "Postgres backup share",
+        category: "file",
+        x: 1224,
+        y: 1030,
+        meta: "\\\\10.0.0.79\\Backup\\PG Backup",
+        tags: ["backup", "postgres", "pg_dump", "ops", "nightly"],
+        details: [
+          "Actual backup destination in the production share working tree.",
+          "scripts/pg-backup.ps1 writes compressed database dumps here under a date folder.",
+          "Current backup set covers nickhr, nickscan_production, nickscan_icums, nickscan_downloads, and nick_comms with 14-day retention."
+        ],
+        path: "scripts/pg-backup.ps1"
+      },
+      {
+        id: "fsShare",
+        title: "FS6000 UNC share",
+        category: "file",
+        x: 1224,
+        y: 766,
+        meta: "\\\\172.16.1.1\\Image\\23301FS01",
+        tags: ["fs6000", "file share", "xml", "raw", "image"],
+        details: [
+          "Scanner file share watched/synced by FS6000BackgroundService.",
+          "Feeds XML/JPG/raw channel ingestion into NSCIM tables and image-processing pipelines.",
+          "Production uses a UNC path because Windows services cannot rely on user-mapped drives."
+        ]
+      },
+      {
+        id: "aseSql",
+        title: "ASE SQL Server",
+        category: "data",
+        x: 1224,
+        y: 896,
+        meta: "10.0.0.3, database networking",
+        tags: ["ase", "sql server", "networking", "scanner"],
+        details: [
+          "Remote scanner-owned SQL Server database.",
+          "NSCIM syncs from it through AseDatabaseSyncService.",
+          "NSCIM does not own or mutate this database schema."
+        ]
+      },
+      {
+        id: "icumsExternal",
+        title: "Ghana ICUMS",
+        category: "external",
+        x: 1534,
+        y: 112,
+        meta: "BOE downloads and submissions",
+        tags: ["icums", "customs", "external", "boe", "submission"],
+        details: [
+          "External customs system for BOE download, declaration data, and submission/acknowledgement flows.",
+          "NSCIM downloads JSON payloads, ingests them, maps scanner decisions, and can submit inspection payloads."
+        ]
+      },
+      {
+        id: "scannerVendors",
+        title: "Scanner hardware",
+        category: "external",
+        x: 1534,
+        y: 276,
+        meta: "FS6000, ASE, Nuctech, Heimann",
+        tags: ["scanner", "fs6000", "ase", "nuctech", "heimann"],
+        details: [
+          "Physical scanner ecosystem.",
+          "FS6000 currently arrives through file share ingestion.",
+          "ASE arrives through remote SQL Server sync.",
+          "Nuctech and Heimann scanner services exist in the codebase as scanner-specific adapters/services."
+        ]
+      },
+      {
+        id: "hubtel",
+        title: "Hubtel",
+        category: "external",
+        x: 1534,
+        y: 440,
+        meta: "SMS and OTP",
+        tags: ["hubtel", "sms", "otp", "external"],
+        details: [
+          "External SMS/OTP provider used through NickComms Gateway.",
+          "NickComms keeps provider-specific logic behind HubtelClient."
+        ]
+      },
+      {
+        id: "smtp",
+        title: "SMTP provider",
+        category: "external",
+        x: 1534,
+        y: 566,
+        meta: "Email delivery",
+        tags: ["smtp", "email", "mail"],
+        details: [
+          "External email delivery for NickComms and module-level email services.",
+          "Secrets are expected through environment variables rather than committed appsettings."
+        ]
+      },
+      {
+        id: "aiExternal",
+        title: "Claude / Ollama",
+        category: "external",
+        x: 1534,
+        y: 692,
+        meta: "Vision and local model providers",
+        tags: ["claude", "ollama", "ai", "vision"],
+        details: [
+          "Optional model providers behind NSCIM AI workflow.",
+          "Ollama can run locally; Claude Vision uses an external API key when configured."
+        ]
+      },
+      {
+        id: "financeExternal",
+        title: "Finance integrations",
+        category: "external",
+        x: 1534,
+        y: 826,
+        meta: "eVAT, OCR, FX, WhatsApp, MoMo",
+        tags: ["finance", "evat", "ocr", "bog", "whatsapp", "momo"],
+        details: [
+          "NickFinance has adapter-ready paths for Hubtel eVAT, MoMo through NickComms, Azure Document Intelligence OCR, WhatsApp Cloud API, and BoG FX rates.",
+          "Several paths are credential-gated and activate when environment variables are configured."
+        ]
+      },
+      {
+        id: "icumsFiles",
+        title: "ICUMS file queues",
+        category: "file",
+        x: 986,
+        y: 814,
+        meta: "Downloads, Outbox, Acknowledged",
+        tags: ["files", "icums", "outbox", "downloads"],
+        details: [
+          "File-backed ICUMS lifecycle surfaces under C:\\Shared\\NSCIM_PRODUCTION\\Data\\ICUMS.",
+          "Downloads are ingested into Postgres.",
+          "Outbox JSON is written by NSCIM submission logic and moved to acknowledged/archive paths on success."
+        ]
+      }
+    ];
+
+    const edges = [
+      { from: "operator", to: "cf", type: "auth", label: "Access login", flows: ["edge"] },
+      { from: "cf", to: "portal", type: "auth", label: "erp.nickscan.net", flows: ["edge"] },
+      { from: "cf", to: "nscimWeb", type: "auth", label: "scan.nickscan.net", flows: ["edge"] },
+      { from: "cf", to: "nscimApi", type: "auth", label: "api.nickscan.net", flows: ["edge"] },
+      { from: "cf", to: "nickhrWeb", type: "auth", label: "hr.nickscan.net", flows: ["edge", "hrfinance"] },
+      { from: "cf", to: "financeWeb", type: "auth", label: "finance host", flows: ["edge", "hrfinance"] },
+
+      { from: "portal", to: "nscimApi", type: "http", label: "stats API", flows: ["edge", "ops"] },
+      { from: "portal", to: "pgHrFinance", type: "data", label: "HR stats", flows: ["hrfinance"] },
+      { from: "nscimWeb", to: "nscimApi", type: "http", label: "REST + JWT", flows: ["edge", "analysis", "icums", "completeness", "ops"] },
+      { from: "nscimApi", to: "signalr", type: "event", label: "hubs", flows: ["analysis", "ops"] },
+      { from: "signalr", to: "nscimWeb", type: "event", label: "live UI", flows: ["analysis", "ops"] },
+
+      { from: "nickhrWeb", to: "nickhrApi", type: "http", label: "REST", flows: ["hrfinance"] },
+      { from: "nickhrWeb", to: "pgHrFinance", type: "data", label: "EF Core", flows: ["hrfinance"] },
+      { from: "nickhrApi", to: "pgHrFinance", type: "data", label: "EF Core", flows: ["hrfinance"] },
+      { from: "financeWeb", to: "pgHrFinance", type: "data", label: "finance schemas", flows: ["hrfinance"] },
+      { from: "financeWeb", to: "comms", type: "http", label: "MoMo/comms", flows: ["hrfinance", "comms"] },
+      { from: "financeWeb", to: "financeExternal", type: "external", label: "adapters", flows: ["hrfinance"] },
+
+      { from: "sourceRoot", to: "publishOutputs", type: "file", label: "published artifacts", flows: ["ops"] },
+      { from: "publishOutputs", to: "portal", type: "file", label: "Portal output", flows: ["ops", "edge"] },
+      { from: "publishOutputs", to: "nscimWeb", type: "file", label: "WebApp output", flows: ["ops", "edge"] },
+      { from: "publishOutputs", to: "nscimApi", type: "file", label: "API output", flows: ["ops"] },
+      { from: "publishOutputs", to: "nickhrApi", type: "file", label: "HR API output", flows: ["ops", "hrfinance"] },
+      { from: "publishOutputs", to: "financeWeb", type: "file", label: "Finance output", flows: ["ops", "hrfinance"] },
+      { from: "publishOutputs", to: "comms", type: "file", label: "Comms output", flows: ["ops", "comms"] },
+
+      { from: "nscimApi", to: "nscimWorkers", type: "event", label: "hosted services", flows: ["scan", "icums", "analysis", "completeness", "ops"] },
+      { from: "nscimApi", to: "completenessEngine", type: "event", label: "completeness APIs", flows: ["completeness", "ops"] },
+      { from: "completenessEngine", to: "nscimWorkers", type: "event", label: "worker ownership", flows: ["completeness", "scan", "icums"] },
+      { from: "completenessEngine", to: "pgProduction", type: "data", label: "record/CCS state", flows: ["completeness", "scan", "icums"] },
+      { from: "nscimApi", to: "pgProduction", type: "data", label: "ApplicationDbContext", flows: ["scan", "analysis", "icums", "completeness", "ops"] },
+      { from: "nscimApi", to: "pgDownloads", type: "data", label: "IcumDownloadsDbContext", flows: ["icums"] },
+      { from: "nscimApi", to: "pgIcums", type: "data", label: "IcumDbContext", flows: ["icums"] },
+      { from: "nscimApi", to: "comms", type: "http", label: "X-Api-Key", flows: ["comms", "ops"] },
+      { from: "nscimApi", to: "splitter", type: "http", label: "http://localhost:5320", flows: ["analysis", "scan"] },
+      { from: "nscimApi", to: "icumsFiles", type: "file", label: "Outbox/downloads", flows: ["icums"] },
+
+      { from: "nscimWorkers", to: "fsShare", type: "file", label: "FS6000 sync", flows: ["scan"] },
+      { from: "scannerVendors", to: "fsShare", type: "file", label: "scan files", flows: ["scan"] },
+      { from: "scannerVendors", to: "aseSql", type: "data", label: "ASE writes", flows: ["scan"] },
+      { from: "nscimWorkers", to: "aseSql", type: "data", label: "ASE sync", flows: ["scan"] },
+      { from: "nscimWorkers", to: "pgProduction", type: "data", label: "CCS, AG, queues", flows: ["scan", "analysis", "completeness", "ops"] },
+      { from: "nscimWorkers", to: "pgDownloads", type: "data", label: "BOE ingest", flows: ["icums"] },
+      { from: "nscimWorkers", to: "pgIcums", type: "data", label: "ICUMS projection", flows: ["icums"] },
+      { from: "nscimWorkers", to: "icumsExternal", type: "external", label: "download/submit", flows: ["icums"] },
+      { from: "icumsExternal", to: "icumsFiles", type: "file", label: "JSON files", flows: ["icums"] },
+
+      { from: "splitter", to: "pgProduction", type: "data", label: "split jobs/results", flows: ["analysis"] },
+      { from: "splitter", to: "aiExternal", type: "external", label: "optional vision", flows: ["analysis"] },
+      { from: "aiAssist", to: "nscimApi", type: "event", label: "suggestions", flows: ["analysis"] },
+      { from: "aiAssist", to: "aiExternal", type: "external", label: "model calls", flows: ["analysis"] },
+
+      { from: "comms", to: "pgComms", type: "data", label: "outbox state", flows: ["comms"] },
+      { from: "comms", to: "hubtel", type: "external", label: "SMS/OTP", flows: ["comms"] },
+      { from: "comms", to: "smtp", type: "external", label: "email", flows: ["comms"] },
+
+      { from: "pgProduction", to: "pgBackup", type: "file", label: "nightly dump", flows: ["ops"] },
+      { from: "pgDownloads", to: "pgBackup", type: "file", label: "nightly dump", flows: ["ops", "icums"] },
+      { from: "pgIcums", to: "pgBackup", type: "file", label: "nightly dump", flows: ["ops", "icums"] },
+      { from: "pgComms", to: "pgBackup", type: "file", label: "nightly dump", flows: ["ops", "comms"] },
+      { from: "pgHrFinance", to: "pgBackup", type: "file", label: "nightly dump", flows: ["ops", "hrfinance"] },
+
+      { from: "platformLibs", to: "nscimApi", type: "platform", label: "tenancy/core", flows: ["ops"] },
+      { from: "platformLibs", to: "comms", type: "platform", label: "tenancy", flows: ["comms"] },
+      { from: "platformLibs", to: "nickhrWeb", type: "platform", label: "tenancy/identity", flows: ["hrfinance"] },
+      { from: "platformLibs", to: "financeWeb", type: "platform", label: "identity/obs", flows: ["hrfinance", "ops"] },
+      { from: "platformLibs", to: "portal", type: "platform", label: "shared web", flows: ["edge"] }
+    ];
+
+    const flows = {
+      all: {
+        title: "System Overview",
+        meta: "All services and major interactions.",
+        details: [
+          "The production stack is a Windows-service oriented .NET 10 system with NSCIM_API at the center.",
+          "NSCIM_API hosts the API, SignalR hubs, Python splitter supervisor, and the background workers that move scanner, ICUMS, completeness, assignment, submission, monitoring, and AI workflows.",
+          "Cloudflare Access fronts public hostnames; module-level auth still exists inside v1.",
+          "GitHub main now includes the state-ownership, CCS identity, repair, and observation work merged on 2026-05-11."
+        ]
+      },
+      edge: {
+        title: "Edge and Login Flow",
+        meta: "Cloudflare Access plus module-level auth.",
+        details: [
+          "Operators reach public hostnames through Cloudflare Access.",
+          "Cloudflare Access performs email OTP and hostname-level policy checks.",
+          "NSCIM and HR still use app-level login/session models behind the Access boundary."
+        ]
+      },
+      scan: {
+        title: "Scanner Ingest Flow",
+        meta: "Scanner hardware -> NSCIM worker pipelines -> production database.",
+        details: [
+          "FS6000 produces files to the UNC share; NSCIM_API workers sync and ingest them.",
+          "ASE writes to remote SQL Server; AseBackgroundService pulls that data into NSCIM.",
+          "Scanner rows feed container scan queues, completeness checks, image records, and analysis groups."
+        ]
+      },
+      icums: {
+        title: "ICUMS Lifecycle",
+        meta: "BOE download, ingestion, completeness matching, outbox submission.",
+        details: [
+          "NSCIM workers download and ingest ICUMS JSON into nickscan_downloads and nickscan_icums.",
+          "Completeness and cargo-group services join BOE data with scanner data through EF contexts and in-memory cross-DB joins.",
+          "Submission payloads move through file-based outbox/acknowledged folders and status updates."
+        ]
+      },
+      completeness: {
+        title: "Completeness Flow",
+        meta: "Record completeness, container completeness, CCS evidence, and repair posture.",
+        details: [
+          "Record completeness and container completeness are separate ownership surfaces.",
+          "Record completeness owns declaration and BOE lifecycle readiness; container completeness owns scanner evidence, CCS state, and container scan queue readiness.",
+          "The 2026-05-11 repair added CCS scanner-inspection identity indexes and corrected historical Complete rows that did not have valid evidence.",
+          "Latest observation checks found zero CCS Complete-without-evidence rows, zero CMR/no-declaration ImageAnalysis rows, zero duplicate CCS identity groups, zero unknown ICUMS submission statuses, and no stuck queues."
+        ]
+      },
+      analysis: {
+        title: "Image Analysis Flow",
+        meta: "DecodedScan kernel, analyst/audit queues, split review, and AI assist.",
+        details: [
+          "NSCIM WebApp calls NSCIM API for workbench, audit review, image viewer, split review, and AI surfaces.",
+          "Image rendering routes through scanner-neutral DecodedScan adapters for FS6000 and ASE.",
+          "SignalR keeps queues and dashboard panels current while worker services advance AnalysisGroup.Status."
+        ]
+      },
+      comms: {
+        title: "Comms Flow",
+        meta: "Modules -> NickComms Gateway -> provider integrations.",
+        details: [
+          "Modules call NickComms with X-Api-Key or typed clients.",
+          "NickComms persists message/outbox state in nick_comms.",
+          "Hubtel handles SMS/OTP; SMTP handles email delivery."
+        ]
+      },
+      hrfinance: {
+        title: "HR and Finance Flow",
+        meta: "NickHR, NickFinance, shared identity, and finance schemas.",
+        details: [
+          "NickHR WebApp and API use the nickhr database.",
+          "NickFinance uses finance schemas, platform identity pieces, and several credential-gated external adapters.",
+          "HR is the people/access-provisioning anchor for cross-module access."
+        ]
+      },
+      ops: {
+        title: "Ops and Observability Flow",
+        meta: "Health, monitoring, drift detection, logs, and dashboards.",
+        details: [
+          "NSCIM_API exposes health endpoints and pushes live dashboard state over SignalR.",
+          "Worker services write monitoring, endpoint usage, error investigation, and drift data to Postgres.",
+          "Platform observability is being extracted and standardized across modules.",
+          "The production share contains local changes for dashboard integrity calculation and alert dedupe behavior.",
+          "Postgres backup automation writes to \\\\10.0.0.79\\Backup\\PG Backup rather than a local C: backup folder."
+        ]
+      }
+    };
+
+    const categoryLabels = {
+      edge: "Edge",
+      app: "App",
+      api: "API",
+      worker: "Worker",
+      data: "Database",
+      file: "File/share",
+      external: "External",
+      platform: "Platform"
+    };
+
+    const nodeById = Object.fromEntries(nodes.map(node => [node.id, node]));
+    const stage = document.getElementById("stage");
+    const edgesSvg = document.getElementById("edges");
+    const viewport = document.getElementById("viewport");
+    const inspectorTitle = document.getElementById("inspectorTitle");
+    const inspectorMeta = document.getElementById("inspectorMeta");
+    const inspectorBody = document.getElementById("inspectorBody");
+    const searchInput = document.getElementById("search");
+    const categorySelect = document.getElementById("category");
+    const zoomInput = document.getElementById("zoom");
+    const resetButton = document.getElementById("reset");
+    const fitButton = document.getElementById("fit");
+
+    let selectedNodeId = null;
+    let activeFlow = "all";
+    let scale = Number(zoomInput.value) / 100;
+    let pan = { x: 28, y: 26 };
+    let dragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let panStart = { x: 0, y: 0 };
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function renderNodes() {
+      for (const node of nodes) {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = `node ${node.category}`;
+        el.id = `node-${node.id}`;
+        el.dataset.id = node.id;
+        el.style.left = `${node.x}px`;
+        el.style.top = `${node.y}px`;
+        el.innerHTML = `
+          <div class="kicker"><span class="dot"></span>${escapeHtml(categoryLabels[node.category])}</div>
+          <div class="title">${escapeHtml(node.title)}</div>
+          <div class="meta">${escapeHtml(node.meta)}</div>
+        `;
+        el.addEventListener("click", event => {
+          event.stopPropagation();
+          selectNode(node.id);
+        });
+        stage.appendChild(el);
+      }
+    }
+
+    function center(node) {
+      return {
+        x: node.x + 95,
+        y: node.y + 42
+      };
+    }
+
+    function pathBetween(a, b) {
+      const start = center(a);
+      const end = center(b);
+      const dx = Math.max(80, Math.abs(end.x - start.x) * 0.42);
+      const c1x = start.x + (end.x >= start.x ? dx : -dx);
+      const c2x = end.x - (end.x >= start.x ? dx : -dx);
+      return `M ${start.x} ${start.y} C ${c1x} ${start.y}, ${c2x} ${end.y}, ${end.x} ${end.y}`;
+    }
+
+    function labelPoint(a, b) {
+      const start = center(a);
+      const end = center(b);
+      return {
+        x: (start.x + end.x) / 2,
+        y: (start.y + end.y) / 2
+      };
+    }
+
+    function renderEdges() {
+      for (const edge of edges) {
+        const from = nodeById[edge.from];
+        const to = nodeById[edge.to];
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", pathBetween(from, to));
+        path.setAttribute("class", `connector edge-${edge.type}`);
+        path.dataset.from = edge.from;
+        path.dataset.to = edge.to;
+        path.dataset.flows = edge.flows.join(",");
+        edgesSvg.appendChild(path);
+
+        const pt = labelPoint(from, to);
+        const label = document.createElement("div");
+        label.className = "edge-label";
+        label.dataset.from = edge.from;
+        label.dataset.to = edge.to;
+        label.dataset.flows = edge.flows.join(",");
+        label.style.left = `${pt.x}px`;
+        label.style.top = `${pt.y}px`;
+        label.textContent = edge.label;
+        stage.appendChild(label);
+      }
+    }
+
+    function renderInspectorForFlow(flowId) {
+      const flow = flows[flowId] || flows.all;
+      inspectorTitle.textContent = flow.title;
+      inspectorMeta.textContent = flow.meta;
+      inspectorBody.innerHTML = `
+        <div class="body-section">
+          <h2>Flow Summary</h2>
+          <ul>${flow.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </div>
+        <div class="body-section">
+          <h2>Architecture Posture</h2>
+          <p>NSCIM_API is the runtime center: API surface, SignalR, worker orchestration, scanner ingest, ICUMS lifecycle, image processing, monitoring, and AI assistance all converge there.</p>
+        </div>
+        <div class="body-section">
+          <h2>Version Context</h2>
+          <p>Repo version of record: 2.16.14 plus the 2026-05-11 state-ownership merge. Recent work focuses on scanner split intake, queue visibility, state-machine correctness, drift detection, completeness ownership, and operations dashboards.</p>
+        </div>
+      `;
+    }
+
+    function renderInspectorForNode(node) {
+      inspectorTitle.textContent = node.title;
+      inspectorMeta.textContent = `${categoryLabels[node.category]} - ${node.meta}`;
+      const connected = edges.filter(edge => edge.from === node.id || edge.to === node.id);
+      const relations = connected.map(edge => {
+        const inbound = edge.to === node.id;
+        const other = nodeById[inbound ? edge.from : edge.to];
+        return `
+          <div class="relation">
+            <strong>${inbound ? "From" : "To"} ${escapeHtml(other.title)}</strong>
+            ${escapeHtml(edge.label)} (${escapeHtml(edge.type)})
+          </div>
+        `;
+      }).join("");
+
+      inspectorBody.innerHTML = `
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(categoryLabels[node.category])}</span>
+          ${(node.tags || []).slice(0, 5).map(tag => `<span class="pill">${escapeHtml(tag)}</span>`).join("")}
+        </div>
+        <div class="body-section">
+          <h2>Responsibilities</h2>
+          <ul>${node.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </div>
+        ${node.path ? `
+          <div class="body-section">
+            <h2>Repo Area</h2>
+            <p><code>${escapeHtml(node.path)}</code></p>
+          </div>
+        ` : ""}
+        <div class="body-section">
+          <h2>Connections</h2>
+          <div class="relations">${relations || `<p class="mini">No direct graph connections.</p>`}</div>
+        </div>
+      `;
+    }
+
+    function selectNode(id) {
+      selectedNodeId = id;
+      document.querySelectorAll(".node").forEach(el => {
+        el.classList.toggle("selected", el.dataset.id === id);
+      });
+      renderInspectorForNode(nodeById[id]);
+      applyFilters();
+    }
+
+    function setFlow(flowId) {
+      activeFlow = flowId;
+      selectedNodeId = null;
+      document.querySelectorAll(".node.selected").forEach(el => el.classList.remove("selected"));
+      document.querySelectorAll(".flow-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.flow === flowId);
+      });
+      renderInspectorForFlow(flowId);
+      applyFilters();
+    }
+
+    function matchesSearch(node, query) {
+      if (!query) return true;
+      const haystack = [node.title, node.meta, node.category, ...(node.tags || []), ...(node.details || [])]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    }
+
+    function nodeVisibleByFilters(node) {
+      const category = categorySelect.value;
+      const query = searchInput.value.trim().toLowerCase();
+      const categoryMatch = category === "all" || node.category === category;
+      const searchMatch = matchesSearch(node, query);
+      return categoryMatch && searchMatch;
+    }
+
+    function nodeInActiveFlow(nodeId) {
+      if (activeFlow === "all") return true;
+      return edges.some(edge =>
+        edge.flows.includes(activeFlow) &&
+        (edge.from === nodeId || edge.to === nodeId)
+      );
+    }
+
+    function edgeInActiveFlow(edgeEl) {
+      if (activeFlow === "all") return true;
+      return edgeEl.dataset.flows.split(",").includes(activeFlow);
+    }
+
+    function applyFilters() {
+      const visibleNodeIds = new Set();
+      for (const node of nodes) {
+        const el = document.getElementById(`node-${node.id}`);
+        const visible = nodeVisibleByFilters(node);
+        const inFlow = nodeInActiveFlow(node.id);
+        el.classList.toggle("hidden", !visible);
+        el.classList.toggle("dimmed", visible && !inFlow);
+        if (visible) visibleNodeIds.add(node.id);
+      }
+
+      document.querySelectorAll(".connector, .edge-label").forEach(el => {
+        const endpointsVisible = visibleNodeIds.has(el.dataset.from) && visibleNodeIds.has(el.dataset.to);
+        const inFlow = edgeInActiveFlow(el);
+        el.classList.toggle("hidden", !endpointsVisible);
+        el.classList.toggle("dimmed", endpointsVisible && !inFlow);
+      });
+
+      if (selectedNodeId) {
+        document.querySelectorAll(".connector, .edge-label").forEach(el => {
+          const related = el.dataset.from === selectedNodeId || el.dataset.to === selectedNodeId;
+          if (!related) el.classList.add("dimmed");
+        });
+        document.querySelectorAll(".node").forEach(el => {
+          const related = el.dataset.id === selectedNodeId ||
+            edges.some(edge =>
+              (edge.from === selectedNodeId && edge.to === el.dataset.id) ||
+              (edge.to === selectedNodeId && edge.from === el.dataset.id)
+            );
+          if (!related && !el.classList.contains("hidden")) el.classList.add("dimmed");
+        });
+      }
+    }
+
+    function applyTransform() {
+      stage.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${scale})`;
+    }
+
+    function fitStage() {
+      const width = viewport.clientWidth;
+      const height = viewport.clientHeight;
+      const fitScale = Math.min(width / 1820, height / 1230) * 0.96;
+      scale = Math.max(0.45, Math.min(1.2, fitScale));
+      zoomInput.value = Math.round(scale * 100);
+      pan = {
+        x: Math.max(16, (width - 1820 * scale) / 2),
+        y: Math.max(16, (height - 1230 * scale) / 2)
+      };
+      applyTransform();
+    }
+
+    viewport.addEventListener("pointerdown", event => {
+      if (event.target.closest(".node")) return;
+      dragging = true;
+      dragStart = { x: event.clientX, y: event.clientY };
+      panStart = { ...pan };
+      viewport.classList.add("dragging");
+      viewport.setPointerCapture(event.pointerId);
+    });
+
+    viewport.addEventListener("pointermove", event => {
+      if (!dragging) return;
+      pan = {
+        x: panStart.x + event.clientX - dragStart.x,
+        y: panStart.y + event.clientY - dragStart.y
+      };
+      applyTransform();
+    });
+
+    viewport.addEventListener("pointerup", event => {
+      dragging = false;
+      viewport.classList.remove("dragging");
+      try {
+        viewport.releasePointerCapture(event.pointerId);
+      } catch (_) {}
+    });
+
+    viewport.addEventListener("wheel", event => {
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 0.05 : -0.05;
+      const next = Math.max(0.45, Math.min(1.2, scale + delta));
+      if (next === scale) return;
+      const rect = viewport.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
+      const worldX = (mx - pan.x) / scale;
+      const worldY = (my - pan.y) / scale;
+      scale = next;
+      pan = {
+        x: mx - worldX * scale,
+        y: my - worldY * scale
+      };
+      zoomInput.value = Math.round(scale * 100);
+      applyTransform();
+    }, { passive: false });
+
+    zoomInput.addEventListener("input", () => {
+      scale = Number(zoomInput.value) / 100;
+      applyTransform();
+    });
+
+    fitButton.addEventListener("click", fitStage);
+
+    resetButton.addEventListener("click", () => {
+      searchInput.value = "";
+      categorySelect.value = "all";
+      setFlow("all");
+      fitStage();
+    });
+
+    searchInput.addEventListener("input", applyFilters);
+    categorySelect.addEventListener("change", applyFilters);
+    document.querySelectorAll(".flow-btn").forEach(btn => {
+      btn.addEventListener("click", () => setFlow(btn.dataset.flow));
+    });
+
+    renderNodes();
+    renderEdges();
+    renderInspectorForFlow("all");
+    fitStage();
+    applyFilters();
+    window.addEventListener("resize", fitStage);
+  </script>
+</body>
+</html>
