@@ -22,6 +22,26 @@ For each release, this file records:
 
 ---
 
+## [2.17.7] - 2026-05-13 - Faster split review approvals
+
+Patch release for the splitter analyst review workflow.
+
+### What landed
+
+- Moved left/right container confirmation above the candidate images so the
+  reviewer verifies assignment before judging the split crops.
+- Added approve buttons directly on each large split candidate card, removing
+  the extra select-then-approve step.
+- Kept reject/label and manual-correction actions available as secondary paths.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Streamline split review approvals
+
 ## [2.17.6] - 2026-05-11 - Split review workbench redesign
 
 Patch release for the splitter analyst review workflow.

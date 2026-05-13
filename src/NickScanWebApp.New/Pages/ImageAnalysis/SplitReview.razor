@@ -163,6 +163,47 @@ else
                         </MudChip>
                     </MudStack>
 
+                    <MudPaper Elevation="0" Class="pa-3 mb-3" Style="border: 1px solid var(--mud-palette-lines-default); border-radius: 6px;">
+                        <MudText Typo="Typo.subtitle1" Class="mb-2"><b>Confirm Container Sides</b></MudText>
+                        <MudGrid>
+                            <MudItem xs="12" md="4">
+                                <MudSelect T="string" Value="@state.ContainerLeft"
+                                           ValueChanged="@(v => state.ContainerLeft = v)"
+                                           Label="Left Container" Variant="Variant.Outlined" Dense="true">
+                                    @foreach (var c in containers)
+                                    {
+                                        <MudSelectItem Value="@c">@c</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" md="1" Class="d-flex align-center justify-center">
+                                <MudIconButton Icon="@Icons.Material.Outlined.SwapHoriz"
+                                               OnClick="@(() => SwapContainers(activeJob.Id))"
+                                               Color="Color.Primary" Size="Size.Large" />
+                            </MudItem>
+                            <MudItem xs="12" md="4">
+                                <MudSelect T="string" Value="@state.ContainerRight"
+                                           ValueChanged="@(v => state.ContainerRight = v)"
+                                           Label="Right Container" Variant="Variant.Outlined" Dense="true">
+                                    @foreach (var c in containers)
+                                    {
+                                        <MudSelectItem Value="@c">@c</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" md="3">
+                                <MudSelect T="string" Value="@state.RejectLabel"
+                                           ValueChanged="@(v => state.RejectLabel = v)"
+                                           Label="Reject / Label As" Variant="Variant.Outlined" Dense="true">
+                                    <MudSelectItem Value="@SplitLabelRejected">Wrong split</MudSelectItem>
+                                    <MudSelectItem Value="@SplitLabelSingleContainer">Single container</MudSelectItem>
+                                    <MudSelectItem Value="@SplitLabelBadImage">Bad image / decode failure</MudSelectItem>
+                                    <MudSelectItem Value="@SplitLabelUncertain">Uncertain</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+
                     @if (state.LoadingImage)
                     {
                         <MudStack AlignItems="AlignItems.Center" Class="pa-8">
@@ -214,12 +255,19 @@ else
                                                 </MudChip>
                                             }
                                             <MudSpacer />
-                                            <MudButton Variant="@(selected ? Variant.Filled : Variant.Outlined)"
-                                                       Color="@(selected ? Color.Success : Color.Primary)"
+                                            @if (selected)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                                    Selected
+                                                </MudChip>
+                                            }
+                                            <MudButton Variant="Variant.Filled"
+                                                       Color="Color.Success"
                                                        Size="Size.Small"
-                                                       StartIcon="@(selected ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.RadioButtonUnchecked)"
-                                                       OnClick="@(() => SelectCandidate(activeJob.Id, candidate.Id))">
-                                                @(selected ? "Selected" : "Select Candidate")
+                                                       StartIcon="@Icons.Material.Outlined.CheckCircle"
+                                                       OnClick="@(() => ApproveJob(activeJob, candidate.Id))"
+                                                       Disabled="@(state.ActionBusy || string.IsNullOrWhiteSpace(state.ContainerLeft) || string.IsNullOrWhiteSpace(state.ContainerRight))">
+                                                Approve @GetCandidateLabel(i) &amp; Next
                                             </MudButton>
                                         </MudStack>
 
@@ -310,55 +358,7 @@ else
 
                         <MudDivider Class="my-4" />
 
-                        <MudText Typo="Typo.subtitle1" Class="mb-2"><b>Container Assignment</b></MudText>
-                        <MudGrid Class="mb-3">
-                            <MudItem xs="12" md="5">
-                                <MudSelect T="string" Value="@state.ContainerLeft"
-                                           ValueChanged="@(v => state.ContainerLeft = v)"
-                                           Label="Left Container" Variant="Variant.Outlined" Dense="true">
-                                    @foreach (var c in containers)
-                                    {
-                                        <MudSelectItem Value="@c">@c</MudSelectItem>
-                                    }
-                                </MudSelect>
-                            </MudItem>
-                            <MudItem xs="12" md="2" Class="d-flex align-center justify-center">
-                                <MudIconButton Icon="@Icons.Material.Outlined.SwapHoriz"
-                                               OnClick="@(() => SwapContainers(activeJob.Id))"
-                                               Color="Color.Primary" Size="Size.Large" />
-                            </MudItem>
-                            <MudItem xs="12" md="5">
-                                <MudSelect T="string" Value="@state.ContainerRight"
-                                           ValueChanged="@(v => state.ContainerRight = v)"
-                                           Label="Right Container" Variant="Variant.Outlined" Dense="true">
-                                    @foreach (var c in containers)
-                                    {
-                                        <MudSelectItem Value="@c">@c</MudSelectItem>
-                                    }
-                                </MudSelect>
-                            </MudItem>
-                        </MudGrid>
-
-                        <MudGrid Class="mb-4">
-                            <MudItem xs="12" md="5">
-                                <MudSelect T="string" Value="@state.RejectLabel"
-                                           ValueChanged="@(v => state.RejectLabel = v)"
-                                           Label="Reject / Label As" Variant="Variant.Outlined" Dense="true">
-                                    <MudSelectItem Value="@SplitLabelRejected">Wrong split</MudSelectItem>
-                                    <MudSelectItem Value="@SplitLabelSingleContainer">Single container</MudSelectItem>
-                                    <MudSelectItem Value="@SplitLabelBadImage">Bad image / decode failure</MudSelectItem>
-                                    <MudSelectItem Value="@SplitLabelUncertain">Uncertain</MudSelectItem>
-                                </MudSelect>
-                            </MudItem>
-                        </MudGrid>
-
                         <MudStack Row="true" AlignItems="AlignItems.Center" Style="gap: 10px; flex-wrap: wrap;">
-                            <MudButton Variant="Variant.Filled" Color="Color.Success"
-                                       StartIcon="@Icons.Material.Outlined.CheckCircle"
-                                       OnClick="@(() => ApproveJob(activeJob))"
-                                       Disabled="@(state.ActionBusy || state.SelectedResultId is null || string.IsNullOrWhiteSpace(state.ContainerLeft) || string.IsNullOrWhiteSpace(state.ContainerRight))">
-                                Approve Selected &amp; Next
-                            </MudButton>
                             <MudButton Variant="Variant.Filled" Color="Color.Warning"
                                        StartIcon="@Icons.Material.Outlined.Edit"
                                        OnClick="@(() => SubmitManualSplit(activeJob))"
@@ -643,13 +643,6 @@ else
         return candidates;
     }
 
-    private void SelectCandidate(Guid jobId, Guid resultId)
-    {
-        var state = GetJobState(jobId);
-        state.SelectedResultId = resultId;
-        StateHasChanged();
-    }
-
     private void OnOriginalImageClicked(Guid jobId, MouseEventArgs e)
     {
         var state = GetJobState(jobId);
@@ -667,14 +660,15 @@ else
         StateHasChanged();
     }
 
-    private async Task ApproveJob(SplitJobDto job)
+    private async Task ApproveJob(SplitJobDto job, Guid? resultId = null)
     {
         var state = GetJobState(job.Id);
         if (string.IsNullOrWhiteSpace(state.ContainerLeft) || string.IsNullOrWhiteSpace(state.ContainerRight))
             return;
 
-        var selected = state.SelectedResultId.HasValue
-            ? state.Results.FirstOrDefault(r => r.Id == state.SelectedResultId.Value)
+        var selectedResultId = resultId ?? state.SelectedResultId;
+        var selected = selectedResultId.HasValue
+            ? state.Results.FirstOrDefault(r => r.Id == selectedResultId.Value)
             : null;
 
         if (selected == null)
@@ -682,6 +676,8 @@ else
             Snackbar.Add("Select a split candidate first", Severity.Warning);
             return;
         }
+
+        state.SelectedResultId = selected.Id;
 
         state.ActionBusy = true;
         try
