@@ -1,0 +1,14 @@
+{
+  "schema_version": "nscim.image_splitter.local_baseline_config.v1",
+  "model_name": "nscim-splitter-candidate-ranker-baseline",
+  "primary_tolerance_px": 20,
+  "min_samples_for_source": 3,
+  "unknown_source_penalty_px": 9999.0,
+  "fallback_split_ratio": 0.5,
+  "allowed_source_kinds": [
+    "current_best",
+    "candidate",
+    "teacher"
+  ],
+  "no_split_handling": "not_modeled_shadow_only"
+}

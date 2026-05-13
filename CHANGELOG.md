@@ -22,6 +22,103 @@ For each release, this file records:
 
 ---
 
+## [2.17.8] - 2026-05-13 - Consolidated splitter review operations
+
+Patch release for the image splitter review and training-readiness workflow.
+
+### What landed
+
+- Added a splitter review summary API for queue, label, scanner, and portal
+  record-link metrics.
+- Made Split Review approvals synchronize the corresponding portal
+  `AnalysisRecord` split state after the splitter accepts the approval.
+- Mapped explicit split review labels for single-container, bad-image, and
+  uncertain cases into portal split states.
+- Updated the Split Review page into a review console with queue, label, and
+  training-readiness context plus direct candidate-save and negative-label
+  actions.
+- Added read-only splitter operational reporting and an operations runbook.
+- Added a shadow-only local baseline training/evaluation/prediction scaffold
+  for exported splitter manifests.
+
+### Migrations
+
+- None.
+
+---
+
+## [2.17.7] - 2026-05-13 - Faster split review approvals
+
+Patch release for the splitter analyst review workflow.
+
+### What landed
+
+- Moved left/right container confirmation above the candidate images so the
+  reviewer verifies assignment before judging the split crops.
+- Added approve buttons directly on each large split candidate card, removing
+  the extra select-then-approve step.
+- Kept reject/label and manual-correction actions available as secondary paths.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Streamline split review approvals
+
+## [2.17.6] - 2026-05-11 - Split review workbench redesign
+
+Patch release for the splitter analyst review workflow.
+
+### What landed
+
+- Reworked the split review page from an expandable table into a focused
+  review queue with one active job at a time.
+- Replaced tiny split thumbnails as the primary review surface with large
+  left/right crop views for the top two split candidates.
+- Added explicit candidate selection, so approval records the reviewer-selected
+  split result instead of always approving the splitter's current best strategy.
+- Added save-and-next style progression after approve or reject/label actions.
+- Kept manual split correction available from the original image, but moved it
+  behind a secondary panel so the reviewer judges the actual split outputs first.
+
+### Migrations
+
+- None.
+
+### Commits
+
+- (this commit) - Redesign split review workbench
+
+## [2.17.5] - 2026-05-11 - Image splitter local vision training foundation
+
+Minor release for the local vision model training path. This does not put
+Codex or any remote model into the production split decision path.
+
+### What landed
+
+- Added append-only splitter tables for remote vision teacher runs and local
+  model prediction runs, so shadow-mode outputs can be audited without
+  overwriting analyst labels.
+- Added an OpenAI vision teacher/verifier hook behind `OPENAI_VISION_ENABLED`
+  and `OPENAI_API_KEY`. It attaches advisory metadata only and cannot change
+  deterministic split ranking, crops, or job completion.
+- Added dataset export and baseline evaluation tooling under
+  `services/image-splitter/tools/` for analyst-labelled split training data.
+- Added explicit split-review negative labels for wrong split, single
+  container, bad image/decode failure, and uncertain cases.
+- Captured a baseline training inventory report showing the current labelled
+  data gap before model training starts.
+
+### Migrations
+
+- `services/image-splitter/migrations/003_add_append_only_prediction_runs.sql`
+
+### Commits
+
+- (this commit) - Add local vision training foundation for splitter
+
 ## [2.17.4] - 2026-05-11 - Splitter orphan processing recovery
 
 Patch release for raw-engine recovery during deploys and restarts.

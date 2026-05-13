@@ -21,6 +21,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly ApplicationDbContext _db;
         private readonly NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner _urlSigner;
         private readonly ITwoContainerSplitIntakeService _splitIntake;
+        private const string SplitLabelRejected = "rejected";
+        private const string SplitLabelSingleContainer = "single_container";
+        private const string SplitLabelBadImage = "bad_image";
+        private const string SplitLabelUncertain = "uncertain";
 
         public ImageSplitterController(
             IHttpClientFactory httpClientFactory,
@@ -42,6 +46,199 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("jobs/pending")]
         public async Task<IActionResult> GetPendingJobs()
             => await ForwardGetAsync($"/api/split/pending{Request.QueryString}");
+
+        [HttpGet("jobs/review-summary")]
+        public async Task<IActionResult> GetReviewSummary(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var response = await client.GetAsync("/api/split/jobs/all", cancellationToken);
+                var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return new ContentResult
+                    {
+                        Content = content,
+                        ContentType = "application/json",
+                        StatusCode = (int)response.StatusCode
+                    };
+                }
+
+                var jobs = ReadRawSplitJobs(content);
+                var jobIds = jobs
+                    .Where(job => job.Id.HasValue)
+                    .Select(job => job.Id!.Value)
+                    .Distinct()
+                    .ToList();
+
+                var portalRecords = jobIds.Count == 0
+                    ? new List<AnalysisRecord>()
+                    : await _db.AnalysisRecords
+                        .AsNoTracking()
+                        .Where(record => record.SplitJobId.HasValue && jobIds.Contains(record.SplitJobId.Value))
+                        .ToListAsync(cancellationToken);
+
+                var scannerByJob = portalRecords
+                    .Where(record => record.SplitJobId.HasValue)
+                    .GroupBy(record => record.SplitJobId!.Value)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .Select(record => NormalizeScanner(record.ScannerType))
+                            .FirstOrDefault(scanner => !string.Equals(scanner, "Unknown", StringComparison.OrdinalIgnoreCase))
+                            ?? "Unknown");
+
+                var verdictCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var scannerBreakdown = new Dictionary<string, ReviewSummaryAccumulator>(StringComparer.OrdinalIgnoreCase);
+
+                var reviewableCompleted = 0;
+                var activePendingProcessing = 0;
+                var unreviewedFailed = 0;
+                var labelledTotal = 0;
+                var approvedCount = 0;
+                var wrongSplitCount = 0;
+                var singleContainerCount = 0;
+                var badImageCount = 0;
+                var uncertainCount = 0;
+                var positiveLabelCount = 0;
+                var negativeLabelCount = 0;
+
+                foreach (var job in jobs)
+                {
+                    var status = NormalizeLabelToken(job.Status);
+                    var verdict = string.IsNullOrWhiteSpace(job.AnalystVerdict)
+                        ? null
+                        : job.AnalystVerdict.Trim();
+                    var isLabelled = !string.IsNullOrWhiteSpace(verdict);
+                    var isUnreviewed = !isLabelled;
+
+                    var isReviewableCompleted = status == "completed" && isUnreviewed;
+                    var isActive = status is "pending" or "processing";
+                    var isUnreviewedFailed = status == "failed" && isUnreviewed;
+                    var normalizedVerdict = NormalizeReviewLabel(verdict) ?? NormalizeLabelToken(verdict);
+                    var isApproved = normalizedVerdict == "approved";
+                    var isWrongSplit = string.Equals(normalizedVerdict, SplitLabelRejected, StringComparison.Ordinal);
+                    var isSingleContainer = string.Equals(normalizedVerdict, SplitLabelSingleContainer, StringComparison.Ordinal);
+                    var isBadImage = string.Equals(normalizedVerdict, SplitLabelBadImage, StringComparison.Ordinal);
+                    var isUncertain = string.Equals(normalizedVerdict, SplitLabelUncertain, StringComparison.Ordinal);
+
+                    if (isReviewableCompleted)
+                        reviewableCompleted++;
+                    if (isActive)
+                        activePendingProcessing++;
+                    if (isUnreviewedFailed)
+                        unreviewedFailed++;
+                    if (isLabelled)
+                    {
+                        labelledTotal++;
+                        verdictCounts[verdict!] = verdictCounts.TryGetValue(verdict!, out var count) ? count + 1 : 1;
+                    }
+                    if (isApproved)
+                        approvedCount++;
+                    if (isWrongSplit)
+                        wrongSplitCount++;
+                    if (isSingleContainer)
+                        singleContainerCount++;
+                    if (isBadImage)
+                        badImageCount++;
+                    if (isUncertain)
+                        uncertainCount++;
+                    if ((job.CorrectSplitX.HasValue && job.CorrectSplitX.Value >= 0) || isApproved)
+                        positiveLabelCount++;
+                    if (isSingleContainer || isBadImage || isUncertain)
+                        negativeLabelCount++;
+
+                    var scanner = job.Id.HasValue && scannerByJob.TryGetValue(job.Id.Value, out var scannerValue)
+                        ? scannerValue
+                        : "Unknown";
+
+                    if (!scannerBreakdown.TryGetValue(scanner, out var bucket))
+                    {
+                        bucket = new ReviewSummaryAccumulator(scanner);
+                        scannerBreakdown[scanner] = bucket;
+                    }
+
+                    bucket.TotalJobs++;
+                    if (isReviewableCompleted)
+                        bucket.ReviewableCompleted++;
+                    if (isActive)
+                        bucket.ActivePendingProcessing++;
+                    if (isUnreviewedFailed)
+                        bucket.UnreviewedFailed++;
+                    if (isLabelled)
+                        bucket.LabelledTotal++;
+                }
+
+                var aseLabelCount = scannerBreakdown.TryGetValue("ASE", out var aseBucket) ? aseBucket.LabelledTotal : 0;
+                var fs6000LabelCount = scannerBreakdown.TryGetValue("FS6000", out var fs6000Bucket) ? fs6000Bucket.LabelledTotal : 0;
+
+                return Ok(new
+                {
+                    generatedAtUtc = DateTime.UtcNow,
+                    generated_at = DateTime.UtcNow,
+                    totalJobs = jobs.Count,
+                    total_jobs = jobs.Count,
+                    reviewableCompleted,
+                    reviewable_count = reviewableCompleted,
+                    pending_review_count = reviewableCompleted,
+                    awaiting_review = reviewableCompleted,
+                    completed_unreviewed = reviewableCompleted,
+                    unreviewed_completed = reviewableCompleted,
+                    activePendingProcessing,
+                    active_pending_processing = activePendingProcessing,
+                    unreviewedFailed,
+                    unreviewed_failed = unreviewedFailed,
+                    approved_count = approvedCount,
+                    rejected_count = wrongSplitCount,
+                    wrong_split_count = wrongSplitCount,
+                    single_container_count = singleContainerCount,
+                    bad_image_count = badImageCount,
+                    uncertain_count = uncertainCount,
+                    labelled_count = labelledTotal,
+                    labeled_count = labelledTotal,
+                    positive_label_count = positiveLabelCount,
+                    negative_label_count = negativeLabelCount,
+                    negative_labels = negativeLabelCount,
+                    training_rows = positiveLabelCount + negativeLabelCount,
+                    training_example_count = positiveLabelCount + negativeLabelCount,
+                    ase_label_count = aseLabelCount,
+                    ase_labels = aseLabelCount,
+                    fs6000_label_count = fs6000LabelCount,
+                    fs6000_labels = fs6000LabelCount,
+                    training_ready = positiveLabelCount >= 200 && negativeLabelCount >= 50 && aseLabelCount >= 100 && fs6000LabelCount >= 100,
+                    labelledTotals = new
+                    {
+                        total = labelledTotal,
+                        byVerdict = verdictCounts
+                            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+                    },
+                    scannerBreakdown = scannerBreakdown.Values
+                        .OrderBy(bucket => bucket.Scanner, StringComparer.OrdinalIgnoreCase)
+                        .Select(bucket => new
+                        {
+                            scanner = bucket.Scanner,
+                            totalJobs = bucket.TotalJobs,
+                            reviewableCompleted = bucket.ReviewableCompleted,
+                            activePendingProcessing = bucket.ActivePendingProcessing,
+                            unreviewedFailed = bucket.UnreviewedFailed,
+                            labelledTotal = bucket.LabelledTotal
+                        }),
+                    portalRecordLinks = new
+                    {
+                        linkedJobs = scannerByJob.Count,
+                        linkedRecords = portalRecords.Count
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to build split review summary");
+                return StatusCode(503, new { error = "Splitter review summary unavailable" });
+            }
+        }
 
         [HttpGet("jobs/{jobId}")]
         public async Task<IActionResult> GetJob(string jobId) => await ForwardGetAsync($"/api/split/{jobId}");
@@ -69,11 +266,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         [HttpPost("jobs/{jobId}/approve")]
         public async Task<IActionResult> ApproveResult(string jobId, [FromBody] JsonElement body)
-            => await ForwardPostAsync($"/api/split/{jobId}/approve", body);
+            => await ForwardApprovePostAsync(jobId, body);
 
         [HttpPost("jobs/{jobId}/reject")]
         public async Task<IActionResult> RejectResult(string jobId, [FromBody] JsonElement body)
-            => await ForwardPostAsync($"/api/split/{jobId}/reject", body);
+            => await ForwardRejectPostAsync(jobId, body);
 
         [HttpPost("jobs/{jobId}/manual")]
         public async Task<IActionResult> ManualSplit(string jobId, [FromBody] JsonElement body)
@@ -692,6 +889,88 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return prop.GetString();
         }
 
+        private static string? TryGetReviewLabel(JsonElement body)
+        {
+            foreach (var propertyName in new[]
+            {
+                "review_label",
+                "split_outcome",
+                "label",
+                "analyst_verdict",
+                "reason_code"
+            })
+            {
+                var label = NormalizeReviewLabel(TryGetString(body, propertyName));
+                if (!string.IsNullOrWhiteSpace(label))
+                    return label;
+            }
+
+            return null;
+        }
+
+        private static bool IsSpecificReviewLabel(string? label) =>
+            string.Equals(label, SplitLabelSingleContainer, StringComparison.Ordinal)
+            || string.Equals(label, SplitLabelBadImage, StringComparison.Ordinal)
+            || string.Equals(label, SplitLabelUncertain, StringComparison.Ordinal);
+
+        private static string? NormalizeReviewLabel(string? value)
+        {
+            var normalized = NormalizeLabelToken(value);
+            if (normalized.Length == 0)
+                return null;
+
+            return normalized switch
+            {
+                "single" or "singlecontainer" or "visualsingle" or "visuallysingle" => SplitLabelSingleContainer,
+                "badimage" or "badscan" or "corruptimage" or "corruptedimage"
+                    or "decodefailure" or "scannerdecodefailure" => SplitLabelBadImage,
+                "uncertain" or "ambiguous" or "lowconfidence" or "inconclusive"
+                    or "nosplitdetected" => SplitLabelUncertain,
+                "reject" or "rejected" or "wrongsplit" => SplitLabelRejected,
+                _ => null
+            };
+        }
+
+        private static string? NormalizeSplitOutcome(string? value)
+        {
+            var normalized = NormalizeLabelToken(value);
+            if (normalized.Length == 0)
+                return null;
+
+            if (normalized is "notapplicable" or "na" or "notsplittable" or "nosplitneeded"
+                or "badimage" or "badscan" or "corruptimage" or "corruptedimage"
+                or "decodefailure" or "scannerdecodefailure")
+            {
+                return "not_applicable";
+            }
+
+            if (normalized is "single" or "singlecontainer" or "visualsingle" or "visuallysingle")
+                return SplitLabelSingleContainer;
+
+            if (normalized is "uncertain" or "ambiguous" or "lowconfidence" or "inconclusive"
+                or "nosplitdetected")
+            {
+                return SplitLabelUncertain;
+            }
+
+            if (normalized is "approve" or "approved" or "reject" or "rejected" or "wrongsplit")
+                return null;
+
+            return value;
+        }
+
+        private static string NormalizeLabelToken(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            return new string(value
+                .Trim()
+                .ToLowerInvariant()
+                .Where(char.IsLetterOrDigit)
+                .ToArray());
+        }
+
         private static string? TryGetOutcome(JsonElement element)
         {
             foreach (var propertyName in new[]
@@ -702,12 +981,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "visual_outcome",
                 "visualOutcome",
                 "classification",
-                "resolution"
+                "resolution",
+                "analyst_verdict",
+                "review_label",
+                "label"
             })
             {
                 var value = TryGetString(element, propertyName);
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
+                var outcome = NormalizeSplitOutcome(value);
+                if (!string.IsNullOrWhiteSpace(outcome))
+                    return outcome;
             }
 
             foreach (var propertyName in new[]
@@ -718,13 +1001,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 "visualSingle",
                 "single_container",
                 "singleContainer",
+                "bad_image",
+                "badImage",
+                "scanner_decode_failure",
+                "scannerDecodeFailure",
                 "uncertain"
             })
             {
                 if (element.TryGetProperty(propertyName, out var prop)
                     && prop.ValueKind == JsonValueKind.True)
                 {
-                    return propertyName;
+                    return NormalizeSplitOutcome(propertyName) ?? propertyName;
                 }
             }
 
@@ -772,6 +1059,174 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .ToList();
         }
 
+        private async Task ApplyOperationalApprovalAsync(string jobId, JsonElement body)
+        {
+            if (!Guid.TryParse(jobId, out var jobGuid))
+            {
+                _logger.LogWarning("Skipping portal split approval sync because job id {JobId} is not a GUID", jobId);
+                return;
+            }
+
+            var resultId = TryGetAliasedGuid(body, "result_id", "resultId");
+            var leftContainer = TryGetAliasedString(body, "container_left", "containerLeft");
+            var rightContainer = TryGetAliasedString(body, "container_right", "containerRight");
+
+            if (!resultId.HasValue
+                || string.IsNullOrWhiteSpace(leftContainer)
+                || string.IsNullOrWhiteSpace(rightContainer))
+            {
+                _logger.LogDebug(
+                    "Skipping portal split approval sync for job {JobId}: approval payload did not include result_id/resultId and both container sides",
+                    jobId);
+                return;
+            }
+
+            leftContainer = leftContainer.Trim();
+            rightContainer = rightContainer.Trim();
+
+            var records = await _db.AnalysisRecords
+                .Where(record => record.SplitJobId == jobGuid && record.IsMultiContainerScan)
+                .ToListAsync();
+
+            var updated = 0;
+            updated += ApplyOperationalApprovalToSide(records, leftContainer, "left", resultId.Value);
+            updated += ApplyOperationalApprovalToSide(records, rightContainer, "right", resultId.Value);
+
+            if (updated > 0)
+            {
+                await _db.SaveChangesAsync();
+                _logger.LogInformation(
+                    "Synchronized split approval for job {JobId}: result {ResultId}, updated {UpdatedRecordCount} portal record(s)",
+                    jobGuid,
+                    resultId.Value,
+                    updated);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Split approval for job {JobId} succeeded in splitter, but no matching portal AnalysisRecords were found for {LeftContainer}/{RightContainer}",
+                    jobGuid,
+                    leftContainer,
+                    rightContainer);
+            }
+        }
+
+        private static int ApplyOperationalApprovalToSide(
+            IEnumerable<AnalysisRecord> records,
+            string containerNumber,
+            string splitPosition,
+            Guid resultId)
+        {
+            var updated = 0;
+
+            foreach (var record in records.Where(record =>
+                         string.Equals(record.ContainerNumber?.Trim(), containerNumber, StringComparison.OrdinalIgnoreCase)))
+            {
+                record.SplitResultId = resultId;
+                record.SplitStatus = SplitAnalysisStatus.Chosen;
+                record.SplitPosition = splitPosition;
+                updated++;
+            }
+
+            return updated;
+        }
+
+        private async Task ApplyOperationalRejectionAsync(string jobId, string? reviewLabel)
+        {
+            var targetStatus = MapReviewLabelToSplitStatus(reviewLabel);
+            if (targetStatus == null)
+                return;
+
+            if (!Guid.TryParse(jobId, out var jobGuid))
+            {
+                _logger.LogWarning("Skipping portal split rejection sync because job id {JobId} is not a GUID", jobId);
+                return;
+            }
+
+            var records = await _db.AnalysisRecords
+                .Where(record => record.SplitJobId == jobGuid && record.IsMultiContainerScan)
+                .ToListAsync();
+
+            foreach (var record in records)
+            {
+                record.SplitStatus = targetStatus;
+                record.SplitResultId = null;
+                record.SplitOptionA_ResultId = null;
+                record.SplitOptionB_ResultId = null;
+            }
+
+            if (records.Count > 0)
+            {
+                await _db.SaveChangesAsync();
+                _logger.LogInformation(
+                    "Synchronized split rejection label {ReviewLabel} for job {JobId}: set {UpdatedRecordCount} portal record(s) to {SplitStatus}",
+                    reviewLabel,
+                    jobGuid,
+                    records.Count,
+                    targetStatus);
+            }
+        }
+
+        private static string? MapReviewLabelToSplitStatus(string? reviewLabel)
+        {
+            return reviewLabel switch
+            {
+                SplitLabelSingleContainer => SplitAnalysisStatus.VisualSingle,
+                SplitLabelBadImage => SplitAnalysisStatus.NotApplicable,
+                SplitLabelUncertain => SplitAnalysisStatus.Uncertain,
+                _ => null
+            };
+        }
+
+        private static string? TryGetAliasedString(JsonElement element, params string[] propertyNames)
+        {
+            foreach (var propertyName in propertyNames)
+            {
+                if (element.TryGetProperty(propertyName, out var prop))
+                {
+                    if (prop.ValueKind == JsonValueKind.String)
+                        return prop.GetString();
+
+                    if (prop.ValueKind == JsonValueKind.Number
+                        || prop.ValueKind == JsonValueKind.True
+                        || prop.ValueKind == JsonValueKind.False)
+                    {
+                        return prop.ToString();
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static Guid? TryGetAliasedGuid(JsonElement element, params string[] propertyNames)
+        {
+            var value = TryGetAliasedString(element, propertyNames);
+            return Guid.TryParse(value, out var guid) ? guid : null;
+        }
+
+        private static IReadOnlyList<RawSplitJobSummary> ReadRawSplitJobs(string content)
+        {
+            using var document = JsonDocument.Parse(content);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return Array.Empty<RawSplitJobSummary>();
+
+            var jobs = new List<RawSplitJobSummary>();
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                jobs.Add(new RawSplitJobSummary(
+                    TryGetGuid(item, "id"),
+                    TryGetString(item, "status"),
+                    TryGetString(item, "analyst_verdict") ?? TryGetString(item, "analystVerdict"),
+                    TryGetInt(item, "correct_split_x") ?? TryGetInt(item, "correctSplitX")));
+            }
+
+            return jobs;
+        }
+
+        private static string NormalizeScanner(string? scannerType)
+            => string.IsNullOrWhiteSpace(scannerType) ? "Unknown" : scannerType.Trim();
+
         private async Task<IActionResult> ForwardGetAsync(string path)
         {
             try
@@ -784,6 +1239,100 @@ namespace NickScanCentralImagingPortal.API.Controllers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to forward GET {Path}", path);
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        private async Task<IActionResult> ForwardApprovePostAsync(string jobId, JsonElement body)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var jsonContent = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json");
+                var response = await client.PostAsync($"/api/split/{jobId}/approve", jsonContent);
+                var content = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    try
+                    {
+                        await ApplyOperationalApprovalAsync(jobId, body);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Splitter approved job {JobId}, but portal AnalysisRecord synchronization failed", jobId);
+                        return StatusCode(500, new { error = "split_operational_sync_failed" });
+                    }
+                }
+
+                return new ContentResult
+                {
+                    Content = content,
+                    ContentType = "application/json",
+                    StatusCode = (int)response.StatusCode
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to forward POST /api/split/{JobId}/approve", jobId);
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        private async Task<IActionResult> ForwardRejectPostAsync(string jobId, JsonElement body)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var jsonContent = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json");
+                var response = await client.PostAsync($"/api/split/{jobId}/reject", jsonContent);
+                var content = await response.Content.ReadAsStringAsync();
+
+                var reviewLabel = TryGetReviewLabel(body);
+                if (response.IsSuccessStatusCode && IsSpecificReviewLabel(reviewLabel))
+                {
+                    var verdictJson = JsonSerializer.Serialize(new { wall_verdict = reviewLabel });
+                    var verdictContent = new StringContent(verdictJson, Encoding.UTF8, "application/json");
+                    var verdictResponse = await client.PostAsync($"/api/split/{jobId}/wall-verdict", verdictContent);
+
+                    if (!verdictResponse.IsSuccessStatusCode)
+                    {
+                        var verdictBody = await verdictResponse.Content.ReadAsStringAsync();
+                        _logger.LogWarning(
+                            "Failed to persist split review label {Label} for job {JobId}: {StatusCode} {Body}",
+                            reviewLabel,
+                            jobId,
+                            (int)verdictResponse.StatusCode,
+                            verdictBody);
+
+                        return StatusCode((int)verdictResponse.StatusCode, new
+                        {
+                            error = "split_label_persist_failed",
+                            label = reviewLabel
+                        });
+                    }
+
+                    try
+                    {
+                        await ApplyOperationalRejectionAsync(jobId, reviewLabel);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Splitter rejected job {JobId}, but portal AnalysisRecord synchronization failed", jobId);
+                        return StatusCode(500, new { error = "split_operational_sync_failed" });
+                    }
+                }
+
+                return new ContentResult
+                {
+                    Content = content,
+                    ContentType = "application/json",
+                    StatusCode = (int)response.StatusCode
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to forward POST /api/split/{JobId}/reject", jobId);
                 return StatusCode(503, new { error = "Splitter service unavailable" });
             }
         }
@@ -803,6 +1352,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogWarning(ex, "Failed to forward POST {Path}", path);
                 return StatusCode(503, new { error = "Splitter service unavailable" });
             }
+        }
+
+        private sealed record RawSplitJobSummary(Guid? Id, string? Status, string? AnalystVerdict, int? CorrectSplitX);
+
+        private sealed class ReviewSummaryAccumulator(string scanner)
+        {
+            public string Scanner { get; } = scanner;
+            public int TotalJobs { get; set; }
+            public int ReviewableCompleted { get; set; }
+            public int ActivePendingProcessing { get; set; }
+            public int UnreviewedFailed { get; set; }
+            public int LabelledTotal { get; set; }
         }
     }
 }

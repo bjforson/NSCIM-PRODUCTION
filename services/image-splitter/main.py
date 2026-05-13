@@ -29,7 +29,8 @@ from config import (
     ALLOWED_IMAGE_URL_HOSTS,
 )
 from models.database import (
-    get_db, create_tables, ImageSplitJob, ImageSplitResult, ImageSplitAssignment
+    get_db, create_tables, ImageSplitJob, ImageSplitResult, ImageSplitAssignment,
+    RemoteVisionRun
 )
 from models.schemas import (
     SplitJobRequest, SplitJobResponse, SplitResultResponse,
@@ -348,6 +349,43 @@ def ensure_minimum_split_candidates(results: list[SplitResult], image_data: byte
     return results
 
 
+def _remote_vision_run_from_openai_advisory(job_id: UUID, result: SplitResult) -> Optional[RemoteVisionRun]:
+    """Build an append-only audit row from OpenAI advisory metadata."""
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    advisory = metadata.get("openai_vision_advisory")
+    if not isinstance(advisory, dict):
+        return None
+
+    usage = advisory.get("usage") if isinstance(advisory.get("usage"), dict) else {}
+    return RemoteVisionRun(
+        job_id=job_id,
+        provider=str(advisory.get("provider") or "openai"),
+        model_name=str(advisory.get("model") or "unknown"),
+        model_version=str(advisory.get("model_version")) if advisory.get("model_version") else None,
+        run_purpose="shadow",
+        status="completed",
+        prompt_version=str(advisory.get("prompt_version")) if advisory.get("prompt_version") else None,
+        split_x=advisory.get("split_x") if isinstance(advisory.get("split_x"), int) else None,
+        confidence=advisory.get("confidence") if isinstance(advisory.get("confidence"), (int, float)) else None,
+        reasoning=str(advisory.get("reasoning") or "")[:2000] or None,
+        input_tokens=usage.get("input_tokens") if isinstance(usage.get("input_tokens"), int) else None,
+        output_tokens=usage.get("output_tokens") if isinstance(usage.get("output_tokens"), int) else None,
+        total_tokens=usage.get("total_tokens") if isinstance(usage.get("total_tokens"), int) else None,
+        latency_ms=advisory.get("latency_ms") if isinstance(advisory.get("latency_ms"), int) else None,
+        raw_response={"assessment": advisory},
+        run_metadata={
+            "source_result_strategy": result.strategy_name,
+            "source_result_split_x": result.split_x,
+            "source_result_confidence": result.confidence,
+            "deterministic_selected_strategy": advisory.get("deterministic_selected_strategy"),
+            "deterministic_split_x": advisory.get("deterministic_split_x"),
+            "purpose": advisory.get("purpose"),
+            "advisory_only": True,
+        },
+        completed_at=datetime.now(timezone.utc),
+    )
+
+
 async def process_job(job_id: UUID):
     """Background task: run the splitting pipeline on a job."""
     from models.database import AsyncSessionLocal
@@ -425,6 +463,10 @@ async def process_job(job_id: UUID):
                     job.claude_vision_latency_ms = r.processing_ms
                     job.claude_vision_model = (r.metadata or {}).get("model")
                     job.claude_vision_ran_at = datetime.now(timezone.utc)
+
+                openai_run = _remote_vision_run_from_openai_advisory(job.id, r)
+                if openai_run is not None:
+                    db.add(openai_run)
 
             # Select best result
             best = get_best_result(results)

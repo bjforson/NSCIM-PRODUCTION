@@ -52,6 +52,16 @@ ALLOWED_IMAGE_URL_HOSTS = {
 # Main app callback (optional)
 MAIN_APP_CALLBACK_URL = os.getenv("MAIN_APP_CALLBACK_URL", "")
 
+# OpenAI vision teacher/verifier (shadow/advisory only).
+# Disabled by default and also requires OPENAI_API_KEY at call time. The
+# orchestrator records advisory metadata on SplitResult objects but never lets
+# OpenAI change deterministic splitting decisions.
+OPENAI_VISION_ENABLED = _env_bool("OPENAI_VISION_ENABLED", False)
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+OPENAI_VISION_MAX_RES = max(256, _env_int("OPENAI_VISION_MAX_RES", 1568))
+OPENAI_VISION_TIMEOUT_SECONDS = max(1, _env_int("OPENAI_VISION_TIMEOUT_SECONDS", 45))
+OPENAI_VISION_REVIEW_DISAGREEMENT_PX = max(1, _env_int("OPENAI_VISION_REVIEW_DISAGREEMENT_PX", 35))
+
 # Consensus scoring
 AGREEMENT_THRESHOLD_PX = 30  # strategies within 30px of each other "agree"
 AGREEMENT_BONUS = 0.15       # bonus confidence for agreeing strategies

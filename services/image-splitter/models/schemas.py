@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, ConfigDict
+from typing import Any, Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -13,6 +13,8 @@ class SplitJobRequest(BaseModel):
 
 
 class SplitJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     container_numbers: str
     status: str
@@ -28,11 +30,10 @@ class SplitJobResponse(BaseModel):
     error_message: Optional[str] = None
     result_count: int = 0
 
-    class Config:
-        from_attributes = True
-
 
 class SplitResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     strategy_name: str
     split_x: int
@@ -49,9 +50,6 @@ class SplitResultResponse(BaseModel):
     verifier_picked: Optional[bool] = None
     verifier_reasoning: Optional[str] = None
     consensus_with_steel_wall: Optional[bool] = None
-
-    class Config:
-        from_attributes = True
 
 
 class ManualSplitRequest(BaseModel):
@@ -70,6 +68,75 @@ class RejectRequest(BaseModel):
     correct_split_x: Optional[int] = None   # analyst's correct split point (feedback)
     rejected_by: str
     reason: Optional[str] = None
+
+
+class RemoteVisionRunBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    provider: str
+    model_name: str
+    model_version: Optional[str] = None
+    run_purpose: str = "shadow"
+    status: str = "completed"
+    prompt_version: Optional[str] = None
+    request_id: Optional[str] = None
+    split_x: Optional[int] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    latency_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    raw_request: Optional[dict[str, Any]] = None
+    raw_response: Optional[dict[str, Any]] = None
+    run_metadata: Optional[dict[str, Any]] = None
+    completed_at: Optional[datetime] = None
+
+
+class RemoteVisionRunCreate(RemoteVisionRunBase):
+    job_id: UUID
+
+
+class RemoteVisionRunResponse(RemoteVisionRunBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    id: UUID
+    job_id: UUID
+    created_at: datetime
+
+
+class LocalModelPredictionRunBase(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_name: str
+    model_version: Optional[str] = None
+    model_artifact_uri: Optional[str] = None
+    model_artifact_sha256: Optional[str] = None
+    training_run_id: Optional[str] = None
+    dataset_version: Optional[str] = None
+    run_purpose: str = "shadow"
+    status: str = "completed"
+    split_x: Optional[int] = None
+    confidence: Optional[float] = None
+    uncertainty: Optional[float] = None
+    latency_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    prediction: Optional[dict[str, Any]] = None
+    run_metadata: Optional[dict[str, Any]] = None
+    completed_at: Optional[datetime] = None
+
+
+class LocalModelPredictionRunCreate(LocalModelPredictionRunBase):
+    job_id: UUID
+
+
+class LocalModelPredictionRunResponse(LocalModelPredictionRunBase):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+    id: UUID
+    job_id: UUID
+    created_at: datetime
 
 
 class HealthResponse(BaseModel):
