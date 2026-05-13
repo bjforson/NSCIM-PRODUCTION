@@ -22,6 +22,31 @@ For each release, this file records:
 
 ---
 
+## [2.17.8] - 2026-05-13 - Consolidated splitter review operations
+
+Patch release for the image splitter review and training-readiness workflow.
+
+### What landed
+
+- Added a splitter review summary API for queue, label, scanner, and portal
+  record-link metrics.
+- Made Split Review approvals synchronize the corresponding portal
+  `AnalysisRecord` split state after the splitter accepts the approval.
+- Mapped explicit split review labels for single-container, bad-image, and
+  uncertain cases into portal split states.
+- Updated the Split Review page into a review console with queue, label, and
+  training-readiness context plus direct candidate-save and negative-label
+  actions.
+- Added read-only splitter operational reporting and an operations runbook.
+- Added a shadow-only local baseline training/evaluation/prediction scaffold
+  for exported splitter manifests.
+
+### Migrations
+
+- None.
+
+---
+
 ## [2.17.7] - 2026-05-13 - Faster split review approvals
 
 Patch release for the splitter analyst review workflow.
