@@ -23,6 +23,27 @@ namespace NickScanWebApp.Shared.Services
         Task<PagedResult<ScannerDataRecord>?> GetScannerDataAsync(string containerNumber, int page = 1, int pageSize = 50);
 
         /// <summary>
+        /// Resolve the logical container/group to the physical source scan identity.
+        /// Optional because the Phase 2A API endpoints may not be deployed yet.
+        /// </summary>
+        Task<ScanAssetResolution?> ResolveScanAssetAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            int? analysisRecordId = null,
+            Guid? splitJobId = null);
+
+        /// <summary>
+        /// Get scanner data while preserving resolver metadata and source-scan query hints.
+        /// Falls back to the legacy container route when resolver-backed routes are absent.
+        /// </summary>
+        Task<PagedResult<ScannerDataRecord>?> GetScannerDataForResolvedScanAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            int page = 1,
+            int pageSize = 50,
+            ScanAssetResolution? resolution = null);
+
+        /// <summary>
         /// Get full scanner data record (cached for 5 minutes)
         /// </summary>
         Task<FullScannerDataRecord?> GetFullScannerDataAsync(string containerNumber);
@@ -41,6 +62,15 @@ namespace NickScanWebApp.Shared.Services
         /// Get image metadata for a container (cached for 5 minutes)
         /// </summary>
         Task<List<ImageMetadata>?> GetImageMetadataAsync(string containerNumber);
+
+        /// <summary>
+        /// Get image metadata while preserving resolver metadata and source-scan query hints.
+        /// Falls back to the legacy container route when resolver-backed routes are absent.
+        /// </summary>
+        Task<List<ImageMetadata>?> GetImageMetadataForResolvedScanAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            ScanAssetResolution? resolution = null);
 
         /// <summary>
         /// Get full image with tools (cached for 10 minutes)

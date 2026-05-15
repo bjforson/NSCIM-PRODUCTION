@@ -76,7 +76,7 @@ namespace NickScanWebApp.New.Services
                 _viewContextCache.Remove(key);
                 cacheSource = "force_refresh";
             }
-            else if (_viewContextCache.TryGet<ImageAnalysisViewContext>(key, out var existing))
+            else if (_viewContextCache.TryGet<ImageAnalysisViewContext>(key, out var existing) && existing != null)
             {
                 var cacheDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
                 _logger.LogInformation(
@@ -123,7 +123,11 @@ namespace NickScanWebApp.New.Services
 
                 // Load all container contexts in parallel
                 var containerTasks = containersToLoad.Select(containerNumber =>
-                    _containerPreloader.LoadAsync(containerNumber, forceRefresh, cancellationToken)
+                    _containerPreloader.LoadAsync(
+                        containerNumber,
+                        forceRefresh,
+                        cancellationToken,
+                        groupIdentifier)
                 ).ToList();
 
                 // Wait for all loads to complete

@@ -7,6 +7,8 @@
 @inject ILogger<ImagesTab> Logger
 @inject IDialogService DialogService
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
     @if (isLoading)
@@ -57,7 +59,7 @@
                                         </MudText>
                                     }
                                     <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 500px; text-align: center; word-break: break-all;">
-                                        URL: @image.ThumbnailUrl
+                                            URL: @GetFullImageUrl(image)
                                     </MudText>
                                     @if (imageRetryCount.ContainsKey(image.Id) && imageRetryCount[image.Id] > 0)
                                     {
@@ -89,7 +91,7 @@
                                 </MudStack>
                             }
                             
-                            <img src="@image.FullImageUrl" 
+                            <img src="@GetFullImageUrl(image)"
                                  alt="@GetImageDisplayName(image)"
                                  style="@GetImageStyle(image.Id); max-width: 100%; max-height: 500px; cursor: pointer; object-fit: contain;"
                                  @onclick="@(() => ViewFullImage(image))"
@@ -139,7 +141,7 @@
                                               Color="Color.Success" 
                                               Size="Size.Medium"
                                               aria-label="Download original image"
-                                              Href="@image.FullImageUrl"
+                                              Href="@GetFullImageUrl(image)"
                                               Target="_blank" />
                             </MudTooltip>
                         </MudStack>
@@ -161,6 +163,13 @@
                                 <MudText Typo="Typo.caption" Color="Color.Secondary">Scan Date</MudText>
                                 <MudText Typo="Typo.body2"><strong>@image.CreatedAt.ToString("MMM dd, yyyy")</strong></MudText>
                             </MudItem>
+                            @if (!string.IsNullOrWhiteSpace((image.Resolution ?? SourceScanResolution)?.EffectiveSourceScanId))
+                            {
+                                <MudItem xs="12" sm="4">
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Source Scan</MudText>
+                                    <MudText Typo="Typo.body2"><strong>@((image.Resolution ?? SourceScanResolution)?.EffectiveSourceScanId)</strong></MudText>
+                                </MudItem>
+                            }
                         </MudGrid>
                     </MudCardContent>
                 </MudPaper>
@@ -190,6 +199,8 @@
 
 @code {
     [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string? GroupIdentifier { get; set; }
+    [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
     [Parameter] public int ImageCount { get; set; }
     /// <summary>
     /// Optional preloaded image metadata for this container. When provided, the tab will render from this
@@ -205,8 +216,15 @@
     private Dictionary<int, bool> imageLoadError = new();
     private Dictionary<int, int> imageRetryCount = new(); // ✅ Track retry attempts
     private Dictionary<int, string> imageErrorMessages = new(); // ✅ Store error messages
+    private string _currentUser = "anon";
     
     // Fullscreen viewer state (removed - using dialog instead)
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUser = authState.User?.Identity?.Name ?? "anon";
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -228,7 +246,10 @@
         try
         {
             Logger.LogInformation("Loading images for container: {ContainerNumber}", ContainerNumber);
-            images = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            images = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                ContainerNumber,
+                GroupIdentifier,
+                SourceScanResolution);
             
             if (images != null && images.Any())
             {
@@ -317,10 +338,12 @@
         
         var parameters = new DialogParameters
         {
-            ["ImageUrl"] = image.FullImageUrl,
+            ["ImageUrl"] = GetFullImageUrl(image),
             ["ContainerNumber"] = ContainerNumber,
             ["ScannerType"] = image.ImageType,
-            ["ScanDate"] = image.CreatedAt
+            ["ScanDate"] = image.CreatedAt,
+            ["GroupIdentifier"] = GroupIdentifier,
+            ["SourceScanResolution"] = image.Resolution ?? SourceScanResolution
         };
 
         var options = new DialogOptions 
@@ -343,6 +366,59 @@
             return image.FileName;
             
         return $"{image.ImageType}_Scan_{ContainerNumber}_{image.CreatedAt:yyyyMMdd_HHmmss}.jpg";
+    }
+
+    private string GetFullImageUrl(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        var resolvedPath = BuildPreferredImagePath(image, "full");
+        return SignImagePath(resolvedPath ?? image.FullImageUrl);
+    }
+
+    private string? BuildPreferredImagePath(NickScanWebApp.Shared.Models.ImageMetadata image, string size)
+    {
+        var resolution = image.Resolution ?? SourceScanResolution;
+        if (resolution?.HasUsableSourceScan != true)
+        {
+            return null;
+        }
+
+        var side = image.SplitSide ?? resolution.EffectiveSplitSide;
+        var splitJobId = image.SplitJobId ?? resolution.SplitJobId;
+        var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
+        if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
+        {
+            var cropRoute = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) ? "image" : "lossless";
+            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/{cropRoute}/{Uri.EscapeDataString(side)}";
+        }
+
+        var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
+        if (string.IsNullOrWhiteSpace(sourceScanId))
+        {
+            return null;
+        }
+
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size={Uri.EscapeDataString(size)}&containerNumber={Uri.EscapeDataString(ContainerNumber)}";
+    }
+
+    private string SignImagePath(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("sig=", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        if (url.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(url, _currentUser);
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(uri.PathAndQuery, _currentUser);
+        }
+
+        return url;
     }
 
     private void OnImageLoaded(int imageId)

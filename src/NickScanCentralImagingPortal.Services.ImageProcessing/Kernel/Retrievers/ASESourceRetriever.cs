@@ -22,20 +22,26 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retriever
     {
         private readonly ILogger<ASESourceRetriever> _logger;
         private readonly ApplicationDbContext _db;
+        private readonly IScanAssetResolver _scanAssetResolver;
 
         public ScannerType ScannerType => ScannerType.ASE;
 
-        public ASESourceRetriever(ILogger<ASESourceRetriever> logger, ApplicationDbContext db)
+        public ASESourceRetriever(
+            ILogger<ASESourceRetriever> logger,
+            ApplicationDbContext db,
+            IScanAssetResolver scanAssetResolver)
         {
             _logger = logger;
             _db = db;
+            _scanAssetResolver = scanAssetResolver;
         }
 
         public async Task<ScanSourceBytes?> LoadAsync(string containerNumber, CancellationToken ct = default)
         {
+            var sourceContainerNumber = await ResolveAseSourceContainerAsync(containerNumber, ct);
             var row = await _db.AseScans
                 .AsNoTracking()
-                .Where(s => s.ContainerNumber == containerNumber
+                .Where(s => s.ContainerNumber == sourceContainerNumber
                         && s.ScanImage != null
                         && s.ScanImage.Length > 16)
                 .OrderByDescending(s => s.ScanTime)
@@ -57,7 +63,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retriever
             return new ScanSourceBytes
             {
                 ScanId          = row.Id.ToString(),
-                ContainerNumber = containerNumber,
+                ContainerNumber = sourceContainerNumber,
                 SourceFormatTag = ASEFormatAdapter.FormatTag,
                 Blobs           = blobs,
                 Metadata        = metadata,
@@ -66,9 +72,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retriever
 
         public async Task<BlobInventory?> InventoryAsync(string containerNumber, CancellationToken ct = default)
         {
+            var sourceContainerNumber = await ResolveAseSourceContainerAsync(containerNumber, ct);
             var row = await _db.AseScans
                 .AsNoTracking()
-                .Where(s => s.ContainerNumber == containerNumber)
+                .Where(s => s.ContainerNumber == sourceContainerNumber)
                 .OrderByDescending(s => s.ScanTime)
                 .Select(s => new { s.Id, HasBlob = s.ScanImage != null && s.ScanImage.Length > 16 })
                 .FirstOrDefaultAsync(ct);
@@ -81,6 +88,20 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retriever
                 PresentBlobNames = row.HasBlob ? new[] { "ScanImage" } : Array.Empty<string>(),
                 MissingBlobNames = row.HasBlob ? Array.Empty<string>() : new[] { "ScanImage" },
             };
+        }
+
+        private async Task<string> ResolveAseSourceContainerAsync(string containerNumber, CancellationToken ct)
+        {
+            var resolution = await _scanAssetResolver.ResolveAsync(containerNumber, cancellationToken: ct);
+            if (resolution.Found
+                && !resolution.IsAmbiguous
+                && string.Equals(resolution.SourceScannerType, "ASE", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
+            {
+                return resolution.SourceContainerNumbers;
+            }
+
+            return containerNumber;
         }
     }
 }

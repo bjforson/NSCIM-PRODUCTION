@@ -43,6 +43,27 @@ namespace NickScanWebApp.Shared.Services
             _tokenSource = tokenSource ?? authStateProvider as IAuthTokenSource;
         }
 
+        private static bool IsTransientGetFailure(Exception ex)
+        {
+            var message = ex.ToString();
+            return message.Contains("No connection could be made", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("actively refused", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("connection aborted", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static TimeSpan GetTransientRetryDelay(int attempt)
+        {
+            return attempt switch
+            {
+                1 => TimeSpan.FromMilliseconds(350),
+                2 => TimeSpan.FromSeconds(1),
+                _ => TimeSpan.FromSeconds(2)
+            };
+        }
+
         /// <summary>
         /// Get JWT token from the typed IAuthTokenSource interface (6.07).
         /// Falls back to reflection-based lookup on AuthenticationStateProvider
@@ -142,56 +163,116 @@ namespace NickScanWebApp.Shared.Services
         /// </summary>
         public async Task<T?> GetAsync<T>(string endpoint)
         {
+            const int maxTransientAttempts = 3;
+
+            for (var attempt = 1; attempt <= maxTransientAttempts; attempt++)
+            {
+                try
+                {
+                    var client = await GetAuthenticatedClientAsync();
+                    var response = await client.GetAsync(endpoint);
+
+                    // Handle 401/403 errors more gracefully - don't log as error if it's expected
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var status = (int)response.StatusCode;
+                        if (status == 401 || status == 403)
+                        {
+                            // 6.07 (Sprint 4): bumped from Debug to Warning so operators
+                            // see session-expiry / permission-denied signals at default
+                            // log levels. Previously this was invisible at Information
+                            // and below, masking the symptom for "everything looks empty".
+                            _logger.LogWarning("HTTP {Status} GET {Endpoint} - authentication/authorization required", status, endpoint);
+                        }
+                        else
+                        {
+                            var content = await response.Content.ReadAsStringAsync();
+                            _logger.LogError("HTTP {Status} GET {Endpoint}. Response: {Content}", status, endpoint, content);
+                        }
+                        response.EnsureSuccessStatusCode();
+                    }
+
+                    return await response.Content.ReadFromJsonAsync<T>(JsonOptions);
+                }
+                catch (HttpRequestException ex) when (IsTransientGetFailure(ex) && attempt < maxTransientAttempts)
+                {
+                    var delay = GetTransientRetryDelay(attempt);
+                    _logger.LogWarning(ex, "Transient HTTP failure calling GET {Endpoint} (attempt {Attempt}/{MaxAttempts}); retrying in {DelayMs}ms", endpoint, attempt, maxTransientAttempts, (int)delay.TotalMilliseconds);
+                    await Task.Delay(delay);
+                }
+                catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Request timed out - log as warning instead of error
+                    _logger.LogWarning("Request timeout calling GET {Endpoint} (timeout after 60 seconds). The API may be slow or unavailable.", endpoint);
+                    throw new ApiException($"Request to {endpoint} timed out. The API may be slow or unavailable.", ex);
+                }
+                catch (HttpRequestException ex)
+                {
+                    // 6.07: bumped 401/403 path from Debug to Warning — operators must see session-expiry signals.
+                    if (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized") || ex.Message.Contains("Forbidden"))
+                    {
+                        _logger.LogWarning(ex, "HTTP 401/403 calling GET {Endpoint} - authentication/authorization required", endpoint);
+                    }
+                    else
+                    {
+                        _logger.LogError(ex, "HTTP error calling GET {Endpoint}", endpoint);
+                    }
+                    throw new ApiException($"Failed to GET {endpoint}: {ex.Message}", ex);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error calling GET {Endpoint}", endpoint);
+                    throw new ApiException($"Unexpected error calling {endpoint}", ex);
+                }
+            }
+
+            throw new ApiException($"Failed to GET {endpoint}: API unavailable after retry attempts");
+        }
+
+        /// <summary>
+        /// Best-effort GET used for optional cache lookups. Returns null for misses
+        /// and unavailable optional endpoints so callers can fall back quietly.
+        /// </summary>
+        public async Task<T?> TryGetAsync<T>(string endpoint)
+        {
             try
             {
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.GetAsync(endpoint);
+                var status = (int)response.StatusCode;
 
-                // Handle 401/403 errors more gracefully - don't log as error if it's expected
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                    response.StatusCode == System.Net.HttpStatusCode.NoContent)
+                {
+                    _logger.LogDebug("Optional GET {Endpoint} returned {Status}", endpoint, status);
+                    return default;
+                }
+
                 if (!response.IsSuccessStatusCode)
                 {
-                    var status = (int)response.StatusCode;
                     if (status == 401 || status == 403)
                     {
-                        // 6.07 (Sprint 4): bumped from Debug to Warning so operators
-                        // see session-expiry / permission-denied signals at default
-                        // log levels. Previously this was invisible at Information
-                        // and below, masking the symptom for "everything looks empty".
-                        _logger.LogWarning("HTTP {Status} GET {Endpoint} - authentication/authorization required", status, endpoint);
+                        _logger.LogWarning("Optional GET {Endpoint} returned HTTP {Status} - authentication/authorization required", endpoint, status);
                     }
                     else
                     {
-                        var content = await response.Content.ReadAsStringAsync();
-                        _logger.LogError("HTTP {Status} GET {Endpoint}. Response: {Content}", status, endpoint, content);
+                        _logger.LogDebug("Optional GET {Endpoint} returned HTTP {Status}", endpoint, status);
                     }
-                    response.EnsureSuccessStatusCode();
+
+                    return default;
                 }
 
                 return await response.Content.ReadFromJsonAsync<T>(JsonOptions);
             }
             catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase))
             {
-                // Request timed out - log as warning instead of error
-                _logger.LogWarning("Request timeout calling GET {Endpoint} (timeout after 60 seconds). The API may be slow or unavailable.", endpoint);
-                throw new ApiException($"Request to {endpoint} timed out. The API may be slow or unavailable.", ex);
-            }
-            catch (HttpRequestException ex)
-            {
-                // 6.07: bumped 401/403 path from Debug to Warning — operators must see session-expiry signals.
-                if (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized") || ex.Message.Contains("Forbidden"))
-                {
-                    _logger.LogWarning(ex, "HTTP 401/403 calling GET {Endpoint} - authentication/authorization required", endpoint);
-                }
-                else
-                {
-                    _logger.LogError(ex, "HTTP error calling GET {Endpoint}", endpoint);
-                }
-                throw new ApiException($"Failed to GET {endpoint}: {ex.Message}", ex);
+                _logger.LogDebug("Optional GET {Endpoint} timed out", endpoint);
+                return default;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error calling GET {Endpoint}", endpoint);
-                throw new ApiException($"Unexpected error calling {endpoint}", ex);
+                _logger.LogDebug(ex, "Optional GET {Endpoint} failed", endpoint);
+                return default;
             }
         }
 
@@ -291,6 +372,42 @@ namespace NickScanWebApp.Shared.Services
             {
                 _logger.LogError(ex, "Error calling POST {Endpoint}", endpoint);
                 throw new ApiException($"Unexpected error calling {endpoint}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Best-effort POST used for optional forward-contract calls. Returns
+        /// false when the route is absent or rejects the request so callers can
+        /// fall back to compatibility endpoints without surfacing transient UI errors.
+        /// </summary>
+        public async Task<bool> TryPostAsync<TRequest>(string endpoint, TRequest data)
+        {
+            try
+            {
+                var client = await GetAuthenticatedClientAsync();
+                var response = await client.PostAsJsonAsync(endpoint, data);
+                var status = (int)response.StatusCode;
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                    response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed ||
+                    response.StatusCode == System.Net.HttpStatusCode.NoContent)
+                {
+                    _logger.LogDebug("Optional POST {Endpoint} returned {Status}", endpoint, status);
+                    return false;
+                }
+
+                _logger.LogDebug("Optional POST {Endpoint} returned HTTP {Status}", endpoint, status);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Optional POST {Endpoint} failed", endpoint);
+                return false;
             }
         }
 

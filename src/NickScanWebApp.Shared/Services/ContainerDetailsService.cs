@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 using NickScanWebApp.Shared.Models;
 
 namespace NickScanWebApp.Shared.Services
@@ -16,6 +17,7 @@ namespace NickScanWebApp.Shared.Services
         private readonly IMemoryCache _cache;
         private readonly ILogger<ContainerDetailsService> _logger;
         private readonly IConfiguration? _configuration;
+        private readonly ConcurrentDictionary<string, byte> _volatileCacheKeys = new(StringComparer.Ordinal);
 
         public ContainerDetailsService(
             ApiService apiService,
@@ -36,19 +38,34 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"container_basic_{containerNumber}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"container_basic_{normalizedContainerNumber}";
 
                 // Try cache first (5 minute cache)
                 if (_cache.TryGetValue(cacheKey, out ContainerBasicInfo? cachedInfo))
                 {
-                    _logger.LogInformation("Retrieved basic info for container {ContainerNumber} from cache", containerNumber);
+                    _logger.LogInformation("Retrieved basic info for container {ContainerNumber} from cache", normalizedContainerNumber);
                     return cachedInfo;
                 }
 
-                _logger.LogInformation("Fetching basic info for container {ContainerNumber} from API", containerNumber);
+                var predictiveBasicInfo = TryMapPredictiveBasicInfo(
+                    await GetPredictiveContainerContextAsync(normalizedContainerNumber));
+
+                if (predictiveBasicInfo != null)
+                {
+                    _cache.Set(cacheKey, predictiveBasicInfo, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                        Size = 1
+                    });
+                    _logger.LogInformation("Retrieved basic info for container {ContainerNumber} from predictive cache", normalizedContainerNumber);
+                    return predictiveBasicInfo;
+                }
+
+                _logger.LogInformation("Fetching basic info for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<ContainerBasicInfo>(
-                    $"/api/containerdetails/basic/{Uri.EscapeDataString(containerNumber)}");
+                    $"/api/containerdetails/basic/{Uri.EscapeDataString(normalizedContainerNumber)}");
 
                 if (response != null)
                 {
@@ -58,7 +75,7 @@ namespace NickScanWebApp.Shared.Services
                         AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
                         Size = 1 // Each cache entry counts as 1 unit
                     });
-                    _logger.LogInformation("Cached basic info for container {ContainerNumber}", containerNumber);
+                    _logger.LogInformation("Cached basic info for container {ContainerNumber}", normalizedContainerNumber);
                 }
 
                 return response;
@@ -77,18 +94,33 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"container_full_{containerNumber}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"container_full_{normalizedContainerNumber}";
 
                 if (_cache.TryGetValue(cacheKey, out ContainerFullDetails? cached))
                 {
-                    _logger.LogInformation("Retrieved full details for container {ContainerNumber} from cache", containerNumber);
+                    _logger.LogInformation("Retrieved full details for container {ContainerNumber} from cache", normalizedContainerNumber);
                     return cached;
                 }
 
-                _logger.LogInformation("Fetching full details for container {ContainerNumber} from API", containerNumber);
+                var predictiveFullDetails = TryMapPredictiveFullDetails(
+                    await GetPredictiveContainerContextAsync(normalizedContainerNumber));
+
+                if (predictiveFullDetails != null)
+                {
+                    _cache.Set(cacheKey, predictiveFullDetails, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
+                        Size = 1
+                    });
+                    _logger.LogInformation("Retrieved full details for container {ContainerNumber} from predictive cache", normalizedContainerNumber);
+                    return predictiveFullDetails;
+                }
+
+                _logger.LogInformation("Fetching full details for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<ContainerFullDetails>(
-                    $"/api/containerdetails/full/{Uri.EscapeDataString(containerNumber)}");
+                    $"/api/containerdetails/full/{Uri.EscapeDataString(normalizedContainerNumber)}");
 
                 if (response != null)
                 {
@@ -115,18 +147,35 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"scanner_data_{containerNumber}_page_{page}_size_{pageSize}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"scanner_data_{normalizedContainerNumber}_page_{page}_size_{pageSize}";
 
                 // Try cache first (2 minute cache for paginated data)
                 if (_cache.TryGetValue(cacheKey, out PagedResult<ScannerDataRecord>? cachedData))
                 {
-                    _logger.LogInformation("Retrieved scanner data for container {ContainerNumber} page {Page} from cache", containerNumber, page);
+                    _logger.LogInformation("Retrieved scanner data for container {ContainerNumber} page {Page} from cache", normalizedContainerNumber, page);
                     return cachedData;
                 }
 
-                _logger.LogInformation("Fetching scanner data for container {ContainerNumber} page {Page} from API", containerNumber, page);
+                var predictiveScannerData = TryMapPredictiveScannerPage(
+                    await GetPredictiveContainerContextAsync(normalizedContainerNumber),
+                    page,
+                    pageSize);
 
-                var url = $"/api/containerdetails/scanner/{Uri.EscapeDataString(containerNumber)}?page={page}&pageSize={pageSize}";
+                if (predictiveScannerData != null)
+                {
+                    _cache.Set(cacheKey, predictiveScannerData, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
+                        Size = 1
+                    });
+                    _logger.LogInformation("Retrieved scanner data for container {ContainerNumber} page {Page} from predictive cache", normalizedContainerNumber, page);
+                    return predictiveScannerData;
+                }
+
+                _logger.LogInformation("Fetching scanner data for container {ContainerNumber} page {Page} from API", normalizedContainerNumber, page);
+
+                var url = $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?page={page}&pageSize={pageSize}";
                 var response = await _apiService.GetAsync<PagedResult<ScannerDataRecord>>(url);
 
                 if (response != null)
@@ -137,7 +186,7 @@ namespace NickScanWebApp.Shared.Services
                         AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
                         Size = 1 // Each cache entry counts as 1 unit
                     });
-                    _logger.LogInformation("Cached scanner data for container {ContainerNumber} page {Page}", containerNumber, page);
+                    _logger.LogInformation("Cached scanner data for container {ContainerNumber} page {Page}", normalizedContainerNumber, page);
                 }
 
                 return response;
@@ -150,6 +199,153 @@ namespace NickScanWebApp.Shared.Services
         }
 
         /// <summary>
+        /// Resolve the UI's logical container/group tuple to a stable physical
+        /// source scan. This is a Phase 2A contract shim: the endpoint is optional
+        /// in this fork and callers must retain compatibility fallbacks.
+        /// </summary>
+        public async Task<ScanAssetResolution?> ResolveScanAssetAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            int? analysisRecordId = null,
+            Guid? splitJobId = null)
+        {
+            try
+            {
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                if (string.IsNullOrWhiteSpace(normalizedContainerNumber)
+                    && !analysisRecordId.HasValue
+                    && !splitJobId.HasValue)
+                {
+                    return null;
+                }
+
+                var cacheKey = $"scan_asset_resolution_{normalizedContainerNumber}_{NormalizeCachePart(groupIdentifier)}_{analysisRecordId}_{splitJobId}";
+                if (_cache.TryGetValue(cacheKey, out ScanAssetResolution? cachedResolution))
+                {
+                    return cachedResolution;
+                }
+
+                var query = BuildResolutionQuery(
+                    normalizedContainerNumber,
+                    groupIdentifier,
+                    analysisRecordId,
+                    splitJobId,
+                    includeContainerWhenEmpty: false);
+
+                if (string.IsNullOrWhiteSpace(query))
+                {
+                    return null;
+                }
+
+                var resolution = await _apiService.TryGetAsync<ScanAssetResolution>(
+                    $"/api/scan-assets/resolve?{query}");
+
+                if (resolution == null)
+                {
+                    return null;
+                }
+
+                if (string.IsNullOrWhiteSpace(resolution.ContainerNumber))
+                {
+                    resolution.ContainerNumber = normalizedContainerNumber;
+                }
+
+                if (string.IsNullOrWhiteSpace(resolution.GroupIdentifier))
+                {
+                    resolution.GroupIdentifier = groupIdentifier;
+                }
+
+                SetVolatileCache(cacheKey, resolution, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
+                    Size = 1
+                });
+
+                return resolution;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex,
+                    "Optional scan asset resolution failed for container {ContainerNumber}, group {GroupIdentifier}",
+                    containerNumber,
+                    groupIdentifier);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Resolver-aware scanner lookup. Planned API order:
+        /// 1. /api/scan-assets/{sourceScanId}/scanner-data
+        /// 2. compatibility alias /api/containerdetails/scanner/{container}?sourceScanId=...
+        /// 3. legacy container-only route.
+        /// </summary>
+        public async Task<PagedResult<ScannerDataRecord>?> GetScannerDataForResolvedScanAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            int page = 1,
+            int pageSize = 50,
+            ScanAssetResolution? resolution = null)
+        {
+            try
+            {
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                resolution ??= await ResolveScanAssetAsync(normalizedContainerNumber, groupIdentifier);
+
+                if (resolution?.HasUsableSourceScan == true)
+                {
+                    var sourceScanId = resolution.EffectiveSourceScanId!;
+                    var cacheKey = $"scanner_data_resolved_{normalizedContainerNumber}_{sourceScanId}_{resolution.SplitJobId}_{resolution.SplitResultId}_page_{page}_size_{pageSize}";
+
+                    if (_cache.TryGetValue(cacheKey, out PagedResult<ScannerDataRecord>? cachedData))
+                    {
+                        _logger.LogInformation(
+                            "Retrieved resolver-backed scanner data for container {ContainerNumber} source {SourceScanId} page {Page} from cache",
+                            normalizedContainerNumber,
+                            sourceScanId,
+                            page);
+                        return cachedData;
+                    }
+
+                    var query = BuildResolutionQuery(
+                        normalizedContainerNumber,
+                        groupIdentifier,
+                        resolution.AnalysisRecordId,
+                        resolution.SplitJobId,
+                        resolution,
+                        page,
+                        pageSize);
+
+                    var sourceEndpoint = $"/api/scan-assets/{sourceScanId}/scanner-data?{query}";
+                    var response = await _apiService.TryGetAsync<PagedResult<ScannerDataRecord>>(sourceEndpoint);
+
+                    if (response == null)
+                    {
+                        var aliasEndpoint = $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?{query}";
+                        response = await _apiService.TryGetAsync<PagedResult<ScannerDataRecord>>(aliasEndpoint);
+                    }
+
+                    if (response != null)
+                    {
+                        response.Resolution ??= resolution;
+                        _cache.Set(cacheKey, response, new MemoryCacheEntryOptions
+                        {
+                            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
+                            Size = 1
+                        });
+                        return response;
+                    }
+                }
+
+                return await GetScannerDataAsync(normalizedContainerNumber, page, pageSize);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting resolver-backed scanner data for container {ContainerNumber}", containerNumber);
+                return await GetScannerDataAsync(containerNumber, page, pageSize);
+            }
+        }
+
+        /// <summary>
         /// Get full scanner data record (cached for 5 minutes)
         /// ✅ Phase 2: Uses ?full=true parameter to get FullScannerDataRecord directly from API
         /// </summary>
@@ -157,24 +353,25 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"full_scanner_{containerNumber}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"full_scanner_{normalizedContainerNumber}";
 
                 // Try cache first (5 minute cache)
                 if (_cache.TryGetValue(cacheKey, out FullScannerDataRecord? cachedData))
                 {
-                    _logger.LogInformation("Retrieved full scanner data for container {ContainerNumber} from cache", containerNumber);
+                    _logger.LogInformation("Retrieved full scanner data for container {ContainerNumber} from cache", normalizedContainerNumber);
                     return cachedData;
                 }
 
-                _logger.LogInformation("Fetching full scanner data for container {ContainerNumber} from API", containerNumber);
+                _logger.LogInformation("Fetching full scanner data for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 // ✅ Phase 2: Use ?full=true parameter to get FullScannerDataRecord directly
                 var fullRecord = await _apiService.GetAsync<FullScannerDataRecord>(
-                    $"/api/containerdetails/scanner/{Uri.EscapeDataString(containerNumber)}?full=true");
+                    $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?full=true");
 
                 if (fullRecord == null)
                 {
-                    _logger.LogWarning("No scanner data found for container {ContainerNumber}", containerNumber);
+                    _logger.LogWarning("No scanner data found for container {ContainerNumber}", normalizedContainerNumber);
                     return null;
                 }
 
@@ -184,7 +381,7 @@ namespace NickScanWebApp.Shared.Services
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
                     Size = 1 // Each cache entry counts as 1 unit
                 });
-                _logger.LogInformation("Cached full scanner data for container {ContainerNumber}", containerNumber);
+                _logger.LogInformation("Cached full scanner data for container {ContainerNumber}", normalizedContainerNumber);
 
                 return fullRecord;
             }
@@ -202,18 +399,35 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"icums_data_{containerNumber}_page_{page}_size_{pageSize}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"icums_data_{normalizedContainerNumber}_page_{page}_size_{pageSize}";
 
                 // Try cache first (2 minute cache for paginated data)
                 if (_cache.TryGetValue(cacheKey, out PagedResult<ICUMSDataRecord>? cachedData))
                 {
-                    _logger.LogInformation("Retrieved ICUMS data for container {ContainerNumber} page {Page} from cache", containerNumber, page);
+                    _logger.LogInformation("Retrieved ICUMS data for container {ContainerNumber} page {Page} from cache", normalizedContainerNumber, page);
                     return cachedData;
                 }
 
-                _logger.LogInformation("Fetching ICUMS data for container {ContainerNumber} page {Page} from API", containerNumber, page);
+                var predictiveIcumData = TryMapPredictiveIcumPage(
+                    await GetPredictiveContainerContextAsync(normalizedContainerNumber),
+                    page,
+                    pageSize);
 
-                var url = $"/api/containerdetails/icums/{Uri.EscapeDataString(containerNumber)}?page={page}&pageSize={pageSize}";
+                if (predictiveIcumData != null)
+                {
+                    _cache.Set(cacheKey, predictiveIcumData, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
+                        Size = 1
+                    });
+                    _logger.LogInformation("Retrieved ICUMS data for container {ContainerNumber} page {Page} from predictive cache", normalizedContainerNumber, page);
+                    return predictiveIcumData;
+                }
+
+                _logger.LogInformation("Fetching ICUMS data for container {ContainerNumber} page {Page} from API", normalizedContainerNumber, page);
+
+                var url = $"/api/containerdetails/icums/{Uri.EscapeDataString(normalizedContainerNumber)}?page={page}&pageSize={pageSize}";
                 var response = await _apiService.GetAsync<PagedResult<ICUMSDataRecord>>(url);
 
                 if (response != null)
@@ -224,7 +438,7 @@ namespace NickScanWebApp.Shared.Services
                         AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
                         Size = 1 // Each cache entry counts as 1 unit
                     });
-                    _logger.LogInformation("Cached ICUMS data for container {ContainerNumber} page {Page}", containerNumber, page);
+                    _logger.LogInformation("Cached ICUMS data for container {ContainerNumber} page {Page}", normalizedContainerNumber, page);
                 }
 
                 return response;
@@ -244,24 +458,25 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"full_boe_{containerNumber}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"full_boe_{normalizedContainerNumber}";
 
                 // Try cache first (5 minute cache)
                 if (_cache.TryGetValue(cacheKey, out FullBOEDataRecord? cachedData))
                 {
-                    _logger.LogInformation("Retrieved full BOE data for container {ContainerNumber} from cache", containerNumber);
+                    _logger.LogInformation("Retrieved full BOE data for container {ContainerNumber} from cache", normalizedContainerNumber);
                     return cachedData;
                 }
 
-                _logger.LogInformation("Fetching full BOE data for container {ContainerNumber} from API", containerNumber);
+                _logger.LogInformation("Fetching full BOE data for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 // ✅ Phase 2: Use ?full=true parameter to get FullBOEDataRecord directly
                 var fullRecord = await _apiService.GetAsync<FullBOEDataRecord>(
-                    $"/api/containerdetails/icums/{Uri.EscapeDataString(containerNumber)}?full=true");
+                    $"/api/containerdetails/icums/{Uri.EscapeDataString(normalizedContainerNumber)}?full=true");
 
                 if (fullRecord == null)
                 {
-                    _logger.LogWarning("No ICUMS data found for container {ContainerNumber}", containerNumber);
+                    _logger.LogWarning("No ICUMS data found for container {ContainerNumber}", normalizedContainerNumber);
                     return null;
                 }
 
@@ -271,7 +486,7 @@ namespace NickScanWebApp.Shared.Services
                     AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5),
                     Size = 1 // Each cache entry counts as 1 unit
                 });
-                _logger.LogInformation("Cached full BOE data for container {ContainerNumber}", containerNumber);
+                _logger.LogInformation("Cached full BOE data for container {ContainerNumber}", normalizedContainerNumber);
 
                 return fullRecord;
             }
@@ -289,19 +504,20 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var cacheKey = $"image_metadata_{containerNumber}";
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                var cacheKey = $"image_metadata_{normalizedContainerNumber}";
 
                 // Try cache first (1 minute cache for images as they may update)
                 if (_cache.TryGetValue(cacheKey, out List<ImageMetadata>? cachedMetadata))
                 {
-                    _logger.LogInformation("Retrieved image metadata for container {ContainerNumber} from cache", containerNumber);
+                    _logger.LogInformation("Retrieved image metadata for container {ContainerNumber} from cache", normalizedContainerNumber);
                     return cachedMetadata;
                 }
 
-                _logger.LogInformation("Fetching image metadata for container {ContainerNumber} from API", containerNumber);
+                _logger.LogInformation("Fetching image metadata for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<List<ImageMetadata>>(
-                    $"/api/containerdetails/images/{Uri.EscapeDataString(containerNumber)}");
+                    $"/api/containerdetails/images/{Uri.EscapeDataString(normalizedContainerNumber)}");
 
                 if (response != null)
                 {
@@ -326,7 +542,7 @@ namespace NickScanWebApp.Shared.Services
                         AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1),
                         Size = 1 // Each cache entry counts as 1 unit
                     });
-                    _logger.LogInformation("Cached image metadata for container {ContainerNumber}", containerNumber);
+                    _logger.LogInformation("Cached image metadata for container {ContainerNumber}", normalizedContainerNumber);
                 }
 
                 return response;
@@ -335,6 +551,87 @@ namespace NickScanWebApp.Shared.Services
             {
                 _logger.LogError(ex, "Error getting image metadata for container {ContainerNumber}", containerNumber);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Resolver-aware image metadata lookup. Planned API order:
+        /// 1. /api/scan-assets/{sourceScanId}/images
+        /// 2. compatibility alias /api/containerdetails/images/{container}?sourceScanId=...
+        /// 3. synthesized /api/scan-assets/{sourceScanId}/image metadata
+        /// 4. legacy container-only route.
+        /// </summary>
+        public async Task<List<ImageMetadata>?> GetImageMetadataForResolvedScanAsync(
+            string containerNumber,
+            string? groupIdentifier = null,
+            ScanAssetResolution? resolution = null)
+        {
+            try
+            {
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+                resolution ??= await ResolveScanAssetAsync(normalizedContainerNumber, groupIdentifier);
+
+                if (resolution?.HasUsableSourceScan == true)
+                {
+                    var sourceScanId = resolution.EffectiveSourceScanId!;
+                    var cacheKey = $"image_metadata_resolved_{normalizedContainerNumber}_{sourceScanId}_{resolution.SplitJobId}_{resolution.SplitResultId}";
+
+                    if (_cache.TryGetValue(cacheKey, out List<ImageMetadata>? cachedMetadata))
+                    {
+                        _logger.LogInformation(
+                            "Retrieved resolver-backed image metadata for container {ContainerNumber} source {SourceScanId} from cache",
+                            normalizedContainerNumber,
+                            sourceScanId);
+                        return cachedMetadata;
+                    }
+
+                    var query = BuildResolutionQuery(
+                        normalizedContainerNumber,
+                        groupIdentifier,
+                        resolution.AnalysisRecordId,
+                        resolution.SplitJobId,
+                        resolution);
+
+                    var response = await _apiService.TryGetAsync<List<ImageMetadata>>(
+                        $"/api/scan-assets/{sourceScanId}/images?{query}");
+
+                    if (response == null)
+                    {
+                        response = await _apiService.TryGetAsync<List<ImageMetadata>>(
+                            $"/api/containerdetails/images/{Uri.EscapeDataString(normalizedContainerNumber)}?{query}");
+                    }
+
+                    response = response?.Where(image => image != null).ToList();
+                    if (response is { Count: > 0 })
+                    {
+                        ApplyResolutionToImages(response, resolution);
+                        NormalizeImageUrls(response);
+                        SetVolatileCache(cacheKey, response, new MemoryCacheEntryOptions
+                        {
+                            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1),
+                            Size = 1
+                        });
+                        return response;
+                    }
+
+                    var synthetic = new List<ImageMetadata>
+                    {
+                        CreateSyntheticSourceImageMetadata(normalizedContainerNumber, resolution)
+                    };
+                    SetVolatileCache(cacheKey, synthetic, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30),
+                        Size = 1
+                    });
+                    return synthetic;
+                }
+
+                return await GetImageMetadataAsync(normalizedContainerNumber);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting resolver-backed image metadata for container {ContainerNumber}", containerNumber);
+                return await GetImageMetadataAsync(containerNumber);
             }
         }
 
@@ -426,15 +723,25 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
+                var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
                 // Note: IMemoryCache doesn't support pattern-based removal
                 // We'll remove the most common cache keys
                 var cacheKeys = new[]
                 {
-                    $"container_basic_{containerNumber}",
-                    $"container_full_{containerNumber}",
-                    $"full_scanner_{containerNumber}",
-                    $"full_boe_{containerNumber}",
-                    $"image_metadata_{containerNumber}"
+                    $"predictive_container_context_{normalizedContainerNumber}",
+                    $"container_basic_{normalizedContainerNumber}",
+                    $"container_full_{normalizedContainerNumber}",
+                    $"full_scanner_{normalizedContainerNumber}",
+                    $"full_boe_{normalizedContainerNumber}",
+                    $"image_metadata_{normalizedContainerNumber}",
+                    $"scanner_data_{normalizedContainerNumber}_page_1_size_25",
+                    $"scanner_data_{normalizedContainerNumber}_page_1_size_50",
+                    $"scanner_data_{normalizedContainerNumber}_page_1_size_100",
+                    $"scanner_data_{normalizedContainerNumber}_page_1_size_1000",
+                    $"icums_data_{normalizedContainerNumber}_page_1_size_25",
+                    $"icums_data_{normalizedContainerNumber}_page_1_size_50",
+                    $"icums_data_{normalizedContainerNumber}_page_1_size_100",
+                    $"icums_data_{normalizedContainerNumber}_page_1_size_1000"
                 };
 
                 foreach (var key in cacheKeys)
@@ -442,12 +749,452 @@ namespace NickScanWebApp.Shared.Services
                     _cache.Remove(key);
                 }
 
-                _logger.LogInformation("Cache cleared for container {ContainerNumber}", containerNumber);
+                RemoveTrackedCacheKeys($"scan_asset_resolution_{normalizedContainerNumber}_");
+                RemoveTrackedCacheKeys($"image_metadata_resolved_{normalizedContainerNumber}_");
+
+                _logger.LogInformation("Cache cleared for container {ContainerNumber}", normalizedContainerNumber);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error clearing cache for container {ContainerNumber}", containerNumber);
             }
+        }
+
+        private void SetVolatileCache<T>(string key, T value, MemoryCacheEntryOptions options)
+        {
+            _cache.Set(key, value, options);
+            _volatileCacheKeys[key] = 0;
+        }
+
+        private void RemoveTrackedCacheKeys(string prefix)
+        {
+            foreach (var key in _volatileCacheKeys.Keys)
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                _cache.Remove(key);
+                _volatileCacheKeys.TryRemove(key, out _);
+            }
+        }
+
+        private static string NormalizeCachePart(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value)
+                ? "_"
+                : value.Trim().ToUpperInvariant();
+        }
+
+        private static string BuildResolutionQuery(
+            string? containerNumber,
+            string? groupIdentifier,
+            int? analysisRecordId,
+            Guid? splitJobId,
+            ScanAssetResolution? resolution = null,
+            int? page = null,
+            int? pageSize = null,
+            bool includeContainerWhenEmpty = true)
+        {
+            var parts = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(containerNumber) || includeContainerWhenEmpty)
+            {
+                parts.Add($"containerNumber={Uri.EscapeDataString(containerNumber ?? string.Empty)}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(groupIdentifier))
+            {
+                parts.Add($"groupIdentifier={Uri.EscapeDataString(groupIdentifier.Trim())}");
+            }
+
+            var effectiveAnalysisRecordId = analysisRecordId ?? resolution?.AnalysisRecordId;
+            if (effectiveAnalysisRecordId.HasValue)
+            {
+                parts.Add($"analysisRecordId={effectiveAnalysisRecordId.Value}");
+            }
+
+            var effectiveSourceScanId = resolution?.EffectiveSourceScanId;
+            if (!string.IsNullOrWhiteSpace(effectiveSourceScanId))
+            {
+                parts.Add($"sourceScanId={Uri.EscapeDataString(effectiveSourceScanId)}");
+            }
+
+            var effectiveSplitJobId = splitJobId ?? resolution?.SplitJobId;
+            if (effectiveSplitJobId.HasValue)
+            {
+                parts.Add($"splitJobId={effectiveSplitJobId.Value}");
+            }
+
+            if (resolution?.SplitResultId.HasValue == true)
+            {
+                parts.Add($"splitResultId={resolution.SplitResultId.Value}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(resolution?.EffectiveSplitSide))
+            {
+                parts.Add($"side={Uri.EscapeDataString(resolution.EffectiveSplitSide!)}");
+            }
+
+            if (page.HasValue)
+            {
+                parts.Add($"page={page.Value}");
+            }
+
+            if (pageSize.HasValue)
+            {
+                parts.Add($"pageSize={pageSize.Value}");
+            }
+
+            return string.Join("&", parts);
+        }
+
+        private void NormalizeImageUrls(IEnumerable<ImageMetadata> images)
+        {
+            var apiBaseUrl = _configuration?["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            foreach (var image in images)
+            {
+                if (!string.IsNullOrEmpty(image.ThumbnailUrl))
+                {
+                    image.ThumbnailUrl = NormalizeImageUrl(image.ThumbnailUrl, apiBaseUrl);
+                }
+
+                if (!string.IsNullOrEmpty(image.FullImageUrl))
+                {
+                    image.FullImageUrl = NormalizeImageUrl(image.FullImageUrl, apiBaseUrl);
+                }
+            }
+        }
+
+        private static void ApplyResolutionToImages(IEnumerable<ImageMetadata> images, ScanAssetResolution resolution)
+        {
+            foreach (var image in images)
+            {
+                image.SourceScanId ??= resolution.SourceScanId;
+                image.OriginalScanRecordId ??= resolution.OriginalScanRecordId;
+                image.SplitJobId ??= resolution.SplitJobId;
+                image.SplitResultId ??= resolution.SplitResultId;
+                image.SplitSide ??= resolution.EffectiveSplitSide;
+                image.ResolutionReason ??= resolution.ResolutionReason;
+                image.Resolution ??= resolution;
+            }
+        }
+
+        private static ImageMetadata CreateSyntheticSourceImageMetadata(
+            string containerNumber,
+            ScanAssetResolution resolution)
+        {
+            var sourceScanId = resolution.EffectiveSourceScanId!;
+            var imagePath = BuildSourceScanImagePath(sourceScanId, containerNumber, resolution, "full");
+            var thumbnailPath = BuildSourceScanImagePath(sourceScanId, containerNumber, resolution, "thumbnail");
+
+            return new ImageMetadata
+            {
+                Id = CreateSyntheticImageId(sourceScanId, resolution.SplitJobId, resolution.SplitResultId),
+                ImageType = resolution.SourceScannerType ?? "Source",
+                FileName = $"{containerNumber}_{sourceScanId}.jpg",
+                FileSizeBytes = 0,
+                CreatedAt = DateTime.UtcNow,
+                ThumbnailUrl = thumbnailPath,
+                FullImageUrl = imagePath,
+                SourceScanId = resolution.SourceScanId,
+                OriginalScanRecordId = resolution.OriginalScanRecordId,
+                SplitJobId = resolution.SplitJobId,
+                SplitResultId = resolution.SplitResultId,
+                SplitSide = resolution.EffectiveSplitSide,
+                ResolutionReason = resolution.ResolutionReason,
+                Resolution = resolution
+            };
+        }
+
+        private static int CreateSyntheticImageId(string sourceScanId, Guid? splitJobId, Guid? splitResultId)
+        {
+            var value = HashCode.Combine(sourceScanId, splitJobId, splitResultId);
+            return value == int.MinValue ? int.MaxValue : Math.Abs(value);
+        }
+
+        private static string BuildSourceScanImagePath(
+            string sourceScanId,
+            string containerNumber,
+            ScanAssetResolution resolution,
+            string size)
+        {
+            var parts = new List<string>
+            {
+                $"size={Uri.EscapeDataString(size)}"
+            };
+
+            var containerHint = StrictSingleContainerToken(containerNumber);
+            if (!string.IsNullOrWhiteSpace(containerHint))
+            {
+                parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
+            }
+
+            if (resolution.SplitJobId.HasValue)
+            {
+                parts.Add($"splitJobId={resolution.SplitJobId.Value}");
+            }
+
+            if (resolution.SplitResultId.HasValue)
+            {
+                parts.Add($"splitResultId={resolution.SplitResultId.Value}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(resolution.EffectiveSplitSide))
+            {
+                parts.Add($"side={Uri.EscapeDataString(resolution.EffectiveSplitSide!)}");
+            }
+
+            return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+        }
+
+        private static string? StrictSingleContainerToken(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var matches = System.Text.RegularExpressions.Regex.Matches(
+                value,
+                "[A-Z]{4}\\d{7}",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            if (matches.Count == 1)
+            {
+                return matches[0].Value.ToUpperInvariant();
+            }
+
+            if (matches.Count > 1 || value.IndexOfAny(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }) >= 0)
+            {
+                return null;
+            }
+
+            return value.Trim().ToUpperInvariant();
+        }
+
+        private bool IsPredictiveCacheFirstEnabled()
+        {
+            if (_configuration == null)
+            {
+                return true;
+            }
+
+            var defaultValue = _configuration.GetValue<bool>("ViewContextPreloading:PredictiveCacheFirst", true);
+            return _configuration.GetValue<bool>("PredictivePreloadClient:Enabled", defaultValue);
+        }
+
+        private async Task<PredictiveContainerContext?> GetPredictiveContainerContextAsync(string containerNumber)
+        {
+            if (!IsPredictiveCacheFirstEnabled() || string.IsNullOrWhiteSpace(containerNumber))
+            {
+                return null;
+            }
+
+            var normalizedContainerNumber = NormalizeContainerNumber(containerNumber);
+            var cacheKey = $"predictive_container_context_{normalizedContainerNumber}";
+
+            if (_cache.TryGetValue(cacheKey, out PredictiveContainerContext? cachedContext))
+            {
+                _logger.LogDebug("Predictive container context cache HIT for {ContainerNumber}", normalizedContainerNumber);
+                return cachedContext;
+            }
+
+            var context = await _apiService.TryGetAsync<PredictiveContainerContext>(
+                $"/api/cache/predictive/container/{Uri.EscapeDataString(normalizedContainerNumber)}");
+
+            if (context == null)
+            {
+                return null;
+            }
+
+            _cache.Set(cacheKey, context, new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = GetPredictiveLocalTtl(context),
+                Size = 1
+            });
+
+            _logger.LogDebug("Predictive container context cache MISS loaded for {ContainerNumber}", normalizedContainerNumber);
+            return context;
+        }
+
+        private TimeSpan GetPredictiveLocalTtl(PredictiveContainerContext context)
+        {
+            var configuredSeconds = _configuration?.GetValue<int>("PredictivePreloadClient:LocalContextSeconds", 30) ?? 30;
+            var ttlCap = TimeSpan.FromSeconds(Math.Clamp(configuredSeconds, 5, 300));
+
+            if (context.ExpiresAtUtc == default)
+            {
+                return ttlCap;
+            }
+
+            var remaining = context.ExpiresAtUtc - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return TimeSpan.FromSeconds(5);
+            }
+
+            return remaining < ttlCap ? remaining : ttlCap;
+        }
+
+        private static ContainerBasicInfo? TryMapPredictiveBasicInfo(PredictiveContainerContext? context)
+        {
+            var summary = context?.Summary;
+            if (summary == null)
+            {
+                return null;
+            }
+
+            return new ContainerBasicInfo
+            {
+                ContainerNumber = summary.ContainerNumber,
+                ScannerType = summary.ScannerType ?? string.Empty,
+                ScannerRecordCount = summary.ScannerRecordCount,
+                ICUMSRecordCount = summary.IcumsRecordCount,
+                ImageCount = summary.ImageCount,
+                LastUpdated = GetPredictiveTimestamp(summary, context),
+                ValidationStatus = summary.HasScannerData && summary.HasIcumsData ? "Complete" : "Partial",
+                DataCompletenessScore = summary.CompletenessScore
+            };
+        }
+
+        private static ContainerFullDetails? TryMapPredictiveFullDetails(PredictiveContainerContext? context)
+        {
+            var summary = context?.Summary;
+            if (summary == null)
+            {
+                return null;
+            }
+
+            return new ContainerFullDetails
+            {
+                ScannerType = summary.ScannerType ?? string.Empty,
+                ScanDate = GetPredictiveTimestamp(summary, context),
+                ValidationStatus = "Pending",
+                CompletenessScore = summary.CompletenessScore,
+                ClearanceType = summary.ClearanceType ?? context?.BoeSummary?.ClearanceType,
+                ImageCount = summary.ImageCount,
+                HasScannerData = summary.HasScannerData,
+                HasICUMSData = summary.HasIcumsData,
+                BOENumber = context?.BoeSummary?.DeclarationNumber,
+                Consignee = context?.BoeSummary?.ConsigneeName,
+                OriginPort = GetFirstFieldValue(context?.IcumsFirstPage?.Data, "Origin Port", "Port of Loading", "Country of Origin"),
+                Destination = GetFirstFieldValue(context?.IcumsFirstPage?.Data, "Destination", "Port of Discharge"),
+                VesselName = GetFirstFieldValue(context?.ScannerFirstPage?.Data, "Vessel Name", "Vessel"),
+                VehicleCount = 0,
+                ScanLocation = GetFirstFieldValue(context?.ScannerFirstPage?.Data, "Scan Location", "Location"),
+                Operator = GetFirstFieldValue(context?.ScannerFirstPage?.Data, "Operator"),
+                ContainerSize = GetFirstFieldValue(context?.IcumsFirstPage?.Data, "Container Size")
+            };
+        }
+
+        private static PagedResult<ScannerDataRecord>? TryMapPredictiveScannerPage(
+            PredictiveContainerContext? context,
+            int page,
+            int pageSize)
+        {
+            var scannerPage = context?.ScannerFirstPage;
+            if (scannerPage == null || page != 1 || pageSize > scannerPage.PageSize)
+            {
+                return null;
+            }
+
+            return new PagedResult<ScannerDataRecord>
+            {
+                Data = scannerPage.Data
+                    .Take(pageSize)
+                    .Select(field => new ScannerDataRecord
+                    {
+                        Field = field.Field,
+                        Value = field.Value ?? string.Empty,
+                        Category = field.Category,
+                        Timestamp = field.Timestamp
+                    })
+                    .ToList(),
+                TotalCount = scannerPage.TotalCount,
+                Page = page,
+                PageSize = pageSize,
+                TotalPages = CalculateTotalPages(scannerPage.TotalCount, pageSize),
+                Status = scannerPage.Status
+            };
+        }
+
+        private static PagedResult<ICUMSDataRecord>? TryMapPredictiveIcumPage(
+            PredictiveContainerContext? context,
+            int page,
+            int pageSize)
+        {
+            var icumPage = context?.IcumsFirstPage;
+            if (icumPage == null || page != 1 || pageSize > icumPage.PageSize)
+            {
+                return null;
+            }
+
+            return new PagedResult<ICUMSDataRecord>
+            {
+                Data = icumPage.Data
+                    .Take(pageSize)
+                    .Select(field => new ICUMSDataRecord
+                    {
+                        Field = field.Field,
+                        Value = field.Value ?? string.Empty,
+                        Category = field.Category,
+                        IsRequired = false
+                    })
+                    .ToList(),
+                TotalCount = icumPage.TotalCount,
+                Page = page,
+                PageSize = pageSize,
+                TotalPages = CalculateTotalPages(icumPage.TotalCount, pageSize),
+                Status = icumPage.Status
+            };
+        }
+
+        private static DateTime GetPredictiveTimestamp(PredictiveContainerSummary summary, PredictiveContainerContext? context)
+        {
+            return summary.LastUpdatedUtc
+                ?? summary.LatestScanDateUtc
+                ?? context?.CachedAtUtc
+                ?? DateTime.UtcNow;
+        }
+
+        private static string? GetFirstFieldValue(IEnumerable<PredictiveFieldValue>? fields, params string[] names)
+        {
+            if (fields == null)
+            {
+                return null;
+            }
+
+            foreach (var name in names)
+            {
+                var match = fields.FirstOrDefault(field =>
+                    string.Equals(field.Field, name, StringComparison.OrdinalIgnoreCase) ||
+                    field.Field.Contains(name, StringComparison.OrdinalIgnoreCase));
+
+                if (!string.IsNullOrWhiteSpace(match?.Value))
+                {
+                    return match.Value;
+                }
+            }
+
+            return null;
+        }
+
+        private static int CalculateTotalPages(int totalCount, int pageSize)
+        {
+            if (pageSize <= 0)
+            {
+                return 0;
+            }
+
+            return (int)Math.Ceiling(totalCount / (double)pageSize);
+        }
+
+        private static string NormalizeContainerNumber(string containerNumber)
+        {
+            return string.IsNullOrWhiteSpace(containerNumber)
+                ? string.Empty
+                : containerNumber.Trim().ToUpperInvariant();
         }
 
         /// <summary>

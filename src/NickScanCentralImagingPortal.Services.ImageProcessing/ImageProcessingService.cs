@@ -19,19 +19,22 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
         private readonly ApplicationDbContext _dbContext;
         private readonly IImageCacheService _cacheService;
         private readonly ScanProcessingPipeline _pipeline;
+        private readonly IScanAssetResolver _scanAssetResolver;
 
         public ImageProcessingService(
             ILogger<ImageProcessingService> logger,
             IServiceProvider serviceProvider,
             ApplicationDbContext dbContext,
             IImageCacheService cacheService,
-            ScanProcessingPipeline pipeline)
+            ScanProcessingPipeline pipeline,
+            IScanAssetResolver scanAssetResolver)
         {
             _logger = logger;
             _serviceProvider = serviceProvider;
             _dbContext = dbContext;
             _cacheService = cacheService;
             _pipeline = pipeline;
+            _scanAssetResolver = scanAssetResolver;
         }
 
         public async Task<Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber)
@@ -70,7 +73,8 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 };
             }
 
-            return await pipeline.ProcessImageAsync(containerNumber);
+            var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+            return await pipeline.ProcessImageAsync(sourceContainerNumber);
         }
 
         public async Task<Core.Interfaces.ImageMetadata> GetImageMetadataAsync(string containerNumber)
@@ -90,12 +94,23 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 return new Core.Interfaces.ImageMetadata { ImageFormat = "Unknown", AdditionalProperties = new Dictionary<string, object> { ["ErrorMessage"] = $"No image processing pipeline found for scanner type: {scannerType}" } };
             }
 
-            return await pipeline.GetImageMetadataAsync(containerNumber);
+            var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+            return await pipeline.GetImageMetadataAsync(sourceContainerNumber);
         }
 
         public async Task<ScannerType> DetectScannerTypeAsync(string containerNumber)
         {
             _logger.LogDebug("Detecting scanner type for container: {ContainerNumber}", containerNumber);
+
+            var resolution = await _scanAssetResolver.ResolveAsync(containerNumber);
+            if (resolution.Found && !resolution.IsAmbiguous)
+            {
+                if (string.Equals(resolution.SourceScannerType, "FS6000", StringComparison.OrdinalIgnoreCase))
+                    return ScannerType.FS6000;
+
+                if (string.Equals(resolution.SourceScannerType, "ASE", StringComparison.OrdinalIgnoreCase))
+                    return ScannerType.ASE;
+            }
 
             // Check FS6000 scans
             var fs6000Scan = await _dbContext.FS6000Scans
@@ -149,13 +164,42 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                     return string.Empty;
                 }
 
-                return await pipeline.GetImageAsBase64Async(containerNumber);
+                var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+                return await pipeline.GetImageAsBase64Async(sourceContainerNumber);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Exception in GetImageAsBase64Async for container {ContainerNumber}", containerNumber);
                 return string.Empty; // ✅ Return empty string instead of throwing - allows detection services to handle gracefully
             }
+        }
+
+        private async Task<string> ResolveSourceContainerForScannerAsync(string containerNumber, ScannerType scannerType)
+        {
+            if (scannerType == ScannerType.Unknown)
+                return containerNumber;
+
+            var resolution = await _scanAssetResolver.ResolveAsync(containerNumber);
+            if (!resolution.Found || resolution.IsAmbiguous || string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
+                return containerNumber;
+
+            if (scannerType == ScannerType.ASE
+                && string.Equals(resolution.SourceScannerType, "ASE", StringComparison.OrdinalIgnoreCase))
+                return resolution.SourceContainerNumbers;
+
+            if (scannerType == ScannerType.FS6000
+                && string.Equals(resolution.SourceScannerType, "FS6000", StringComparison.OrdinalIgnoreCase))
+                return resolution.SourceContainerNumbers;
+
+            return containerNumber;
+        }
+
+        private async Task<string> ResolveSourceContainerForPipelineAsync(string containerNumber, CancellationToken ct)
+        {
+            var resolution = await _scanAssetResolver.ResolveAsync(containerNumber, cancellationToken: ct);
+            return resolution.Found && !resolution.IsAmbiguous && !string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers)
+                ? resolution.SourceContainerNumbers
+                : containerNumber;
         }
 
         private IImagePipeline? GetImagePipeline(ScannerType scannerType)
@@ -316,7 +360,8 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             }
 
             // Assuming pipeline.GetImageMetadataAsync returns Services.ImageProcessing.ImageMetadata
-            var servicesMetadata = await pipeline.GetImageMetadataAsync(containerNumber);
+            var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+            var servicesMetadata = await pipeline.GetImageMetadataAsync(sourceContainerNumber);
 
             // Convert Services.ImageProcessing.ImageMetadata to Core.Interfaces.ImageMetadata
             return new NickScanCentralImagingPortal.Core.Interfaces.ImageMetadata
@@ -353,7 +398,8 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 return string.Empty;
             }
 
-            return await pipeline.GetImageAsBase64Async(containerNumber);
+            var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+            return await pipeline.GetImageAsBase64Async(sourceContainerNumber);
         }
 
         /// <summary>
@@ -391,12 +437,14 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             // ✅ Call the pipeline's method with image type parameter
             if (pipeline is FS6000ImagePipeline fs6000Pipeline)
             {
-                return await fs6000Pipeline.GetCompleteContainerDataAsync(containerNumber, imageType);
+                var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+                return await fs6000Pipeline.GetCompleteContainerDataAsync(sourceContainerNumber, imageType);
             }
             else if (pipeline is ASEImagePipeline asePipeline)
             {
                 // ASE only has one image per container, so imageType parameter is ignored
-                return await asePipeline.GetCompleteContainerDataAsync(containerNumber);
+                var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
+                return await asePipeline.GetCompleteContainerDataAsync(sourceContainerNumber);
             }
 
             _logger.LogWarning("Pipeline does not support complete data retrieval for scanner type: {ScannerType}", scannerType);
@@ -423,27 +471,27 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             string containerNumber, string mode,
             float loPct = 1.0f, float hiPct = 99.5f, float gamma = 1.0f,
             CancellationToken ct = default)
-            => await _pipeline.RenderAsync(containerNumber, mode, loPct, hiPct, gamma, ct);
+            => await _pipeline.RenderAsync(await ResolveSourceContainerForPipelineAsync(containerNumber, ct), mode, loPct, hiPct, gamma, ct);
 
         public async Task<RoiInspectorResult?> GetRoiInspectorAsync(
             string containerNumber, int x, int y, int width, int height,
             CancellationToken ct = default)
-            => await _pipeline.BuildRoiAsync(containerNumber, x, y, width, height, ct);
+            => await _pipeline.BuildRoiAsync(await ResolveSourceContainerForPipelineAsync(containerNumber, ct), x, y, width, height, ct);
 
         public async Task<PixelValueResult?> GetPixelValueAsync(
             string containerNumber, int x, int y,
             CancellationToken ct = default)
-            => await _pipeline.ProbePixelAsync(containerNumber, x, y, ct);
+            => await _pipeline.ProbePixelAsync(await ResolveSourceContainerForPipelineAsync(containerNumber, ct), x, y, ct);
 
         public async Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(
             string containerNumber,
             CancellationToken ct = default)
-            => await _pipeline.GetCapabilitiesAsync(containerNumber, ct);
+            => await _pipeline.GetCapabilitiesAsync(await ResolveSourceContainerForPipelineAsync(containerNumber, ct), ct);
 
         public async Task<RawPlaneResult?> GetRawPlaneAsync(
             string containerNumber, string plane,
             CancellationToken ct = default)
-            => await _pipeline.GetRawPlaneAsync(containerNumber, plane, ct);
+            => await _pipeline.GetRawPlaneAsync(await ResolveSourceContainerForPipelineAsync(containerNumber, ct), plane, ct);
 
         /// <summary>
         /// Ingest FS6000 raw .img channels from a stable folder into

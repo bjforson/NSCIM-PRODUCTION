@@ -199,8 +199,9 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.Kernel
 
         private static string ScannerLabel(DecodedScan scan) => scan.SourceFormatTag switch
         {
-            var t when t.StartsWith("fs6000") => "FS6000",
-            var t when t.StartsWith("ase")    => "ASE",
+            var t when t.StartsWith("fs6000")   => "FS6000",
+            var t when t.StartsWith("ase")      => "ASE",
+            var t when t.StartsWith("eagle-a25") => "EAGLE_A25",
             _ => "unknown",
         };
     }

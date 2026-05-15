@@ -4,7 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 namespace NickScanWebApp.New.Controllers;
 
 /// <summary>
-/// Proxies image requests to the API so the browser can fetch images same-origin for canvas pixel access (avoids CORS).
+/// Proxies image/raw-image requests to the API so the browser can fetch image
+/// data same-origin for canvas pixel access (avoids CORS/certificate boundary
+/// issues between the WebApp and API hosts).
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -27,7 +29,9 @@ public class ImageProxyController : ControllerBase
 
     /// <summary>
     /// GET api/imageproxy?url=Base64EncodedImageUrl
-    /// Fetches the image from the API and streams it back. Browser uses same-origin URL so canvas getImageData works.
+    /// Fetches image bytes or raw plane bytes from the API. Browser uses a
+    /// same-origin URL so canvas getImageData works and raw metadata headers
+    /// remain readable by JS.
     /// </summary>
     [HttpGet]
     [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
@@ -56,28 +60,65 @@ public class ImageProxyController : ControllerBase
         try
         {
             var client = _httpClientFactory.CreateClient("NickScanAPI");
-            // BUG FIX: do NOT use `using` on the response with `HttpCompletionOption.ResponseHeadersRead`.
-            // File(stream, ...) streams the body during the outgoing response pipeline, AFTER this method
-            // returns. Disposing the HttpResponseMessage first yields a closed stream, ASP.NET writes
-            // zero bytes, and the browser's createImageBitmap rejects the 0-byte blob with
-            // "The source image could not be decoded".
-            // Fix: buffer into a byte[] with ReadAsByteArrayAsync so we own the bytes after dispose.
-            using var response = await client.GetAsync(targetUrl);
-            response.EnsureSuccessStatusCode();
+            using var response = await client.GetAsync(
+                targetUrl,
+                HttpCompletionOption.ResponseHeadersRead,
+                HttpContext.RequestAborted);
 
-            var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-            var bytes = await response.Content.ReadAsByteArrayAsync();
-            if (bytes.Length == 0)
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Image proxy upstream returned HTTP {StatusCode} for {Url}",
+                    (int)response.StatusCode,
+                    targetUrl);
+                return StatusCode((int)response.StatusCode, "Upstream image unavailable");
+            }
+
+            if (response.Content.Headers.ContentLength == 0)
             {
                 _logger.LogWarning("Image proxy got empty body from {Url}", targetUrl);
                 return StatusCode(502, "Upstream returned empty body");
             }
-            return File(bytes, contentType);
+
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
+            if (response.Content.Headers.ContentLength.HasValue)
+            {
+                Response.ContentLength = response.Content.Headers.ContentLength.Value;
+            }
+
+            CopyHeaderIfPresent(response, "X-Width");
+            CopyHeaderIfPresent(response, "X-Height");
+            CopyHeaderIfPresent(response, "X-BitDepth");
+            CopyHeaderIfPresent(response, "X-Plane");
+            CopyHeaderIfPresent(response, "X-Source-Format");
+
+            await response.Content.CopyToAsync(Response.Body, HttpContext.RequestAborted);
+            return new EmptyResult();
+        }
+        catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            _logger.LogDebug("Image proxy request was cancelled by the client for {Url}", targetUrl);
+            return new EmptyResult();
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Image proxy failed for {Url}", targetUrl.Length > 80 ? targetUrl[..80] + "..." : targetUrl);
             return StatusCode(502, "Image unavailable: " + ex.Message);
+        }
+    }
+
+    private void CopyHeaderIfPresent(HttpResponseMessage upstream, string name)
+    {
+        if (upstream.Headers.TryGetValues(name, out var values))
+        {
+            Response.Headers[name] = values.ToArray();
+            return;
+        }
+
+        if (upstream.Content.Headers.TryGetValues(name, out values))
+        {
+            Response.Headers[name] = values.ToArray();
         }
     }
 }

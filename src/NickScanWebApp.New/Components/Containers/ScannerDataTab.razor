@@ -53,6 +53,10 @@
             <MudAlert Severity="Severity.Success" Variant="Variant.Text" Dense="true">
                 <MudText Typo="Typo.caption">
                     Total Scanner Fields: @scannerData.TotalCount | Categories: @GetGroupedData().Count | Latest Scan: @GetLatestScanTime()
+                    @if (!string.IsNullOrWhiteSpace(CurrentResolution?.EffectiveSourceScanId))
+                    {
+                        <text> | Source Scan: @CurrentResolution.EffectiveSourceScanId</text>
+                    }
                 </MudText>
             </MudAlert>
         </MudStack>
@@ -85,6 +89,8 @@
 
 @code {
     [Parameter] public string ContainerNumber { get; set; } = string.Empty;
+    [Parameter] public string? GroupIdentifier { get; set; }
+    [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
     [Parameter] public int TotalRecords { get; set; }
     /// <summary>
     /// Optional preloaded scanner data for this container. When provided, the tab will render from this
@@ -97,6 +103,10 @@
     private bool _hasLoaded = false;
 
     private string _lastContainerNumber = string.Empty;
+    private string? _lastGroupIdentifier;
+    private string? _lastResolutionSignature;
+
+    private ScanAssetResolution? CurrentResolution => SourceScanResolution ?? scannerData?.Resolution;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -104,6 +114,10 @@
         if (PreloadedData != null)
         {
             scannerData = PreloadedData;
+            if (SourceScanResolution != null)
+            {
+                scannerData.Resolution ??= SourceScanResolution;
+            }
             isLoading = false;
             _hasLoaded = true;
             await InvokeAsync(StateHasChanged);
@@ -111,9 +125,16 @@
         }
 
         // Otherwise, fall back to fetching via the shared service when the container changes.
-        if (!string.IsNullOrEmpty(ContainerNumber) && (ContainerNumber != _lastContainerNumber || !_hasLoaded))
+        var resolutionSignature = GetResolutionSignature(SourceScanResolution);
+        if (!string.IsNullOrEmpty(ContainerNumber)
+            && (ContainerNumber != _lastContainerNumber
+                || !string.Equals(GroupIdentifier, _lastGroupIdentifier, StringComparison.Ordinal)
+                || !string.Equals(resolutionSignature, _lastResolutionSignature, StringComparison.Ordinal)
+                || !_hasLoaded))
         {
             _lastContainerNumber = ContainerNumber;
+            _lastGroupIdentifier = GroupIdentifier;
+            _lastResolutionSignature = resolutionSignature;
             await LoadData();
         }
     }
@@ -131,7 +152,12 @@
         {
             Console.WriteLine($"🔍 [ScannerDataTab] Loading ALL scanner data for container: {ContainerNumber}");
             // Fetch ALL data at once (use large page size to get everything)
-            scannerData = await ContainerDetailsService.GetScannerDataAsync(ContainerNumber, 1, 1000);
+            scannerData = await ContainerDetailsService.GetScannerDataForResolvedScanAsync(
+                ContainerNumber,
+                GroupIdentifier,
+                page: 1,
+                pageSize: 1000,
+                resolution: SourceScanResolution);
             
             if (scannerData != null)
             {
@@ -228,6 +254,16 @@
             .FirstOrDefault();
             
         return latest?.Timestamp?.ToString("MMM dd, yyyy HH:mm") ?? "N/A";
+    }
+
+    private static string? GetResolutionSignature(ScanAssetResolution? resolution)
+    {
+        if (resolution == null)
+        {
+            return null;
+        }
+
+        return $"{resolution.EffectiveSourceScanId}:{resolution.SplitJobId}:{resolution.SplitResultId}:{resolution.EffectiveSplitSide}";
     }
 }
 

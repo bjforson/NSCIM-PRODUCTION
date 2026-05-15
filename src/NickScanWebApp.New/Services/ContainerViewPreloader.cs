@@ -33,8 +33,21 @@ namespace NickScanWebApp.New.Services
             return _configuration?.GetValue<bool>("ViewContextPreloading:Enabled", true) ?? true;
         }
 
-        private static string GetCacheKey(string containerNumber) =>
-            $"container_view:{containerNumber}";
+        private int GetContainerFirstPageSize()
+        {
+            // Keep the existing full-tab behavior by default. Operators can lower
+            // this after the scanner/ICUMS tabs support partial-page hydration.
+            var configuredPageSize = _configuration?.GetValue<int>("ViewContextPreloading:ContainerFirstPageSize", 1000) ?? 1000;
+            return Math.Clamp(configuredPageSize, 1, 1000);
+        }
+
+        private static string GetCacheKey(string containerNumber, string? groupIdentifier = null)
+        {
+            var groupPart = string.IsNullOrWhiteSpace(groupIdentifier)
+                ? "direct"
+                : groupIdentifier.Trim().ToUpperInvariant();
+            return $"container_view:{containerNumber.Trim().ToUpperInvariant()}:{groupPart}";
+        }
 
         /// <summary>
         /// Load (or retrieve from cache) the full container view context.
@@ -43,7 +56,8 @@ namespace NickScanWebApp.New.Services
         public async Task<ContainerViewContext?> LoadAsync(
             string containerNumber,
             bool forceRefresh = false,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? groupIdentifier = null)
         {
             if (string.IsNullOrWhiteSpace(containerNumber))
             {
@@ -66,7 +80,7 @@ namespace NickScanWebApp.New.Services
                 };
             }
 
-            var key = GetCacheKey(containerNumber);
+            var key = GetCacheKey(containerNumber, groupIdentifier);
             var startTime = DateTime.UtcNow;
             var cacheSource = "unknown";
 
@@ -77,7 +91,7 @@ namespace NickScanWebApp.New.Services
                 _viewContextCache.Remove(key);
                 cacheSource = "force_refresh";
             }
-            else if (_viewContextCache.TryGet<ContainerViewContext>(key, out var existing))
+            else if (_viewContextCache.TryGet<ContainerViewContext>(key, out var existing) && existing != null)
             {
                 var cacheDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
                 _logger.LogInformation(
@@ -101,6 +115,9 @@ namespace NickScanWebApp.New.Services
                 var basicInfoDuration = (DateTime.UtcNow - basicInfoStart).TotalMilliseconds;
                 cancellationToken.ThrowIfCancellationRequested();
 
+                var scanAssetResolution = await _detailsService.ResolveScanAssetAsync(containerNumber, groupIdentifier);
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (basicInfo == null)
                 {
                     _logger.LogWarning("No basic container info found for {ContainerNumber}", containerNumber);
@@ -112,26 +129,35 @@ namespace NickScanWebApp.New.Services
                 // Step 2: based on counts, fire off the heavier requests in parallel
                 var parallelLoadStart = DateTime.UtcNow;
                 var tasks = new List<Task>();
+                var firstPageSize = GetContainerFirstPageSize();
 
                 Task<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ScannerDataRecord>?>? scannerTask = null;
                 Task<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>?>? icumsTask = null;
                 Task<List<NickScanWebApp.Shared.Models.ImageMetadata>?>? imagesTask = null;
 
-                if (basicInfo.ScannerRecordCount > 0)
+                if (basicInfo.ScannerRecordCount > 0 || scanAssetResolution?.HasUsableSourceScan == true)
                 {
-                    scannerTask = _detailsService.GetScannerDataAsync(containerNumber, page: 1, pageSize: 1000);
+                    scannerTask = _detailsService.GetScannerDataForResolvedScanAsync(
+                        containerNumber,
+                        groupIdentifier,
+                        page: 1,
+                        pageSize: firstPageSize,
+                        resolution: scanAssetResolution);
                     tasks.Add(scannerTask);
                 }
 
                 if (basicInfo.ICUMSRecordCount > 0)
                 {
-                    icumsTask = _detailsService.GetICUMSDataAsync(containerNumber, page: 1, pageSize: 1000);
+                    icumsTask = _detailsService.GetICUMSDataAsync(containerNumber, page: 1, pageSize: firstPageSize);
                     tasks.Add(icumsTask);
                 }
 
-                if (basicInfo.ImageCount > 0)
+                if (basicInfo.ImageCount > 0 || scanAssetResolution?.HasUsableSourceScan == true)
                 {
-                    imagesTask = _detailsService.GetImageMetadataAsync(containerNumber);
+                    imagesTask = _detailsService.GetImageMetadataForResolvedScanAsync(
+                        containerNumber,
+                        groupIdentifier,
+                        scanAssetResolution);
                     tasks.Add(imagesTask);
                 }
 
@@ -146,6 +172,7 @@ namespace NickScanWebApp.New.Services
                 {
                     ContainerNumber = containerNumber,
                     BasicInfo = basicInfo,
+                    ScanAssetResolution = scanAssetResolution,
                     ScannerData = scannerTask?.Result,
                     ICUMSData = icumsTask?.Result,
                     Images = imagesTask?.Result
@@ -170,7 +197,7 @@ namespace NickScanWebApp.New.Services
 
                 _viewContextCache.Set(key, context);
                 _logger.LogInformation(
-                    "Preloaded ContainerViewContext for {ContainerNumber} in {TotalDuration}ms (parallel load: {ParallelDuration}ms, source: {Source}): Scanner={ScannerCount}, ICUMS={ICUMSCount}, Images={ImageCount}, EstimatedSize={SizeEstimate}KB",
+                    "Preloaded ContainerViewContext for {ContainerNumber} in {TotalDuration}ms (parallel load: {ParallelDuration}ms, source: {Source}): Scanner={ScannerCount}, ICUMS={ICUMSCount}, Images={ImageCount}, SourceScan={SourceScanId}, EstimatedSize={SizeEstimate}KB",
                     containerNumber,
                     totalDuration,
                     parallelLoadDuration,
@@ -178,6 +205,7 @@ namespace NickScanWebApp.New.Services
                     scannerCount,
                     icumsCount,
                     imageCount,
+                    context.ScanAssetResolution?.EffectiveSourceScanId,
                     sizeEstimate / 1024);
 
                 return context;

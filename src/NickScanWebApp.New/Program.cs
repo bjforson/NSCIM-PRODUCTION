@@ -238,8 +238,15 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.ReadinessKeepaliveCoordin
 // signer holds no per-user state.
 builder.Services.AddSingleton<NickScanWebApp.New.Services.SignedImageUrlBuilder>();
 
-// Add application services
-builder.Services.AddMemoryCache();
+// Add application services. Keep the WebApp cache bounded; image-analysis
+// dialogs can touch large cargo/ICUMS payloads, and an unbounded in-process
+// cache can pin a Blazor Server worker after a few heavy assignments.
+builder.Services.AddMemoryCache(options =>
+{
+    options.SizeLimit = builder.Configuration.GetValue<long?>("Cache:MemorySizeLimit") ?? 2000;
+    options.CompactionPercentage = 0.25;
+    options.ExpirationScanFrequency = TimeSpan.FromMinutes(1);
+});
 
 // ✅ CRITICAL: Register ApiService FIRST before any services that depend on it
 // Note: IHttpClientFactory is automatically registered by AddHttpClient("NickScanAPI", ...) above
