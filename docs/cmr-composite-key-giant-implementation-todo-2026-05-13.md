@@ -641,13 +641,13 @@ Exit gate:
 
 ## Phase 11: Small-Batch Production Expansion
 
-- [ ] Run batch size `5`.
-- [ ] Verify no duplicate RCS keys.
-- [ ] Verify no duplicate AG keys.
-- [ ] Verify no duplicate AR `(GroupId, ContainerNumber)`.
-- [ ] Verify no duplicate active assignments.
-- [ ] Verify all batch rows are visible or intentionally held.
-- [ ] Verify Analyst users can work batch assignments.
+- [x] Run batch size `5`.
+- [x] Verify no duplicate RCS keys.
+- [x] Verify no duplicate AG keys.
+- [x] Verify no duplicate AR `(GroupId, ContainerNumber)`.
+- [x] Verify no duplicate active assignments.
+- [x] Verify all batch rows are visible or intentionally held.
+- [x] Verify Analyst users can work batch assignments.
 - [ ] Verify Audit users can work batch assignments.
 - [ ] Verify no unexpected Decision Agent work.
 - [ ] Verify ICUMS payloads are generated correctly for completed CMRs.
@@ -658,6 +658,52 @@ Exit gate:
 Exit gate:
 
 - [ ] Production CMR backlog drains in controlled batches with clean duplicate metrics.
+
+### Phase 11 Batch-5 Production Evidence - 2026-05-15/2026-05-16
+
+Controlled production expansion was run with production `CmrCompositeProgression:Enabled=false` and ICUMS live submission still off. The pilot runner enabled CMR composite progression only inside the controlled process. The failed first dry-run used the unresolved DB-password placeholder and wrote nothing.
+
+Dry-run scope:
+
+- `run_id=cmr-pilot-20260515-234607`
+- `candidate_count=5`
+- all candidates had `ready=True`
+- all candidates had `unsafe_duplicates=False`
+- all candidates had `rcs=0 ag=0 ar=0 active_assignments=0`
+- `dry_run_ready=5`
+- `errors=0`
+
+Applied allow-list:
+
+- `MRSU3641112` -> `CMR-C0B7CF67E04340BF0023`
+- `TCNU2435950` -> `CMR-C2527B0C4253B3B7D5AC`
+- `ARKU5035000` -> `CMR-D5027C2E4965442C1A0F`
+- `PCIU9133534` -> `CMR-C201806C3DF9DB1AEB23`
+- `MSMU6263232` -> `CMR-CA4757E30E2AB0B37A97`
+
+Apply result:
+
+- `run_id=prod-cmr-batch5-20260515-2346`
+- `records_built_or_updated=5`
+- `groups_created=5`
+- `analysis_records_created=5`
+- `completeness_rows_stamped=5`
+- `skipped_not_ready=0`
+- `skipped_duplicates=0`
+- `errors=0`
+
+Post-apply verification:
+
+- Each selected CMR has one `RecordCompletenessStatus` row with `Status=Ready` and `WorkflowStage=ImageAnalysis`.
+- Each selected CMR has one `RecordExpectedContainer` row with `Status=Ready`.
+- Each selected CMR has one `AnalysisGroup` row with `GroupType=CMR`.
+- Each selected CMR has one `AnalysisRecord` row with the real container number.
+- Duplicate counts were all zero: RCS, AG, AR, and active assignments.
+- After the assignment cycle, all five selected CMR groups moved to `AnalystAssigned`.
+- Each selected CMR group has one active Analyst assignment and one queue entry, assigned to `pimage`.
+- Latest queue refresh for the batch was `2026-05-16 00:47:59 Europe/London`.
+- API and Web health remained `200`.
+- Fresh application error count stayed `0` for the last 15 minutes.
 
 ## Phase 12: Observability, Alerts, And Runbooks
 
