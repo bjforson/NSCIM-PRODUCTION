@@ -41,13 +41,42 @@ namespace NickScanCentralImagingPortal.API.Middleware
             var correlationId = context.GetCorrelationId() ?? Guid.NewGuid().ToString();
             var path = context.Request.Path.ToString();
 
-            // Log the exception with correlation ID
-            _logger.LogError(exception,
-                "❌ Unhandled exception occurred. CorrelationId: {CorrelationId}, Path: {Path}, Message: {Message}",
-                correlationId, path, exception.Message);
+            if (exception is OperationCanceledException && context.RequestAborted.IsCancellationRequested)
+            {
+                _logger.LogDebug(exception,
+                    "Request aborted by client. CorrelationId: {CorrelationId}, Path: {Path}, Message: {Message}",
+                    correlationId, path, exception.Message);
+
+                if (!context.Response.HasStarted)
+                {
+                    context.Response.Clear();
+                    context.Response.StatusCode = 499;
+                    await context.Response.CompleteAsync();
+                }
+
+                return;
+            }
+
+            if (exception is OperationCanceledException)
+            {
+                _logger.LogWarning(exception,
+                    "Request timed out or was canceled. CorrelationId: {CorrelationId}, Path: {Path}, Message: {Message}",
+                    correlationId, path, exception.Message);
+            }
+            else
+            {
+                _logger.LogError(exception,
+                    "❌ Unhandled exception occurred. CorrelationId: {CorrelationId}, Path: {Path}, Message: {Message}",
+                    correlationId, path, exception.Message);
+            }
 
             // Determine error response based on exception type
             var errorResponse = CreateErrorResponse(exception, correlationId, path);
+
+            if (context.Response.HasStarted)
+            {
+                return;
+            }
 
             // Set response status code and content type
             context.Response.StatusCode = errorResponse.StatusCode;

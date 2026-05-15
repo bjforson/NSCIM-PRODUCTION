@@ -37,7 +37,13 @@ from models.schemas import (
     ManualSplitRequest, ApproveRequest, RejectRequest, HealthResponse
 )
 from pipeline.orchestrator import run_pipeline, get_best_result, get_all_strategies
-from pipeline.image_utils import base64_to_bytes, get_image_dimensions, crop_and_encode
+from pipeline.image_utils import (
+    base64_to_bytes,
+    crop_and_encode,
+    crop_side_and_encode,
+    detect_image_media_type,
+    get_image_dimensions,
+)
 from pipeline.visual_eligibility import classify_visual_eligibility
 from strategies.base import SplitResult
 
@@ -583,6 +589,7 @@ async def create_split_job(
     return SplitJobResponse(
         id=job.id,
         container_numbers=job.container_numbers,
+        scanner_type=job.scanner_type,
         status=job.status,
         created_at=job.created_at,
         result_count=0
@@ -627,6 +634,7 @@ async def create_split_job_upload(
     return SplitJobResponse(
         id=job.id,
         container_numbers=job.container_numbers,
+        scanner_type=job.scanner_type,
         status=job.status,
         created_at=job.created_at,
         result_count=0
@@ -657,6 +665,7 @@ async def search_jobs_by_containers(container_numbers: str, db: AsyncSession = D
         out.append(SplitJobResponse(
             id=j.id,
             container_numbers=j.container_numbers,
+            scanner_type=j.scanner_type,
             status=j.status,
             best_strategy=j.best_strategy,
             best_score=j.best_score,
@@ -677,14 +686,16 @@ async def search_jobs_by_containers(container_numbers: str, db: AsyncSession = D
 async def list_pending_jobs(
     mode: str = Query(
         "legacy",
-        pattern="^(legacy|active|recent|reviewable)$",
+        pattern="^(legacy|active|recent|reviewable|backlog)$",
         description=(
             "legacy returns the historical 200-row backlog; active returns only "
-            "pending/processing; recent/reviewable return actionable recent jobs."
+            "pending/processing; recent/reviewable return actionable recent jobs; "
+            "backlog returns all completed unreviewed jobs."
         ),
     ),
     limit: int = Query(200, ge=1, le=500),
     since_hours: int | None = Query(None, ge=1, le=24 * 31),
+    scanner_type: str | None = Query(None, description="Optional scanner filter such as ASE or FS6000."),
     db: AsyncSession = Depends(get_db)
 ):
     """List split jobs for operational review.
@@ -697,9 +708,14 @@ async def list_pending_jobs(
     filters = [
         ImageSplitJob.analyst_verdict.is_(None),
     ]
+    if scanner_type and scanner_type.strip().lower() not in {"all", "*"}:
+        filters.append(func.upper(ImageSplitJob.scanner_type) == scanner_type.strip().upper())
+
     mode_norm = mode.lower()
     if mode_norm == "active":
         filters.append(ImageSplitJob.status.in_(["pending", "processing"]))
+    elif mode_norm == "backlog":
+        filters.append(ImageSplitJob.status == "completed")
     elif mode_norm in ("recent", "reviewable"):
         filters.append(ImageSplitJob.status.in_(["pending", "processing", "completed"]))
         cutoff_hours = since_hours or 72
@@ -727,6 +743,7 @@ async def list_pending_jobs(
         out.append(SplitJobResponse(
             id=j.id,
             container_numbers=j.container_numbers,
+            scanner_type=j.scanner_type,
             status=j.status,
             best_strategy=j.best_strategy,
             best_score=j.best_score,
@@ -757,6 +774,7 @@ async def get_split_job(job_id: UUID, db: AsyncSession = Depends(get_db)):
     return SplitJobResponse(
         id=job.id,
         container_numbers=job.container_numbers,
+        scanner_type=job.scanner_type,
         status=job.status,
         best_strategy=job.best_strategy,
         best_score=job.best_score,
@@ -817,6 +835,43 @@ async def get_result_image(job_id: UUID, result_id: UUID, side: str, db: AsyncSe
         raise HTTPException(404, "Image not available")
 
     return Response(content=img_data, media_type="image/jpeg")
+
+
+@app.get("/api/split/{job_id}/results/{result_id}/lossless/{side}")
+async def get_result_lossless_image(job_id: UUID, result_id: UUID, side: str, db: AsyncSession = Depends(get_db)):
+    """Render a left or right crop losslessly from the original dual-container scan bytes."""
+    if side not in ("left", "right"):
+        raise HTTPException(400, "Side must be 'left' or 'right'")
+
+    result = await db.get(ImageSplitResult, result_id)
+    if not result or result.job_id != job_id:
+        raise HTTPException(404, "Result not found")
+
+    job = await db.get(ImageSplitJob, job_id)
+    if not job or not job.image_data:
+        raise HTTPException(404, "Job or original image not found")
+
+    try:
+        img_data = crop_side_and_encode(bytes(job.image_data), result.split_x, side, format="png")
+    except Exception as exc:
+        logger.warning(
+            "Failed to render lossless split crop job=%s result=%s side=%s",
+            job_id,
+            result_id,
+            side,
+            exc_info=True,
+        )
+        raise HTTPException(500, f"Could not render lossless split crop: {exc}") from exc
+
+    return Response(
+        content=img_data,
+        media_type="image/png",
+        headers={
+            "X-Split-X": str(result.split_x),
+            "X-Crop-Encoding": "png",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @app.post("/api/split/{job_id}/manual")
@@ -912,15 +967,19 @@ async def reject_split(
     if not job:
         raise HTTPException(404, "Job not found")
 
-    job.analyst_verdict = "rejected"
-    job.correct_split_x = request.correct_split_x   # ground truth from analyst (may be None)
+    raw_label = (request.review_label or request.split_outcome or "rejected").strip().lower().replace("-", "_")
+    analyst_verdict = raw_label if raw_label in {"rejected", "single_container", "bad_image", "uncertain"} else "rejected"
+
+    job.analyst_verdict = analyst_verdict
+    job.correct_split_x = request.correct_split_x if analyst_verdict == "rejected" else None
     job.reviewed_by = request.rejected_by
     job.reviewed_at = datetime.now(timezone.utc)
     await db.commit()
 
     return {
-        "status": "rejected",
+        "status": analyst_verdict,
         "correct_split_x": request.correct_split_x,
+        "review_label": analyst_verdict,
         "message": "Feedback recorded. If you provided a correct split point, it will be used for algorithm improvement."
     }
 
@@ -982,7 +1041,8 @@ async def get_original_image(job_id: UUID, db: AsyncSession = Depends(get_db)):
     job = await db.get(ImageSplitJob, job_id)
     if not job or not job.image_data:
         raise HTTPException(404, "Job or image not found")
-    return Response(content=bytes(job.image_data), media_type="image/jpeg")
+    image_data = bytes(job.image_data)
+    return Response(content=image_data, media_type=detect_image_media_type(image_data))
 
 
 from pydantic import BaseModel as _AnnotateBase

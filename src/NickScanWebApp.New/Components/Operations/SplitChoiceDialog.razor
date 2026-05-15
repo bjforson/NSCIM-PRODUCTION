@@ -1,7 +1,11 @@
 @using MudBlazor
+@using NickScanWebApp.Shared.Models
+@using System.Security.Claims
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 
 @* Inline split choice step — shown inside the Images tab for containers
    that are part of a 2-container scan and have split candidates ready.
@@ -20,7 +24,7 @@ else if (_splitStatus == "Pending")
     <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-4">
         <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
             <MudProgressCircular Color="Color.Info" Size="Size.Small" Indeterminate="true" />
-            <MudText>Image split is processing. Showing combined image for now.</MudText>
+            <MudText>Image split is processing. Please wait before continuing analysis.</MudText>
         </MudStack>
     </MudAlert>
 }
@@ -33,8 +37,97 @@ else if (IsTerminalNoChoice)
         </MudStack>
     </MudAlert>
 }
+else if (!string.IsNullOrWhiteSpace(_loadErrorMessage))
+{
+    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-4" Dense="true">
+        <MudStack Spacing="2">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                <MudIcon Icon="@Icons.Material.Outlined.WarningAmber" />
+                <MudText>@_loadErrorMessage</MudText>
+            </MudStack>
+            <MudStack Row="true" Spacing="2">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Outlined.Refresh"
+                           OnClick="@RetryLoadSplitOptions"
+                           Disabled="@_loading">
+                    Retry Split Choices
+                </MudButton>
+                <MudButton Variant="Variant.Text"
+                           Color="Color.Default"
+                           Size="Size.Small"
+                           StartIcon="@Icons.Material.Outlined.SkipNext"
+                           OnClick="@SkipSplit"
+                           Disabled="@_submitting">
+                    Skip
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudAlert>
+}
+else if (_splitStatus == "Ready" && _options.Count == 0 && !string.IsNullOrWhiteSpace(_emptyStateMessage))
+{
+    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-4" Dense="true">
+        <MudStack Spacing="2">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Outlined.ImageNotSupported" />
+            <MudText>@_emptyStateMessage</MudText>
+            </MudStack>
+            <MudButton Variant="Variant.Text" Color="Color.Default"
+                       StartIcon="@Icons.Material.Outlined.SkipNext"
+                       OnClick="@SkipSplit"
+                       Disabled="@_submitting">
+                Skip — Use Original Combined Image
+            </MudButton>
+        </MudStack>
+    </MudAlert>
+}
 else if (_splitStatus == "Ready" && _options?.Count > 0)
 {
+    @if (!string.IsNullOrWhiteSpace(_originalImageUrl))
+    {
+        <MudPaper Class="pa-3 mb-3" Elevation="0" Style="border: 1px solid var(--mud-palette-lines-default);">
+            <MudStack Spacing="2">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" />
+                    <MudText Typo="Typo.subtitle2">Original Combined Scan</MudText>
+                    <MudSpacer />
+                    @if (!_originalImageExpanded)
+                    {
+                        <MudButton Size="Size.Small"
+                                   Variant="Variant.Outlined"
+                                   Color="Color.Default"
+                                   StartIcon="@Icons.Material.Outlined.Visibility"
+                                   OnClick="@(() => _originalImageExpanded = true)">
+                            Load Preview
+                        </MudButton>
+                    }
+                </MudStack>
+                @if (!_originalImageExpanded)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Combined scan preview is held back until requested.</MudText>
+                }
+                else if (_originalImageFailed)
+                {
+                    <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Style="height: 220px; background: #2a2a2a;">
+                        <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Color="Color.Error" />
+                        <MudText Typo="Typo.caption">Original scan preview unavailable</MudText>
+                    </MudStack>
+                }
+                else
+                {
+                    <img src="@GetOriginalImageSource()"
+                         alt="Original combined scan"
+                         loading="lazy"
+                         decoding="async"
+                         style="width: 100%; max-height: 360px; object-fit: contain; background: #1a1a1a;"
+                         @onerror="MarkOriginalImageFailed" />
+                }
+            </MudStack>
+        </MudPaper>
+    }
+
     <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mb-4" Dense="true">
         <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
             <MudIcon Icon="@Icons.Material.Outlined.ContentCut" />
@@ -54,6 +147,7 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             var option = _options[i];
             var label = i == 0 ? "Option A" : "Option B";
             var color = i == 0 ? Color.Primary : Color.Secondary;
+            var imageSource = GetCropImageSource(option);
 
             <MudItem xs="12" md="6">
                 <MudCard Elevation="2" Class="@(_choosingResultId == option.ResultId ? "mud-border-primary" : "")" Style="height: 100%;">
@@ -63,9 +157,12 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
                                 <MudChip T="string" Color="@color" Size="Size.Small" Variant="Variant.Filled">@label</MudChip>
                                 <MudText Typo="Typo.subtitle2">@option.Strategy</MudText>
                                 <MudSpacer />
-                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
-                                    Split x=@option.SplitX
-                                </MudChip>
+                                @if (option.SplitX > 0)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                        Split x=@option.SplitX
+                                    </MudChip>
+                                }
                                 @if (option.Confidence > 0)
                                 {
                                     <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
@@ -75,21 +172,32 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
                             </MudStack>
                         </CardHeaderContent>
                     </MudCardHeader>
-                    <MudCardMedia>
-                        @if (!string.IsNullOrEmpty(option.CropImageBase64))
+                    <div style="width: 100%; min-height: 260px; display: flex; align-items: center; justify-content: center; background: #1a1a1a;">
+                        @if (option.CropImageFailed)
                         {
-                            <img src="@($"data:image/jpeg;base64,{option.CropImageBase64}")"
+                            <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Style="width: 100%; height: 260px; background: #2a2a2a;">
+                                <MudIcon Icon="@Icons.Material.Outlined.BrokenImage" Color="Color.Error" />
+                                <MudText Typo="Typo.caption">@option.ImageErrorText</MudText>
+                            </MudStack>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(imageSource))
+                        {
+                            <img @key="imageSource"
+                                 src="@imageSource"
                                  alt="@($"{label}: {option.Strategy}")"
-                                 style="width: 100%; height: auto; max-height: 400px; object-fit: contain; background: #1a1a1a;" />
+                                 loading="lazy"
+                                 decoding="async"
+                                 style="display: block; width: 100%; min-height: 240px; height: auto; max-height: 420px; object-fit: contain; background: #1a1a1a;"
+                                 @onerror="@(() => MarkCropImageFailed(option))" />
                         }
                         else
                         {
-                            <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Style="height: 200px; background: #2a2a2a;">
+                            <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Style="width: 100%; height: 260px; background: #2a2a2a;">
                                 <MudProgressCircular Color="Color.Primary" Size="Size.Small" Indeterminate="true" />
                                 <MudText Typo="Typo.caption">Loading preview...</MudText>
                             </MudStack>
                         }
-                    </MudCardMedia>
+                    </div>
                     @if (!string.IsNullOrEmpty(option.Reasoning))
                     {
                         <MudCardContent>
@@ -130,15 +238,31 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
 
 @code {
     [Parameter] public string ContainerNumber { get; set; } = "";
+    [Parameter] public string? GroupIdentifier { get; set; }
+    [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
     [Parameter] public EventCallback OnSplitChosen { get; set; }
     [Parameter] public EventCallback OnSplitSkipped { get; set; }
+    [Parameter] public EventCallback<ScanAssetResolution?> OnSplitResolutionChanged { get; set; }
+    [Parameter] public EventCallback<string?> OnSplitStateChanged { get; set; }
 
     private bool _loading = true;
     private bool _submitting;
     private string? _splitStatus;
     private string? _position;
     private string? _jobId;
+    private int? _analysisRecordId;
+    private string? _recordContainerHint;
+    private string? _originalImageUrl;
+    private bool _originalImageExpanded;
+    private bool _originalImageFailed;
+    private ScanAssetResolution? _resolution;
     private string? _choosingResultId;
+    private string _currentUser = "anon";
+    private string? _lastLoadedKey;
+    private string? _activeLoadKey;
+    private bool _loadAttempted;
+    private string? _loadErrorMessage;
+    private string? _emptyStateMessage;
     private List<SplitOption> _options = new();
 
     private class SplitOption
@@ -147,87 +271,575 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         public string Strategy { get; set; } = "";
         public int SplitX { get; set; }
         public double Confidence { get; set; }
+        public string? Side { get; set; }
         public string? CropImageUrl { get; set; }
-        public string? CropImageBase64 { get; set; }
+        public string? PreviewImageUrl { get; set; }
+        public string CropImageMimeType { get; set; } = "image/png";
+        public bool UsePreviewImage { get; set; }
+        public bool CropImageFailed { get; set; }
+        public string ImageErrorText { get; set; } = "Preview unavailable";
         public string? Reasoning { get; set; }
     }
 
     protected override async Task OnParametersSetAsync()
     {
         if (string.IsNullOrEmpty(ContainerNumber)) return;
-        await LoadSplitOptions();
+
+        var loadKey = BuildLoadKey();
+        if (string.Equals(_activeLoadKey, loadKey, StringComparison.Ordinal)
+            || (_loadAttempted && string.Equals(_lastLoadedKey, loadKey, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        await LoadSplitOptions(loadKey, forceReload: false);
     }
 
-    private async Task LoadSplitOptions()
+    private async Task LoadSplitOptions(string loadKey, bool forceReload)
     {
+        if (!forceReload
+            && (string.Equals(_activeLoadKey, loadKey, StringComparison.Ordinal)
+                || (_loadAttempted && string.Equals(_lastLoadedKey, loadKey, StringComparison.Ordinal))))
+        {
+            return;
+        }
+
+        _activeLoadKey = loadKey;
+        _loadAttempted = true;
         _loading = true;
+        _originalImageUrl = null;
+        _originalImageExpanded = false;
+        _originalImageFailed = false;
+        _loadErrorMessage = null;
+        _emptyStateMessage = null;
+        _recordContainerHint = null;
+        _options.Clear();
         StateHasChanged();
+        await NotifySplitStateChangedAsync();
 
         try
         {
-            var response = await ApiService.GetAsync<System.Text.Json.JsonElement>(
-                $"api/image-splitter/container/{ContainerNumber}/split-options");
+            _currentUser = await GetCurrentUserAsync();
+            _resolution = SourceScanResolution
+                ?? await ContainerDetailsService.ResolveScanAssetAsync(ContainerNumber, GroupIdentifier);
 
-            var isMulti = response.TryGetProperty("isMultiContainer", out var mc) && mc.GetBoolean();
-            _splitStatus = response.TryGetProperty("splitStatus", out var ss) ? ss.GetString() : null;
-            _position = response.TryGetProperty("position", out var pos) ? pos.GetString() : null;
-            _jobId = response.TryGetProperty("jobId", out var jid) ? jid.GetString() : null;
+            var response = await TryLoadSplitOptionsFromIdentityAsync(_resolution)
+                ?? await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
+                    $"/api/image-splitter/container/{Uri.EscapeDataString(ContainerNumber)}/split-options");
+
+            if (response == null)
+            {
+                _splitStatus = null;
+                return;
+            }
+
+            response.Resolution ??= _resolution;
+            _resolution = response.Resolution ?? _resolution;
+            EnsureStoredSplitOptions(response, _resolution);
+            var isMulti = response.IsMultiContainer;
+            _splitStatus = response.SplitStatus;
+            _position = response.Position;
+            _jobId = response.EffectiveSplitJobId?.ToString();
+            _analysisRecordId = response.AnalysisRecordId ?? response.Resolution?.AnalysisRecordId;
+            _recordContainerHint = GetStrictSingleContainerHint(response, _resolution);
+            _originalImageUrl = ToBrowserImageUrl(response.OriginalImageUrl ?? BuildOriginalImageUrl(response, _resolution));
 
             _options.Clear();
             if (isMulti && _splitStatus == "Ready" &&
-                response.TryGetProperty("options", out var opts) &&
-                opts.ValueKind == System.Text.Json.JsonValueKind.Array)
+                response.Options.Count > 0)
             {
-                foreach (var opt in opts.EnumerateArray())
+                foreach (var opt in response.Options)
                 {
+                    var cropImageUrl = ToBrowserImageUrl(opt.CropImageUrl ?? BuildCropImageUrl(response, opt));
+                    var previewImageUrl = ToBrowserImageUrl(opt.PreviewImageUrl ?? BuildPreviewImageUrl(response, opt));
                     _options.Add(new SplitOption
                     {
-                        ResultId = opt.TryGetProperty("resultId", out var rid) ? rid.GetString() ?? "" : "",
-                        Strategy = opt.TryGetProperty("strategy", out var st) ? st.GetString() ?? "" : "",
-                        SplitX = opt.TryGetProperty("splitX", out var sx) ? sx.GetInt32() : 0,
-                        Confidence = opt.TryGetProperty("confidence", out var cf) ? cf.GetDouble() : 0,
-                        CropImageUrl = opt.TryGetProperty("cropImageUrl", out var url) ? url.GetString() : null,
-                        Reasoning = opt.TryGetProperty("reasoning", out var rs) ? rs.GetString() : null
+                        ResultId = opt.ResultId,
+                        Strategy = opt.Strategy,
+                        SplitX = opt.SplitX,
+                        Confidence = opt.Confidence,
+                        Side = opt.Side,
+                        CropImageUrl = cropImageUrl,
+                        PreviewImageUrl = previewImageUrl,
+                        UsePreviewImage = !string.IsNullOrWhiteSpace(previewImageUrl),
+                        CropImageMimeType = IsLosslessImageUrl(cropImageUrl) ? "image/png" : "image/jpeg",
+                        CropImageFailed = string.IsNullOrWhiteSpace(previewImageUrl),
+                        ImageErrorText = string.IsNullOrWhiteSpace(previewImageUrl)
+                            ? "No split preview URL was returned for this option."
+                            : "Preview unavailable",
+                        Reasoning = opt.Reasoning
                     });
                 }
-
-                // Load crop images as base64 (auth-protected endpoints need token)
-                foreach (var option in _options)
-                {
-                    if (!string.IsNullOrEmpty(option.CropImageUrl))
-                    {
-                        _ = LoadCropImageAsync(option);
-                    }
-                }
             }
+            else if (isMulti && _splitStatus == "Ready")
+            {
+                _emptyStateMessage = "The splitter says this image is ready, but no crop choices were returned. The combined image remains available below.";
+            }
+
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[SplitChoiceDialog] Error loading split options: {ex.Message}");
+            _loadErrorMessage = "Split choices could not be loaded. The combined image remains available below.";
             _splitStatus = null; // Fall through to normal viewer
         }
         finally
         {
+            _lastLoadedKey = loadKey;
+            _activeLoadKey = null;
             _loading = false;
+            await NotifySplitStateChangedAsync();
             StateHasChanged();
         }
     }
 
-    private async Task LoadCropImageAsync(SplitOption option)
+    private async Task RetryLoadSplitOptions()
     {
-        try
+        if (string.IsNullOrEmpty(ContainerNumber))
         {
-            var bytes = await ApiService.GetBytesAsync(option.CropImageUrl!);
-            if (bytes != null && bytes.Length > 0)
+            return;
+        }
+
+        var loadKey = BuildLoadKey();
+        _lastLoadedKey = null;
+        _loadAttempted = false;
+        await LoadSplitOptions(loadKey, forceReload: true);
+    }
+
+    private string BuildLoadKey()
+    {
+        var resolution = SourceScanResolution;
+        return string.Join("|", new[]
+        {
+            ContainerNumber ?? string.Empty,
+            GroupIdentifier ?? string.Empty,
+            resolution?.AnalysisRecordId?.ToString() ?? string.Empty,
+            resolution?.EffectiveSourceScanId ?? string.Empty,
+            resolution?.SplitJobId?.ToString() ?? string.Empty,
+            resolution?.SplitResultId?.ToString() ?? string.Empty,
+            resolution?.EffectiveSplitSide ?? string.Empty,
+            resolution?.Status ?? string.Empty
+        });
+    }
+
+    private async Task<ImageAnalysisSplitOptionsResponse?> TryLoadSplitOptionsFromIdentityAsync(ScanAssetResolution? resolution)
+    {
+        ImageAnalysisSplitOptionsResponse? context = null;
+        var analysisRecordId = resolution?.AnalysisRecordId;
+        if (analysisRecordId.HasValue)
+        {
+            context = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
+                $"/api/image-analysis/records/{analysisRecordId.Value}/split-options");
+
+            var splitterByRecord = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
+                $"/api/image-splitter/records/{analysisRecordId.Value}/split-options");
+            var mergedByRecord = MergeSplitOptionResponses(splitterByRecord, context, resolution);
+            if (HasUsableSplitOptionPayload(mergedByRecord))
             {
-                option.CropImageBase64 = Convert.ToBase64String(bytes);
-                await InvokeAsync(StateHasChanged);
+                return mergedByRecord;
             }
         }
-        catch (Exception ex)
+
+        var splitJobId = resolution?.SplitJobId ?? context?.EffectiveSplitJobId;
+        if (splitJobId.HasValue)
         {
-            Console.WriteLine($"[SplitChoiceDialog] Error loading crop image: {ex.Message}");
+            var containerKey = GetSingleContainerHint(resolution) ?? ContainerNumber;
+            var byJob = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
+                $"/api/image-splitter/jobs/{splitJobId.Value}/split-options?containerNumber={Uri.EscapeDataString(containerKey)}");
+            var mergedByJob = MergeSplitOptionResponses(byJob, context, resolution);
+            if (HasUsableSplitOptionPayload(mergedByJob))
+            {
+                return mergedByJob;
+            }
         }
+
+        var mergedContext = MergeSplitOptionResponses(context, null, resolution);
+        return HasUsableSplitOptionPayload(mergedContext) ? mergedContext : null;
+    }
+
+    private static ImageAnalysisSplitOptionsResponse? MergeSplitOptionResponses(
+        ImageAnalysisSplitOptionsResponse? primary,
+        ImageAnalysisSplitOptionsResponse? context,
+        ScanAssetResolution? resolution)
+    {
+        if (primary == null)
+        {
+            primary = context;
+            context = null;
+        }
+
+        if (primary == null)
+        {
+            return null;
+        }
+
+        primary.Options ??= new();
+        if (primary.Options.Count == 0 && context?.Options?.Count > 0)
+        {
+            primary.Options = context.Options;
+        }
+
+        primary.Resolution ??= context?.Resolution ?? resolution;
+        primary.AnalysisRecordId ??= context?.AnalysisRecordId ?? resolution?.AnalysisRecordId;
+        primary.JobId ??= context?.JobId;
+        primary.SplitJobId ??= context?.SplitJobId ?? context?.JobId ?? resolution?.SplitJobId;
+        primary.SplitResultId ??= context?.SplitResultId ?? resolution?.SplitResultId;
+        primary.SplitOptionAResultId ??= context?.SplitOptionAResultId ?? resolution?.SplitContext?.SplitOptionAResultId;
+        primary.SplitOptionBResultId ??= context?.SplitOptionBResultId ?? resolution?.SplitContext?.SplitOptionBResultId;
+        primary.OriginalScanRecordId ??= context?.OriginalScanRecordId ?? resolution?.OriginalScanRecordId;
+        primary.ScannerScanId ??= context?.ScannerScanId ?? resolution?.ScannerScanId;
+        primary.SourceScanId ??= context?.SourceScanId ?? resolution?.EffectiveSourceScanId;
+        primary.SourceScannerType ??= context?.SourceScannerType ?? resolution?.SourceScannerType;
+        primary.ChosenResultId ??= context?.ChosenResultId;
+        primary.OriginalImageUrl ??= context?.OriginalImageUrl;
+        primary.ResolverReason ??= context?.ResolverReason ?? resolution?.ResolutionReason;
+
+        if (string.IsNullOrWhiteSpace(primary.Position))
+        {
+            primary.Position = context?.EffectiveSplitSide ?? resolution?.EffectiveSplitSide;
+        }
+
+        if (string.IsNullOrWhiteSpace(primary.SplitStatus))
+        {
+            primary.SplitStatus = context?.SplitStatus;
+        }
+
+        if (!primary.IsMultiContainer && context?.IsMultiContainer == true)
+        {
+            primary.IsMultiContainer = true;
+        }
+
+        return primary;
+    }
+
+    private static void EnsureStoredSplitOptions(
+        ImageAnalysisSplitOptionsResponse response,
+        ScanAssetResolution? resolution)
+    {
+        if (response.Options.Count > 0)
+        {
+            return;
+        }
+
+        var splitJobId = response.EffectiveSplitJobId ?? resolution?.SplitJobId;
+        var side = response.EffectiveSplitSide ?? resolution?.EffectiveSplitSide;
+        if (!splitJobId.HasValue || string.IsNullOrWhiteSpace(side))
+        {
+            return;
+        }
+
+        var storedOptions = new[]
+        {
+            (ResultId: response.SplitOptionAResultId ?? resolution?.SplitContext?.SplitOptionAResultId,
+                Strategy: "Stored option A",
+                Reasoning: "Recovered from the persisted split result ID."),
+            (ResultId: response.SplitOptionBResultId ?? resolution?.SplitContext?.SplitOptionBResultId,
+                Strategy: "Stored option B",
+                Reasoning: "Recovered from the persisted split result ID.")
+        };
+
+        var seen = new HashSet<Guid>();
+        foreach (var option in storedOptions)
+        {
+            if (!option.ResultId.HasValue || !seen.Add(option.ResultId.Value))
+            {
+                continue;
+            }
+
+            var resultId = option.ResultId.Value.ToString();
+            response.Options.Add(new ImageAnalysisSplitOption
+            {
+                ResultId = resultId,
+                Strategy = option.Strategy,
+                Side = side,
+                CropImageUrl = $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(resultId)}/lossless/{Uri.EscapeDataString(side)}",
+                PreviewImageUrl = $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(resultId)}/image/{Uri.EscapeDataString(side)}",
+                Reasoning = option.Reasoning
+            });
+        }
+    }
+
+    private static bool HasUsableSplitOptionPayload(ImageAnalysisSplitOptionsResponse? response)
+    {
+        if (response == null)
+        {
+            return false;
+        }
+
+        if (response.Options.Count > 0)
+        {
+            return true;
+        }
+
+        return response.IsMultiContainer
+            && !string.Equals(response.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string? BuildOriginalImageUrl(ImageAnalysisSplitOptionsResponse response, ScanAssetResolution? resolution)
+    {
+        var sourceScanId = response.EffectiveSourceScanId ?? resolution?.EffectiveSourceScanId;
+        if (!string.IsNullOrWhiteSpace(sourceScanId))
+        {
+            var parts = new List<string> { "size=thumbnail" };
+            var containerHint = GetStrictSingleContainerHint(response, resolution);
+            if (!string.IsNullOrWhiteSpace(containerHint))
+            {
+                parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
+            }
+
+            return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+        }
+
+        var splitJobId = response.EffectiveSplitJobId ?? resolution?.SplitJobId;
+        return splitJobId.HasValue
+            ? $"/api/image-splitter/jobs/{splitJobId.Value}/original"
+            : null;
+    }
+
+    private string? BuildCropImageUrl(ImageAnalysisSplitOptionsResponse response, ImageAnalysisSplitOption option)
+    {
+        var splitJobId = response.EffectiveSplitJobId ?? _resolution?.SplitJobId;
+        var side = option.Side ?? response.EffectiveSplitSide ?? _resolution?.EffectiveSplitSide;
+        if (!splitJobId.HasValue || string.IsNullOrWhiteSpace(option.ResultId) || string.IsNullOrWhiteSpace(side))
+        {
+            return null;
+        }
+
+        return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(option.ResultId)}/lossless/{Uri.EscapeDataString(side)}";
+    }
+
+    private string? BuildPreviewImageUrl(ImageAnalysisSplitOptionsResponse response, ImageAnalysisSplitOption option)
+    {
+        var splitJobId = response.EffectiveSplitJobId ?? _resolution?.SplitJobId;
+        var side = option.Side ?? response.EffectiveSplitSide ?? _resolution?.EffectiveSplitSide;
+        if (!splitJobId.HasValue || string.IsNullOrWhiteSpace(option.ResultId) || string.IsNullOrWhiteSpace(side))
+        {
+            return null;
+        }
+
+        return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(option.ResultId)}/image/{Uri.EscapeDataString(side)}";
+    }
+
+    private string? GetSingleContainerHint(
+        ImageAnalysisSplitOptionsResponse? response,
+        ScanAssetResolution? resolution)
+    {
+        return GetSingleContainerHint(resolution)
+            ?? FirstContainerToken(response?.Resolution?.ContainerNumber)
+            ?? FirstContainerToken(response?.Resolution?.RequestedContainerNumber)
+            ?? FirstContainerToken(response?.Resolution?.NormalizedContainerNumber)
+            ?? FirstContainerToken(ContainerNumber);
+    }
+
+    private string? GetStrictSingleContainerHint(
+        ImageAnalysisSplitOptionsResponse? response,
+        ScanAssetResolution? resolution)
+    {
+        return StrictSingleContainerToken(resolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(response?.Resolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(response?.Resolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(response?.Resolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(ContainerNumber);
+    }
+
+    private string? GetSingleContainerHint(ScanAssetResolution? resolution)
+    {
+        return FirstContainerToken(resolution?.ContainerNumber)
+            ?? FirstContainerToken(resolution?.RequestedContainerNumber)
+            ?? FirstContainerToken(resolution?.NormalizedContainerNumber)
+            ?? FirstContainerToken(ContainerNumber);
+    }
+
+    private static string? FirstContainerToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            value,
+            "[A-Z]{4}\\d{7}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (match.Success)
+        {
+            return match.Value.ToUpperInvariant();
+        }
+
+        var token = value
+            .Split(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(token) ? null : token.Trim().ToUpperInvariant();
+    }
+
+    private static string? StrictSingleContainerToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            value,
+            "[A-Z]{4}\\d{7}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (matches.Count == 1)
+        {
+            return matches[0].Value.ToUpperInvariant();
+        }
+
+        if (matches.Count > 1 || value.IndexOfAny(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private async Task<string> GetCurrentUserAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        return authState.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? authState.User?.Identity?.Name
+            ?? "anon";
+    }
+
+    private string? ToBrowserImageUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        if (url.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(StripSignedUrlParameters(url), _currentUser);
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(StripSignedUrlParameters(uri.PathAndQuery), _currentUser);
+        }
+
+        return url;
+    }
+
+    private static string StripSignedUrlParameters(string pathAndQuery)
+    {
+        var queryIndex = pathAndQuery.IndexOf('?');
+        if (queryIndex < 0)
+        {
+            return pathAndQuery;
+        }
+
+        var path = pathAndQuery[..queryIndex];
+        var query = pathAndQuery[(queryIndex + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part =>
+                !part.StartsWith("exp=", StringComparison.OrdinalIgnoreCase)
+                && !part.StartsWith("uid=", StringComparison.OrdinalIgnoreCase)
+                && !part.StartsWith("sig=", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return query.Count == 0
+            ? path
+            : $"{path}?{string.Join("&", query)}";
+    }
+
+    private string GetOriginalImageSource()
+    {
+        return _originalImageUrl ?? string.Empty;
+    }
+
+    private void MarkOriginalImageFailed()
+    {
+        _originalImageFailed = true;
+    }
+
+    private void MarkCropImageFailed(SplitOption option)
+    {
+        option.ImageErrorText = "Preview unavailable; choose still records this split option.";
+        option.CropImageFailed = true;
+        StateHasChanged();
+    }
+
+    private static string? GetCropImageSource(SplitOption option)
+    {
+        return option.PreviewImageUrl;
+    }
+
+    private static bool IsLosslessImageUrl(string? url) =>
+        !string.IsNullOrWhiteSpace(url)
+        && url.Contains("/lossless/", StringComparison.OrdinalIgnoreCase);
+
+    private ScanAssetResolution? ApplyChosenSplitToResolution(string resultId)
+    {
+        var resolution = _resolution ?? SourceScanResolution;
+        if (resolution == null)
+        {
+            return null;
+        }
+
+        var selectedOption = _options.FirstOrDefault(option =>
+            string.Equals(option.ResultId, resultId, StringComparison.OrdinalIgnoreCase));
+        var side = selectedOption?.Side ?? _position ?? resolution.EffectiveSplitSide;
+        var recordContainer = GetRecordContainerHint() ?? ContainerNumber;
+
+        resolution.ContainerNumber = recordContainer;
+        resolution.NormalizedContainerNumber = string.IsNullOrWhiteSpace(resolution.NormalizedContainerNumber)
+            ? recordContainer
+            : resolution.NormalizedContainerNumber;
+        resolution.GroupIdentifier ??= GroupIdentifier;
+        resolution.AnalysisRecordId ??= _analysisRecordId;
+        resolution.Status = "Resolved";
+        resolution.Found = true;
+        resolution.IsResolved = true;
+        resolution.Resolved = true;
+
+        if (Guid.TryParse(_jobId, out var splitJobId))
+        {
+            resolution.SplitJobId = splitJobId;
+        }
+
+        if (Guid.TryParse(resultId, out var splitResultId))
+        {
+            resolution.SplitResultId = splitResultId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(side))
+        {
+            resolution.SplitPosition = side;
+            resolution.SplitSide = side;
+            resolution.PositionHint = side;
+        }
+
+        resolution.SplitContext ??= new SplitOptionContext();
+        resolution.SplitContext.ContainerNumber = recordContainer;
+        resolution.SplitContext.GroupIdentifier ??= GroupIdentifier;
+        resolution.SplitContext.IsMultiContainer = true;
+        resolution.SplitContext.SplitStatus = "Chosen";
+        resolution.SplitContext.SplitJobId = resolution.SplitJobId;
+        resolution.SplitContext.SplitResultId = resolution.SplitResultId;
+        resolution.SplitContext.SplitPosition = resolution.EffectiveSplitSide;
+        resolution.SplitContext.SourceScanId ??= resolution.EffectiveSourceScanId;
+        resolution.SplitContext.OriginalScanRecordId ??= resolution.OriginalScanRecordId;
+        resolution.SplitContext.ScannerScanId ??= resolution.ScannerScanId;
+        resolution.SplitContext.SourceScannerType ??= resolution.SourceScannerType;
+        if (_analysisRecordId.HasValue)
+        {
+            resolution.SplitContext.AnalysisRecordId = _analysisRecordId.Value;
+        }
+
+        _resolution = resolution;
+        return resolution;
     }
 
     private async Task ChooseOption(string resultId)
@@ -240,13 +852,48 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         {
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var userName = authState.User?.Identity?.Name ?? "unknown";
+            var recordContainer = GetRecordContainerHint();
 
-            await ApiService.PostAsync<object, object>(
-                $"api/image-splitter/container/{ContainerNumber}/choose-split",
-                new { resultId, approvedBy = userName });
+            var request = new
+            {
+                resultId,
+                approvedBy = userName,
+                splitJobId = _jobId,
+                sourceScanId = _resolution?.EffectiveSourceScanId,
+                containerNumber = recordContainer
+            };
 
+            var saved = false;
+            if (_analysisRecordId.HasValue)
+            {
+                saved = await ApiService.TryPostAsync(
+                    $"/api/image-analysis/records/{_analysisRecordId.Value}/choose-split",
+                    request);
+            }
+
+            if (!saved && Guid.TryParse(_jobId, out var splitJobId))
+            {
+                saved = await ApiService.TryPostAsync(
+                    $"/api/image-splitter/jobs/{splitJobId}/choose-split",
+                    request);
+            }
+
+            if (!saved)
+            {
+                var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
+                await ApiService.PostAsync<object, object>(
+                    $"/api/image-splitter/container/{Uri.EscapeDataString(containerKey)}/choose-split",
+                    request);
+            }
+
+            var chosenResolution = ApplyChosenSplitToResolution(resultId);
+            ClearSplitRelatedCaches();
+            _splitStatus = "Chosen";
+            _options.Clear();
             Snackbar.Add($"Split image selected for {ContainerNumber}", Severity.Success);
+            await OnSplitResolutionChanged.InvokeAsync(chosenResolution);
             await OnSplitChosen.InvokeAsync();
+            await NotifySplitStateChangedAsync();
         }
         catch (Exception ex)
         {
@@ -269,13 +916,45 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         {
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var userName = authState.User?.Identity?.Name ?? "unknown";
+            var recordContainer = GetRecordContainerHint();
 
-            await ApiService.PostAsync<object, object>(
-                $"api/image-splitter/container/{ContainerNumber}/skip-split",
-                new { skippedBy = userName });
+            var request = new
+            {
+                skippedBy = userName,
+                splitJobId = _jobId,
+                sourceScanId = _resolution?.EffectiveSourceScanId,
+                containerNumber = recordContainer
+            };
 
+            var saved = false;
+            if (_analysisRecordId.HasValue)
+            {
+                saved = await ApiService.TryPostAsync(
+                    $"/api/image-analysis/records/{_analysisRecordId.Value}/skip-split",
+                    request);
+            }
+
+            if (!saved && Guid.TryParse(_jobId, out var splitJobId))
+            {
+                saved = await ApiService.TryPostAsync(
+                    $"/api/image-splitter/jobs/{splitJobId}/skip-split",
+                    request);
+            }
+
+            if (!saved)
+            {
+                var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
+                await ApiService.PostAsync<object, object>(
+                    $"/api/image-splitter/container/{Uri.EscapeDataString(containerKey)}/skip-split",
+                    request);
+            }
+
+            ClearSplitRelatedCaches();
+            _splitStatus = "Skipped";
+            _options.Clear();
             Snackbar.Add($"Split skipped for {ContainerNumber} — using combined image", Severity.Info);
             await OnSplitSkipped.InvokeAsync();
+            await NotifySplitStateChangedAsync();
         }
         catch (Exception ex)
         {
@@ -296,6 +975,57 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
     public bool NeedsSplitInteraction => StatusEquals("Ready") && _options.Count > 0;
     public bool IsPending => StatusEquals("Pending");
     public bool IsResolved => _splitStatus == null || StatusEquals("Chosen") || StatusEquals("Skipped") || IsTerminalNoChoice;
+
+    private async Task NotifySplitStateChangedAsync()
+    {
+        if (!OnSplitStateChanged.HasDelegate)
+        {
+            return;
+        }
+
+        await OnSplitStateChanged.InvokeAsync(GetSplitInteractionState());
+    }
+
+    private string GetSplitInteractionState()
+    {
+        if (_loading)
+        {
+            return "Loading";
+        }
+
+        if (NeedsSplitInteraction || StatusEquals("Ready"))
+        {
+            return "ChoiceRequired";
+        }
+
+        if (IsPending)
+        {
+            return "Pending";
+        }
+
+        return "Resolved";
+    }
+
+    private void ClearSplitRelatedCaches()
+    {
+        ContainerDetailsService.ClearContainerCache(ContainerNumber);
+
+        var containerHint = GetSingleContainerHint(_resolution);
+        if (!string.IsNullOrWhiteSpace(containerHint)
+            && !string.Equals(containerHint, ContainerNumber, StringComparison.OrdinalIgnoreCase))
+        {
+            ContainerDetailsService.ClearContainerCache(containerHint);
+        }
+    }
+
+    private string? GetRecordContainerHint()
+    {
+        return _recordContainerHint
+            ?? StrictSingleContainerToken(_resolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(_resolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(_resolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(ContainerNumber);
+    }
 
     private bool IsTerminalNoChoice =>
         StatusEquals("VisualSingle") || StatusEquals("Uncertain") || StatusEquals("NotApplicable");

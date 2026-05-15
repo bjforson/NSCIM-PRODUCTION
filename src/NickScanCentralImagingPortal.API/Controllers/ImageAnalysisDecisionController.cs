@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageAnalysis;
+using NickScanCentralImagingPortal.Services.ImageSplitter;
 using NickScanCentralImagingPortal.Services.Manifest;
 
 namespace NickScanCentralImagingPortal.API.Controllers
@@ -352,6 +353,102 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .ToList();
 
             return legacyUngrouped.Count == 1 ? legacyUngrouped[0] : null;
+        }
+
+        private async Task<AnalysisRecord?> ResolveAnalysisRecordForDecisionAsync(ImageDecisionRequest request)
+        {
+            if (request.AnalysisRecordId.HasValue)
+            {
+                var byId = await _context.AnalysisRecords
+                    .FirstOrDefaultAsync(r => r.Id == request.AnalysisRecordId.Value);
+
+                if (byId != null)
+                    return byId;
+            }
+
+            var containerNumber = (request.ContainerNumber ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(containerNumber))
+            {
+                var direct = await _context.AnalysisRecords
+                    .Where(r => r.ContainerNumber == containerNumber &&
+                                (r.ScannerType == request.ScannerType || string.IsNullOrEmpty(r.ScannerType)))
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (direct != null)
+                    return direct;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.GroupIdentifier))
+                return null;
+
+            var group = await ResolveAnalysisGroupForDecisionAsync(request.GroupIdentifier, request.ScannerType);
+            if (group == null)
+                return null;
+
+            var groupRecords = await _context.AnalysisRecords
+                .Where(r => r.GroupId == group.Id)
+                .OrderByDescending(r => r.CreatedAtUtc)
+                .ToListAsync();
+
+            if (groupRecords.Count == 0)
+                return null;
+
+            var scannerScoped = groupRecords
+                .Where(r => ScannerMatches(r.ScannerType, request.ScannerType))
+                .ToList();
+
+            var candidates = scannerScoped.Count > 0 ? scannerScoped : groupRecords;
+            var exactContainer = candidates.FirstOrDefault(r =>
+                string.Equals(r.ContainerNumber, containerNumber, StringComparison.OrdinalIgnoreCase));
+            if (exactContainer != null)
+                return exactContainer;
+
+            return candidates.Count == 1 ? candidates[0] : null;
+        }
+
+        private async Task ApplySplitSelectionFromDecisionRequestAsync(AnalysisRecord record, ImageDecisionRequest request)
+        {
+            if (!record.IsMultiContainerScan || !request.SplitResultId.HasValue)
+                return;
+
+            var changed = false;
+            if (request.SplitJobId.HasValue && record.SplitJobId != request.SplitJobId)
+            {
+                record.SplitJobId = request.SplitJobId;
+                changed = true;
+            }
+
+            if (record.SplitResultId != request.SplitResultId)
+            {
+                record.SplitResultId = request.SplitResultId;
+                changed = true;
+            }
+
+            if (!string.Equals(record.SplitStatus, SplitAnalysisStatus.Chosen, StringComparison.OrdinalIgnoreCase))
+            {
+                record.SplitStatus = SplitAnalysisStatus.Chosen;
+                changed = true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.SplitSide)
+                && !string.Equals(record.SplitPosition, request.SplitSide, StringComparison.OrdinalIgnoreCase))
+            {
+                record.SplitPosition = request.SplitSide.Trim();
+                changed = true;
+            }
+
+            if (!changed)
+                return;
+
+            await _context.SaveChangesAsync();
+            _logger.LogInformation(
+                "Applied split choice from decision save for analysis record {AnalysisRecordId} ({Container}): job={SplitJobId}, result={SplitResultId}, side={SplitSide}",
+                record.Id,
+                record.ContainerNumber,
+                record.SplitJobId,
+                record.SplitResultId,
+                record.SplitPosition);
         }
 
         private string? GetAuthenticatedUsername()
@@ -1368,6 +1465,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 request.Comments = Truncate((request.Comments ?? string.Empty).Trim(), 500);
                 request.Tags = Truncate((request.Tags ?? string.Empty).Trim(), 500);
                 request.GroupIdentifier = Truncate((request.GroupIdentifier ?? string.Empty).Trim(), 100);
+                request.SplitSide = Truncate((request.SplitSide ?? string.Empty).Trim(), 10);
                 request.ReviewedBy = GetAuthenticatedActor();
 
                 // ✅ BULLETPROOF FIX: Validate and normalize decision value
@@ -1403,6 +1501,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                 }
 
+                // Resolve the underlying AnalysisRecord before completeness checks
+                // and split gates. Group-level views can pass a wave/group id as
+                // ContainerNumber, but analyst decisions must be stored against
+                // the actual child container record.
+                var arForSplit = await ResolveAnalysisRecordForDecisionAsync(request);
+                if (arForSplit != null
+                    && !string.Equals(request.ContainerNumber, arForSplit.ContainerNumber, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation(
+                        "Decision save remapped request container {RequestedContainer} to analysis record container {RecordContainer} (analysisRecordId={AnalysisRecordId}, group={GroupIdentifier})",
+                        request.ContainerNumber,
+                        arForSplit.ContainerNumber,
+                        arForSplit.Id,
+                        request.GroupIdentifier);
+                    request.ContainerNumber = arForSplit.ContainerNumber;
+                }
+
+                if (arForSplit != null)
+                {
+                    await ApplySplitSelectionFromDecisionRequestAsync(arForSplit, request);
+                }
+
                 // Prefer to allow saving even if completeness record is missing (log only)
                 var hasContainer = await _context.ContainerCompletenessStatuses
                     .AnyAsync(s => s.ContainerNumber == request.ContainerNumber);
@@ -1416,13 +1536,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // multi-container records that haven't picked a split, AND copy the
                 // split-job/result IDs onto the persisted IAD so the audit trail
                 // captures which crop the analyst was looking at.
-                var arForSplit = await _context.AnalysisRecords
-                    .AsNoTracking()
-                    .Where(r => r.ContainerNumber == request.ContainerNumber &&
-                                (r.ScannerType == request.ScannerType || string.IsNullOrEmpty(r.ScannerType)))
-                    .OrderByDescending(r => r.CreatedAtUtc)
-                    .FirstOrDefaultAsync();
-
                 if (arForSplit != null
                     && arForSplit.IsMultiContainerScan
                     && string.Equals(arForSplit.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
@@ -2791,6 +2904,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
         public string ReviewedBy { get; set; } = string.Empty;
         public string? GroupIdentifier { get; set; }
         public bool IsConsolidated { get; set; }
+        public int? AnalysisRecordId { get; set; }
+        public Guid? SplitJobId { get; set; }
+        public Guid? SplitResultId { get; set; }
+        public string? SplitSide { get; set; }
 
         // ── Controlled-vocabulary finding categories (Gap 1a — AI training flywheel) ──
         // Both nullable. A decision may carry a security finding, a revenue finding,

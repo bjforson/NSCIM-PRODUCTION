@@ -15,6 +15,7 @@ using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Core.DTOs.ImageProcessing;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageAnalysis;
 using SixLabors.ImageSharp;
@@ -134,6 +135,25 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public string RoleName { get; set; } = string.Empty;
         }
 
+        public sealed class SplitOptionContext
+        {
+            public int AnalysisRecordId { get; set; }
+            public Guid GroupId { get; set; }
+            public string? GroupIdentifier { get; set; }
+            public string ContainerNumber { get; set; } = string.Empty;
+            public string? ScannerType { get; set; }
+            public bool IsMultiContainer { get; set; }
+            public Guid? SplitJobId { get; set; }
+            public Guid? SplitResultId { get; set; }
+            public Guid? SplitOptionAResultId { get; set; }
+            public Guid? SplitOptionBResultId { get; set; }
+            public string? SplitPosition { get; set; }
+            public string? SplitStatus { get; set; }
+            public string? SourceScanId { get; set; }
+            public string? SourceScannerType { get; set; }
+            public string ResolverReason { get; set; } = string.Empty;
+        }
+
         /// <summary>
         /// Get service state (backward compatibility endpoint - delegates to management controller)
         /// </summary>
@@ -243,6 +263,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         || assignment.AssignedTo != username
                         || assignment.Role != userRole
                         || assignment.GroupId != row.Entry.GroupId
+                        || IsCompositeContainerPairIdentifier(row.Entry.GroupIdentifier)
                         || (assignment.LeaseUntilUtc.HasValue && assignment.LeaseUntilUtc <= now))
                     {
                         staleQueueEntryIds.Add(row.Entry.AssignmentId);
@@ -380,6 +401,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .Where(g => userRole != "Audit" || (g.Status != AnalysisStatuses.AuditCompleted && g.Status != AnalysisStatuses.Completed))
                 .Where(g => userRole != "Analyst" || (g.Status != AnalysisStatuses.AnalystCompleted && g.Status != AnalysisStatuses.AuditCompleted && g.Status != AnalysisStatuses.Completed))
                 .ToList();
+
+            var compositePairGroups = groups
+                .Where(g => IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                .ToList();
+            if (compositePairGroups.Count > 0)
+            {
+                groups = groups
+                    .Where(g => !IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                    .ToList();
+
+                _logger.LogWarning(
+                    "[GetMyAssignments] Excluding {Count} assignment group(s) whose identifiers are scan-pair container lists: {Groups}",
+                    compositePairGroups.Count,
+                    string.Join(", ", compositePairGroups.Select(g => g.GroupIdentifier).Take(10)));
+            }
 
             // ✅ DIAGNOSTIC: Log groups after status filtering
             var filteredGroupIds = groups.Select(g => g.Id).Distinct().ToList();
@@ -861,6 +897,33 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         private static string GetMyAssignmentsCacheKey(string username, string role) => $"my-assignments:{username}:{role}";
 
+        private static bool IsCompositeContainerPairIdentifier(string? identifier)
+        {
+            var parts = ParseCompositeContainerTokens(identifier);
+            return parts.Count >= 2;
+        }
+
+        private static IReadOnlyList<string> ParseCompositeContainerTokens(string? identifier)
+        {
+            var parts = (identifier ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(ContainerNumberListMatcher.Normalize)
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .Where(IsLikelyIsoContainerNumber)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return parts;
+        }
+
+        private static bool IsLikelyIsoContainerNumber(string value)
+        {
+            var token = value.Trim();
+            return token.Length == 11
+                && token.Take(4).All(char.IsLetter)
+                && token.Skip(4).All(char.IsDigit);
+        }
+
         private void InvalidateMyAssignmentsCache(string? username, string? role)
         {
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role)) return;
@@ -1035,6 +1098,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
             var availableGroups = eligibleGroups
                 .Where(g => !activeAssignments.Contains(g.Id))
                 .ToList();
+
+            var availableCompositePairs = availableGroups
+                .Where(g => IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                .ToList();
+            if (availableCompositePairs.Count > 0)
+            {
+                availableGroups = availableGroups
+                    .Where(g => !IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                    .ToList();
+
+                _logger.LogWarning(
+                    "[AvailableGroups] Excluding {Count} group(s) whose identifiers are scan-pair container lists: {Groups}",
+                    availableCompositePairs.Count,
+                    string.Join(", ", availableCompositePairs.Select(g => g.GroupIdentifier).Take(10)));
+            }
 
             // Get records for available groups
             var availableGroupIds = availableGroups.Select(g => g.Id).ToList();
@@ -2525,6 +2603,71 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public int GroupsAuditAssigned { get; set; }
         }
 
+        // GET /api/image-analysis/records/{analysisRecordId}/split-options
+        [HttpGet("records/{analysisRecordId:int}/split-options")]
+        public async Task<ActionResult<SplitOptionContext>> GetSplitOptionsForAnalysisRecord(int analysisRecordId)
+        {
+            var record = await _db.AnalysisRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == analysisRecordId);
+
+            if (record == null)
+                return NotFound(new { error = "AnalysisRecord not found" });
+
+            var group = await _db.AnalysisGroups
+                .AsNoTracking()
+                .FirstOrDefaultAsync(g => g.Id == record.GroupId);
+
+            var context = new SplitOptionContext
+            {
+                AnalysisRecordId = record.Id,
+                GroupId = record.GroupId,
+                GroupIdentifier = group?.GroupIdentifier,
+                ContainerNumber = record.ContainerNumber,
+                ScannerType = record.ScannerType ?? group?.ScannerType,
+                IsMultiContainer = record.IsMultiContainerScan,
+                SplitJobId = record.SplitJobId,
+                SplitResultId = record.SplitResultId,
+                SplitOptionAResultId = record.SplitOptionA_ResultId,
+                SplitOptionBResultId = record.SplitOptionB_ResultId,
+                SplitPosition = record.SplitPosition,
+                SplitStatus = record.SplitStatus,
+                ResolverReason = "analysis_record"
+            };
+
+            var normalizedContainer = ContainerNumberListMatcher.Normalize(record.ContainerNumber);
+            if (!string.IsNullOrWhiteSpace(normalizedContainer))
+            {
+                var originalCandidates = await _db.OriginalScanRecords
+                    .AsNoTracking()
+                    .Where(original => original.OriginalContainerNumbers != null
+                        && original.OriginalContainerNumbers.ToUpper().Contains(normalizedContainer))
+                    .OrderByDescending(original => original.ScanTime)
+                    .Take(25)
+                    .Select(original => new
+                    {
+                        original.Id,
+                        original.ScannerType,
+                        original.OriginalContainerNumbers
+                    })
+                    .ToListAsync();
+
+                var source = originalCandidates.FirstOrDefault(original =>
+                    ContainerNumberListMatcher.ContainsContainer(
+                        original.OriginalContainerNumbers,
+                        normalizedContainer));
+
+                if (source != null)
+                {
+                    context.SourceScanId = $"original:{source.Id}";
+                    context.SourceScannerType = source.ScannerType;
+                    context.ResolverReason = "analysis_record_tokenized_original_scan";
+                }
+            }
+
+            return Ok(context);
+        }
+
         // GET /api/image-analysis/group-by-identifier?identifier=X&scannerType=Y
         [HttpGet("group-by-identifier")]
         public async Task<ActionResult> GetGroupByIdentifier([FromQuery] string identifier, [FromQuery] string? scannerType = null)
@@ -2536,7 +2679,57 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             var group = await query.FirstOrDefaultAsync();
             if (group == null)
+            {
+                var tokens = ParseCompositeContainerTokens(identifier);
+                if (tokens.Count >= 2)
+                {
+                    var groupIds = await _db.AnalysisRecords
+                        .AsNoTracking()
+                        .Where(record => tokens.Contains(record.ContainerNumber))
+                        .Select(record => record.GroupId)
+                        .Distinct()
+                        .ToListAsync();
+
+                    var tokenizedQuery = _db.AnalysisGroups
+                        .AsNoTracking()
+                        .Where(candidate => groupIds.Contains(candidate.Id));
+
+                    if (!string.IsNullOrEmpty(scannerType))
+                        tokenizedQuery = tokenizedQuery.Where(candidate => candidate.ScannerType == scannerType);
+
+                    var candidates = await tokenizedQuery
+                        .Select(candidate => new
+                        {
+                            candidate.Id,
+                            candidate.GroupIdentifier,
+                            candidate.ScannerType
+                        })
+                        .ToListAsync();
+
+                    if (candidates.Count == 1)
+                    {
+                        return Ok(new
+                        {
+                            groupId = (Guid?)candidates[0].Id,
+                            resolvedBy = "tokenized_container_record",
+                            groupIdentifier = candidates[0].GroupIdentifier
+                        });
+                    }
+
+                    if (candidates.Count > 1)
+                    {
+                        return Conflict(new
+                        {
+                            groupId = (Guid?)null,
+                            ambiguous = true,
+                            reason = "comma_joined_identifier_matches_multiple_groups",
+                            candidates
+                        });
+                    }
+                }
+
                 return Ok(new { groupId = (Guid?)null });
+            }
 
             return Ok(new { groupId = (Guid?)group.Id });
         }

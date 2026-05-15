@@ -1086,9 +1086,9 @@
             // groups/ready can be slow if there are many groups or complex queries
             var readyGroupsTask = SafeGetWithTimeout<List<ReadyGroup>>("/api/image-analysis-management/groups/ready", TimeSpan.FromSeconds(30));
             var activeAssignmentsTask = SafeGetWithTimeout<List<ActiveAssignment>>("/api/image-analysis-management/assignments", TimeSpan.FromSeconds(20));
-            var statsTask = SafeGetWithTimeout<ManagementStats>("/api/image-analysis-management/stats", TimeSpan.FromSeconds(10));
-            var serviceStateTask = SafeGetWithTimeout<ServiceState>("/api/image-analysis-management/service-state", TimeSpan.FromSeconds(10));
-            var analystsTask = SafeGetWithTimeout<List<string>>("/api/image-analysis-management/analysts", TimeSpan.FromSeconds(10));
+            var statsTask = SafeGetWithTimeout<ManagementStats>("/api/image-analysis-management/stats", TimeSpan.FromSeconds(15));
+            var serviceStateTask = SafeGetWithTimeout<ServiceState>("/api/image-analysis-management/service-state", TimeSpan.FromSeconds(20));
+            var analystsTask = SafeGetWithTimeout<List<string>>("/api/image-analysis-management/analysts", TimeSpan.FromSeconds(15));
             
             // ✅ FIX: Wait for all tasks but don't fail if one times out - use WhenAll with error handling
             try
@@ -1256,7 +1256,7 @@
 
     private async Task<T?> SafeGet<T>(string endpoint)
     {
-        try { return await ApiService.GetAsync<T>(endpoint); }
+        try { return await SafeGetWithTimeout<T>(endpoint, TimeSpan.FromSeconds(20)); }
         catch (Exception ex) { 
             Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
             Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error); 
@@ -1264,42 +1264,94 @@
         }
     }
 
+    private static bool IsTransientApiFailure(Exception ex)
+    {
+        var message = ex.ToString();
+        return message.Contains("No connection could be made", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("actively refused", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("connection aborted", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static TimeSpan GetTransientRetryDelay(int attempt)
+    {
+        return attempt switch
+        {
+            1 => TimeSpan.FromMilliseconds(500),
+            2 => TimeSpan.FromSeconds(1.5),
+            3 => TimeSpan.FromSeconds(3),
+            _ => TimeSpan.FromSeconds(5)
+        };
+    }
+
     private async Task<T?> SafeGetWithTimeout<T>(string endpoint, TimeSpan timeout)
     {
-        try 
-        { 
-            using var cts = new CancellationTokenSource(timeout);
-            var apiTask = ApiService.GetAsync<T>(endpoint);
-            var delayTask = Task.Delay(timeout, cts.Token);
-            
-            var completedTask = await Task.WhenAny(apiTask, delayTask);
-            
-            if (completedTask == apiTask)
+        var startedUtc = DateTime.UtcNow;
+        var attempt = 0;
+        Exception? lastTransientException = null;
+
+        while (DateTime.UtcNow - startedUtc < timeout)
+        {
+            attempt++;
+            var remaining = timeout - (DateTime.UtcNow - startedUtc);
+            if (remaining <= TimeSpan.Zero)
             {
-                // API call completed before timeout
-                cts.Cancel(); // Cancel the delay task
-                return await apiTask;
+                break;
             }
-            else
+
+            try
             {
-                // Timeout occurred
+                var apiTask = ApiService.GetAsync<T>(endpoint);
+                var delayTask = Task.Delay(remaining);
+
+                var completedTask = await Task.WhenAny(apiTask, delayTask);
+
+                if (completedTask == apiTask)
+                {
+                    return await apiTask;
+                }
+
                 Console.WriteLine($"⏱️ Timeout calling {endpoint} after {timeout.TotalSeconds}s");
                 Snackbar.Add($"Timeout loading {endpoint} (>{timeout.TotalSeconds}s)", Severity.Warning);
                 return default;
             }
+            catch (OperationCanceledException ex)
+            {
+                Console.WriteLine($"⏱️ Timeout calling {endpoint}: {ex.Message}");
+                Snackbar.Add($"Timeout loading {endpoint}", Severity.Warning);
+                return default;
+            }
+            catch (Exception ex) when (IsTransientApiFailure(ex))
+            {
+                lastTransientException = ex;
+                var retryDelay = GetTransientRetryDelay(attempt);
+                var timeLeftAfterDelay = timeout - (DateTime.UtcNow - startedUtc) - retryDelay;
+
+                if (timeLeftAfterDelay <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                Console.WriteLine($"⚠️ Transient API failure calling {endpoint} (attempt {attempt}); retrying in {retryDelay.TotalSeconds:0.0}s: {ex.Message}");
+                await Task.Delay(retryDelay);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
+                Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error);
+                return default;
+            }
         }
-        catch (OperationCanceledException)
+
+        if (lastTransientException != null)
         {
-            Console.WriteLine($"⏱️ Timeout calling {endpoint}");
-            Snackbar.Add($"Timeout loading {endpoint}", Severity.Warning);
-            return default;
+            Console.WriteLine($"❌ Transient API failure persisted for {endpoint}: {lastTransientException.Message}");
+            Snackbar.Add($"API temporarily unavailable while loading {endpoint}. Please retry in a moment.", Severity.Warning);
         }
-        catch (Exception ex) 
-        { 
-            Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
-            Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error); 
-            return default; 
-        }
+
+        return default;
     }
 
     private async Task OnSaveClicked()

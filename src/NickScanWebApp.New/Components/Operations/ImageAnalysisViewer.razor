@@ -1,5 +1,6 @@
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.Shared.Models
 @using NickScanWebApp.New.Services
 @using NickScanWebApp.New.Services.Permissions
 @using System
@@ -24,6 +25,12 @@
                     @if (!string.IsNullOrEmpty(ScannerType))
                     {
                         <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">@ScannerType</MudChip>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(SourceScanResolution?.EffectiveSourceScanId))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined" Style="color:white;border-color:rgba(255,255,255,0.4);">
+                            @SourceScanResolution.EffectiveSourceScanId
+                        </MudChip>
                     }
                 </MudStack>
                 <MudText Typo="Typo.caption" Style="color:rgba(255,255,255,0.6);">
@@ -418,13 +425,16 @@
                                  Variant="@(_rawPlane == "he" ? Variant.Filled : Variant.Outlined)"
                                  Style="@(_rawPlane == "he" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
                                  OnClick="@(() => SelectRawPlane("he"))">HE</MudChip>
-                        @if (_scanVariant != "ase-single-view")
+                        @if (HasRawLowPlane)
                         {
                             <MudChip T="string" Size="Size.Small"
                                      Color="@(_rawPlane == "le" ? Color.Info : Color.Default)"
                                      Variant="@(_rawPlane == "le" ? Variant.Filled : Variant.Outlined)"
                                      Style="@(_rawPlane == "le" ? "" : "color:white; border-color:rgba(255,255,255,0.3);")"
                                      OnClick="@(() => SelectRawPlane("le"))">LE</MudChip>
+                        }
+                        @if (HasRawMaterialPlane)
+                        {
                             <MudChip T="string" Size="Size.Small"
                                      Color="@(_rawPlane == "material" ? Color.Info : Color.Default)"
                                      Variant="@(_rawPlane == "material" ? Variant.Filled : Variant.Outlined)"
@@ -1352,6 +1362,7 @@
     [Parameter] public DateTime ScanDate { get; set; }
     [Parameter] public string? GroupIdentifier { get; set; }
     [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
 
     // Audit mode — when true, shows Approve/Reject instead of Normal/Abnormal
     [Parameter] public bool AuditMode { get; set; } = false;
@@ -1521,6 +1532,20 @@
     private string _rawGeometryLabel = ""; // e.g. "3256×1378 @ 16-bit · 8.5 MB"
     private ElementReference _rawCanvas;
     private DateTime _rawLastRenderAt = DateTime.MinValue;
+    private bool _rawPendingInitialRender = false;
+
+    private bool IsEagleA25Scan => string.Equals(ScannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
+        || _scanVariant.StartsWith("eagle-a25", StringComparison.OrdinalIgnoreCase);
+
+    private bool HasRawLowPlane => _supportedModes.Any(m =>
+        string.Equals(m, "diff", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(m, "high-pen", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(m, "low-pen", StringComparison.OrdinalIgnoreCase));
+
+    private bool HasRawMaterialPlane => _supportedModes.Any(m =>
+        string.Equals(m, "composite", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(m, "organic-strip", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(m, "metal-strip", StringComparison.OrdinalIgnoreCase));
 
     // v2.13.0 Phase 5 — ROI inspector side panel. Fires the /roi backend
     // (shipped in v2.10.0, threaded through the unified pipeline) whenever
@@ -1677,6 +1702,85 @@
         public List<string> Recommendations { get; set; } = new();
     }
 
+    private string? BuildPreferredImagePath(string size)
+    {
+        var resolution = SourceScanResolution;
+        if (resolution?.HasUsableSourceScan != true)
+        {
+            return null;
+        }
+
+        var side = resolution.EffectiveSplitSide;
+        if (resolution.SplitJobId.HasValue && resolution.SplitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
+        {
+            var cropRoute = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) ? "image" : "lossless";
+            return $"/api/image-splitter/jobs/{resolution.SplitJobId.Value}/results/{resolution.SplitResultId.Value}/{cropRoute}/{Uri.EscapeDataString(side)}";
+        }
+
+        var sourceScanId = resolution.EffectiveSourceScanId;
+        if (string.IsNullOrWhiteSpace(sourceScanId))
+        {
+            return null;
+        }
+
+        var parts = new List<string>
+        {
+            $"size={Uri.EscapeDataString(size)}"
+        };
+
+        var containerHint = StrictSingleContainerToken(ContainerNumber);
+        if (!string.IsNullOrWhiteSpace(containerHint))
+        {
+            parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
+        }
+
+        if (resolution.SplitJobId.HasValue)
+        {
+            parts.Add($"splitJobId={resolution.SplitJobId.Value}");
+        }
+
+        if (resolution.SplitResultId.HasValue)
+        {
+            parts.Add($"splitResultId={resolution.SplitResultId.Value}");
+        }
+
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+    }
+
+    private static string? StrictSingleContainerToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            value,
+            "[A-Z]{4}\\d{7}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (matches.Count == 1)
+        {
+            return matches[0].Value.ToUpperInvariant();
+        }
+
+        if (matches.Count > 1 || value.IndexOfAny(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private string GetDecisionContainerNumber()
+    {
+        return StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.SplitContext?.ContainerNumber)
+            ?? StrictSingleContainerToken(ContainerNumber)
+            ?? ContainerNumber;
+    }
+
     /// <summary>
     /// Get current image URL (original or enhanced based on toggle)
     /// </summary>
@@ -1694,12 +1798,31 @@
         }
         else
         {
+            var resolvedPath = BuildPreferredImagePath("full");
+            if (!string.IsNullOrWhiteSpace(resolvedPath))
+            {
+                baseUrl = UrlBuilder.Build(resolvedPath, _currentUsername);
+            }
+            else if (IsEagleA25() && !string.IsNullOrEmpty(ContainerNumber))
+            {
+                // Eagle A25 native images need to keep server-side render
+                // parameters on the signed API URL before proxying.
+                baseUrl = UrlBuilder.Build(
+                    $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
+                    _currentUsername);
+            }
             // ImageUrl should already be a full URL (converted in OnInitializedAsync)
             // But handle edge cases - AND ensure we always request full-size, not thumbnail
-            if (!string.IsNullOrEmpty(ImageUrl))
+            else if (!string.IsNullOrEmpty(ImageUrl))
             {
                 // If it's already a full URL, use it
                 if (ImageUrl.StartsWith("http://") || ImageUrl.StartsWith("https://"))
+                {
+                    baseUrl = ImageUrl;
+                }
+                // Same-origin WebApp image proxy; keep relative so the browser
+                // does not go cross-origin to the API certificate/port.
+                else if (ImageUrl.StartsWith("/api/imageproxy", StringComparison.OrdinalIgnoreCase))
                 {
                     baseUrl = ImageUrl;
                 }
@@ -1749,6 +1872,11 @@
                 var sep = baseUrl.Contains("?") ? "&" : "?";
                 baseUrl = $"{baseUrl}{sep}loPct={wl.Value.Lo.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}&hiPct={wl.Value.Hi.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}";
             }
+
+            if (ShouldProxyCurrentImageUrl(baseUrl))
+            {
+                baseUrl = BuildImageProxyUrl(baseUrl);
+            }
         }
 
         // ✅ FIX: Add cache buster to force browser to reload image when toggling
@@ -1759,6 +1887,25 @@
         }
 
         return baseUrl;
+    }
+
+    private bool ShouldProxyCurrentImageUrl(string url)
+    {
+        return IsEagleA25()
+            && !url.StartsWith("/api/imageproxy", StringComparison.OrdinalIgnoreCase)
+            && (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsEagleA25()
+    {
+        return string.Equals(ScannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildImageProxyUrl(string targetUrl)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(targetUrl);
+        return $"/api/imageproxy?url={Uri.EscapeDataString(Convert.ToBase64String(bytes))}";
     }
 
     /// <summary>
@@ -1829,6 +1976,7 @@
             _rawPlane = "he";
             _rawGeometryLabel = "";
             _rawError = "";
+            _rawPendingInitialRender = false;
             try { _ = JS.InvokeVoidAsync("Raw16BitViewer.clearCache", _lastContainerNumber); } catch { }
 
             // v2.13.0 Phase 5 — clear the ROI panel; rectangles from the old
@@ -1854,6 +2002,7 @@
         if (!string.IsNullOrEmpty(ImageUrl))
         {
             if (ImageUrl.StartsWith("http://") || ImageUrl.StartsWith("https://")) { }
+            else if (ImageUrl.StartsWith("/api/imageproxy", StringComparison.OrdinalIgnoreCase)) { }
             else if (ImageUrl.StartsWith("/"))
                 ImageUrl = $"{apiBaseUrl}{ImageUrl}";
             else
@@ -1861,13 +2010,22 @@
 
             if (ImageUrl.Contains("size=thumbnail", StringComparison.OrdinalIgnoreCase))
                 ImageUrl = ImageUrl.Replace("size=thumbnail", "size=full", StringComparison.OrdinalIgnoreCase);
+
+            if (ShouldProxyCurrentImageUrl(ImageUrl))
+            {
+                ImageUrl = BuildImageProxyUrl(ImageUrl);
+            }
         }
         else if (!string.IsNullOrEmpty(ContainerNumber))
         {
             // Signed URL for browser <img src>; middleware validates before Authorize.
-            ImageUrl = UrlBuilder.Build(
-                $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
+            var resolvedPath = BuildPreferredImagePath("full");
+            var signedUrl = UrlBuilder.Build(
+                resolvedPath ?? $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
                 _currentUsername);
+            ImageUrl = IsEagleA25()
+                ? BuildImageProxyUrl(signedUrl)
+                : signedUrl;
         }
         
         // Load the controlled finding-category lookups once before LoadExistingTags
@@ -1936,6 +2094,13 @@
             {
                 _scanVariant    = caps.Variant ?? "";
                 _supportedModes = (caps.SupportedModes ?? Array.Empty<string>()).ToList();
+                if (string.Equals(caps.Scanner, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
+                    || _scanVariant.StartsWith("eagle-a25", StringComparison.OrdinalIgnoreCase))
+                {
+                    _rawMode = true;
+                    _rawPlane = "he";
+                    _rawPendingInitialRender = true;
+                }
             }
             else
             {
@@ -2012,6 +2177,11 @@
             return;
         _serverWindowPct  = DefaultServerWindowPct;
         _serverLevelPct   = DefaultServerLevelPct;
+        if (_rawMode)
+        {
+            _ = InvokeAsync(RerenderRawFromCacheAsync);
+            return;
+        }
         _imageCacheBuster = DateTime.UtcNow.Ticks.ToString();
         StateHasChanged();
     }
@@ -2153,6 +2323,10 @@
             var rawUrl = UrlBuilder.Build(
                 $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/raw?plane={Uri.EscapeDataString(_rawPlane)}",
                 _currentUsername);
+            if (IsEagleA25Scan)
+            {
+                rawUrl = BuildImageProxyUrl(rawUrl);
+            }
             var meta = await JS.InvokeAsync<RawPlaneMeta>(
                 "Raw16BitViewer.loadAndRender",
                 _rawCanvas, rawUrl, ContainerNumber, _rawPlane,
@@ -2361,6 +2535,13 @@
                 await JS.InvokeVoidAsync("ImageAnalysisViewer.attachKeyboardShortcuts", _dotNetRef);
             }
             catch { }
+
+        }
+
+        if (_rawPendingInitialRender)
+        {
+            _rawPendingInitialRender = false;
+            await LoadAndRenderRawPlaneAsync();
         }
     }
 
@@ -2696,16 +2877,29 @@
     private async Task LoadGoodsPanelData()
     {
         _goodsPanelLoading = true;
+        _goodsPanelItems.Clear();
+        _goodsPanelGroups.Clear();
+        _goodsPanelText = null;
+        _crmsRiskLevel = null;
         StateHasChanged();
         try
         {
-            var groupId = GroupIdentifier;
-            if (string.IsNullOrEmpty(groupId))
-                groupId = ContainerNumber;
+            CargoGroupResponse? cargoGroup = null;
+            string? resolvedLookup = null;
+            foreach (var lookup in GetGoodsPanelLookupCandidates())
+            {
+                cargoGroup = await TryLoadCargoGroupForGoodsPanel(lookup);
+                if (cargoGroup?.Data?.ICUMSData?.Any() == true)
+                {
+                    resolvedLookup = lookup;
+                    break;
+                }
+            }
 
-            // Try cargo group API first (has structured line items)
-            var cargoGroup = await ApiService.GetAsync<CargoGroupResponse>(
-                $"/api/cargogroup/{Uri.EscapeDataString(groupId)}?loadICUMSData=true");
+            if (!string.IsNullOrWhiteSpace(resolvedLookup))
+            {
+                Console.WriteLine($"[GoodsPanel] Loaded cargo summary using lookup '{resolvedLookup}' for container {ContainerNumber}");
+            }
 
             if (cargoGroup?.Data?.ICUMSData != null)
             {
@@ -2822,6 +3016,38 @@
             _goodsPanelLoading = false;
             StateHasChanged();
         }
+    }
+
+    private IEnumerable<string> GetGoodsPanelLookupCandidates()
+    {
+        var candidates = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(GroupIdentifier))
+        {
+            candidates.Add(GroupIdentifier.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(ContainerNumber))
+        {
+            candidates.Add(ContainerNumber.Trim());
+        }
+
+        return candidates.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<CargoGroupResponse?> TryLoadCargoGroupForGoodsPanel(string lookup)
+    {
+        var typeHint = IsConsolidated ? "Consolidated" : "NonConsolidated";
+        var endpoint = $"/api/cargogroup/{Uri.EscapeDataString(lookup)}?type={typeHint}&loadScannerData=false&loadImageData=false&loadICUMSData=true";
+
+        var cargoGroup = await ApiService.TryGetAsync<CargoGroupResponse>(endpoint);
+        if (cargoGroup?.Data?.ICUMSData?.Any() == true)
+        {
+            return cargoGroup;
+        }
+
+        var fallbackEndpoint = $"/api/cargogroup/{Uri.EscapeDataString(lookup)}?loadScannerData=false&loadImageData=false&loadICUMSData=true";
+        return await ApiService.TryGetAsync<CargoGroupResponse>(fallbackEndpoint);
     }
 
     // Lightweight DTOs for the goods panel (avoids pulling in full CargoGroupDto)
@@ -3645,10 +3871,12 @@
 
             var tagsString = string.Join(", ", _tags);
             var rectanglesJson = _rectangles.Any() ? System.Text.Json.JsonSerializer.Serialize(_rectangles) : null;
+            var decisionContainerNumber = GetDecisionContainerNumber();
+            var splitSide = SourceScanResolution?.EffectiveSplitSide;
 
             var request = new
             {
-                ContainerNumber,
+                ContainerNumber = decisionContainerNumber,
                 ScannerType,
                 Decision = _selectedDecision,
                 Comments = _existingComments ?? "",
@@ -3657,6 +3885,10 @@
                 ReviewedBy = _currentUsername,
                 GroupIdentifier,
                 IsConsolidated,
+                AnalysisRecordId = SourceScanResolution?.AnalysisRecordId,
+                SplitJobId = SourceScanResolution?.SplitJobId,
+                SplitResultId = SourceScanResolution?.SplitResultId,
+                SplitSide = splitSide,
                 ThreatCategoryId = _selectedThreatCategoryId,
                 RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
             };
@@ -3736,10 +3968,12 @@
             try
             {
                 var tagsString = string.Join(", ", _tags);
+                var decisionContainerNumber = GetDecisionContainerNumber();
+                var splitSide = SourceScanResolution?.EffectiveSplitSide;
                 
                 // Get existing decision for this image
                 var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                    $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+                    $"/api/ImageAnalysisDecision/container/{decisionContainerNumber}");
                 
                 var existingDecision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
 
@@ -3754,7 +3988,7 @@
 
                 var request = new
                 {
-                    ContainerNumber,
+                    ContainerNumber = decisionContainerNumber,
                     ScannerType,
                     Decision = existingDecision.Decision,
                     Comments = existingDecision.Comments ?? "",
@@ -3763,6 +3997,10 @@
                     ReviewedBy = _currentUsername,
                     GroupIdentifier,
                     IsConsolidated,
+                    AnalysisRecordId = SourceScanResolution?.AnalysisRecordId,
+                    SplitJobId = SourceScanResolution?.SplitJobId,
+                    SplitResultId = SourceScanResolution?.SplitResultId,
+                    SplitSide = splitSide,
                     // AI training flywheel — preserve current dropdown selections.
                     // Sending the local state means a user who picked a category and
                     // then triggered a tags-only auto-save still gets their pick saved.
