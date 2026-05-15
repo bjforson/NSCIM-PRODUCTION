@@ -1,0 +1,393 @@
+@using MudBlazor
+@inject ISnackbar Snackbar
+@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IDialogService DialogService
+
+<MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+    <MudPaper Elevation="0" Class="mb-4">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.h4">Eagle A25 Air Cargo</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Rapiscan/ASE scanner capture and sync status</MudText>
+            </MudStack>
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                <MudChip T="string" Size="Size.Large" Color="Color.Warning" Icon="@Icons.Material.Outlined.PauseCircle">
+                    Assignment Disabled
+                </MudChip>
+                <MudChip T="string" Size="Size.Large" Color="@GetCaptureStatusColor()" Icon="@GetCaptureStatusIcon()">
+                    @GetCaptureStatusText()
+                </MudChip>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadData">
+                    Refresh
+                </MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+    <MudGrid Class="mb-4">
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-secondary);">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Secondary" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">@_totalScans.ToString("N0")</MudText>
+                    <MudText Typo="Typo.caption">May 2026 forward</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Assets</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Info" />
+                    </MudStack>
+                    <MudText Typo="Typo.h3">@_totalAssets.ToString("N0")</MudText>
+                    <MudText Typo="Typo.caption">Documents, x-ray images, markers</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Last Scan</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Schedule" Color="Color.Success" />
+                    </MudStack>
+                    <MudText Typo="Typo.h6">@FormatDate(_lastScan?.ScanDateUtc)</MudText>
+                    <MudText Typo="Typo.caption">@(_lastScan?.CargoIdentifier ?? "No cargo identifier")</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="12" md="3">
+            <MudPaper Elevation="2" Class="pa-4">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Last Sync</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Sync" Color="@GetSyncIconColor()" />
+                    </MudStack>
+                    <MudText Typo="Typo.h6">@FormatDate(_lastSync?.CompletedAtUtc ?? _lastSync?.StartedAtUtc)</MudText>
+                    <MudText Typo="Typo.caption">@GetSyncStatusText()</MudText>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudStack Spacing="3">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudText Typo="Typo.h6">Eagle A25 Records</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Total: @_totalRecords.ToString("N0") records</MudText>
+            </MudStack>
+
+            <MudPaper Elevation="1" Class="pa-3" Style="background-color: var(--mud-palette-background-grey);">
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_accession"
+                                      Label="Accession"
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Outlined.Tag" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_cargoIdentifier"
+                                      Label="Cargo Identifier"
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Outlined.Workspaces" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_airWaybill"
+                                      Label="Air Waybill"
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Outlined.Flight" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Style="height: 100%;">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Search" OnClick="SearchScans">
+                                Search
+                            </MudButton>
+                            <MudButton Variant="Variant.Text" Color="Color.Default" StartIcon="@Icons.Material.Outlined.Clear" OnClick="ClearFilters">
+                                Clear
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudTable Items="_scans" Loading="_isLoading" Dense="true" Hover="true" Striped="true">
+                <HeaderContent>
+                    <MudTh Style="width: 56px;">View</MudTh>
+                    <MudTh>Accession</MudTh>
+                    <MudTh>Scan Date UTC</MudTh>
+                    <MudTh>Cargo</MudTh>
+                    <MudTh>AWB</MudTh>
+                    <MudTh>Flight</MudTh>
+                    <MudTh>Transit</MudTh>
+                    <MudTh>Company</MudTh>
+                    <MudTh>Route</MudTh>
+                    <MudTh>Assets</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="View">
+                        <MudIconButton Icon="@Icons.Material.Outlined.Visibility"
+                                       Color="Color.Secondary"
+                                       Size="Size.Small"
+                                       Title="View Eagle A25 record"
+                                       AriaLabel="View Eagle A25 record"
+                                       OnClick="@(() => ViewRecord(context))" />
+                    </MudTd>
+                    <MudTd DataLabel="Accession">
+                        <MudText Style="font-family: monospace; font-weight: 500;">@context.Accession</MudText>
+                    </MudTd>
+                    <MudTd DataLabel="Scan Date UTC">@context.ScanDateUtc.ToString("yyyy-MM-dd HH:mm:ss")</MudTd>
+                    <MudTd DataLabel="Cargo">@Display(context.CargoIdentifier)</MudTd>
+                    <MudTd DataLabel="AWB">@Display(context.AirWaybill)</MudTd>
+                    <MudTd DataLabel="Flight">@Display(context.FlightNumber)</MudTd>
+                    <MudTd DataLabel="Transit">@Display(context.TransitType)</MudTd>
+                    <MudTd DataLabel="Company">@Display(context.Company)</MudTd>
+                    <MudTd DataLabel="Route">@FormatRoute(context.OriginFrom, context.OriginTo)</MudTd>
+                    <MudTd DataLabel="Assets">@context.AssetCount</MudTd>
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">No Eagle A25 records found</MudText>
+                </NoRecordsContent>
+            </MudTable>
+        </MudStack>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private bool _isLoading;
+    private int _totalScans;
+    private int _totalAssets;
+    private int _totalRecords;
+    private EagleA25LastScan? _lastScan;
+    private EagleA25SyncLog? _lastSync;
+    private List<EagleA25ScanDto> _scans = new();
+
+    private string _accession = "";
+    private string _cargoIdentifier = "";
+    private string _airWaybill = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+
+        try
+        {
+            var status = await ApiService.GetAsync<EagleA25SyncStatus>("/api/EagleA25/sync-status");
+            if (status != null)
+            {
+                _totalScans = status.TotalScans;
+                _totalAssets = status.TotalAssets;
+                _lastScan = status.LastScan;
+                _lastSync = status.LastSync;
+            }
+
+            await LoadScans();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading Eagle A25 data: {ex.Message}");
+            Snackbar.Add($"Error loading Eagle A25 data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadScans()
+    {
+        var queryParams = new List<string>
+        {
+            "page=1",
+            "pageSize=50"
+        };
+
+        if (!string.IsNullOrWhiteSpace(_accession))
+        {
+            queryParams.Add($"accession={Uri.EscapeDataString(_accession)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_cargoIdentifier))
+        {
+            queryParams.Add($"cargoIdentifier={Uri.EscapeDataString(_cargoIdentifier)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_airWaybill))
+        {
+            queryParams.Add($"airWaybill={Uri.EscapeDataString(_airWaybill)}");
+        }
+
+        var response = await ApiService.GetAsync<EagleA25ScanResponse>($"/api/EagleA25/scans?{string.Join("&", queryParams)}");
+        _scans = response?.Data ?? new List<EagleA25ScanDto>();
+        _totalRecords = response?.TotalCount ?? 0;
+    }
+
+    private async Task SearchScans()
+    {
+        _isLoading = true;
+
+        try
+        {
+            await LoadScans();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ClearFilters()
+    {
+        _accession = "";
+        _cargoIdentifier = "";
+        _airWaybill = "";
+        await SearchScans();
+    }
+
+    private async Task ViewRecord(EagleA25ScanDto scan)
+    {
+        var parameters = new DialogParameters<EagleA25RecordDialog>
+        {
+            { x => x.ScanId, scan.Id }
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            BackdropClick = true
+        };
+
+        await DialogService.ShowAsync<EagleA25RecordDialog>(
+            $"Eagle A25: {scan.Accession}",
+            parameters,
+            options);
+    }
+
+    private string GetCaptureStatusText()
+    {
+        if (_lastScan?.ScanDateUtc >= DateTime.UtcNow.AddHours(-24))
+            return "Capturing";
+        if (_lastScan != null)
+            return "Synced";
+        return "No Data";
+    }
+
+    private Color GetCaptureStatusColor()
+    {
+        if (_lastScan?.ScanDateUtc >= DateTime.UtcNow.AddHours(-24))
+            return Color.Success;
+        if (_lastScan != null)
+            return Color.Warning;
+        return Color.Error;
+    }
+
+    private string GetCaptureStatusIcon()
+    {
+        if (_lastScan != null)
+            return Icons.Material.Outlined.CheckCircle;
+        return Icons.Material.Outlined.Error;
+    }
+
+    private Color GetSyncIconColor()
+    {
+        if (_lastSync?.Succeeded == true)
+            return Color.Success;
+        if (_lastSync != null)
+            return Color.Error;
+        return Color.Default;
+    }
+
+    private string GetSyncStatusText()
+    {
+        if (_lastSync == null)
+            return "No sync history";
+        return _lastSync.Succeeded ? "Last sync succeeded" : "Last sync failed";
+    }
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToString("yyyy-MM-dd HH:mm:ss") : "N/A";
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "N/A" : value;
+    }
+
+    private static string FormatRoute(string? originFrom, string? originTo)
+    {
+        if (string.IsNullOrWhiteSpace(originFrom) && string.IsNullOrWhiteSpace(originTo))
+            return "N/A";
+        return $"{Display(originFrom)} -> {Display(originTo)}";
+    }
+
+    public class EagleA25SyncStatus
+    {
+        public int TotalScans { get; set; }
+        public int TotalAssets { get; set; }
+        public EagleA25LastScan? LastScan { get; set; }
+        public EagleA25SyncLog? LastSync { get; set; }
+    }
+
+    public class EagleA25LastScan
+    {
+        public long Accession { get; set; }
+        public DateTime ScanDateUtc { get; set; }
+        public string? CargoIdentifier { get; set; }
+        public string? AirWaybill { get; set; }
+    }
+
+    public class EagleA25SyncLog
+    {
+        public DateTime StartedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+        public bool Succeeded { get; set; }
+    }
+
+    public class EagleA25ScanResponse
+    {
+        public List<EagleA25ScanDto>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+
+    public class EagleA25ScanDto
+    {
+        public Guid Id { get; set; }
+        public long Accession { get; set; }
+        public long? ScanAccession { get; set; }
+        public DateTime ScanDateUtc { get; set; }
+        public string? CargoIdentifier { get; set; }
+        public string? AirWaybill { get; set; }
+        public string? FlightNumber { get; set; }
+        public string? TransitType { get; set; }
+        public string? Weight { get; set; }
+        public string? Company { get; set; }
+        public string? Quantity { get; set; }
+        public string? QuantityType { get; set; }
+        public string? OriginFrom { get; set; }
+        public string? OriginTo { get; set; }
+        public bool InspectDone { get; set; }
+        public bool InspectSuspicious { get; set; }
+        public int AssetCount { get; set; }
+    }
+}

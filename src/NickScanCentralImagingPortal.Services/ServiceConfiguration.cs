@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.ScannerServices;
 using NickScanCentralImagingPortal.Services.AccessReview; // Added for access review service
 using NickScanCentralImagingPortal.Services.ASE;
 using NickScanCentralImagingPortal.Services.ContainerCompleteness; // Added for container completeness service
+using NickScanCentralImagingPortal.Services.EagleA25;
 using NickScanCentralImagingPortal.Services.FS6000;
 using NickScanCentralImagingPortal.Services.IcumApi;
 using NickScanCentralImagingPortal.Services.ImageProcessing; // Added for image processing
@@ -31,9 +32,14 @@ namespace NickScanCentralImagingPortal.Services
     {
         public static IServiceCollection AddStandardizedServices(this IServiceCollection services, IConfiguration configuration)
         {
-            services.AddCoreServices();
+            var disableHostedServices = StagingVerificationDisablesHostedServices(configuration);
+
+            services.AddCoreServices(configuration);
             services.AddDatabaseServices(configuration);
-            services.AddBackgroundServices(configuration); // Pass configuration for ASE
+            if (!disableHostedServices)
+            {
+                services.AddBackgroundServices(configuration); // Pass configuration for ASE
+            }
             services.AddHttpClients(configuration);
             services.AddEnhancedServices(configuration); // Added enhanced services
 
@@ -94,20 +100,32 @@ namespace NickScanCentralImagingPortal.Services
             // AI training flywheel — Gap 4: COCO export (joins decisions + annotations + manifest snapshots)
             services.AddScoped<NickScanCentralImagingPortal.Services.AiTraining.CocoExportService>();
 
-            services.AddHostedService<AiSuggestionAutoTriggerService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<AiSuggestionAutoTriggerService>();
+            }
 
             // Service Lifecycle Management (PRIORITY 0 - must be registered before services)
             services.Configure<ServiceLifecycleOptions>(configuration.GetSection("ServiceLifecycle"));
             services.AddSingleton<IServiceLifecycleManager, ServiceLifecycleManager>();
-            services.AddHostedService<ServiceLifecycleStartupService>(); // Discovers and registers services
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<ServiceLifecycleStartupService>(); // Discovers and registers services
+            }
 
             // Service Orchestrator (PRIORITY 1 - manages all services)
-            services.AddHostedService<ServiceOrchestratorBackgroundService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<ServiceOrchestratorBackgroundService>();
+            }
 
             // Performance Monitoring Service (PRIORITY 1 - real-time metrics)
             services.AddSingleton<PerformanceMonitoringService>();
             services.AddSingleton<IPerformanceMonitoringService>(sp => sp.GetRequiredService<PerformanceMonitoringService>());
-            services.AddHostedService(sp => sp.GetRequiredService<PerformanceMonitoringService>());
+            if (!disableHostedServices)
+            {
+                services.AddHostedService(sp => sp.GetRequiredService<PerformanceMonitoringService>());
+            }
 
             return services;
         }
@@ -231,8 +249,10 @@ namespace NickScanCentralImagingPortal.Services
             return services;
         }
 
-        private static IServiceCollection AddCoreServices(this IServiceCollection services)
+        private static IServiceCollection AddCoreServices(this IServiceCollection services, IConfiguration configuration)
         {
+            var disableHostedServices = StagingVerificationDisablesHostedServices(configuration);
+
             // ✅ FIX: Register IHttpContextAccessor for services that need HTTP context
             services.AddHttpContextAccessor();
 
@@ -268,6 +288,7 @@ namespace NickScanCentralImagingPortal.Services
             // Container Scan Queue Publisher Service (unified abstraction for all scanners)
             // Future-proof: Any scanner can inject this service and publish scans without code changes
             services.AddScoped<IContainerScanQueuePublisher, NickScanCentralImagingPortal.Services.ContainerCompleteness.ContainerScanQueuePublisherService>();
+            services.AddSingleton<IScannerWorkflowGate, ScannerWorkflowGate>();
 
             // Queue publishing metrics and alerting
             services.AddSingleton<NickScanCentralImagingPortal.Services.ContainerCompleteness.QueuePublishingMetricsService>();
@@ -279,30 +300,48 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<IContainerDataMapperService, ContainerDataMapperService>();
 
             // Container Completeness Orchestrator (background service coordinating the pipeline)
-            services.AddHostedService<NickScanCentralImagingPortal.Services.ContainerCompleteness.ContainerCompletenessOrchestratorService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.ContainerCompleteness.ContainerCompletenessOrchestratorService>();
+            }
 
             // ✅ QUEUE RECOVERY SERVICE: Recovers missed scans from scanner tables (ultimate safety net)
-            services.AddHostedService<NickScanCentralImagingPortal.Services.ContainerCompleteness.QueueRecoveryService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.ContainerCompleteness.QueueRecoveryService>();
+            }
 
             // CMR Validation and Re-download Services
             services.AddScoped<ICMRValidationService, CMRValidationService>();
             services.AddScoped<ICMRRedownloadService, CMRRedownloadService>();
-            services.AddHostedService<CMRRedownloadBackgroundService>();
-            services.AddHostedService<CMRMetricsRecorderService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<CMRRedownloadBackgroundService>();
+                services.AddHostedService<CMRMetricsRecorderService>();
+            }
 
             // ✅ ISO 27001: Access Review Service (quarterly reviews)
-            services.AddHostedService<AccessReview.AccessReviewService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<AccessReview.AccessReviewService>();
+            }
 
             // Auto-generates AiCargoSummary on completed wave AGs via Ollama. Was
             // user-triggered only (button in CargoGroupSummaryTab) which left every
             // newly-formed wave with a NULL summary until an analyst clicked through.
             // Idle until Ollama is reachable on AiWorkflow:OllamaBaseUrl. Disable via
             // AiWorkflow:AutoGenerateSummaries=false if Ollama load is a concern.
-            services.AddHostedService<NickScanCentralImagingPortal.Services.AiCargoSummary.AiCargoSummaryBackgroundService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.AiCargoSummary.AiCargoSummaryBackgroundService>();
+            }
 
             // Email Service
             services.AddScoped<IEmailService, NickScanCentralImagingPortal.Services.Email.EmailService>();
-            services.AddHostedService<NickScanCentralImagingPortal.Services.Email.DailyDataQualityReportService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.Email.DailyDataQualityReportService>();
+            }
 
             // Sprint 5G3 / audit 8.25 — persisted dashboard alerts + email-on-Critical
             // via NickComms.Gateway (registered just below). Scoped because it
@@ -405,6 +444,7 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<IImageProcessingOrchestrator, ImageProcessingOrchestrator>(); // Corrected type
 
             // Image Processing Services - Using fully qualified names to avoid ambiguity
+            services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IScanAssetResolver, NickScanCentralImagingPortal.Services.ImageProcessing.ScanAssetResolver>();
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IImageProcessingService, NickScanCentralImagingPortal.Services.ImageProcessing.ImageProcessingService>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.IImageCacheService, NickScanCentralImagingPortal.Services.ImageProcessing.ImageCacheService>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.ASE.IASEImageConverterService, NickScanCentralImagingPortal.Services.ImageProcessing.ASE.ASEImageConverterService>();
@@ -425,10 +465,14 @@ namespace NickScanCentralImagingPortal.Services
                                NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters.FS6000FormatAdapter>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanFormatAdapter,
                                NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters.ASEFormatAdapter>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanFormatAdapter,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters.EagleA25FormatAdapter>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanSourceRetriever,
                                NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retrievers.FS6000SourceRetriever>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanSourceRetriever,
                                NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retrievers.ASESourceRetriever>();
+            services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions.IScanSourceRetriever,
+                               NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Retrievers.EagleA25SourceRetriever>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.IScannerTypeDetector,
                                NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.ScannerTypeDetector>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.ScanRouter>();
@@ -437,7 +481,10 @@ namespace NickScanCentralImagingPortal.Services
             // 2026-04-19: worker closes the gap between fs6000scans and raw-channel rows
             // every 5 min. "Never abandon" — a scan stays in its working set until all
             // three channels are in fs6000images or it ages out of the 7-day window.
-            services.AddHostedService<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelBackfillWorker>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.ImageProcessing.FS6000.FS6000RawChannelBackfillWorker>();
+            }
 
             // v2.9.6: typed HttpClient for the Python inspector's /composite/ endpoint.
             // Used by FS6000ImagePipeline to render 16-bit composites from DB-ingested
@@ -514,6 +561,39 @@ namespace NickScanCentralImagingPortal.Services
             services.AddScoped<IAseDatabaseSyncService, AseDatabaseSyncService>();
             services.AddHostedService<AseBackgroundService>();
 
+            // Eagle A25 air-cargo scanner services (SQL-backed Rapiscan/ASE source).
+            services.Configure<EagleA25Configuration>(configuration.GetSection("EagleA25"));
+            services.PostConfigure<EagleA25Configuration>(config =>
+            {
+                if (!string.IsNullOrEmpty(config.ConnectionString) &&
+                    (config.ConnectionString.Contains("***USE_ENV_VAR") || config.ConnectionString.Contains("***USE_ENV")))
+                {
+                    var password = Environment.GetEnvironmentVariable("NICKSCAN_EAGLEA25_SQL_PASSWORD");
+                    if (!string.IsNullOrEmpty(password))
+                    {
+                        var escapedPassword = password.Replace(";", ";;").Replace("=", "==");
+                        config.ConnectionString = config.ConnectionString
+                            .Replace("***USE_ENV_VAR_NICKSCAN_EAGLEA25_SQL_PASSWORD***", escapedPassword)
+                            .Replace("***USE_ENV_VAR***", escapedPassword)
+                            .Replace("***USE_ENV***", escapedPassword);
+                    }
+                }
+
+                var shareUsername = Environment.GetEnvironmentVariable("NICKSCAN_EAGLEA25_SHARE_USERNAME");
+                if (!string.IsNullOrWhiteSpace(shareUsername))
+                {
+                    config.SourceShareUsername = shareUsername;
+                }
+
+                var sharePassword = Environment.GetEnvironmentVariable("NICKSCAN_EAGLEA25_SHARE_PASSWORD");
+                if (!string.IsNullOrWhiteSpace(sharePassword))
+                {
+                    config.SourceSharePassword = sharePassword;
+                }
+            });
+            services.AddScoped<IEagleA25SyncService, EagleA25SyncService>();
+            services.AddHostedService<EagleA25BackgroundService>();
+
             // ICUMS Services (ENABLED - Priority 2)
             services.AddScoped<IIcumApiService, IcumApiService>();
 
@@ -571,6 +651,8 @@ namespace NickScanCentralImagingPortal.Services
 
         private static IServiceCollection AddEnhancedServices(this IServiceCollection services, IConfiguration configuration)
         {
+            var disableHostedServices = StagingVerificationDisablesHostedServices(configuration);
+
             // ? REMOVED: Duplicate MemoryCache (already configured in Program.cs with SizeLimit=1000)
             // This was creating a second cache instance, doubling memory overhead (~200 MB saved)
 
@@ -589,6 +671,8 @@ namespace NickScanCentralImagingPortal.Services
 
         private static IServiceCollection AddHttpClients(this IServiceCollection services, IConfiguration configuration)
         {
+            var disableHostedServices = StagingVerificationDisablesHostedServices(configuration);
+
             // ICUMS HTTP Client with Proxy Support and Enhanced Configuration
             services.AddHttpClient<IIcumApiService, IcumApiService>((serviceProvider, client) =>
             {
@@ -675,9 +759,17 @@ namespace NickScanCentralImagingPortal.Services
                 client.BaseAddress = new Uri(rawImageEngineUrl);
                 client.Timeout = TimeSpan.FromSeconds(30);
             });
-            services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.TwoContainerSplitIntakeWorker>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.TwoContainerSplitIntakeWorker>();
+            }
 
             return services;
+        }
+
+        private static bool StagingVerificationDisablesHostedServices(IConfiguration configuration)
+        {
+            return configuration.GetValue<bool>("StagingVerification:DisableBackgroundServices", false);
         }
     }
 

@@ -4,8 +4,8 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
 {
     /// <summary>
     /// Sprint 5G3 / audit finding 8.25 — single sink for dashboard alerts that
-    /// combines persistence, deduplication, SignalR broadcast, and (for
-    /// <c>Critical</c> severity) email notification via NickComms.Gateway.
+    /// combines persistence, open-incident deduplication, SignalR broadcast,
+    /// and throttled email notification for Critical alerts via NickComms.Gateway.
     ///
     /// Replaces the earlier in-memory-only flow inside
     /// <c>ImageAnalysisDashboardBroadcastService.GetCurrentAlertsAsync</c>:
@@ -19,12 +19,13 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
     public interface IDashboardAlertService
     {
         /// <summary>
-        /// Persist (or touch, on dedupe hit) the alert and notify on-call when
-        /// the rule promotes a previously-unseen alert to <c>Critical</c>.
+        /// Persist (or touch, on open-incident dedupe hit) the alert and notify
+        /// on-call when the rule promotes a previously-unseen alert to
+        /// <c>Critical</c> and the configured email cooldown permits it.
         ///
-        /// Dedupe rule: an existing row with the same <c>(Type, Title)</c>
-        /// raised within the last 30 minutes is considered the same incident.
-        /// Its <c>RaisedAtUtc</c> is updated; nothing else is sent.
+        /// Dedupe rule: an unacknowledged row with the same stable alert key is
+        /// considered the same incident. Its <c>RaisedAtUtc</c> and visible
+        /// details are updated; no duplicate row is created.
         ///
         /// Returns the persisted entity so callers can echo Id / EmailSentAtUtc
         /// to SignalR clients without a re-read.

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
+using NickScanCentralImagingPortal.Core.Entities.EagleA25;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Entities.HR;
 using NickScanCentralImagingPortal.Core.Entities.Review;
@@ -47,6 +48,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
         // ASE tables
         public DbSet<AseScan> AseScans { get; set; }
         public DbSet<AseSyncLog> AseSyncLogs { get; set; }
+
+        // Eagle A25 air-cargo scanner tables
+        public DbSet<EagleA25Scan> EagleA25Scans { get; set; }
+        public DbSet<EagleA25ScanAsset> EagleA25ScanAssets { get; set; }
+        public DbSet<EagleA25SyncLog> EagleA25SyncLogs { get; set; }
 
         // User Management tables
         public DbSet<User> Users { get; set; }
@@ -992,6 +998,45 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                       .OnDelete(DeleteBehavior.SetNull);
             });
 
+            modelBuilder.Entity<EagleA25Scan>(entity =>
+            {
+                entity.ToTable("eaglea25scans");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.SourceScanId);
+                entity.HasIndex(e => e.SourceManifestId).IsUnique();
+                entity.HasIndex(e => e.Accession).IsUnique();
+                entity.HasIndex(e => e.ScanDateUtc);
+                entity.HasIndex(e => e.AirWaybill);
+                entity.HasIndex(e => e.CargoIdentifier);
+                entity.Property(e => e.CargoIdentifier).HasMaxLength(512);
+                entity.Property(e => e.AirWaybill).HasMaxLength(512);
+                entity.Property(e => e.SyncStatus).IsRequired().HasMaxLength(32);
+            });
+
+            modelBuilder.Entity<EagleA25ScanAsset>(entity =>
+            {
+                entity.ToTable("eaglea25scanassets");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.SourceExtFileId).IsUnique();
+                entity.HasIndex(e => new { e.EagleA25ScanId, e.FileType });
+                entity.HasIndex(e => e.FileType);
+                entity.Property(e => e.FileType).IsRequired().HasMaxLength(30);
+                entity.Property(e => e.SourcePath).IsRequired().HasMaxLength(1000);
+                entity.HasOne(e => e.Scan)
+                      .WithMany(e => e.Assets)
+                      .HasForeignKey(e => e.EagleA25ScanId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<EagleA25SyncLog>(entity =>
+            {
+                entity.ToTable("eaglea25synclogs");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.StartedAtUtc);
+                entity.HasIndex(e => e.Status);
+                entity.Property(e => e.Status).IsRequired().HasMaxLength(32);
+            });
+
             modelBuilder.Entity<AiImageAnalysisSuggestion>(entity =>
             {
                 entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType });
@@ -1094,6 +1139,7 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
             {
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.Type).IsRequired().HasMaxLength(64);
+                entity.Property(e => e.AlertKey).IsRequired().HasMaxLength(256);
                 entity.Property(e => e.Severity).IsRequired().HasMaxLength(20);
                 entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
                 entity.Property(e => e.Description).HasMaxLength(2000);
@@ -1106,6 +1152,8 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.TenantId).HasColumnName("tenant_id");
 
                 entity.HasIndex(e => e.Type);
+                entity.HasIndex(e => e.AlertKey)
+                      .HasDatabaseName("ix_dashboardalerts_alertkey");
                 entity.HasIndex(e => e.Severity);
                 entity.HasIndex(e => e.RaisedAtUtc);
                 entity.HasIndex(e => e.AcknowledgedAtUtc);
@@ -1113,6 +1161,8 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 // (Type, Title, RaisedAtUtc) within a 30-minute window.
                 entity.HasIndex(e => new { e.Type, e.Title, e.RaisedAtUtc })
                       .HasDatabaseName("ix_dashboardalerts_type_title_raisedatutc");
+                entity.HasIndex(e => new { e.AlertKey, e.AcknowledgedAtUtc, e.RaisedAtUtc })
+                      .HasDatabaseName("ix_dashboardalerts_alertkey_ack_raisedatutc");
                 // Tenancy index — matches the phase-1 pattern
                 entity.HasIndex(e => new { e.TenantId, e.Id })
                       .HasDatabaseName("ix_dashboardalerts_tenant_id");
