@@ -82,6 +82,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return IsCompletedAnalystDecisionValue(decision.Decision);
         }
 
+        private static ImageAnalysisDecision SelectImageDecisionForDisplay(IEnumerable<ImageAnalysisDecision> decisions)
+        {
+            return decisions
+                .OrderByDescending(d => !string.IsNullOrWhiteSpace(d.ReviewedBy))
+                .ThenByDescending(d => d.ReviewedAt)
+                .ThenByDescending(d => d.UpdatedAt ?? d.CreatedAt)
+                .First();
+        }
+
+        private static string GetImageAnalystDisplay(IEnumerable<ImageAnalysisDecision> decisions)
+        {
+            var analysts = decisions
+                .Select(d => d.ReviewedBy?.Trim())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return analysts.Count == 0 ? "Unknown" : string.Join(", ", analysts);
+        }
+
         private static string? BaseScannerType(string? scannerType)
         {
             if (string.IsNullOrWhiteSpace(scannerType))
@@ -325,7 +346,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // Create dictionary with composite key as string
                 var allDecisions = allDecisionsList
                     .GroupBy(d => $"{d.ContainerNumber}|{d.ScannerType}")
-                    .ToDictionary(g => g.Key, g => g.First());
+                    .ToDictionary(g => g.Key, g => SelectImageDecisionForDisplay(g));
 
                 // Group by GroupIdentifier
                 var groups = auditRecords
@@ -561,7 +582,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                 var allDecisions = allDecisionsList
                     .GroupBy(d => $"{d.ContainerNumber}|{d.ScannerType}")
-                    .ToDictionary(g => g.Key, g => g.First());
+                    .ToDictionary(g => g.Key, g => SelectImageDecisionForDisplay(g));
 
                 // Build AuditGroupDto
                 var firstRecord = completenessRecords.First();
@@ -1930,9 +1951,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             .OrderByDescending(a => a.AuditedAt)
                             .FirstOrDefault();
 
-                        // Get image analyst (from first image decision)
-                        var firstImageDecision = groupImageDecisions.FirstOrDefault();
-                        var imageAnalyst = firstImageDecision?.ReviewedBy ?? "Unknown";
+                        var imageAnalyst = GetImageAnalystDisplay(groupImageDecisions);
 
                         // Build audit details
                         var auditDetails = containers.Select(c =>
