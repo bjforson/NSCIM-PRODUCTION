@@ -267,42 +267,48 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             ? parsedAccession
             : null;
 
-        return await _db.EagleA25Scans
+        var scan = await _db.EagleA25Scans
+            .Include(scan => scan.Assets)
             .AsNoTracking()
             .Where(scan =>
                 (accession.HasValue && (scan.Accession == accession.Value || scan.ScanAccession == accession.Value))
                 || scan.CargoIdentifier == normalizedContainer
                 || scan.AirWaybill == normalizedContainer)
             .OrderByDescending(scan => scan.ScanDateUtc)
-            .Select(scan => new ScanAssetResolution
-            {
-                Status = ScanAssetResolutionStatuses.Resolved,
-                Found = true,
-                RequestedContainerNumber = normalizedContainer,
-                NormalizedContainerNumber = normalizedContainer,
-                ContainerNumber = !string.IsNullOrWhiteSpace(scan.CargoIdentifier)
-                    ? scan.CargoIdentifier!
-                    : scan.Accession.ToString(CultureInfo.InvariantCulture),
-                SourceScannerType = "EAGLE_A25",
-                SourceScanId = scan.Id.ToString(),
-                ScannerScanId = scan.Id,
-                SourceContainerNumbers = scan.Accession.ToString(CultureInfo.InvariantCulture),
-                ResolvedBy = "ExactEagleA25",
-                MatchKind = ScanAssetMatchKinds.Exact,
-                ResolutionReason = "ExactEagleA25Match",
-                ScanTime = scan.ScanDateUtc,
-                ImageSizeBytes = scan.Assets
-                    .Where(asset => asset.FileType == "XRAY")
-                    .Select(asset => asset.FileSizeBytes)
-                    .FirstOrDefault(),
-                ImageDisplayName = scan.Accession.ToString(CultureInfo.InvariantCulture),
-                HasImage = scan.Assets.Any(asset =>
-                    !string.IsNullOrWhiteSpace(asset.LocalPath)
-                    && (asset.FileType == "XRAY"
-                        || asset.FileType == "XRAYJPEG"
-                        || asset.FileType == "SCANDOC"))
-            })
             .FirstOrDefaultAsync(cancellationToken);
+
+        if (scan == null)
+            return null;
+
+        var accessionText = scan.Accession.ToString(CultureInfo.InvariantCulture);
+        return new ScanAssetResolution
+        {
+            Status = ScanAssetResolutionStatuses.Resolved,
+            Found = true,
+            RequestedContainerNumber = normalizedContainer,
+            NormalizedContainerNumber = normalizedContainer,
+            ContainerNumber = !string.IsNullOrWhiteSpace(scan.CargoIdentifier)
+                ? scan.CargoIdentifier!
+                : accessionText,
+            SourceScannerType = "EAGLE_A25",
+            SourceScanId = scan.Id.ToString(),
+            ScannerScanId = scan.Id,
+            SourceContainerNumbers = accessionText,
+            ResolvedBy = "ExactEagleA25",
+            MatchKind = ScanAssetMatchKinds.Exact,
+            ResolutionReason = "ExactEagleA25Match",
+            ScanTime = scan.ScanDateUtc,
+            ImageSizeBytes = scan.Assets
+                .Where(asset => asset.FileType == "XRAY")
+                .Select(asset => asset.FileSizeBytes)
+                .FirstOrDefault(),
+            ImageDisplayName = accessionText,
+            HasImage = scan.Assets.Any(asset =>
+                !string.IsNullOrWhiteSpace(asset.LocalPath)
+                && (asset.FileType == "XRAY"
+                    || asset.FileType == "XRAYJPEG"
+                    || asset.FileType == "SCANDOC"))
+        };
     }
 
     private async Task<List<ScanAssetResolutionCandidate>> ResolveTokenizedCandidatesAsync(

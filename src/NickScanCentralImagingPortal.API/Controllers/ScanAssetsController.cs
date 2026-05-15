@@ -116,6 +116,41 @@ public sealed class ScanAssetsController : ControllerBase
             });
         }
 
+        if (IsEagleA25(resolution.SourceScannerType))
+        {
+            var eagleLookup = !string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers)
+                ? resolution.SourceContainerNumbers
+                : resolution.SourceScanId ?? sourceScanId;
+
+            var rendered = await _imageProcessingService.GetRenderedImageBytesAsync(
+                eagleLookup,
+                "bw",
+                ct: cancellationToken);
+
+            if (rendered is { Length: > 0 })
+            {
+                Response.Headers.CacheControl = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase)
+                    ? "private, max-age=300"
+                    : "private, max-age=3600";
+
+                if (string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase))
+                {
+                    return File(rendered, "image/jpeg");
+                }
+
+                return File(rendered, "image/jpeg");
+            }
+
+            var fallback = await _imageProcessingService.GetCompleteContainerDataAsync(eagleLookup, imageType);
+            if (fallback?.ImageBytes is { Length: > 0 })
+            {
+                Response.Headers.CacheControl = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase)
+                    ? "private, max-age=300"
+                    : "private, max-age=3600";
+                return File(fallback.ImageBytes, fallback.MimeType ?? "image/jpeg");
+            }
+        }
+
         var data = await _imageProcessingService.GetCompleteContainerDataAsync(
             resolution.SourceContainerNumbers,
             imageType);
@@ -344,6 +379,37 @@ public sealed class ScanAssetsController : ControllerBase
             if (fs != null)
                 return fs;
 
+            var eagleBySourceScanId = await _db.EagleA25Scans
+                .AsNoTracking()
+                .Where(scan => scan.SourceScanId == originalScanRecordId)
+                .OrderByDescending(scan => scan.ScanDateUtc)
+                .Select(scan => new ScanAssetResolution
+                {
+                    Found = true,
+                    RequestedContainerNumber = scan.CargoIdentifier ?? scan.Accession.ToString(),
+                    ContainerNumber = scan.CargoIdentifier ?? scan.Accession.ToString(),
+                    SourceScannerType = "EAGLE_A25",
+                    SourceScanId = scan.Id.ToString(),
+                    ScannerScanId = scan.Id,
+                    SourceContainerNumbers = scan.Accession.ToString(),
+                    ResolvedBy = "SourceScanId",
+                    ResolutionReason = "EagleA25SourceScanId",
+                    ScanTime = scan.ScanDateUtc,
+                    ImageSizeBytes = scan.Assets
+                        .Where(asset => asset.FileType == "XRAY")
+                        .Select(asset => asset.FileSizeBytes)
+                        .FirstOrDefault(),
+                    HasImage = scan.Assets.Any(asset =>
+                        !string.IsNullOrWhiteSpace(asset.LocalPath)
+                        && (asset.FileType == "XRAY"
+                            || asset.FileType == "XRAYJPEG"
+                            || asset.FileType == "SCANDOC"))
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (eagleBySourceScanId != null)
+                return eagleBySourceScanId;
+
             var original = await _db.OriginalScanRecords
                 .AsNoTracking()
                 .Where(record => record.Id == originalScanRecordId)
@@ -420,6 +486,36 @@ public sealed class ScanAssetsController : ControllerBase
 
             if (fs != null)
                 return fs;
+
+            var eagle = await _db.EagleA25Scans
+                .AsNoTracking()
+                .Where(scan => scan.Id == scannerScanId)
+                .Select(scan => new ScanAssetResolution
+                {
+                    Found = true,
+                    RequestedContainerNumber = scan.CargoIdentifier ?? scan.Accession.ToString(),
+                    ContainerNumber = scan.CargoIdentifier ?? scan.Accession.ToString(),
+                    SourceScannerType = "EAGLE_A25",
+                    SourceScanId = sourceScanId,
+                    ScannerScanId = scan.Id,
+                    SourceContainerNumbers = scan.Accession.ToString(),
+                    ResolvedBy = "SourceScanId",
+                    ResolutionReason = "EagleA25ScanId",
+                    ScanTime = scan.ScanDateUtc,
+                    ImageSizeBytes = scan.Assets
+                        .Where(asset => asset.FileType == "XRAY")
+                        .Select(asset => asset.FileSizeBytes)
+                        .FirstOrDefault(),
+                    HasImage = scan.Assets.Any(asset =>
+                        !string.IsNullOrWhiteSpace(asset.LocalPath)
+                        && (asset.FileType == "XRAY"
+                            || asset.FileType == "XRAYJPEG"
+                            || asset.FileType == "SCANDOC"))
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (eagle != null)
+                return eagle;
         }
 
         return ScanAssetResolution.NotFound(sourceScanId, "SourceScanNotFound");
@@ -519,6 +615,10 @@ public sealed class ScanAssetsController : ControllerBase
             || string.Equals(resolution.ScannerScanId?.ToString(), lookupId, StringComparison.OrdinalIgnoreCase)
             || string.Equals(resolution.ScannerScanId?.ToString("N"), lookupId, StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsEagleA25(string? scannerType)
+        => string.Equals(scannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(scannerType, "EagleA25", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeSourceScanIdForLookup(string? sourceScanId)
     {
