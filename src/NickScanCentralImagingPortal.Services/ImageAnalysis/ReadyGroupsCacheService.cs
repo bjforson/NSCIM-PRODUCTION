@@ -92,6 +92,40 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
 
+            var disabledGroups = eligibleGroups
+                .Where(g => !IsAssignmentIntakeEnabled(g.ScannerType))
+                .ToList();
+            if (disabledGroups.Count > 0)
+            {
+                eligibleGroups = eligibleGroups
+                    .Where(g => IsAssignmentIntakeEnabled(g.ScannerType))
+                    .ToList();
+
+                _logger.LogInformation(
+                    "[CACHE-FILTER] Excluded {Count} {Role}/{Status} group(s) whose scanner workflow assignment intake is disabled: {ScannerTypes}",
+                    disabledGroups.Count,
+                    roleName,
+                    eligibleStatus,
+                    string.Join(", ", disabledGroups.Select(g => g.ScannerType ?? "Unknown").Distinct().Take(10)));
+            }
+
+            var compositeScanPairGroups = eligibleGroups
+                .Where(g => IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                .ToList();
+            if (compositeScanPairGroups.Count > 0)
+            {
+                eligibleGroups = eligibleGroups
+                    .Where(g => !IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                    .ToList();
+
+                _logger.LogWarning(
+                    "[CACHE-FILTER] Excluded {Count} {Role}/{Status} group(s) whose identifiers are scan-pair container lists: {Groups}",
+                    compositeScanPairGroups.Count,
+                    roleName,
+                    eligibleStatus,
+                    string.Join(", ", compositeScanPairGroups.Select(g => g.GroupIdentifier).Take(10)));
+            }
+
             if (!eligibleGroups.Any())
             {
                 // Cache empty result too (prevents repeated queries for empty results)
@@ -400,6 +434,8 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 await cache.RemoveAsync(cacheKey, cancellationToken);
                 _logger.LogDebug("[CACHE-INVALIDATE] Invalidated cache for {Role} with status {Status}", roleName, status);
             }
+
+            await PredictiveRoleInvalidationBestEffortAsync(roleName);
         }
 
         private async Task InvalidateCacheBestEffortAsync(string roleName, string status)
@@ -434,6 +470,13 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             {
                 await cache.RemoveByPrefixAsync(CacheKeyPrefix, cancellationToken);
                 _logger.LogDebug("[CACHE-INVALIDATE] Invalidated all ready groups caches");
+            }
+
+            var predictiveRoles = _configuration.GetSection("PredictivePreload:Roles").Get<string[]>()
+                ?? new[] { "Analyst", "Audit" };
+            foreach (var role in predictiveRoles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                await PredictiveRoleInvalidationBestEffortAsync(role);
             }
         }
 
@@ -473,6 +516,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     .AsNoTracking()
                     .FirstOrDefaultAsync(g => g.Id == assignment.GroupId, ct);
                 if (group == null) return;
+
+                if (IsCompositeContainerPairIdentifier(group.GroupIdentifier))
+                {
+                    _logger.LogWarning(
+                        "[QUEUE] Skipping materialized queue entry for group {GroupId} ({GroupIdentifier}) because the identifier is a scan-pair container list, not a cargo/record key.",
+                        group.Id,
+                        group.GroupIdentifier);
+                    return;
+                }
 
                 // Container list from AnalysisRecords
                 var containers = await db.AnalysisRecords
@@ -585,6 +637,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 _logger.LogDebug("[QUEUE] Upserted entry for assignment {Id} group {Group}",
                     assignmentId, group.GroupIdentifier);
                 InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
+                QueuePredictiveAssignmentPreload(group.Id, assignment.Role, group.Status);
             }
             catch (Exception ex)
             {
@@ -605,7 +658,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 var cacheTarget = await db.AnalysisAssignments
                     .AsNoTracking()
                     .Where(a => a.Id == assignmentId)
-                    .Select(a => new { a.AssignedTo, a.Role })
+                    .Select(a => new { a.AssignedTo, a.Role, a.GroupId })
                     .FirstOrDefaultAsync(ct);
 
                 if (cacheTarget == null)
@@ -613,7 +666,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     cacheTarget = await db.AnalysisQueueEntries
                         .AsNoTracking()
                         .Where(e => e.AssignmentId == assignmentId)
-                        .Select(e => new { e.AssignedTo, e.Role })
+                        .Select(e => new { e.AssignedTo, e.Role, e.GroupId })
                         .FirstOrDefaultAsync(ct);
                 }
 
@@ -623,6 +676,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 if (cacheTarget != null)
                 {
                     InvalidateMyAssignmentsCache(cacheTarget.AssignedTo, cacheTarget.Role);
+                    QueuePredictiveAssignmentInvalidation(cacheTarget.GroupId, cacheTarget.Role);
                 }
             }
             catch (Exception ex)
@@ -661,7 +715,10 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 foreach (var cacheTarget in cacheTargets)
                 {
                     InvalidateMyAssignmentsCache(cacheTarget.AssignedTo, cacheTarget.Role);
+                    QueuePredictiveRoleInvalidation(cacheTarget.Role);
                 }
+
+                QueuePredictiveAssignmentInvalidation(groupId);
             }
             catch (Exception ex)
             {
@@ -692,7 +749,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 // All queue entries
                 var queueEntries = await db.AnalysisQueueEntries
                     .AsNoTracking()
-                    .Select(e => new { e.AssignmentId, e.AssignedTo, e.Role })
+                    .Select(e => new { e.AssignmentId, e.AssignedTo, e.Role, e.GroupId })
                     .ToListAsync(ct);
 
                 var queueEntryIds = queueEntries.Select(e => e.AssignmentId).ToList();
@@ -726,6 +783,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         .Distinct())
                     {
                         InvalidateMyAssignmentsCache(staleEntry.AssignedTo, staleEntry.Role);
+                        QueuePredictiveRoleInvalidation(staleEntry.Role);
+                    }
+
+                    foreach (var staleGroupId in staleEntries.Select(e => e.GroupId).Distinct())
+                    {
+                        QueuePredictiveAssignmentInvalidation(staleGroupId);
                     }
                 }
 
@@ -758,6 +821,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private static string GetMyAssignmentsCacheKey(string username, string role)
             => $"{MyAssignmentsCacheKeyPrefix}:{username}:{role}";
 
+        private static bool IsCompositeContainerPairIdentifier(string? identifier)
+        {
+            var parts = (identifier ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return parts.Count >= 2 && parts.All(IsLikelyIsoContainerNumber);
+        }
+
+        private static bool IsLikelyIsoContainerNumber(string value)
+        {
+            var token = value.Trim();
+            return token.Length == 11
+                && token.Take(4).All(char.IsLetter)
+                && token.Skip(4).All(char.IsDigit);
+        }
+
         private void InvalidateMyAssignmentsCache(string? username, string? role)
         {
             if (_memoryCache == null || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(role))
@@ -766,6 +848,111 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             _memoryCache.Remove(GetMyAssignmentsCacheKey(username, role));
             _logger.LogDebug("[CACHE-INVALIDATE] Invalidated my-assignments cache for {User}/{Role}", username, role);
         }
+
+        private void QueuePredictiveAssignmentPreload(Guid groupId, string? role, string? status)
+        {
+            if (string.IsNullOrWhiteSpace(role))
+                return;
+
+            _ = PredictiveAssignmentPreloadBestEffortAsync(groupId, role, status ?? string.Empty);
+        }
+
+        private async Task PredictiveAssignmentPreloadBestEffortAsync(Guid groupId, string role, string status)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var predictivePreload = scope.ServiceProvider.GetService<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService>();
+                if (predictivePreload == null)
+                    return;
+
+                await predictivePreload.PreloadAssignmentAsync(groupId, role, status, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[PREDICTIVE-PRELOAD] Best-effort assignment preload failed for group {GroupId}", groupId);
+            }
+        }
+
+        private void QueuePredictiveAssignmentInvalidation(Guid groupId, string? role = null)
+        {
+            _ = PredictiveAssignmentInvalidationBestEffortAsync(groupId, role);
+        }
+
+        private async Task PredictiveAssignmentInvalidationBestEffortAsync(Guid groupId, string? role)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var predictivePreload = scope.ServiceProvider.GetService<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService>();
+                if (predictivePreload == null)
+                    return;
+
+                await predictivePreload.InvalidateAssignmentAsync(groupId, CancellationToken.None);
+                if (!string.IsNullOrWhiteSpace(role))
+                {
+                    await predictivePreload.InvalidateRoleAssignmentsAsync(role, CancellationToken.None);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[PREDICTIVE-PRELOAD] Best-effort assignment invalidation failed for group {GroupId}", groupId);
+            }
+        }
+
+        private void QueuePredictiveRoleInvalidation(string? role)
+        {
+            if (string.IsNullOrWhiteSpace(role))
+                return;
+
+            _ = PredictiveRoleInvalidationBestEffortAsync(role);
+        }
+
+        private async Task PredictiveRoleInvalidationBestEffortAsync(string role)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var predictivePreload = scope.ServiceProvider.GetService<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService>();
+                if (predictivePreload == null)
+                    return;
+
+                await predictivePreload.InvalidateRoleAssignmentsAsync(role, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[PREDICTIVE-PRELOAD] Best-effort role invalidation failed for role {Role}", role);
+            }
+        }
+
+        private bool IsAssignmentIntakeEnabled(string? scannerType)
+        {
+            var normalized = NormalizeScannerType(scannerType);
+            if (string.IsNullOrEmpty(normalized))
+            {
+                return true;
+            }
+
+            if (normalized == "EAGLEA25")
+            {
+                return _configuration.GetValue<bool>("ScannerWorkflow:EagleA25:AssignmentIntakeEnabled", false);
+            }
+
+            var disabled = _configuration
+                .GetSection("ScannerWorkflow:DisabledAssignmentIntakeScannerTypes")
+                .Get<string[]>() ?? Array.Empty<string>();
+
+            return !disabled.Any(s => NormalizeScannerType(s) == normalized);
+        }
+
+        private static string NormalizeScannerType(string? scannerType)
+            => string.IsNullOrWhiteSpace(scannerType)
+                ? string.Empty
+                : scannerType.Trim()
+                    .Replace("_", string.Empty, StringComparison.Ordinal)
+                    .Replace("-", string.Empty, StringComparison.Ordinal)
+                    .Replace(" ", string.Empty, StringComparison.Ordinal)
+                    .ToUpperInvariant();
     }
 }
 

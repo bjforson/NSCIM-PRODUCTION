@@ -26,7 +26,11 @@ namespace NickScanCentralImagingPortal.Core.Helpers
             // Sprint 5G2 / B1 (followup 2): Ready→AuditAssigned for ImageAnalysisController.AssignGroup —
             // admin/lead can assign an auditor directly to a Ready group, skipping the analyst step entirely
             // (rare but legitimate "Audit-only" review path).
-            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AuditAssigned, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AgentProcessing, AnalysisStatuses.PartiallyCompleted, AnalysisStatuses.Completed } }, // AnalystCompleted: Decision Agent bypasses assignment; AgentProcessing: Decision Agent claims group; PartiallyCompleted: auto-progression on imageless group; Completed: intake wave-progression reconciliation; AuditAssigned: admin direct-to-audit assignment
+            // Sprint 5G2 / B1 (followup 3): Ready→Cancelled for composite scan-pair quarantine.
+            // A group identifier like "MSMU1683356, MRKU8254509" belongs to the split subsystem,
+            // not the image-analysis assignment identity surface; housekeeping cancels those
+            // invalid AG shells before they can be reassigned.
+            { AnalysisStatuses.Ready, new HashSet<string> { AnalysisStatuses.AnalystAssigned, AnalysisStatuses.AuditAssigned, AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AgentProcessing, AnalysisStatuses.PartiallyCompleted, AnalysisStatuses.Completed, AnalysisStatuses.Cancelled } }, // AnalystCompleted: Decision Agent bypasses assignment; AgentProcessing: Decision Agent claims group; PartiallyCompleted: auto-progression on imageless group; Completed: intake wave-progression reconciliation; AuditAssigned: admin direct-to-audit assignment; Cancelled: composite scan-pair quarantine
             // Sprint 5G2 / B1: promote DecisionAgentWorker's AgentProcessing→AuditCompleted edge into the
             // legal table. When ProcessingDepthAudit is enabled, the agent self-audits its own decision and
             // jumps directly from AgentProcessing to AuditCompleted (the AnalystCompleted state is implicit

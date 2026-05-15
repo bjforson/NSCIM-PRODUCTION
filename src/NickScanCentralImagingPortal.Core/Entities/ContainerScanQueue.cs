@@ -120,6 +120,7 @@ namespace NickScanCentralImagingPortal.Core.Entities
     {
         public const string FS6000 = "FS6000";
         public const string ASE = "ASE";
+        public const string EagleA25 = "EagleA25";
         public const string HeimannSmith = "HeimannSmith";
         public const string Nuctech = "Nuctech";
     }

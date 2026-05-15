@@ -6,6 +6,7 @@ using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.RecordCompleteness;
 
 namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 {
@@ -231,70 +232,16 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 {
                     try
                     {
-                        var recordId = group.RecordCompletenessStatusId.Value;
+                        var updatedChildren = await RecordCompletenessRollupSync.MarkContainerDecidedAsync(
+                            db,
+                            group,
+                            containerNumber,
+                            effectiveScannerType,
+                            ct);
 
-                        // Flip the matching RecordExpectedContainer to "Decided"
-                        var expectedRows = await db.RecordExpectedContainers
-                            .AsTracking()
-                            .Where(e => e.RecordId == recordId
-                                     && e.ContainerNumber == containerNumber)
-                            .ToListAsync(ct);
-
-                        if (!string.IsNullOrWhiteSpace(effectiveScannerType))
-                        {
-                            expectedRows = expectedRows
-                                .Where(e => ScannerMatches(e.ScannerType, effectiveScannerType))
-                                .ToList();
-                        }
-                        var nowUtc = DateTime.UtcNow;
-                        foreach (var row in expectedRows)
-                        {
-                            if (row.Status != "Submitted" && row.Status != "Decided")
-                            {
-                                row.Status = "Decided";
-                                row.DecidedAtUtc = nowUtc;
-                            }
-                        }
-
-                        // Recompute parent rollup counts
-                        var record = await db.RecordCompletenessStatuses
-                            .AsTracking()
-                            .FirstOrDefaultAsync(r => r.Id == recordId, ct);
-                        if (record != null)
-                        {
-                            var allChildren = await db.RecordExpectedContainers
-                                .Where(e => e.RecordId == recordId)
-                                .ToListAsync(ct);
-
-                            record.ContainersAwaitingScan = allChildren.Count(c => c.Status == "AwaitingScan");
-                            record.ContainersScanned     = allChildren.Count(c => c.Status == "Pending");
-                            record.ContainersReady       = allChildren.Count(c => c.Status == "Ready");
-                            record.ContainersDecided     = allChildren.Count(c => c.Status == "Decided");
-                            record.ContainersSubmitted   = allChildren.Count(c => c.Status == "Submitted");
-                            record.ContainersNoImage     = allChildren.Count(c => c.Status == "NoImageAvailable");
-                            record.ContainersNoScan      = allChildren.Count(c => c.Status == "NoScanReceived");
-
-                            // Derive parent status from child state
-                            var total = allChildren.Count;
-                            if (record.ContainersSubmitted == total && total > 0)
-                            {
-                                record.Status = "Completed";
-                                record.WorkflowStage = "Completed";
-                            }
-                            else if (record.ContainersDecided > 0 || record.ContainersSubmitted > 0)
-                            {
-                                record.Status = "InAudit";
-                                record.WorkflowStage = "Audit";
-                            }
-                            record.UpdatedAtUtc = nowUtc;
-                            record.LastCheckedAtUtc = nowUtc;
-
-                            _logger.LogInformation(
-                                "[DECISION-FX] Record {RecordId} ({Decl}) rollup updated: decided={Decided}/{Total} status={Status}",
-                                recordId, record.DeclarationNumber, record.ContainersDecided, total, record.Status);
-                        }
-
-                        await db.SaveChangesAsync(ct);
+                        _logger.LogInformation(
+                            "[DECISION-FX] Record {RecordId} rollup synced after analyst decision for {Container}; updatedChildren={UpdatedChildren}",
+                            group.RecordCompletenessStatusId.Value, containerNumber, updatedChildren);
                     }
                     catch (Exception recEx)
                     {

@@ -55,10 +55,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
                 .Distinct()
                 .ToListAsync(ct);
 
+            var nowUtc = DateTime.UtcNow;
             var readyGroups = await db.AnalysisGroups
                 .AsTracking()
                 .Where(g => g.Status == AnalysisStatuses.Ready)
                 .Where(g => !processedGroupIds.Contains(g.Id))
+                .Where(g => !db.AnalysisAssignments.Any(a =>
+                    a.GroupId == g.Id
+                    && a.State == "Active"
+                    && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > nowUtc)))
                 .OrderBy(g => g.Priority)
                 .ThenBy(g => g.CreatedAtUtc)
                 .Take(settings.MaxGroupsPerCycle)
@@ -73,6 +78,22 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
             // is in the legal table.
             foreach (var g in readyGroups)
             {
+                var hasActiveHumanAssignment = await db.AnalysisAssignments
+                    .AsNoTracking()
+                    .AnyAsync(a =>
+                        a.GroupId == g.Id
+                        && a.State == "Active"
+                        && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > DateTime.UtcNow),
+                        ct);
+
+                if (hasActiveHumanAssignment)
+                {
+                    logger.LogInformation(
+                        "[DECISION-AGENT] Skipping group {GroupIdentifier}; active human assignment already exists",
+                        g.GroupIdentifier);
+                    continue;
+                }
+
                 await AnalysisGroupStateMachine.TransitionAsync(
                     db, g, AnalysisStatuses.AgentProcessing,
                     triggerName: "DecisionAgentClaimedGroup",
@@ -82,6 +103,13 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
                     ct: ct);
                 g.UpdatedAtUtc = DateTime.UtcNow;
             }
+            readyGroups = readyGroups
+                .Where(g => g.Status == AnalysisStatuses.AgentProcessing)
+                .ToList();
+
+            if (!readyGroups.Any())
+                return;
+
             logger.LogInformation("[DECISION-AGENT] Claimed {Count} group(s) as AgentProcessing", readyGroups.Count);
 
             // Build evaluators list (BuiltIn + Dynamic)
@@ -349,6 +377,23 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
             {
                 if (group.Status == AnalysisStatuses.AgentProcessing)
                 {
+                    var hasActiveHumanAssignment = await db.AnalysisAssignments
+                        .AsNoTracking()
+                        .AnyAsync(a =>
+                            a.GroupId == group.Id
+                            && a.State == "Active"
+                            && (a.LeaseUntilUtc == null || a.LeaseUntilUtc > DateTime.UtcNow),
+                            ct);
+
+                    if (hasActiveHumanAssignment)
+                    {
+                        await db.SaveChangesAsync(ct);
+                        logger.LogInformation(
+                            "[DECISION-AGENT] Did not release group {GroupIdentifier} to Ready because an active human assignment exists",
+                            group.GroupIdentifier);
+                        return;
+                    }
+
                     // Sprint 5G2 / B1: route through the state-machine facade. AgentProcessing → Ready
                     // is in the legal table.
                     await AnalysisGroupStateMachine.TransitionAsync(

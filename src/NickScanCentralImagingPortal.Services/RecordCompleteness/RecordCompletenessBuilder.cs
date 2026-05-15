@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 
 namespace NickScanCentralImagingPortal.Services.RecordCompleteness
@@ -14,7 +15,8 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
     /// <see cref="RecordReconciliationWorker"/> and the backfill script.
     ///
     /// Encodes the Pattern A / B / C grouping rule we agreed on:
-    /// - Record identity is ALWAYS the declaration number (globally unique, stable).
+    /// - IM/EX record identity is the declaration number (globally unique, stable).
+    /// - CMR record identity is the CMR composite operational key until BOE upgrade.
     /// - For the "used cars in one container" case where multiple declarations share
     ///   a single physical container, the records are still created per-declaration
     ///   but they share a <see cref="RecordCompletenessStatus.ContainerGroupKey"/>
@@ -137,6 +139,73 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                     FirstSeenUtc = nowUtc,
                 })
                 .ToList();
+
+            return new BuildResult(record, children);
+        }
+
+        /// <summary>
+        /// Build a CMR pre-declaration record from a single valid CMR BOE row.
+        /// CMR records are keyed by the CMR composite operational key because
+        /// DeclarationNumber is not stable/available until the later BOE upgrade.
+        /// </summary>
+        public static BuildResult BuildCmr(BOEDocument cmrRow, DateTime nowUtc)
+        {
+            if (cmrRow == null)
+                throw new ArgumentNullException(nameof(cmrRow));
+
+            if (!string.Equals(cmrRow.ClearanceType?.Trim(), "CMR", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("CMR row must have ClearanceType CMR.", nameof(cmrRow));
+
+            if (!CmrCompositeKeyHelper.TryCreate(
+                    cmrRow.RotationNumber,
+                    cmrRow.ContainerNumber,
+                    cmrRow.BlNumber,
+                    out var compositeKey))
+            {
+                throw new ArgumentException(
+                    "CMR row must include rotation number, container number, and BL number.",
+                    nameof(cmrRow));
+            }
+
+            var record = new RecordCompletenessStatus
+            {
+                DeclarationNumber = compositeKey.OperationalKey,
+                ClearanceType = "CMR",
+                RegimeCode = cmrRow.RegimeCode,
+                PrimaryBoeDocumentId = cmrRow.Id,
+                RotationNumber = compositeKey.RotationNumber,
+                BlNumber = compositeKey.BlNumber,
+                ContainerGroupKey = null,
+                ScannerType = null,
+                TotalExpectedContainers = 1,
+                ContainersAwaitingScan = 1,
+                ContainersScanned = 0,
+                ContainersReady = 0,
+                ContainersDecided = 0,
+                ContainersSubmitted = 0,
+                ContainersNoImage = 0,
+                ContainersNoScan = 0,
+                Status = "Pending",
+                WorkflowStage = "Pending",
+                FirstSeenUtc = nowUtc,
+                LastNewContainerAtUtc = nowUtc,
+                DeclarationsJson = null,
+                CreatedAtUtc = nowUtc,
+                UpdatedAtUtc = nowUtc,
+            };
+
+            var children = new List<RecordExpectedContainer>
+            {
+                new()
+                {
+                    ContainerNumber = compositeKey.ContainerNumber,
+                    Status = "AwaitingScan",
+                    BoeDocumentId = cmrRow.Id,
+                    HouseBl = cmrRow.HouseBl,
+                    ConsigneeName = cmrRow.ConsigneeName,
+                    FirstSeenUtc = nowUtc,
+                }
+            };
 
             return new BuildResult(record, children);
         }

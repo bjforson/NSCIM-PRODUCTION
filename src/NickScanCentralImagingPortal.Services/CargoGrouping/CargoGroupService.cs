@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Core.Interfaces;
@@ -69,6 +70,35 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
 
             try
             {
+                if (CmrCompositeKeyHelper.IsOperationalKey(groupIdentifier))
+                {
+                    groupQueryStopwatch.Restart();
+                    var cmrGroup = await BuildCmrCompositeGroupAsync(
+                        groupIdentifier,
+                        loadScannerData,
+                        loadImageData,
+                        loadICUMSData);
+                    groupQueryStopwatch.Stop();
+
+                    totalStopwatch.Stop();
+                    if (cmrGroup == null)
+                    {
+                        _logger.LogInformation(
+                            "⏱️ [GetCargoGroupAsync] COMPLETE (CMR composite not found) - Identifier: {Identifier}, Total: {Total}ms",
+                            groupIdentifier,
+                            totalStopwatch.ElapsedMilliseconds);
+                        return null;
+                    }
+
+                    _logger.LogInformation(
+                        "⏱️ [GetCargoGroupAsync] COMPLETE (CMR composite) - Identifier: {Identifier}, Total: {Total}ms ({TotalSeconds:F2}s), Containers: {ContainerCount}",
+                        groupIdentifier,
+                        totalStopwatch.ElapsedMilliseconds,
+                        totalStopwatch.Elapsed.TotalSeconds,
+                        cmrGroup.ContainerNumbers?.Count ?? 0);
+                    return cmrGroup;
+                }
+
                 // Determine cargo type if not provided
                 if (!type.HasValue)
                 {
@@ -193,7 +223,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                 groupIdentifier, type, loadScannerData, loadImageData, loadICUMSData);
 
             var data = new CargoGroupDataDto();
-            List<string>? containerNumbers = null;
+            List<string> containerNumbers = new();
 
             try
             {
@@ -201,15 +231,34 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                 // Cargo group requests can take 15-20 seconds for large groups with many containers
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(_configuration.GetValue<int>("CargoGroup:RequestTimeoutSeconds", 55)));
 
+                if (CmrCompositeKeyHelper.IsOperationalKey(groupIdentifier))
+                {
+                    var cmrDocuments = await FindCmrDocumentsForOperationalKeyAsync(groupIdentifier, cts.Token);
+                    if (cmrDocuments.Any())
+                    {
+                        var cmrContainers = GetDistinctContainerNumbers(cmrDocuments);
+                        data = await GetCmrCompositeDataAsync(
+                            groupIdentifier,
+                            cmrDocuments,
+                            cmrContainers,
+                            loadScannerData,
+                            loadImageData,
+                            loadICUMSData,
+                            cts.Token);
+                    }
+
+                    return data;
+                }
+
                 if (type == CargoType.Consolidated)
                 {
                     // Get all containers under this Master BL
-                    containerNumbers = await _cargoQueries.GetContainersByMasterBLAsync(groupIdentifier);
+                    containerNumbers = await _cargoQueries.GetContainersByMasterBLAsync(groupIdentifier) ?? new List<string>();
                 }
                 else
                 {
                     // Get all containers under this Declaration
-                    containerNumbers = await _cargoQueries.GetContainersByDeclarationAsync(groupIdentifier);
+                    containerNumbers = await _cargoQueries.GetContainersByDeclarationAsync(groupIdentifier) ?? new List<string>();
                 }
 
                 containerQueryStopwatch.Stop();
@@ -749,6 +798,282 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                 ClearanceType = group.ClearanceType,
                 LatestUpdateDate = group.DeclarationDate != null ? DateTime.TryParse(group.DeclarationDate, out var date) ? date : null : null
             };
+        }
+
+        private async Task<CargoGroupDto?> BuildCmrCompositeGroupAsync(
+            string operationalKey,
+            bool loadScannerData,
+            bool loadImageData,
+            bool loadICUMSData,
+            CancellationToken cancellationToken = default)
+        {
+            var cmrDocuments = await FindCmrDocumentsForOperationalKeyAsync(operationalKey, cancellationToken);
+            if (!cmrDocuments.Any())
+            {
+                _logger.LogWarning("No CMR BOE documents found for operational key {OperationalKey}", operationalKey);
+                return null;
+            }
+
+            var containers = GetDistinctContainerNumbers(cmrDocuments);
+            var firstDoc = cmrDocuments
+                .OrderByDescending(d => d.UpdatedAt)
+                .ThenByDescending(d => d.CreatedAt)
+                .First();
+
+            var group = new CargoGroupDto
+            {
+                GroupIdentifier = operationalKey,
+                Type = CargoType.NonConsolidated,
+                GroupingKey = "CmrComposite",
+                DeclarationNumber = operationalKey,
+                MasterBL = firstDoc.BlNumber,
+                ConsigneeName = firstDoc.ConsigneeName,
+                ContainerNumbers = containers,
+                TotalContainers = containers.Count,
+                TotalHouseBLs = 0,
+                TotalBOEs = cmrDocuments.Select(d => d.Id).Distinct().Count(),
+                ClearanceType = "CMR",
+                LatestUpdateDate = cmrDocuments
+                    .Select(d => (DateTime?)d.UpdatedAt)
+                    .DefaultIfEmpty(firstDoc.CreatedAt)
+                    .Max()
+            };
+
+            group.Data = await GetCmrCompositeDataAsync(
+                operationalKey,
+                cmrDocuments,
+                containers,
+                loadScannerData,
+                loadImageData,
+                loadICUMSData,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "Built CMR composite cargo group {OperationalKey}: Containers={ContainerCount}, BOEs={BoeCount}",
+                operationalKey,
+                group.TotalContainers,
+                group.TotalBOEs);
+
+            return group;
+        }
+
+        private async Task<List<BOEDocument>> FindCmrDocumentsForOperationalKeyAsync(
+            string operationalKey,
+            CancellationToken cancellationToken = default)
+        {
+            var trimmedKey = operationalKey.Trim();
+            var upperKey = trimmedKey.ToUpperInvariant();
+
+            var rcs = await _appDbContext.RecordCompletenessStatuses
+                .AsNoTracking()
+                .Where(r => r.DeclarationNumber == trimmedKey || r.DeclarationNumber == upperKey)
+                .Where(r => r.ClearanceType == null || r.ClearanceType == "CMR")
+                .OrderByDescending(r => r.UpdatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (rcs != null)
+            {
+                var expectedContainers = await _appDbContext.RecordExpectedContainers
+                    .AsNoTracking()
+                    .Where(rec => rec.RecordId == rcs.Id)
+                    .Select(rec => new
+                    {
+                        rec.ContainerNumber,
+                        rec.BoeDocumentId
+                    })
+                    .ToListAsync(cancellationToken);
+
+                var boeIds = expectedContainers
+                    .Where(rec => rec.BoeDocumentId.HasValue)
+                    .Select(rec => rec.BoeDocumentId!.Value)
+                    .Distinct()
+                    .ToList();
+
+                var containerNumbers = expectedContainers
+                    .Select(rec => rec.ContainerNumber)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Select(c => c.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var query = _icumDbContext.BOEDocuments
+                    .AsNoTracking()
+                    .Where(b => b.ClearanceType == "CMR");
+
+                if (boeIds.Any())
+                {
+                    query = query.Where(b => boeIds.Contains(b.Id));
+                }
+                else
+                {
+                    if (containerNumbers.Any())
+                    {
+                        query = query.Where(b => containerNumbers.Contains(b.ContainerNumber));
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(rcs.RotationNumber))
+                    {
+                        var rotation = rcs.RotationNumber.Trim();
+                        query = query.Where(b => b.RotationNumber == rotation);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(rcs.BlNumber))
+                    {
+                        var blNumber = rcs.BlNumber.Trim();
+                        query = query.Where(b => b.BlNumber == blNumber);
+                    }
+                }
+
+                var linkedRows = await query
+                    .OrderByDescending(b => b.UpdatedAt)
+                    .ThenByDescending(b => b.CreatedAt)
+                    .ToListAsync(cancellationToken);
+
+                var exactLinkedRows = FilterCmrDocumentsByOperationalKey(linkedRows, upperKey);
+                if (exactLinkedRows.Any())
+                {
+                    return exactLinkedRows;
+                }
+
+                _logger.LogWarning(
+                    "RCS {RecordId} exists for CMR operational key {OperationalKey}, but linked BOE rows did not recompute to the same key",
+                    rcs.Id,
+                    operationalKey);
+            }
+
+            var recentCandidates = await _icumDbContext.BOEDocuments
+                .AsNoTracking()
+                .Where(b => b.ClearanceType == "CMR")
+                .Where(b => b.RotationNumber != null && b.RotationNumber != "")
+                .Where(b => b.ContainerNumber != null && b.ContainerNumber != "")
+                .Where(b => b.BlNumber != null && b.BlNumber != "")
+                .OrderByDescending(b => b.UpdatedAt)
+                .ThenByDescending(b => b.CreatedAt)
+                .Take(5000)
+                .ToListAsync(cancellationToken);
+
+            return FilterCmrDocumentsByOperationalKey(recentCandidates, upperKey);
+        }
+
+        private static List<BOEDocument> FilterCmrDocumentsByOperationalKey(
+            IEnumerable<BOEDocument> documents,
+            string operationalKey)
+        {
+            return documents
+                .Where(doc =>
+                    CmrCompositeKeyHelper.TryCreate(
+                        doc.RotationNumber,
+                        doc.ContainerNumber,
+                        doc.BlNumber,
+                        out var key)
+                    && string.Equals(key.OperationalKey, operationalKey, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(doc => doc.Id)
+                .Select(group => group.First())
+                .ToList();
+        }
+
+        private async Task<CargoGroupDataDto> GetCmrCompositeDataAsync(
+            string operationalKey,
+            IReadOnlyList<BOEDocument> cmrDocuments,
+            List<string> containerNumbers,
+            bool loadScannerData,
+            bool loadImageData,
+            bool loadICUMSData,
+            CancellationToken cancellationToken = default)
+        {
+            var data = new CargoGroupDataDto
+            {
+                ICUMSData = loadICUMSData
+                    ? await BuildCmrCompositeIcumsGroupsAsync(operationalKey, cmrDocuments, containerNumbers, cancellationToken)
+                    : new List<ICUMSDataGroupDto>(),
+                ScannerData = new List<ScannerDataGroupDto>(),
+                ImageData = new List<ImageDataGroupDto>()
+            };
+
+            if (loadScannerData)
+            {
+                data.ScannerData = await GetScannerDataForGroupAsync(containerNumbers, cancellationToken);
+            }
+
+            if (loadImageData)
+            {
+                data.ImageData = await GetImageDataForGroupAsync(containerNumbers, cancellationToken);
+            }
+
+            return data;
+        }
+
+        private async Task<List<ICUMSDataGroupDto>> BuildCmrCompositeIcumsGroupsAsync(
+            string operationalKey,
+            IReadOnlyList<BOEDocument> cmrDocuments,
+            List<string> containerNumbers,
+            CancellationToken cancellationToken = default)
+        {
+            var boeIds = cmrDocuments.Select(d => d.Id).Distinct().ToList();
+            var manifestItems = boeIds.Any()
+                ? await _icumDbContext.ManifestItems
+                    .AsNoTracking()
+                    .Where(i => boeIds.Contains(i.BOEDocumentId))
+                    .ToListAsync(cancellationToken)
+                : new List<DownloadedManifestItem>();
+
+            var sharedRecords = new Dictionary<string, ICUMSDataRecordDto>(StringComparer.OrdinalIgnoreCase);
+            var sharedBoeDetails = new List<BOEDetailDto>();
+
+            foreach (var boe in cmrDocuments)
+            {
+                var records = await ExtractICUMSRecords(boe);
+                foreach (var record in records)
+                {
+                    var key = $"{record.Category}|{record.Field}";
+                    if (!sharedRecords.TryGetValue(key, out var existing)
+                        || (!HasUsefulValue(existing.Value) && HasUsefulValue(record.Value)))
+                    {
+                        sharedRecords[key] = record;
+                    }
+                }
+
+                if (!sharedBoeDetails.Any(detail => detail.BOEId == boe.Id))
+                {
+                    sharedBoeDetails.Add(CreateBOEDetail(boe, manifestItems));
+                }
+            }
+
+            var containersToUse = containerNumbers.Any()
+                ? containerNumbers
+                : GetDistinctContainerNumbers(cmrDocuments);
+
+            if (!containersToUse.Any())
+            {
+                containersToUse = new List<string> { operationalKey };
+            }
+
+            return containersToUse
+                .Select(containerNumber => new ICUMSDataGroupDto
+                {
+                    GroupKey = containerNumber,
+                    ContainerNumber = containerNumber,
+                    Records = sharedRecords.Values.ToList(),
+                    BOEDetails = sharedBoeDetails
+                })
+                .ToList();
+        }
+
+        private static List<string> GetDistinctContainerNumbers(IEnumerable<BOEDocument> documents)
+        {
+            return documents
+                .Select(doc => doc.ContainerNumber)
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool HasUsefulValue(string? value)
+        {
+            return !string.IsNullOrWhiteSpace(value)
+                && !string.Equals(value, "Not available", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(value, "N/A", StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task<List<ICUMSDataGroupDto>> GetICUMSDataForGroupAsync(

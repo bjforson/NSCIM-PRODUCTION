@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 
@@ -30,6 +31,26 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
         /// (AwaitingScan → Pending → Ready) and recomputes rollups.
         /// </summary>
         Task BuildOrUpdateRecordAsync(string declarationNumber, CancellationToken ct = default);
+
+        /// <summary>
+        /// Build or update a record by operational identifier. When
+        /// includeCmrCompositeRecords is true and the identifier is a CMR
+        /// composite operational key, this takes the CMR path; otherwise this
+        /// preserves the declaration-number IM/EX behavior.
+        /// </summary>
+        Task BuildOrUpdateRecordAsync(string recordIdentifier, bool includeCmrCompositeRecords, CancellationToken ct = default);
+
+        /// <summary>
+        /// Build or update a CMR pre-declaration record from its composite-key
+        /// parts. The primitive gate is intentionally passed by the caller so
+        /// this service does not read configuration itself.
+        /// </summary>
+        Task BuildOrUpdateCmrRecordAsync(
+            string? rotationNumber,
+            string? containerNumber,
+            string? blNumber,
+            bool includeCmrCompositeRecords,
+            CancellationToken ct = default);
 
         /// <summary>
         /// Promote a single container within a record when its images become available.
@@ -170,6 +191,39 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
             }
         }
 
+        public async Task BuildOrUpdateRecordAsync(string recordIdentifier, bool includeCmrCompositeRecords, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(recordIdentifier))
+                return;
+
+            if (includeCmrCompositeRecords && CmrCompositeKeyHelper.IsOperationalKey(recordIdentifier))
+            {
+                await BuildOrUpdateCmrRecordByOperationalKeyAsync(recordIdentifier.Trim().ToUpperInvariant(), ct);
+                return;
+            }
+
+            await BuildOrUpdateRecordAsync(recordIdentifier, ct);
+        }
+
+        public async Task BuildOrUpdateCmrRecordAsync(
+            string? rotationNumber,
+            string? containerNumber,
+            string? blNumber,
+            bool includeCmrCompositeRecords,
+            CancellationToken ct = default)
+        {
+            if (!includeCmrCompositeRecords)
+                return;
+
+            if (!CmrCompositeKeyHelper.TryCreate(rotationNumber, containerNumber, blNumber, out var compositeKey))
+            {
+                _logger.LogDebug("{ServiceId} Invalid CMR composite-key parts — skipping record build", SERVICE_ID);
+                return;
+            }
+
+            await BuildOrUpdateCmrRecordByCompositeKeyAsync(compositeKey, ct);
+        }
+
         public async Task PromoteContainerAndRecomputeAsync(string declarationNumber, string containerNumber, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(declarationNumber) || string.IsNullOrWhiteSpace(containerNumber))
@@ -216,6 +270,167 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
             {
                 _logger.LogError(ex, "{ServiceId} Error promoting container {Container} in {Decl}", SERVICE_ID, containerNumber, declarationNumber);
             }
+        }
+
+        private async Task BuildOrUpdateCmrRecordByOperationalKeyAsync(string operationalKey, CancellationToken ct)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var appDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var icumDb = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+
+                var cmrRow = await FindCmrRowByOperationalKeyAsync(icumDb, operationalKey, null, ct);
+                if (cmrRow == null)
+                {
+                    _logger.LogDebug("{ServiceId} No valid CMR BOE row for operational key {Key} — skipping", SERVICE_ID, operationalKey);
+                    return;
+                }
+
+                await BuildOrUpdateCmrRecordFromRowAsync(appDb, cmrRow, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{ServiceId} Error building CMR record for operational key {Key}", SERVICE_ID, operationalKey);
+            }
+        }
+
+        private async Task BuildOrUpdateCmrRecordByCompositeKeyAsync(CmrCompositeKey compositeKey, CancellationToken ct)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var appDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var icumDb = scope.ServiceProvider.GetRequiredService<IcumDownloadsDbContext>();
+
+                var cmrRow = await FindCmrRowByOperationalKeyAsync(icumDb, compositeKey.OperationalKey, compositeKey.ContainerNumber, ct);
+                if (cmrRow == null)
+                {
+                    _logger.LogDebug(
+                        "{ServiceId} No valid CMR BOE row for {Container}/{Rotation}/{Bl} — skipping",
+                        SERVICE_ID,
+                        compositeKey.ContainerNumber,
+                        compositeKey.RotationNumber,
+                        compositeKey.BlNumber);
+                    return;
+                }
+
+                await BuildOrUpdateCmrRecordFromRowAsync(appDb, cmrRow, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{ServiceId} Error building CMR record for operational key {Key}", SERVICE_ID, compositeKey.OperationalKey);
+            }
+        }
+
+        private async Task BuildOrUpdateCmrRecordFromRowAsync(ApplicationDbContext appDb, BOEDocument cmrRow, CancellationToken ct)
+        {
+            var built = RecordCompletenessBuilder.BuildCmr(cmrRow, DateTime.UtcNow);
+            var operationalKey = built.Record.DeclarationNumber;
+
+            var existing = await appDb.RecordCompletenessStatuses
+                .AsTracking()
+                .Include(r => r.ExpectedContainers)
+                .FirstOrDefaultAsync(r => r.DeclarationNumber == operationalKey, ct);
+
+            if (existing == null)
+            {
+                appDb.RecordCompletenessStatuses.Add(built.Record);
+                await appDb.SaveChangesAsync(ct);
+
+                foreach (var child in built.Children)
+                    child.RecordId = built.Record.Id;
+                appDb.RecordExpectedContainers.AddRange(built.Children);
+                await appDb.SaveChangesAsync(ct);
+
+                _logger.LogInformation("{ServiceId} Created CMR record {Key}: {Count} expected container",
+                    SERVICE_ID, operationalKey, built.Children.Count);
+
+                existing = built.Record;
+                existing.ExpectedContainers = built.Children;
+            }
+            else
+            {
+                existing.ClearanceType = "CMR";
+                existing.RegimeCode = built.Record.RegimeCode;
+                existing.PrimaryBoeDocumentId = built.Record.PrimaryBoeDocumentId;
+                existing.RotationNumber = built.Record.RotationNumber;
+                existing.BlNumber = built.Record.BlNumber;
+                existing.UpdatedAtUtc = DateTime.UtcNow;
+
+                var existingContainerNumbers = new HashSet<string>(
+                    existing.ExpectedContainers.Select(c => c.ContainerNumber),
+                    StringComparer.OrdinalIgnoreCase);
+
+                var newChildren = built.Children
+                    .Where(c => !existingContainerNumbers.Contains(c.ContainerNumber))
+                    .ToList();
+
+                if (newChildren.Count > 0)
+                {
+                    foreach (var child in newChildren)
+                        child.RecordId = existing.Id;
+                    appDb.RecordExpectedContainers.AddRange(newChildren);
+                    existing.LastNewContainerAtUtc = DateTime.UtcNow;
+
+                    _logger.LogInformation("{ServiceId} Amended CMR record {Key}: +{NewCount} containers",
+                        SERVICE_ID, operationalKey, newChildren.Count);
+                }
+
+                var expectedChild = built.Children[0];
+                foreach (var child in existing.ExpectedContainers
+                             .Where(c => string.Equals(c.ContainerNumber, expectedChild.ContainerNumber, StringComparison.OrdinalIgnoreCase)))
+                {
+                    child.BoeDocumentId = expectedChild.BoeDocumentId;
+                    child.HouseBl = expectedChild.HouseBl;
+                    child.ConsigneeName = expectedChild.ConsigneeName;
+                }
+
+                await appDb.SaveChangesAsync(ct);
+            }
+
+            await PromoteChildrenAsync(appDb, existing, ct);
+
+            var allChildren = await appDb.RecordExpectedContainers
+                .AsTracking()
+                .Where(c => c.RecordId == existing.Id)
+                .ToListAsync(ct);
+
+            RecordCompletenessBuilder.Recompute(existing, allChildren);
+            await appDb.SaveChangesAsync(ct);
+
+            _logger.LogInformation("{ServiceId} CMR record {Key} status={Status} (total={Total}, ready={Ready}, awaiting={Awaiting})",
+                SERVICE_ID, operationalKey, existing.Status,
+                existing.TotalExpectedContainers, existing.ContainersReady, existing.ContainersAwaitingScan);
+        }
+
+        private static async Task<BOEDocument?> FindCmrRowByOperationalKeyAsync(
+            IcumDownloadsDbContext icumDb,
+            string operationalKey,
+            string? normalizedContainerNumber,
+            CancellationToken ct)
+        {
+            var query = icumDb.BOEDocuments
+                .AsNoTracking()
+                .Where(b => b.ClearanceType == "CMR"
+                         && b.RotationNumber != null
+                         && b.BlNumber != null
+                         && b.ContainerNumber != null);
+
+            if (!string.IsNullOrWhiteSpace(normalizedContainerNumber))
+            {
+                query = query.Where(b => b.ContainerNumber!.ToUpper() == normalizedContainerNumber);
+            }
+
+            var candidates = await query
+                .OrderByDescending(row => row.UpdatedAt)
+                .ThenByDescending(row => row.CreatedAt)
+                .ThenByDescending(row => row.Id)
+                .ToListAsync(ct);
+
+            return candidates
+                .FirstOrDefault(row => CmrCompositeKeyHelper.TryCreate(row.RotationNumber, row.ContainerNumber, row.BlNumber, out var key)
+                           && string.Equals(key.OperationalKey, operationalKey, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

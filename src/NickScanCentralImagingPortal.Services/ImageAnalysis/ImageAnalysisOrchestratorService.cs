@@ -51,6 +51,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private DateTime _lastMetricsCleanup = DateTime.MinValue;
         private DateTime _lastDecisionAgentRun = DateTime.MinValue;
         private DateTime _lastSplitDetectionRun = DateTime.MinValue;
+        private DateTime _lastIcumsAckReconciliationRun = DateTime.MinValue;
 
         // Track last validation time for assignment worker
         private static DateTime _lastValidationTime = DateTime.MinValue;
@@ -784,6 +785,14 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                     if (string.IsNullOrWhiteSpace(g.GroupIdentifier)) continue;
 
+                    if (IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                    {
+                        _logger.LogWarning(
+                            "[INTAKE] Skipping composite scan-pair identifier {GroupIdentifier}. Split jobs may use container pairs, but AnalysisGroup identifiers must be cargo/record keys.",
+                            g.GroupIdentifier);
+                        continue;
+                    }
+
                     var containersInGroup = validRows
                         .Where(s => s.GroupIdentifier == g.GroupIdentifier)
                         .ToList();
@@ -1277,12 +1286,36 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         await using var tx = await db.Database.BeginTransactionAsync(stoppingToken);
 
-                        var stillAvailable = !await db.AnalysisAssignments
-                            .AnyAsync(a => a.GroupId == group.Id && a.State == "Active", stoppingToken);
-                        if (!stillAvailable)
+                        var activeAssignmentsForGroup = await db.AnalysisAssignments
+                            .AsTracking()
+                            .Where(a => a.GroupId == group.Id && a.State == "Active")
+                            .ToListAsync(stoppingToken);
+
+                        var hasCurrentActiveAssignment = activeAssignmentsForGroup
+                            .Any(a => a.LeaseUntilUtc == null || a.LeaseUntilUtc > now);
+
+                        if (hasCurrentActiveAssignment)
                         {
                             await tx.RollbackAsync(stoppingToken);
                             return;
+                        }
+
+                        foreach (var staleAssignment in activeAssignmentsForGroup)
+                        {
+                            staleAssignment.State = "Expired";
+                            staleAssignment.UpdatedAtUtc = now;
+                        }
+
+                        if (activeAssignmentsForGroup.Count > 0)
+                        {
+                            _logger.LogInformation(
+                                "[ASSIGNMENT] Reclaimed {Count} stale active assignment(s) for group {GroupId} during assignment guard",
+                                activeAssignmentsForGroup.Count,
+                                group.Id);
+
+                            // Clear the partial unique index on active group assignments before
+                            // inserting the replacement row in the same transaction.
+                            await db.SaveChangesAsync(stoppingToken);
                         }
 
                         assignment = new AnalysisAssignment
@@ -1856,16 +1889,21 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                 // Build per-container ICUMS scanData payloads (real format for ICUMS submission)
                                 await BuildAndWriteIcumsPayloadsAsync(db, g, analyst, audits, outputFolder, stoppingToken);
 
-                                // FIX C: Self-healing CCS sync — set WorkflowStage to 'PendingSubmission' (awaiting ICUMS send)
-                                var ccsGroupIds = decisionGroupIds.Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
-                                foreach (var ccsGid in ccsGroupIds)
-                                {
-                                    var ccsUpdated = await db.Database.ExecuteSqlRawAsync(
-                                        "UPDATE ContainerCompletenessStatuses SET WorkflowStage = 'PendingSubmission', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE GroupIdentifier = {0} AND WorkflowStage NOT IN ('PendingSubmission','Submitted')",
-                                        ccsGid);
-                                    if (ccsUpdated > 0)
-                                        _logger.LogInformation("[SUBMISSION] Set {Count} CCS record(s) to WorkflowStage=PendingSubmission for GroupIdentifier={GroupId}", ccsUpdated, ccsGid);
-                                }
+                                // Self-healing CCS sync: update by both group identity and the
+                                // group's AnalysisRecords containers. Some production CCS rows
+                                // still carry the container number as GroupIdentifier while the
+                                // AnalysisGroup uses the BOE/declaration number.
+                                var submissionContainers = analyst
+                                    .Select(a => a.ContainerNumber)
+                                    .Union(audits.Select(a => a.ContainerNumber))
+                                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
+                                var ccsUpdated = await SubmissionWorkflowStageSync.MarkPendingSubmissionAsync(
+                                    db, g, submissionContainers, stoppingToken);
+                                if (ccsUpdated > 0)
+                                    _logger.LogInformation("[SUBMISSION] Set {Count} CCS record(s) to WorkflowStage=PendingSubmission for group {GroupId} ({GroupIdentifier})",
+                                        ccsUpdated, g.Id, g.GroupIdentifier);
 
                                 // Sprint 5G2 / B1: route through the state-machine facade. AuditCompleted → Completed
                                 // is in the legal table. The facade's SaveChangesAsync auto-enlists in the ambient
@@ -1907,6 +1945,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             // Retry any pending ICUMS payload files that were generated but not yet submitted
             await RetryPendingIcumsSubmissionsAsync(db, stoppingToken);
+            await ReconcileAcknowledgedIcumsSubmissionsAsync(db, stoppingToken);
         }
 
         /// <summary>
@@ -1965,7 +2004,9 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 try
                 {
                     var json = await System.IO.File.ReadAllTextAsync(payloadFile, ct);
-                    var containerNumber = ExtractContainerFromFileName(Path.GetFileName(payloadFile));
+                    var payloadFileName = Path.GetFileName(payloadFile);
+                    var containerNumber = ExtractContainerFromFileName(payloadFileName);
+                    var groupId = ExtractGroupIdFromFileName(payloadFileName);
 
                     using var httpClient = httpFactory.CreateClient();
                     httpClient.DefaultRequestHeaders.Clear();
@@ -2002,11 +2043,13 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         {
                             try
                             {
-                                var acked = await db.Database.ExecuteSqlRawAsync(
-                                    "UPDATE ContainerCompletenessStatuses SET WorkflowStage = 'Submitted', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE ContainerNumber = {0} AND WorkflowStage = 'PendingSubmission'",
-                                    containerNumber);
+                                var group = groupId.HasValue
+                                    ? await db.AnalysisGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId.Value, ct)
+                                    : null;
+                                var acked = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                                    db, containerNumber, group, ct);
                                 if (acked > 0)
-                                    _logger.LogInformation("[ICUMS-RETRY] Set WorkflowStage=Submitted for {Container}", containerNumber);
+                                    _logger.LogInformation("[ICUMS-RETRY] Set WorkflowStage=Submitted for {Container} ({Count} record(s))", containerNumber, acked);
                             }
                             catch (Exception dbEx)
                             {
@@ -2038,6 +2081,80 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             if (submitted > 0 || failed > 0)
                 _logger.LogInformation("[ICUMS-RETRY] Complete: Submitted={Submitted}, Failed={Failed}", submitted, failed);
+        }
+
+        /// <summary>
+        /// Reconciles acknowledged ICUMS payload files back into CCS state without
+        /// resubmitting them. This heals crashes and old group-id drift where the
+        /// file reached /Acknowledged but CCS stayed in ImageAnalysis/Audit/Completed.
+        /// </summary>
+        private async Task ReconcileAcknowledgedIcumsSubmissionsAsync(ApplicationDbContext db, CancellationToken ct)
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastIcumsAckReconciliationRun < TimeSpan.FromMinutes(15))
+                return;
+
+            _lastIcumsAckReconciliationRun = now;
+
+            var outputFolder = _configuration["ICUMS:Submission:OutputFolder"]
+                ?? Environment.GetEnvironmentVariable("ICUMS_Submission_OutputFolder")
+                ?? @"C:\Shared\NSCIM_PRODUCTION\Data\ICUMS\Outbox";
+            var ackDir = Path.Combine(outputFolder, "ICUMS", "Acknowledged");
+
+            if (!Directory.Exists(ackDir))
+                return;
+
+            var acknowledgedFiles = Directory.GetFiles(ackDir, "ICUMS_*.json")
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Take(2000)
+                .ToList();
+
+            if (acknowledgedFiles.Count == 0)
+                return;
+
+            var reconciled = 0;
+            var skipped = 0;
+
+            foreach (var file in acknowledgedFiles)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var containerNumber = ExtractContainerFromFileName(file.Name);
+                if (string.IsNullOrWhiteSpace(containerNumber))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    var groupId = ExtractGroupIdFromFileName(file.Name);
+                    var group = groupId.HasValue
+                        ? await db.AnalysisGroups.AsNoTracking().FirstOrDefaultAsync(g => g.Id == groupId.Value, ct)
+                        : null;
+
+                    var updated = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                        db, containerNumber, group, ct);
+                    reconciled += updated;
+                }
+                catch (Exception ex)
+                {
+                    skipped++;
+                    _logger.LogWarning(ex,
+                        "[ICUMS-ACK-RECONCILE] Failed to reconcile acknowledged payload {File}",
+                        file.Name);
+                }
+            }
+
+            if (reconciled > 0 || skipped > 0)
+            {
+                _logger.LogInformation(
+                    "[ICUMS-ACK-RECONCILE] Complete: Files={Files}, ReconciledRows={Reconciled}, Skipped={Skipped}",
+                    acknowledgedFiles.Count,
+                    reconciled,
+                    skipped);
+            }
         }
 
         /// <summary>
@@ -2558,9 +2675,8 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                         {
                             try
                             {
-                                var acked = await db.Database.ExecuteSqlRawAsync(
-                                    "UPDATE ContainerCompletenessStatuses SET WorkflowStage = 'Submitted', UpdatedAt = now() AT TIME ZONE 'UTC' WHERE ContainerNumber = {0} AND WorkflowStage = 'PendingSubmission'",
-                                    containerNumber);
+                                var acked = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                                    db, containerNumber, group, ct);
                                 if (acked > 0)
                                     _logger.LogInformation("[ICUMS-SUBMIT] Set WorkflowStage=Submitted for {Container} ({Count} record(s))", containerNumber, acked);
                             }
@@ -2653,6 +2769,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 if (parts.Length >= 1) return parts[0];
             }
             return "";
+        }
+
+        private static Guid? ExtractGroupIdFromFileName(string fileName)
+        {
+            // Format: ICUMS_{containerNumber}_{groupId}_{timestamp}.json
+            if (!fileName.StartsWith("ICUMS_"))
+                return null;
+
+            var parts = fileName["ICUMS_".Length..].Split('_');
+            return parts.Length >= 2 && Guid.TryParse(parts[1], out var groupId)
+                ? groupId
+                : null;
         }
 
         /// <summary>
@@ -2950,12 +3078,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                     // 1.15.0 — find the matching RecordCompletenessStatus so the new group gets linked on creation
                     int? recordIdForWave = null;
+                    string? recordClearanceTypeForWave = null;
                     try
                     {
-                        recordIdForWave = await db.RecordCompletenessStatuses
+                        var recordForWave = await db.RecordCompletenessStatuses
                             .Where(r => r.DeclarationNumber == normalized || r.DeclarationNumber == waveGroupIdentifier)
-                            .Select(r => (int?)r.Id)
+                            .Select(r => new { r.Id, r.ClearanceType })
                             .FirstOrDefaultAsync(ct);
+                        recordIdForWave = recordForWave?.Id;
+                        recordClearanceTypeForWave = recordForWave?.ClearanceType;
                     }
                     catch { /* best-effort */ }
 
@@ -2969,7 +3100,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         GroupIdentifier = waveGroupIdentifier,
                         NormalizedGroupIdentifier = normalized,
-                        GroupType = "BL",
+                        GroupType = GetRecordBackedGroupType(recordClearanceTypeForWave),
                         ScannerType = scannerType,
                         ParentGroupId = parentGroup.Id,
                         WaveNumber = 1,
@@ -3271,7 +3402,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                                  || r.ContainerGroupKey == parent.GroupIdentifier)
                         .Where(r => parent.ScannerType == null || r.ScannerType == null || r.ScannerType == parent.ScannerType)
                         .OrderByDescending(r => r.UpdatedAtUtc)
-                        .Select(r => new { r.Id, r.ScannerType })
+                        .Select(r => new { r.Id, r.ScannerType, r.ClearanceType })
                         .FirstOrDefaultAsync(ct);
 
                     // Third-tier fallback: containercompletenessstatuses keyed by the
@@ -3298,7 +3429,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         GroupIdentifier = waveGroupIdentifier,
                         NormalizedGroupIdentifier = normalized,
-                        GroupType = "BL",
+                        GroupType = GetRecordBackedGroupType(rcsForWave?.ClearanceType),
                         ScannerType = resolvedScannerType,
                         ParentGroupId = parent.Id,
                         WaveNumber = nextWaveNumber,
@@ -3635,6 +3766,8 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     _logger.LogInformation("[HOUSEKEEPING] Removed {Count} orphaned assignments", orphaned.Count);
                 }
 
+                await ExpireStaleActiveAssignmentsAsync(db, now, stoppingToken);
+
                 // Fix stuck groups
                 var stuckGroups = await db.AnalysisGroups
                     .AsTracking()
@@ -3729,6 +3862,11 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     _logger.LogInformation("[HOUSEKEEPING] Fixed {Count} stuck groups", groupsToFix.Count);
                 }
 
+                // Split jobs may legitimately carry a two-container identifier, but
+                // AnalysisGroups must not. Quarantine any legacy rows before the
+                // assignment reconciler can re-materialize them.
+                await QuarantineCompositeContainerPairGroupsAsync(db, now, stoppingToken);
+
                 // Synchronize status with WorkflowStage
                 await SynchronizeStatusWithWorkflowStageAsync(db, now, stoppingToken);
 
@@ -3751,6 +3889,128 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             {
                 _logger.LogError(ex, "[HOUSEKEEPING] Error in housekeeping workflow");
             }
+        }
+
+        /// <summary>
+        /// Expires active assignment rows whose lease is already past due. This
+        /// clears the partial unique index on active group assignments and removes
+        /// stale materialized queue rows, allowing Ready groups to be reclaimed by
+        /// the next assignment cycle.
+        /// </summary>
+        private async Task ExpireStaleActiveAssignmentsAsync(
+            ApplicationDbContext db,
+            DateTime now,
+            CancellationToken ct)
+        {
+            var staleAssignmentIds = await db.AnalysisAssignments
+                .AsNoTracking()
+                .Where(a => a.State == "Active"
+                    && a.LeaseUntilUtc.HasValue
+                    && a.LeaseUntilUtc <= now)
+                .OrderBy(a => a.LeaseUntilUtc)
+                .Select(a => a.Id)
+                .Take(1000)
+                .ToListAsync(ct);
+
+            if (staleAssignmentIds.Count == 0)
+                return;
+
+            var expired = await db.AnalysisAssignments
+                .Where(a => staleAssignmentIds.Contains(a.Id) && a.State == "Active")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(a => a.State, "Expired")
+                    .SetProperty(a => a.UpdatedAtUtc, now),
+                    ct);
+
+            var removedQueueRows = await db.AnalysisQueueEntries
+                .Where(e => staleAssignmentIds.Contains(e.AssignmentId))
+                .ExecuteDeleteAsync(ct);
+
+            _logger.LogInformation(
+                "[ASSIGNMENT-JANITOR] Expired {ExpiredCount} stale active assignment(s), removed {QueueCount} queue row(s)",
+                expired,
+                removedQueueRows);
+        }
+
+        /// <summary>
+        /// Releases legacy AnalysisGroups whose GroupIdentifier is a scan-pair
+        /// container list such as "ABCD1234567,EFGH7654321". The split subsystem
+        /// owns that pair key; image analysis assignment keys must stay anchored
+        /// to declaration/BL/CMR operational records.
+        /// </summary>
+        private async Task QuarantineCompositeContainerPairGroupsAsync(
+            ApplicationDbContext db,
+            DateTime now,
+            CancellationToken ct)
+        {
+            var candidateGroups = await db.AnalysisGroups
+                .AsTracking()
+                .Where(g => !string.IsNullOrEmpty(g.GroupIdentifier)
+                    && (g.Status == AnalysisStatuses.Ready
+                        || g.Status == AnalysisStatuses.AnalystAssigned
+                        || g.Status == AnalysisStatuses.AuditAssigned
+                        || g.Status == "Assigned"))
+                .OrderByDescending(g => g.UpdatedAtUtc ?? g.CreatedAtUtc)
+                .Take(500)
+                .ToListAsync(ct);
+
+            var compositeGroups = candidateGroups
+                .Where(g => IsCompositeContainerPairIdentifier(g.GroupIdentifier))
+                .Take(100)
+                .ToList();
+
+            if (compositeGroups.Count == 0)
+                return;
+
+            var compositeGroupIds = compositeGroups.Select(g => g.Id).ToList();
+
+            var activeAssignments = await db.AnalysisAssignments
+                .AsTracking()
+                .Where(a => compositeGroupIds.Contains(a.GroupId) && a.State == "Active")
+                .ToListAsync(ct);
+
+            foreach (var assignment in activeAssignments)
+            {
+                assignment.State = "Expired";
+                assignment.UpdatedAtUtc = now;
+            }
+
+            var removedQueueRows = await db.AnalysisQueueEntries
+                .Where(e => compositeGroupIds.Contains(e.GroupId))
+                .ExecuteDeleteAsync(ct);
+
+            if (activeAssignments.Count > 0)
+                await db.SaveChangesAsync(ct);
+
+            var transitioned = 0;
+            foreach (var group in compositeGroups)
+            {
+                if (group.Status == AnalysisStatuses.Ready
+                    || group.Status == AnalysisStatuses.AnalystAssigned
+                    || group.Status == AnalysisStatuses.AuditAssigned)
+                {
+                    await AnalysisGroupStateMachine.TransitionAsync(
+                        db,
+                        group,
+                        AnalysisStatuses.Cancelled,
+                        triggerName: "CompositeScanPairQuarantine",
+                        actor: "ORCHESTRATOR-HOUSEKEEPING",
+                        reason: "AnalysisGroup identifier is a split scan-pair container list; terminal quarantine lets the record-backed intake path own the real cargo groups.",
+                        correlationId: null,
+                        ct: ct);
+                    transitioned++;
+                }
+            }
+
+            if (transitioned > 0)
+                await db.SaveChangesAsync(ct);
+
+            _logger.LogWarning(
+                "[COMPOSITE-SCAN-GUARD] Quarantined {GroupCount} scan-pair AnalysisGroup(s); expired {AssignmentCount} assignment(s), removed {QueueCount} queue row(s). Groups: {Groups}",
+                compositeGroups.Count,
+                activeAssignments.Count,
+                removedQueueRows,
+                string.Join(", ", compositeGroups.Select(g => $"{g.Id}:{g.GroupIdentifier}").Take(10)));
         }
 
         /// <summary>
@@ -4371,6 +4631,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             return false;
         }
 
+        private static bool IsCompositeContainerPairIdentifier(string? identifier)
+        {
+            var parts = (identifier ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return parts.Count >= 2 && parts.All(IsLikelyIsoContainerNumber);
+        }
+
+        private static bool IsLikelyIsoContainerNumber(string value)
+        {
+            var token = value.Trim();
+            return token.Length == 11
+                && token.Take(4).All(char.IsLetter)
+                && token.Skip(4).All(char.IsDigit);
+        }
+
         /// <summary>
         /// Idempotent: MERGE ensures AnalysisGroup exists. Returns true if inserted, false if already existed.
         /// Eliminates race condition vs check-then-act + catch.
@@ -4481,6 +4760,13 @@ RETURNING (xmax = 0)::int;";
                                 .FirstOrDefaultAsync(ct);
                         }
                     }
+                    if (!IsAssignmentIntakeEnabled(scannerType))
+                    {
+                        _logger.LogInformation(
+                            "[INTAKE-RECORD] Skipping record {RecordId} ({Decl}) because scanner workflow assignment intake is disabled for {ScannerType}",
+                            record.Id, record.DeclarationNumber, scannerType ?? "Unknown");
+                        continue;
+                    }
                     var existing = await db.AnalysisGroups
                         .AsTracking()
                         .FirstOrDefaultAsync(g => g.GroupIdentifier == record.DeclarationNumber
@@ -4494,6 +4780,39 @@ RETURNING (xmax = 0)::int;";
                             existing.UpdatedAtUtc = DateTime.UtcNow;
                             await db.SaveChangesAsync(ct);
                         }
+
+                        var existingContainerNumbersToStamp = readyChildren
+                            .Select(c => c.ContainerNumber)
+                            .ToArray();
+                        var existingStamped = await db.Database.ExecuteSqlInterpolatedAsync($@"
+                            UPDATE containercompletenessstatuses
+                            SET groupidentifier = {record.DeclarationNumber},
+                                updatedat = now() AT TIME ZONE 'UTC'
+                            WHERE containernumber = ANY({existingContainerNumbersToStamp})
+                              AND (groupidentifier IS NULL OR btrim(groupidentifier) = '')", ct);
+                        if (existingStamped > 0)
+                        {
+                            _logger.LogInformation(
+                                "[INTAKE-RECORD] Back-stamped groupidentifier={Decl} on {Count} completeness row(s) for existing record group {RecordId}",
+                                record.DeclarationNumber, existingStamped, record.Id);
+                        }
+                        continue;
+                    }
+
+                    var existingCmrGroup = await FindExistingCmrCompositeGroupForRealRecordAsync(
+                        db,
+                        record,
+                        readyChildren,
+                        scannerType,
+                        ct);
+                    if (existingCmrGroup != null)
+                    {
+                        _logger.LogInformation(
+                            "[INTAKE-RECORD] Skipping duplicate real declaration group for record {RecordId} ({Decl}); existing CMR group {GroupId} ({GroupIdentifier}) already covers the same container/rotation/BL",
+                            record.Id,
+                            record.DeclarationNumber,
+                            existingCmrGroup.Id,
+                            existingCmrGroup.GroupIdentifier);
                         continue;
                     }
 
@@ -4509,7 +4828,7 @@ RETURNING (xmax = 0)::int;";
                             {
                                 GroupIdentifier = record.DeclarationNumber,
                                 NormalizedGroupIdentifier = record.DeclarationNumber,
-                                GroupType = "BL",
+                                GroupType = GetRecordBackedGroupType(record.ClearanceType),
                                 ScannerType = scannerType,
                                 Priority = 0,
                                 RecordCompletenessStatusId = record.Id,
@@ -4547,7 +4866,7 @@ RETURNING (xmax = 0)::int;";
                                 SET groupidentifier = {record.DeclarationNumber},
                                     updatedat = now() AT TIME ZONE 'UTC'
                                 WHERE containernumber = ANY({containerNumbersToStamp})
-                                  AND groupidentifier IS NULL", ct);
+                                  AND (groupidentifier IS NULL OR btrim(groupidentifier) = '')", ct);
                             if (stamped > 0)
                             {
                                 _logger.LogInformation(
@@ -4628,6 +4947,99 @@ RETURNING (xmax = 0)::int;";
                 _logger.LogInformation("[INTAKE-RECORD] Created {Count} AnalysisGroups from records this cycle", groupsCreated);
             }
         }
+
+        private async Task<AnalysisGroup?> FindExistingCmrCompositeGroupForRealRecordAsync(
+            ApplicationDbContext db,
+            RecordCompletenessStatus record,
+            IReadOnlyList<RecordExpectedContainer> readyChildren,
+            string? scannerType,
+            CancellationToken ct)
+        {
+            if (!_configuration.GetValue<bool>("CmrCompositeProgression:Enabled", false)
+                || string.Equals(record.ClearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(record.RotationNumber)
+                || string.IsNullOrWhiteSpace(record.BlNumber))
+            {
+                return null;
+            }
+
+            foreach (var child in readyChildren)
+            {
+                if (!CmrCompositeKeyHelper.TryCreate(
+                        record.RotationNumber,
+                        child.ContainerNumber,
+                        record.BlNumber,
+                        out var cmrKey))
+                {
+                    continue;
+                }
+
+                var cmrRecordId = await db.RecordCompletenessStatuses
+                    .AsNoTracking()
+                    .Where(r => r.ClearanceType == "CMR"
+                             && (r.DeclarationNumber == cmrKey.OperationalKey
+                              || (r.RotationNumber == cmrKey.RotationNumber
+                                  && r.BlNumber == cmrKey.BlNumber
+                                  && r.ExpectedContainers.Any(e => e.ContainerNumber == cmrKey.ContainerNumber))))
+                    .Select(r => (int?)r.Id)
+                    .FirstOrDefaultAsync(ct);
+
+                if (!cmrRecordId.HasValue)
+                    continue;
+
+                var query = db.AnalysisGroups
+                    .AsTracking()
+                    .Where(g => g.RecordCompletenessStatusId == cmrRecordId.Value
+                             || g.GroupIdentifier == cmrKey.OperationalKey
+                             || g.NormalizedGroupIdentifier == cmrKey.OperationalKey);
+
+                if (!string.IsNullOrWhiteSpace(scannerType))
+                {
+                    query = query.Where(g => g.ScannerType == null || g.ScannerType == scannerType);
+                }
+
+                var existingCmrGroup = await query
+                    .OrderByDescending(g => g.UpdatedAtUtc ?? g.CreatedAtUtc)
+                    .FirstOrDefaultAsync(ct);
+
+                if (existingCmrGroup != null)
+                    return existingCmrGroup;
+            }
+
+            return null;
+        }
+
+        private static string GetRecordBackedGroupType(string? clearanceType)
+            => string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase) ? "CMR" : "BL";
+
+        private bool IsAssignmentIntakeEnabled(string? scannerType)
+        {
+            var normalized = NormalizeScannerType(scannerType);
+            if (string.IsNullOrEmpty(normalized))
+            {
+                return true;
+            }
+
+            if (normalized == "EAGLEA25")
+            {
+                return _configuration.GetValue<bool>("ScannerWorkflow:EagleA25:AssignmentIntakeEnabled", false);
+            }
+
+            var disabled = _configuration
+                .GetSection("ScannerWorkflow:DisabledAssignmentIntakeScannerTypes")
+                .Get<string[]>() ?? Array.Empty<string>();
+
+            return !disabled.Any(s => NormalizeScannerType(s) == normalized);
+        }
+
+        private static string NormalizeScannerType(string? scannerType)
+            => string.IsNullOrWhiteSpace(scannerType)
+                ? string.Empty
+                : scannerType.Trim()
+                    .Replace("_", string.Empty, StringComparison.Ordinal)
+                    .Replace("-", string.Empty, StringComparison.Ordinal)
+                    .Replace(" ", string.Empty, StringComparison.Ordinal)
+                    .ToUpperInvariant();
 
         /// <summary>
         /// 1.15.0 — Look up the matching RecordCompletenessStatus for an AnalysisGroup

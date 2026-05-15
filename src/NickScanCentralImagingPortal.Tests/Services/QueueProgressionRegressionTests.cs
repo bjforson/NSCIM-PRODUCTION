@@ -248,6 +248,79 @@ namespace NickScanCentralImagingPortal.Tests.Services
         }
 
         [Fact]
+        public async Task DecisionSideEffects_DecisionSyncsRecordCompletenessParentRollup()
+        {
+            await using var db = CreateAppDb();
+
+            var record = new RecordCompletenessStatus
+            {
+                DeclarationNumber = "CMR-ROLLUP-DECISION",
+                ClearanceType = "CMR",
+                Status = "Ready",
+                WorkflowStage = "ImageAnalysis",
+                TotalExpectedContainers = 1,
+                ContainersReady = 1,
+                CreatedAtUtc = DateTime.UtcNow.AddHours(-1),
+                UpdatedAtUtc = DateTime.UtcNow.AddHours(-1)
+            };
+            db.RecordCompletenessStatuses.Add(record);
+            await db.SaveChangesAsync();
+
+            db.RecordExpectedContainers.Add(new RecordExpectedContainer
+            {
+                RecordId = record.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Ready",
+                FirstSeenUtc = DateTime.UtcNow.AddHours(-1),
+                BecameReadyUtc = DateTime.UtcNow.AddMinutes(-30)
+            });
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = record.DeclarationNumber,
+                NormalizedGroupIdentifier = record.DeclarationNumber,
+                ScannerType = "ASE",
+                GroupType = "CMR",
+                RecordCompletenessStatusId = record.Id
+            };
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Ready"
+            });
+            db.ImageAnalysisDecisions.Add(new ImageAnalysisDecision
+            {
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                GroupIdentifier = record.DeclarationNumber,
+                Decision = "Abnormal",
+                ReviewedBy = "analyst-one",
+                ReviewedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var service = new DecisionSideEffectsService(NullLogger<DecisionSideEffectsService>.Instance);
+
+            await service.ApplyAsync(db, "PIDU4444900", record.DeclarationNumber, "ASE");
+
+            var child = await db.RecordExpectedContainers.AsNoTracking().SingleAsync();
+            var parent = await db.RecordCompletenessStatuses.AsNoTracking().SingleAsync();
+
+            Assert.Equal("Decided", child.Status);
+            Assert.NotNull(child.DecidedAtUtc);
+            Assert.Equal(0, parent.ContainersReady);
+            Assert.Equal(1, parent.ContainersDecided);
+            Assert.Equal(0, parent.ContainersSubmitted);
+            Assert.Equal("InAudit", parent.Status);
+            Assert.Equal("Audit", parent.WorkflowStage);
+        }
+
+        [Fact]
         public async Task SetReady_AutoMode_CreatesImmediateAnalystAssignment()
         {
             var dbName = $"QueueProgression_Readiness_{Guid.NewGuid():N}";
@@ -355,6 +428,388 @@ namespace NickScanCentralImagingPortal.Tests.Services
             Assert.Equal("Analyst", readiness.Role);
         }
 
+        [Fact]
+        public async Task Heartbeat_ReadyUser_RenewsExpiringActiveAssignmentAndQueueRow()
+        {
+            var dbName = $"QueueProgression_HeartbeatRenew_{Guid.NewGuid():N}";
+            using var cache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 100 });
+            await using var provider = new ServiceCollection()
+                .AddDbContext<ApplicationDbContext>(o => o
+                    .UseInMemoryDatabase(dbName)
+                    .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning)))
+                .BuildServiceProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            db.AnalysisSettings.Add(new AnalysisSettings
+            {
+                Enabled = true,
+                AssignmentMode = "Auto",
+                MaxConcurrentPerUser = 5,
+                LeaseMinutes = 30
+            });
+
+            db.Roles.Add(new Role
+            {
+                Id = 1002,
+                Name = "Analyst",
+                DisplayName = "Image Analyst",
+                IsActive = true
+            });
+            db.Users.Add(new User
+            {
+                Username = "analyst-one",
+                Email = "analyst-one@example.test",
+                PasswordHash = "test",
+                RoleId = 1002,
+                IsActive = true
+            });
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = "ASSIGNED-GROUP",
+                NormalizedGroupIdentifier = "ASSIGNED-GROUP",
+                ScannerType = "ASE",
+                GroupType = "Container"
+            };
+            db.AnalysisGroups.Add(group);
+            await db.SaveChangesAsync();
+
+            await AnalysisGroupStateMachine.TransitionAsync(
+                db,
+                group,
+                AnalysisStatuses.AnalystAssigned,
+                triggerName: "HeartbeatRenewSeed",
+                actor: "test",
+                reason: "Seed active assignment for heartbeat lease renewal coverage.");
+
+            var oldLease = DateTime.UtcNow.AddMinutes(1);
+            db.AnalysisAssignments.Add(new AnalysisAssignment
+            {
+                GroupId = group.Id,
+                AssignedTo = "analyst-one",
+                Role = "Analyst",
+                State = "Active",
+                LeaseUntilUtc = oldLease,
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-20),
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-20),
+                LastAccessedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+            });
+            db.UserReadiness.Add(new UserReadiness
+            {
+                Username = "analyst-one",
+                Role = "Analyst",
+                IsReady = true,
+                LastHeartbeat = DateTime.UtcNow.AddMinutes(-1),
+                LastChangedAt = DateTime.UtcNow.AddMinutes(-1),
+                ChangedBy = "analyst-one"
+            });
+            await db.SaveChangesAsync();
+
+            var assignmentId = await db.AnalysisAssignments.Select(a => a.Id).SingleAsync();
+            var controller = new TestUserReadinessController(
+                db,
+                NullLogger<UserReadinessController>.Instance,
+                cache,
+                Array.Empty<AnalysisGroup>());
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[]
+                        {
+                            new Claim(ClaimTypes.Name, "analyst-one"),
+                            new Claim(ClaimTypes.Role, "Analyst")
+                        },
+                        authenticationType: "test")),
+                    RequestServices = provider
+                }
+            };
+
+            var result = await controller.SendHeartbeat(new HeartbeatRequest { Role = "Analyst" });
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var assignmentsRenewed = (int)(ok.Value!.GetType().GetProperty("AssignmentsRenewed")!.GetValue(ok.Value) ?? 0);
+            var renewed = await db.AnalysisAssignments.SingleAsync();
+
+            Assert.Equal(1, assignmentsRenewed);
+            Assert.Equal("Active", renewed.State);
+            Assert.True(renewed.LeaseUntilUtc > oldLease.AddMinutes(20));
+            Assert.NotNull(renewed.LastAccessedAtUtc);
+            Assert.Contains(assignmentId, controller.UpsertedAssignmentIds);
+        }
+
+        [Fact]
+        public async Task SubmissionStageSync_PendingSubmission_UsesAnalysisRecordsWhenCcsGroupIdentifierIsStale()
+        {
+            await using var db = CreateAppDb();
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = "40326204318",
+                NormalizedGroupIdentifier = "40326204318",
+                ScannerType = "ASE",
+                GroupType = "Container"
+            };
+
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "CAXU9272575",
+                ScannerType = "ASE",
+                Status = AnalysisStatuses.Ready
+            });
+            db.ContainerCompletenessStatuses.AddRange(
+                new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "CAXU9272575",
+                    GroupIdentifier = "CAXU9272575",
+                    ScannerType = "ASE",
+                    WorkflowStage = "ImageAnalysis",
+                    Status = "Complete"
+                },
+                new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "CAXU9272575",
+                    GroupIdentifier = "CAXU9272575",
+                    ScannerType = "FS6000",
+                    WorkflowStage = "ImageAnalysis",
+                    Status = "Complete"
+                },
+                new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "CAXU9272575",
+                    GroupIdentifier = "CAXU9272575",
+                    ScannerType = "ASE",
+                    WorkflowStage = "Submitted",
+                    Status = "Complete"
+                });
+            await db.SaveChangesAsync();
+
+            var updated = await SubmissionWorkflowStageSync.MarkPendingSubmissionAsync(
+                db, group, Array.Empty<string>());
+
+            var rows = await db.ContainerCompletenessStatuses
+                .AsNoTracking()
+                .OrderBy(c => c.Id)
+                .ToListAsync();
+
+            Assert.Equal(1, updated);
+            Assert.Equal("PendingSubmission", rows[0].WorkflowStage);
+            Assert.Equal("ImageAnalysis", rows[1].WorkflowStage);
+            Assert.Equal("Submitted", rows[2].WorkflowStage);
+        }
+
+        [Fact]
+        public async Task SubmissionStageSync_Submitted_AdvancesStaleCcsAfterLiveSubmit()
+        {
+            await using var db = CreateAppDb();
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = "40426287185",
+                NormalizedGroupIdentifier = "40426287185",
+                ScannerType = "ASE",
+                GroupType = "Container"
+            };
+
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "MRSU8158853",
+                ScannerType = "ASE",
+                Status = "Decided"
+            });
+            db.ContainerCompletenessStatuses.AddRange(
+                new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "MRSU8158853",
+                    GroupIdentifier = "MRSU8158853",
+                    ScannerType = "ASE",
+                    WorkflowStage = "ImageAnalysis",
+                    Status = "Complete"
+                },
+                new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "MRSU8158853",
+                    GroupIdentifier = "MRSU8158853",
+                    ScannerType = "ASE",
+                    WorkflowStage = "SplitSuperseded",
+                    Status = "Complete"
+                });
+            await db.SaveChangesAsync();
+
+            var updated = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                db, "MRSU8158853", group);
+
+            var rows = await db.ContainerCompletenessStatuses
+                .AsNoTracking()
+                .OrderBy(c => c.Id)
+                .ToListAsync();
+
+            Assert.Equal(1, updated);
+            Assert.Equal("Submitted", rows[0].WorkflowStage);
+            Assert.Equal("SplitSuperseded", rows[1].WorkflowStage);
+        }
+
+        [Fact]
+        public async Task SubmissionStageSync_Submitted_SyncsRecordRollupEvenWhenCcsAlreadySubmitted()
+        {
+            await using var db = CreateAppDb();
+
+            var record = new RecordCompletenessStatus
+            {
+                DeclarationNumber = "CMR-ROLLUP-SUBMITTED",
+                ClearanceType = "CMR",
+                Status = "Ready",
+                WorkflowStage = "ImageAnalysis",
+                TotalExpectedContainers = 1,
+                ContainersReady = 1,
+                ContainersDecided = 0,
+                ContainersSubmitted = 0,
+                CreatedAtUtc = DateTime.UtcNow.AddHours(-1),
+                UpdatedAtUtc = DateTime.UtcNow.AddHours(-1)
+            };
+            db.RecordCompletenessStatuses.Add(record);
+            await db.SaveChangesAsync();
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = record.DeclarationNumber,
+                NormalizedGroupIdentifier = record.DeclarationNumber,
+                ScannerType = "ASE",
+                GroupType = "CMR",
+                RecordCompletenessStatusId = record.Id
+            };
+
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Decided"
+            });
+            db.RecordExpectedContainers.Add(new RecordExpectedContainer
+            {
+                RecordId = record.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Decided",
+                FirstSeenUtc = DateTime.UtcNow.AddHours(-1),
+                BecameReadyUtc = DateTime.UtcNow.AddMinutes(-45),
+                DecidedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+            });
+            db.ContainerCompletenessStatuses.Add(new ContainerCompletenessStatus
+            {
+                ContainerNumber = "PIDU4444900",
+                GroupIdentifier = "PIDU4444900",
+                ScannerType = "ASE",
+                WorkflowStage = "Submitted",
+                Status = "Complete",
+                ClearanceType = "CMR"
+            });
+            await db.SaveChangesAsync();
+
+            var updated = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                db, "PIDU4444900", group);
+
+            var child = await db.RecordExpectedContainers.AsNoTracking().SingleAsync();
+            var parent = await db.RecordCompletenessStatuses.AsNoTracking().SingleAsync();
+            var ccs = await db.ContainerCompletenessStatuses.AsNoTracking().SingleAsync();
+
+            Assert.Equal(0, updated);
+            Assert.Equal("Submitted", ccs.WorkflowStage);
+            Assert.Equal("Submitted", child.Status);
+            Assert.Equal(0, parent.ContainersReady);
+            Assert.Equal(0, parent.ContainersDecided);
+            Assert.Equal(1, parent.ContainersSubmitted);
+            Assert.Equal("Completed", parent.Status);
+            Assert.Equal("Completed", parent.WorkflowStage);
+        }
+
+        [Fact]
+        public async Task SubmissionStageSync_Submitted_DoesNotSyncRecordRollupWhenOnlyProtectedCcsRowsMatch()
+        {
+            await using var db = CreateAppDb();
+
+            var record = new RecordCompletenessStatus
+            {
+                DeclarationNumber = "CMR-ROLLUP-PROTECTED",
+                ClearanceType = "CMR",
+                Status = "InAudit",
+                WorkflowStage = "Audit",
+                TotalExpectedContainers = 1,
+                ContainersReady = 0,
+                ContainersDecided = 1,
+                ContainersSubmitted = 0,
+                CreatedAtUtc = DateTime.UtcNow.AddHours(-1),
+                UpdatedAtUtc = DateTime.UtcNow.AddHours(-1)
+            };
+            db.RecordCompletenessStatuses.Add(record);
+            await db.SaveChangesAsync();
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = record.DeclarationNumber,
+                NormalizedGroupIdentifier = record.DeclarationNumber,
+                ScannerType = "ASE",
+                GroupType = "CMR",
+                RecordCompletenessStatusId = record.Id
+            };
+
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Decided"
+            });
+            db.RecordExpectedContainers.Add(new RecordExpectedContainer
+            {
+                RecordId = record.Id,
+                ContainerNumber = "PIDU4444900",
+                ScannerType = "ASE",
+                Status = "Decided",
+                FirstSeenUtc = DateTime.UtcNow.AddHours(-1),
+                BecameReadyUtc = DateTime.UtcNow.AddMinutes(-45),
+                DecidedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+            });
+            db.ContainerCompletenessStatuses.Add(new ContainerCompletenessStatus
+            {
+                ContainerNumber = "PIDU4444900",
+                GroupIdentifier = record.DeclarationNumber,
+                ScannerType = "ASE",
+                WorkflowStage = "SplitSuperseded",
+                Status = "Complete",
+                ClearanceType = "CMR"
+            });
+            await db.SaveChangesAsync();
+
+            var updated = await SubmissionWorkflowStageSync.MarkContainerSubmittedAsync(
+                db, "PIDU4444900", group);
+
+            var child = await db.RecordExpectedContainers.AsNoTracking().SingleAsync();
+            var parent = await db.RecordCompletenessStatuses.AsNoTracking().SingleAsync();
+            var ccs = await db.ContainerCompletenessStatuses.AsNoTracking().SingleAsync();
+
+            Assert.Equal(0, updated);
+            Assert.Equal("SplitSuperseded", ccs.WorkflowStage);
+            Assert.Equal("Decided", child.Status);
+            Assert.Equal(0, parent.ContainersSubmitted);
+            Assert.Equal(1, parent.ContainersDecided);
+            Assert.Equal("InAudit", parent.Status);
+            Assert.Equal("Audit", parent.WorkflowStage);
+        }
+
         private static async Task<AnalysisGroup> SeedAssignedGroupAsync(ApplicationDbContext db, string groupIdentifier, string scannerType)
         {
             var group = new AnalysisGroup
@@ -443,6 +898,7 @@ namespace NickScanCentralImagingPortal.Tests.Services
         private sealed class TestUserReadinessController : UserReadinessController
         {
             private readonly List<AnalysisGroup> _readyGroups;
+            public List<int> UpsertedAssignmentIds { get; } = new();
 
             public TestUserReadinessController(
                 ApplicationDbContext dbContext,
@@ -474,6 +930,7 @@ namespace NickScanCentralImagingPortal.Tests.Services
 
             protected override Task UpsertQueueEntryAsync(int assignmentId, CancellationToken cancellationToken)
             {
+                UpsertedAssignmentIds.Add(assignmentId);
                 return Task.CompletedTask;
             }
         }

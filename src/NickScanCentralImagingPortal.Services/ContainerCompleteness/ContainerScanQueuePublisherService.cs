@@ -19,17 +19,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         private readonly IContainerScanQueueRepository _queueRepository;
         private readonly ILogger<ContainerScanQueuePublisherService> _logger;
         private readonly QueuePublishingMetricsService? _metricsService;
+        private readonly IScannerWorkflowGate? _scannerWorkflowGate;
         private const int MAX_RETRIES = 5;
         private const int BASE_DELAY_MS = 1000; // 1 second
 
         public ContainerScanQueuePublisherService(
             IContainerScanQueueRepository queueRepository,
             ILogger<ContainerScanQueuePublisherService> logger,
-            QueuePublishingMetricsService? metricsService = null)
+            QueuePublishingMetricsService? metricsService = null,
+            IScannerWorkflowGate? scannerWorkflowGate = null)
         {
             _queueRepository = queueRepository;
             _logger = logger;
             _metricsService = metricsService; // Optional for backward compatibility
+            _scannerWorkflowGate = scannerWorkflowGate;
         }
 
         public async Task<int> PublishScanAsync(
@@ -57,6 +60,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 {
                     _logger.LogWarning("[QUEUE-PUBLISHER] Skipping queue publish - ScannerType is null or empty for container {ContainerNumber}", containerNumber);
                     _metricsService?.RecordPublishAttempt(false, 0, "Unknown", stopwatch.Elapsed, skipped: true);
+                    return 0;
+                }
+
+                if (_scannerWorkflowGate?.IsAssignmentIntakeEnabled(scannerType) == false)
+                {
+                    _logger.LogInformation("[QUEUE-PUBLISHER] Skipping queue publish for disabled scanner workflow {ScannerType} ({ContainerNumber})",
+                        scannerType, containerNumber);
+                    _metricsService?.RecordPublishAttempt(false, 0, scannerType, stopwatch.Elapsed, skipped: true);
                     return 0;
                 }
 
@@ -121,6 +132,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 var validScans = scans
                     .Where(s => !string.IsNullOrWhiteSpace(s.ContainerNumber) && !string.IsNullOrWhiteSpace(s.ScannerType))
                     .ToList();
+                var disabledCount = validScans.Count(s => _scannerWorkflowGate?.IsAssignmentIntakeEnabled(s.ScannerType) == false);
+                if (disabledCount > 0)
+                {
+                    validScans = validScans
+                        .Where(s => _scannerWorkflowGate?.IsAssignmentIntakeEnabled(s.ScannerType) != false)
+                        .ToList();
+                    _logger.LogInformation("[QUEUE-PUBLISHER] Skipped {Count} scans because scanner workflow assignment intake is disabled", disabledCount);
+                }
 
                 if (!validScans.Any())
                 {

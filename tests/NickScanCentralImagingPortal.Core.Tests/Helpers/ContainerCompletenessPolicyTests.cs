@@ -38,6 +38,72 @@ public class ContainerCompletenessPolicyTests
     }
 
     [Fact]
+    public void Evaluate_HoldsCmrCompositeRowsWhenFeatureFlagIsOff()
+    {
+        var decision = ContainerCompletenessPolicy.Evaluate(
+            hasScannerData: true,
+            hasICUMSData: true,
+            hasImageData: true,
+            clearanceType: "CMR",
+            groupIdentifier: "",
+            cmrCompositeProgressionEnabled: false,
+            cmrRotationNumber: "ROT123",
+            cmrContainerNumber: "PIDU4444900",
+            cmrBlNumber: "BL789");
+
+        Assert.Equal("AwaitingDeclaration", decision.Status);
+        Assert.Equal("Pending", decision.WorkflowStage);
+        Assert.False(decision.IsComplete);
+        Assert.True(decision.IsAwaitingDeclaration);
+    }
+
+    [Fact]
+    public void Evaluate_AllowsCmrCompositeRowsWhenFeatureFlagIsOn()
+    {
+        var decision = ContainerCompletenessPolicy.Evaluate(
+            hasScannerData: true,
+            hasICUMSData: true,
+            hasImageData: true,
+            clearanceType: "CMR",
+            groupIdentifier: "",
+            cmrCompositeProgressionEnabled: true,
+            cmrRotationNumber: "ROT123",
+            cmrContainerNumber: "PIDU4444900",
+            cmrBlNumber: "BL789");
+
+        Assert.Equal("Complete", decision.Status);
+        Assert.Equal("ImageAnalysis", decision.WorkflowStage);
+        Assert.True(decision.IsComplete);
+        Assert.False(decision.IsAwaitingDeclaration);
+    }
+
+    [Theory]
+    [InlineData(null, "PIDU4444900", "BL789")]
+    [InlineData("ROT123", null, "BL789")]
+    [InlineData("ROT123", "PIDU4444900", null)]
+    public void Evaluate_HoldsCmrCompositeRowsWhenFeatureFlagIsOnButKeyIsIncomplete(
+        string? rotationNumber,
+        string? containerNumber,
+        string? blNumber)
+    {
+        var decision = ContainerCompletenessPolicy.Evaluate(
+            hasScannerData: true,
+            hasICUMSData: true,
+            hasImageData: true,
+            clearanceType: "CMR",
+            groupIdentifier: "",
+            cmrCompositeProgressionEnabled: true,
+            cmrRotationNumber: rotationNumber,
+            cmrContainerNumber: containerNumber,
+            cmrBlNumber: blNumber);
+
+        Assert.Equal("AwaitingDeclaration", decision.Status);
+        Assert.Equal("Pending", decision.WorkflowStage);
+        Assert.False(decision.IsComplete);
+        Assert.True(decision.IsAwaitingDeclaration);
+    }
+
+    [Fact]
     public void Evaluate_ReturnsMissingWhenEvidenceIsIncomplete()
     {
         var decision = ContainerCompletenessPolicy.Evaluate(
