@@ -110,6 +110,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
 
                 if (string.Equals(resolution.SourceScannerType, "ASE", StringComparison.OrdinalIgnoreCase))
                     return ScannerType.ASE;
+
+                if (string.Equals(resolution.SourceScannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(resolution.SourceScannerType, "EagleA25", StringComparison.OrdinalIgnoreCase))
+                    return ScannerType.EagleA25;
             }
 
             // Check FS6000 scans
@@ -128,6 +132,25 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
             {
                 _logger.LogDebug("Detected ASE scanner for container: {ContainerNumber}", containerNumber);
                 return ScannerType.ASE;
+            }
+
+            if (long.TryParse(containerNumber, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var accession))
+            {
+                var eagleByAccession = await _dbContext.EagleA25Scans
+                    .AnyAsync(s => s.Accession == accession || s.ScanAccession == accession);
+                if (eagleByAccession)
+                {
+                    _logger.LogDebug("Detected Eagle A25 scanner for accession: {ContainerNumber}", containerNumber);
+                    return ScannerType.EagleA25;
+                }
+            }
+
+            var eagleByCargo = await _dbContext.EagleA25Scans
+                .AnyAsync(s => s.CargoIdentifier == containerNumber || s.AirWaybill == containerNumber);
+            if (eagleByCargo)
+            {
+                _logger.LogDebug("Detected Eagle A25 scanner for lookup: {ContainerNumber}", containerNumber);
+                return ScannerType.EagleA25;
             }
 
             // TODO: Add Heimann Smith detection when implemented
@@ -446,9 +469,75 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
                 return await asePipeline.GetCompleteContainerDataAsync(sourceContainerNumber);
             }
+            else if (scannerType == ScannerType.EagleA25)
+            {
+                return await GetEagleA25FallbackImageDataAsync(containerNumber, imageType);
+            }
 
             _logger.LogWarning("Pipeline does not support complete data retrieval for scanner type: {ScannerType}", scannerType);
             return null;
+        }
+
+        private async Task<ContainerImageDataResponse?> GetEagleA25FallbackImageDataAsync(string lookup, string? imageType)
+        {
+            var trimmed = lookup.Trim();
+            IQueryable<Core.Entities.EagleA25.EagleA25Scan> query = _dbContext.EagleA25Scans
+                .Include(scan => scan.Assets)
+                .AsNoTracking();
+
+            if (Guid.TryParse(trimmed, out var scanId))
+            {
+                query = query.Where(scan => scan.Id == scanId);
+            }
+            else if (long.TryParse(trimmed, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var accession))
+            {
+                query = query.Where(scan => scan.Accession == accession || scan.ScanAccession == accession);
+            }
+            else
+            {
+                query = query.Where(scan => scan.CargoIdentifier == trimmed || scan.AirWaybill == trimmed);
+            }
+
+            var scan = await query
+                .OrderByDescending(scan => scan.ScanDateUtc)
+                .FirstOrDefaultAsync();
+
+            if (scan == null)
+                return null;
+
+            var preferredTypes = string.IsNullOrWhiteSpace(imageType)
+                ? new[] { "XRAYJPEG", "SCANDOC" }
+                : new[] { imageType };
+
+            var asset = scan.Assets
+                .Where(asset => !string.IsNullOrWhiteSpace(asset.LocalPath))
+                .Where(asset => preferredTypes.Any(type => string.Equals(asset.FileType, type, StringComparison.OrdinalIgnoreCase)))
+                .Where(asset => string.IsNullOrWhiteSpace(asset.MimeType) || asset.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(asset => Array.FindIndex(preferredTypes, type => string.Equals(asset.FileType, type, StringComparison.OrdinalIgnoreCase)))
+                .ThenByDescending(asset => asset.FileSizeBytes ?? 0)
+                .FirstOrDefault();
+
+            if (asset == null || string.IsNullOrWhiteSpace(asset.LocalPath) || !System.IO.File.Exists(asset.LocalPath))
+                return null;
+
+            var bytes = await System.IO.File.ReadAllBytesAsync(asset.LocalPath);
+            if (bytes.Length == 0)
+                return null;
+
+            return new ContainerImageDataResponse
+            {
+                ContainerNumber = !string.IsNullOrWhiteSpace(scan.CargoIdentifier)
+                    ? scan.CargoIdentifier!
+                    : scan.Accession.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                DetectedScanner = ScannerType.EagleA25,
+                ImageBytes = bytes,
+                ImageBase64 = Convert.ToBase64String(bytes),
+                MimeType = string.IsNullOrWhiteSpace(asset.MimeType) ? "image/jpeg" : asset.MimeType!,
+                ScanTime = scan.ScanDateUtc,
+                ProcessingPipeline = $"EagleA25Fallback:{asset.FileType}",
+                ImageSizeBytes = bytes.Length,
+                Quality = "SourceAsset"
+            };
         }
 
         // ══════════════════════════════════════════════════════════════════
