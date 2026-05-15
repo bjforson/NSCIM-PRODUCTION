@@ -450,6 +450,11 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 return null;
             }
 
+            if (scannerType == ScannerType.EagleA25)
+            {
+                return await GetEagleA25FallbackImageDataAsync(containerNumber, imageType);
+            }
+
             var pipeline = GetImagePipeline(scannerType);
             if (pipeline == null)
             {
@@ -468,10 +473,6 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 // ASE only has one image per container, so imageType parameter is ignored
                 var sourceContainerNumber = await ResolveSourceContainerForScannerAsync(containerNumber, scannerType);
                 return await asePipeline.GetCompleteContainerDataAsync(sourceContainerNumber);
-            }
-            else if (scannerType == ScannerType.EagleA25)
-            {
-                return await GetEagleA25FallbackImageDataAsync(containerNumber, imageType);
             }
 
             _logger.LogWarning("Pipeline does not support complete data retrieval for scanner type: {ScannerType}", scannerType);
