@@ -1366,7 +1366,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                             "[ASSIGNMENT-EVENT] Created | AssignmentId={AssignmentId} | GroupId={GroupId} | GroupIdentifier={GroupIdentifier} | User={User} | Role={Role} | LeaseUntil={LeaseUntil} | Reason=AutoAssign",
                             assignment.Id, group.Id, group.GroupIdentifier, assignedUser, roleName, leaseUntil);
 
-                        _readyGroupsCache.InvalidateCache(roleName, eligibleStatus);
+                        await _readyGroupsCache.InvalidateCacheAsync(roleName, eligibleStatus, stoppingToken);
 
                         // 2026-05-05 (Sprint 2C, audit 4.02): materialize the queue entry
                         // immediately after the assignment commit. Without this the user's
@@ -1656,6 +1656,23 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 {
                     try { await _readyGroupsCache.RemoveQueueEntryAsync(db, assignment.Id, stoppingToken); }
                     catch { /* reconciliation catches misses */ }
+                }
+
+                foreach (var cacheTarget in expired
+                    .Where(a => a.Role == "Analyst" || a.Role == "Audit")
+                    .Select(a => new
+                    {
+                        Role = a.Role,
+                        Status = a.Role == "Audit"
+                            ? AnalysisStatuses.AnalystCompleted
+                            : AnalysisStatuses.Ready
+                    })
+                    .Distinct())
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync(
+                        cacheTarget.Role,
+                        cacheTarget.Status,
+                        stoppingToken);
                 }
 
                 _logger.LogInformation("[ASSIGNMENT] Reclaimed {Count} expired assignments", expired.Count);

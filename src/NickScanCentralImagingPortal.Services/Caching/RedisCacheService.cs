@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Interfaces;
@@ -13,6 +14,7 @@ namespace NickScanCentralImagingPortal.Services.Caching
         private readonly IDistributedCache _cache;
         private readonly ILogger<RedisCacheService> _logger;
         private readonly TimeSpan _defaultExpiration = TimeSpan.FromMinutes(30);
+        private static readonly ConcurrentDictionary<string, byte> _knownKeys = new(StringComparer.Ordinal);
 
         public RedisCacheService(
             IDistributedCache cache,
@@ -59,6 +61,7 @@ namespace NickScanCentralImagingPortal.Services.Caching
                 };
 
                 await _cache.SetStringAsync(key, serializedData, options, cancellationToken);
+                _knownKeys[key] = 0;
                 _logger.LogDebug("Cached value for key: {Key} with expiration: {Expiration}",
                     key, expiration ?? _defaultExpiration);
             }
@@ -74,6 +77,7 @@ namespace NickScanCentralImagingPortal.Services.Caching
             try
             {
                 await _cache.RemoveAsync(key, cancellationToken);
+                _knownKeys.TryRemove(key, out _);
                 _logger.LogDebug("Removed cached value for key: {Key}", key);
             }
             catch (Exception ex)
@@ -86,10 +90,24 @@ namespace NickScanCentralImagingPortal.Services.Caching
         {
             try
             {
-                // Note: This requires StackExchange.Redis directly for pattern-based deletion
-                // For now, log a warning - implement when needed with StackExchange.Redis IConnectionMultiplexer
-                _logger.LogWarning("RemoveByPrefixAsync not fully implemented. Prefix: {Prefix}", prefix);
-                await Task.CompletedTask;
+                if (string.IsNullOrWhiteSpace(prefix))
+                {
+                    return;
+                }
+
+                var matchingKeys = _knownKeys.Keys
+                    .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
+                    .ToList();
+
+                foreach (var key in matchingKeys)
+                {
+                    await _cache.RemoveAsync(key, cancellationToken);
+                    _knownKeys.TryRemove(key, out _);
+                }
+
+                _logger.LogInformation("Removed {Count} cached value(s) by prefix: {Prefix}",
+                    matchingKeys.Count,
+                    prefix);
             }
             catch (Exception ex)
             {
