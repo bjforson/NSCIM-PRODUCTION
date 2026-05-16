@@ -28,6 +28,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         public int ScansWithNewChannels { get; private set; }
         public int ScansAlreadyComplete { get; private set; }
         public int ScansPending { get; private set; }
+        public int ScansAcceptedUnrecoverable { get; private set; }
         public int ScansInvalid { get; private set; }
         public int ScansFailed { get; private set; }
         public int ChannelsIngested { get; private set; }
@@ -62,6 +63,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 ScansWithNewChannels = 0;
                 ScansAlreadyComplete = 0;
                 ScansPending = 0;
+                ScansAcceptedUnrecoverable = 0;
                 ScansInvalid = 0;
                 ScansFailed = 0;
                 ChannelsIngested = 0;
@@ -83,6 +85,11 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 if (r.IngestedChannels > 0)
                 {
                     ScansWithNewChannels++;
+                }
+                else if (r.AcceptedInvalidChannels > 0)
+                {
+                    ScansAcceptedUnrecoverable++;
+                    LastError = r.LastError ?? LastError;
                 }
                 else if (r.InvalidChannels > 0)
                 {

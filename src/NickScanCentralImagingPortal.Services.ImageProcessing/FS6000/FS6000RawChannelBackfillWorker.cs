@@ -133,7 +133,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 "[FS6000-RAW-WORKER] cycle starting — {Count} scan(s) with missing channels",
                 candidates.Count);
 
-            int ingested = 0, alreadyComplete = 0, pending = 0, invalid = 0, failed = 0;
+            int ingested = 0, alreadyComplete = 0, pending = 0, invalid = 0, acceptedUnrecoverable = 0, failed = 0;
             long bytes = 0;
 
             foreach (var scan in candidates)
@@ -149,6 +149,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     if (r.IngestedChannels > 0)
                     {
                         ingested++;
+                    }
+                    else if (r.AcceptedInvalidChannels > 0)
+                    {
+                        acceptedUnrecoverable++;
                     }
                     else if (r.InvalidChannels > 0)
                     {
@@ -192,8 +196,8 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             _logger.LogInformation(
-                "[FS6000-RAW-WORKER] cycle done. ingested={Ingested} alreadyComplete={Done} pendingNextCycle={Pending} invalid={Invalid} failed={Failed} bytes={Bytes}",
-                ingested, alreadyComplete, pending, invalid, failed, bytes);
+                "[FS6000-RAW-WORKER] cycle done. ingested={Ingested} alreadyComplete={Done} pendingNextCycle={Pending} acceptedUnrecoverable={AcceptedUnrecoverable} invalid={Invalid} failed={Failed} bytes={Bytes}",
+                ingested, alreadyComplete, pending, acceptedUnrecoverable, invalid, failed, bytes);
         }
 
         /// <summary>

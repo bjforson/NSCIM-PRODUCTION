@@ -1455,6 +1455,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 scansWithNewChannels  = tracker.ScansWithNewChannels,
                 scansAlreadyComplete  = tracker.ScansAlreadyComplete,
                 scansPending          = tracker.ScansPending,
+                scansAcceptedUnrecoverable = tracker.ScansAcceptedUnrecoverable,
                 scansInvalid          = tracker.ScansInvalid,
                 scansFailed           = tracker.ScansFailed,
                 channelsIngested      = tracker.ChannelsIngested,
@@ -1500,6 +1501,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             AlreadyPresent   = report.AlreadyPresent,
                             MissingFiles     = report.MissingFiles,
                             InvalidChannels  = report.InvalidChannels,
+                            AcceptedInvalidChannels = report.AcceptedInvalidChannels,
                             FailedChannels   = report.FailedChannels,
                             ErrorMessage     = report.ErrorMessage,
                             LastError        = report.LastError,
@@ -1508,10 +1510,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         if (tracker.Processed % 50 == 0)
                         {
                             _logger.LogInformation(
-                                "[FS6000-BACKFILL] Progress {Done}/{Total} | new={New} already={Already} pending={Pending} invalid={Invalid} failed={Failed} bytes={Bytes}",
+                                "[FS6000-BACKFILL] Progress {Done}/{Total} | new={New} already={Already} pending={Pending} acceptedUnrecoverable={AcceptedUnrecoverable} invalid={Invalid} failed={Failed} bytes={Bytes}",
                                 tracker.Processed, tracker.TotalScans,
                                 tracker.ScansWithNewChannels, tracker.ScansAlreadyComplete, tracker.ScansPending,
-                                tracker.ScansInvalid, tracker.ScansFailed, tracker.BytesIngested);
+                                tracker.ScansAcceptedUnrecoverable, tracker.ScansInvalid, tracker.ScansFailed, tracker.BytesIngested);
                         }
                     }
                     catch (Exception ex)
@@ -1522,9 +1524,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 _logger.LogInformation(
-                    "[FS6000-BACKFILL] Completed. Total={Total} New={New} Already={Already} Pending={Pending} Invalid={Invalid} Failed={Failed} Bytes={Bytes}",
+                    "[FS6000-BACKFILL] Completed. Total={Total} New={New} Already={Already} Pending={Pending} AcceptedUnrecoverable={AcceptedUnrecoverable} Invalid={Invalid} Failed={Failed} Bytes={Bytes}",
                     tracker.TotalScans, tracker.ScansWithNewChannels,
-                    tracker.ScansAlreadyComplete, tracker.ScansPending, tracker.ScansInvalid,
+                    tracker.ScansAlreadyComplete, tracker.ScansPending, tracker.ScansAcceptedUnrecoverable, tracker.ScansInvalid,
                     tracker.ScansFailed, tracker.BytesIngested);
             }
             catch (Exception ex)
