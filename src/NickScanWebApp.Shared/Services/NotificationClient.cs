@@ -37,6 +37,16 @@ public sealed class NotificationClient
         return _apiService.PutAsync<object, TResult>(BuildReadPath(notificationId), new { });
     }
 
+    public Task<object?> CreateNotificationAsync<TRequest>(TRequest request)
+    {
+        return CreateNotificationAsync<TRequest, object>(request);
+    }
+
+    public Task<TResult?> CreateNotificationAsync<TRequest, TResult>(TRequest request)
+    {
+        return _apiService.PostAsync<TRequest, TResult>(BasePath, request);
+    }
+
     public Task<TResult?> MarkAsUnreadAsync<TResult>(int notificationId)
     {
         return _apiService.PutAsync<object, TResult>(BuildUnreadPath(notificationId), new { });

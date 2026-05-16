@@ -1,7 +1,7 @@
-using System.Net.Http.Json;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services
 {
@@ -10,17 +10,16 @@ namespace NickScanWebApp.New.Services
     /// </summary>
     public class CargoGroupService
     {
-        private readonly ApiService _apiService;
+        private readonly CargoGroupClient _cargoGroupClient;
         private readonly IMemoryCache _cache;
         private readonly ILogger<CargoGroupService> _logger;
-        private const string API_BASE = "/api/cargogroup";
 
         public CargoGroupService(
-            ApiService apiService,
+            CargoGroupClient cargoGroupClient,
             IMemoryCache cache,
             ILogger<CargoGroupService> logger)
         {
-            _apiService = apiService;
+            _cargoGroupClient = cargoGroupClient;
             _cache = cache;
             _logger = logger;
         }
@@ -32,8 +31,7 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                var url = $"{API_BASE}/by-container/{Uri.EscapeDataString(containerNumber)}";
-                return await _apiService.GetAsync<CargoGroupIdentifierDto>(url);
+                return await _cargoGroupClient.GetGroupIdentifierByContainerAsync<CargoGroupIdentifierDto>(containerNumber);
             }
             catch (Exception ex)
             {
@@ -71,33 +69,25 @@ namespace NickScanWebApp.New.Services
                 _logger.LogInformation("Fetching cargo group {Identifier} from API (Scanner: {Scanner}, Image: {Image}, ICUMS: {ICUMS})",
                     groupIdentifier, loadScannerData, loadImageData, loadICUMSData);
 
-                var queryParams = new List<string>();
-                if (type.HasValue)
-                {
-                    queryParams.Add($"type={type.Value}");
-                }
-                if (!loadScannerData)
-                {
-                    queryParams.Add("loadScannerData=false");
-                }
-                if (!loadImageData)
-                {
-                    queryParams.Add("loadImageData=false");
-                }
-                if (!loadICUMSData)
-                {
-                    queryParams.Add("loadICUMSData=false");
-                }
-
-                var url = $"{API_BASE}/{Uri.EscapeDataString(groupIdentifier)}";
-                if (queryParams.Any())
-                {
-                    url += $"?{string.Join("&", queryParams)}";
-                }
+                var typeName = type?.ToString();
+                bool? loadScannerDataFlag = loadScannerData ? null : false;
+                bool? loadImageDataFlag = loadImageData ? null : false;
+                bool? loadICUMSDataFlag = loadICUMSData ? null : false;
+                var url = CargoGroupClient.BuildCargoGroupPath(
+                    groupIdentifier,
+                    typeName,
+                    loadScannerDataFlag,
+                    loadImageDataFlag,
+                    loadICUMSDataFlag);
 
                 var networkStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 _logger.LogDebug("API call START - URL: {Url}", url);
-                var group = await _apiService.GetAsync<CargoGroupDto>(url);
+                var group = await _cargoGroupClient.GetCargoGroupAsync<CargoGroupDto>(
+                    groupIdentifier,
+                    typeName,
+                    loadScannerDataFlag,
+                    loadImageDataFlag,
+                    loadICUMSDataFlag);
                 networkStopwatch.Stop();
                 _logger.LogDebug("API call COMPLETE - Network time: {ElapsedMs}ms ({ElapsedSec:F2}s)",
                     networkStopwatch.ElapsedMilliseconds, networkStopwatch.Elapsed.TotalSeconds);
@@ -135,8 +125,9 @@ namespace NickScanWebApp.New.Services
 
                 _logger.LogInformation("Fetching cargo group data {Identifier} from API", groupIdentifier);
 
-                var url = $"{API_BASE}/{Uri.EscapeDataString(groupIdentifier)}/data?type={type}";
-                var data = await _apiService.GetAsync<CargoGroupDataDto>(url);
+                var data = await _cargoGroupClient.GetCargoGroupDataAsync<CargoGroupDataDto>(
+                    groupIdentifier,
+                    type.ToString());
 
                 if (data != null)
                 {
@@ -161,8 +152,9 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                var url = $"{API_BASE}/{Uri.EscapeDataString(groupIdentifier)}/icums?type={type}";
-                return await _apiService.GetAsync<List<ICUMSDataGroupDto>>(url);
+                return await _cargoGroupClient.GetCargoGroupICUMSAsync<List<ICUMSDataGroupDto>>(
+                    groupIdentifier,
+                    type.ToString());
             }
             catch (Exception ex)
             {
@@ -178,8 +170,9 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                var url = $"{API_BASE}/{Uri.EscapeDataString(groupIdentifier)}/scanner?type={type}";
-                return await _apiService.GetAsync<List<ScannerDataGroupDto>>(url);
+                return await _cargoGroupClient.GetCargoGroupScannerAsync<List<ScannerDataGroupDto>>(
+                    groupIdentifier,
+                    type.ToString());
             }
             catch (Exception ex)
             {
@@ -195,8 +188,9 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                var url = $"{API_BASE}/{Uri.EscapeDataString(groupIdentifier)}/images?type={type}";
-                return await _apiService.GetAsync<List<ImageDataGroupDto>>(url);
+                return await _cargoGroupClient.GetCargoGroupImagesAsync<List<ImageDataGroupDto>>(
+                    groupIdentifier,
+                    type.ToString());
             }
             catch (Exception ex)
             {
@@ -216,16 +210,11 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                var queryParams = new List<string>();
-                if (type.HasValue)
-                    queryParams.Add($"type={type.Value}");
-                if (!string.IsNullOrEmpty(clearanceType))
-                    queryParams.Add($"clearanceType={Uri.EscapeDataString(clearanceType)}");
-                queryParams.Add($"page={page}");
-                queryParams.Add($"pageSize={pageSize}");
-
-                var url = $"{API_BASE}?{string.Join("&", queryParams)}";
-                return await _apiService.GetAsync<List<CargoGroupSummaryDto>>(url);
+                return await _cargoGroupClient.GetCargoGroupsAsync<List<CargoGroupSummaryDto>>(
+                    type?.ToString(),
+                    clearanceType,
+                    page,
+                    pageSize);
             }
             catch (NickScanWebApp.Shared.Services.ApiException ex) when (ex.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase))
             {

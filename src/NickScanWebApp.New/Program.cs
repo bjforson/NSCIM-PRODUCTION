@@ -265,6 +265,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.IContainerDetailsServi
 // Shared services from NickScanWebApp.Shared
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.BLReviewService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerProcessingService>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerProcessingClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.SettingsService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.GatewayService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ExportService>();
@@ -273,6 +274,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.ManualBoeClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageProcessingClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ScanAssetClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainersClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.EagleA25Client>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.SplitSelectionClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsDownloadQueueClient>();
@@ -314,6 +316,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsPayloadClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditReviewClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.DatabaseAdminClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditLogClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ReportsClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.VehicleImportClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsMetricsClient>();
 // App-specific services
