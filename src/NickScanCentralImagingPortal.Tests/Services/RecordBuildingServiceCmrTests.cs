@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -178,6 +179,74 @@ namespace NickScanCentralImagingPortal.Tests.Services
             Assert.Equal("New Consignee", updatedChild.ConsigneeName);
             Assert.Equal("Ready", updatedChild.Status);
             Assert.Equal("Ready", record.Status);
+        }
+
+        [Fact]
+        public async Task BuildOrUpdateRecordAsync_CmrOperationalKey_CreatesAndPromotesFromExistingCompletenessEvidence()
+        {
+            await using var provider = CreateProvider();
+            var scanImageAssetId = Guid.NewGuid();
+
+            await SeedCmrRowAsync(provider, new BOEDocument
+            {
+                Id = 120,
+                ClearanceType = "CMR",
+                RotationNumber = "26CMA000037",
+                ContainerNumber = "TEMU2527526",
+                BlNumber = "LGS0207682",
+                HouseBl = "HBL-CMR",
+                ConsigneeName = "CMR Consignee",
+                CreatedAt = DateTime.UtcNow.AddDays(-9),
+                UpdatedAt = DateTime.UtcNow.AddDays(-9)
+            });
+
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var appDb = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                appDb.ContainerCompletenessStatuses.Add(new ContainerCompletenessStatus
+                {
+                    ContainerNumber = "TEMU2527526",
+                    ScannerType = "ASE",
+                    InspectionId = "84830-a",
+                    ScanImageAssetId = scanImageAssetId,
+                    OriginalScanRecordId = 5786,
+                    SourceContainerLabel = "TEMU2527526, TIIU2732427",
+                    ScanDate = DateTime.UtcNow,
+                    HasScannerData = true,
+                    HasICUMSData = true,
+                    HasImageData = true,
+                    Status = "Complete",
+                    WorkflowStage = "ImageAnalysis"
+                });
+                await appDb.SaveChangesAsync();
+            }
+
+            Assert.True(CmrCompositeKeyHelper.TryCreate(
+                "26CMA000037",
+                "TEMU2527526",
+                "LGS0207682",
+                out var key));
+
+            var service = new RecordBuildingService(
+                provider.GetRequiredService<IServiceScopeFactory>(),
+                NullLogger<RecordBuildingService>.Instance);
+
+            await service.BuildOrUpdateRecordAsync(key.OperationalKey, includeCmrCompositeRecords: true);
+
+            await using var verifyScope = provider.CreateAsyncScope();
+            var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var record = await verifyDb.RecordCompletenessStatuses
+                .Include(r => r.ExpectedContainers)
+                .SingleAsync();
+            var child = Assert.Single(record.ExpectedContainers);
+
+            Assert.Equal(key.OperationalKey, record.DeclarationNumber);
+            Assert.Equal("Ready", record.Status);
+            Assert.Equal("ImageAnalysis", record.WorkflowStage);
+            Assert.Equal("Ready", child.Status);
+            Assert.Equal(scanImageAssetId, child.ScanImageAssetId);
+            Assert.Equal(5786, child.OriginalScanRecordId);
+            Assert.Equal("TEMU2527526, TIIU2732427", child.SourceContainerLabel);
         }
 
         private static ServiceProvider CreateProvider()

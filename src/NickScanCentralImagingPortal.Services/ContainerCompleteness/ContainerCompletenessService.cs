@@ -947,6 +947,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             {
                                 foreach (var (declaration, container) in readyDeclarations)
                                 {
+                                    await recordBuilder.BuildOrUpdateRecordAsync(declaration, _cmrCompositeProgressionEnabled, stoppingToken);
                                     await recordBuilder.PromoteContainerAndRecomputeAsync(declaration, container, stoppingToken);
                                 }
                                 _logger.LogInformation("{ServiceId} Promoted {Count} containers in records via event-driven path",
@@ -1822,11 +1823,12 @@ LIMIT {take} OFFSET {skip}";
             {
                 int imageCount = 0;
                 var normalizedContainer = NickScanCentralImagingPortal.Core.Utilities.ContainerNumberListMatcher.Normalize(containerNumber);
+                var normalizedScannerType = (scannerType ?? string.Empty).Trim().ToUpperInvariant();
 
                 var linkedAsset = await dbContext.SourceScanContainerLinks
                     .AsNoTracking()
                     .Where(link => link.NormalizedContainerNumber == normalizedContainer
-                        && link.ScannerType == scannerType)
+                        && link.ScannerType.ToUpper() == normalizedScannerType)
                     .OrderByDescending(link => link.UpdatedAtUtc)
                     .Select(link => new
                     {
@@ -1844,7 +1846,7 @@ LIMIT {take} OFFSET {skip}";
                     return (true, 1);
                 }
 
-                if (scannerType == "FS6000")
+                if (normalizedScannerType == "FS6000")
                 {
                     // Get scan ID for this container
                     var scan = await dbContext.FS6000Scans
@@ -1858,7 +1860,7 @@ LIMIT {take} OFFSET {skip}";
                             .CountAsync();
                     }
                 }
-                else if (scannerType == "ASE")
+                else if (normalizedScannerType == "ASE")
                 {
                     if (linkedAsset?.OriginalScanRecordId != null)
                     {
