@@ -4,7 +4,9 @@
 @page "/image-analysis/operations-dashboard"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesImageAnalysisView)]
 @using NickScanWebApp.New.Components.ImageAnalysis
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager NavManager
@@ -715,7 +717,7 @@
             }
 
             // Always send heartbeat via API to keep record alive
-            await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
+            await ReadinessClient.SendHeartbeatAsync(_userRole);
 
             // Also send via SignalR if connected and ready
             if (_readinessHub?.State == HubConnectionState.Connected && _isReadyForAssignment)
@@ -770,12 +772,7 @@
             }
             
             // Always send via API for persistence
-            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
-            {
-                Role = _userRole,
-                IsReady = ready,
-                SessionId = (string?)null
-            });
+            var response = await ReadinessClient.SetReadyAsync(_userRole, ready);
             
             Logger.LogInformation("✅ [FRONTEND] API readiness call succeeded");
             
@@ -836,9 +833,8 @@
             // Keep settings + my-assignments parallel, then gate the available-groups
             // request on the resolved assignment mode. /available is only valid in
             // UserClaim mode, so avoid creating a guaranteed 400 in Manual/Auto.
-            var roleQuery = Uri.EscapeDataString(_userRole);
-            var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
-            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>($"/api/image-analysis/my-assignments?role={roleQuery}");
+            var settingsTask = ManagementClient.GetServiceStateAsync<AnalysisSettingsDto>();
+            var assignmentsTask = WorkflowClient.GetMyAssignmentsAsync<MyAssignmentDto>(_userRole);
 
             var settings = await settingsTask;
             Console.WriteLine($"✅ [ImageAnalysis] Settings loaded: {settings != null}");
@@ -865,7 +861,7 @@
             {
                 // /available can still fail if the mode changes between calls; keep
                 // it isolated so assignment loading continues.
-                availableTask = TryGetAvailableAsync($"/api/image-analysis/available?role={roleQuery}");
+                availableTask = TryGetAvailableAsync(_userRole);
                 await Task.WhenAll(assignmentsTask, availableTask);
             }
             else
@@ -925,10 +921,9 @@
 
     // /available can fail if assignment mode changes during refresh. Decouple its
     // fault from Task.WhenAll so the rest of the workbench can still render.
-    private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
+    private Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string role)
     {
-        try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }
-        catch { return null; }
+        return WorkflowClient.TryGetAvailableAsync<MyAssignmentDto>(role);
     }
 
     private async Task ClaimGroup(MyAssignmentDto group)
@@ -936,7 +931,7 @@
         try
         {
             _isLoading = true;
-            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{group.GroupId}/claim", new { });
+            var response = await WorkflowClient.ClaimGroupAsync(group.GroupId);
             
             if (response != null)
             {
@@ -960,7 +955,7 @@
         try
         {
             _isLoading = true;
-            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{assignment.GroupIdentifier}/lease/renew", new { });
+            var response = await WorkflowClient.RenewLeaseAsync(assignment.GroupIdentifier);
             
             if (response != null)
             {

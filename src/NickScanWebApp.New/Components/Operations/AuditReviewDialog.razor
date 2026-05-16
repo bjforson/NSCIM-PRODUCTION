@@ -664,7 +664,11 @@
         var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
         if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
         {
-            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/lossless/{Uri.EscapeDataString(side)}";
+            return NickScanWebApp.Shared.Services.SplitSelectionClient.BuildResultImagePath(
+                splitJobId.Value,
+                splitResultId.Value.ToString(),
+                side,
+                lossless: true);
         }
 
         var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;

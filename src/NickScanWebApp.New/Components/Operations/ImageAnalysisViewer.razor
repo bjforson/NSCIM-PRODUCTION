@@ -1713,8 +1713,12 @@
         var side = resolution.EffectiveSplitSide;
         if (resolution.SplitJobId.HasValue && resolution.SplitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
         {
-            var cropRoute = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) ? "image" : "lossless";
-            return $"/api/image-splitter/jobs/{resolution.SplitJobId.Value}/results/{resolution.SplitResultId.Value}/{cropRoute}/{Uri.EscapeDataString(side)}";
+            var lossless = !string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase);
+            return NickScanWebApp.Shared.Services.SplitSelectionClient.BuildResultImagePath(
+                resolution.SplitJobId.Value,
+                resolution.SplitResultId.Value.ToString(),
+                side,
+                lossless);
         }
 
         var sourceScanId = resolution.EffectiveSourceScanId;

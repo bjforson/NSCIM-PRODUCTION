@@ -5,8 +5,7 @@
 @using NickScanCentralImagingPortal.Core.Constants
 @using System.Text.Json
 @using System.Text.Json.Serialization
-@inject NickScanWebApp.New.Services.ApiService ApiService
-@inject IHttpClientFactory HttpClientFactory
+@inject NickScanWebApp.Shared.Services.XrayInspectorClient XrayClient
 @inject NavigationManager Navigation
 @inject ISnackbar Snackbar
 @inject ILogger<XrayInspector> Logger
@@ -511,8 +510,7 @@
         _searchInFlight = true;
         try
         {
-            var url = $"/api/xray-inspector/search?q={Uri.EscapeDataString(_searchQuery)}&scanner={_searchScanner}&limit=50";
-            var json = await ApiService.GetAsync<SearchResponseDto>(url);
+            var json = await XrayClient.SearchAsync<SearchResponseDto>(_searchQuery, _searchScanner, 50);
             _searchResults = json?.Results ?? new();
         }
         catch (Exception ex)
@@ -550,7 +548,7 @@
 
         try
         {
-            var meta = await ApiService.GetAsync<ScanDetailsDto>($"/api/xray-inspector/scan/{scan.Scanner}/{scan.Id}");
+            var meta = await XrayClient.GetScanAsync<ScanDetailsDto>(scan.Scanner, scan.Id);
             try { ApplyMetadata(meta); }
             catch (Exception applyEx)
             {
@@ -570,8 +568,7 @@
             try
             {
                 var otherType = scan.Scanner == "ase" ? "fs6000" : "ase";
-                var url = $"/api/xray-inspector/search?q={Uri.EscapeDataString(scan.ContainerNumber)}&scanner={otherType}&limit=1";
-                var json = await ApiService.GetAsync<SearchResponseDto>(url);
+                var json = await XrayClient.SearchAsync<SearchResponseDto>(scan.ContainerNumber, otherType, 1);
                 if (json?.Results is { Count: > 0 })
                 {
                     _otherScannerHint = json.Results[0];
@@ -687,7 +684,7 @@
                 // way to preserve 16-bit fidelity on screen is to keep
                 // the uint16 buffer in JS and map to 8-bit via the
                 // current W/L every time the user drags.
-                var rawApiUrl = $"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}&format=bin";
+                var rawApiUrl = NickScanWebApp.Shared.Services.XrayInspectorClient.BuildImagePath(_selectedScan.Scanner, _selectedScan.Id, $"{qs}&format=bin");
                 var rawProxyUrl = BuildProxyUrl(rawApiUrl);
                 await JS.InvokeVoidAsync("XrayInspector.loadRaw16Image", "xray-canvas-host", rawProxyUrl);
             }
@@ -695,7 +692,7 @@
             {
                 // Cooked path: server produces an 8-bit PNG (clahe/percentile/
                 // log/gamma/window/colormap). Load via plain <img src>.
-                var innerApiUrl = $"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}";
+                var innerApiUrl = NickScanWebApp.Shared.Services.XrayInspectorClient.BuildImagePath(_selectedScan.Scanner, _selectedScan.Id, qs);
                 var proxyUrl = BuildProxyUrl(innerApiUrl);
 
                 var metaObj = new
@@ -805,7 +802,7 @@
                     x0, y0, x1, y1,
                     samples = 512
                 };
-                var resp = await ApiService.PostAsync<object, JsonElement>("/api/xray-inspector/analyze/line-profile", req);
+                var resp = await XrayClient.AnalyzeLineProfileAsync<JsonElement>(req);
                 if (resp.ValueKind == JsonValueKind.Object)
                 {
                     var mean = resp.GetProperty("mean").GetDouble();
@@ -825,7 +822,7 @@
                     roi = JsonSerializer.Deserialize<object>(roi.GetRawText()),
                     bins = 64
                 };
-                var resp = await ApiService.PostAsync<object, RoiStatsDto>("/api/xray-inspector/analyze/roi-stats", req);
+                var resp = await XrayClient.AnalyzeRoiStatsAsync<RoiStatsDto>(req);
                 if (resp is not null)
                 {
                     _latestRoiStats = resp;
@@ -854,13 +851,13 @@
                 case "edge-canny":
                     {
                         var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, method = "canny", low = 50.0, high = 150.0 };
-                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/edge", req);
+                        bytes = await XrayClient.AnalyzeEdgeBytesAsync(req);
                         break;
                     }
                 case "edge-sobel":
                     {
                         var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, method = "sobel", ksize = 5 };
-                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/edge", req);
+                        bytes = await XrayClient.AnalyzeEdgeBytesAsync(req);
                         break;
                     }
                 case "threshold":
@@ -869,19 +866,18 @@
                         var hi = _windowHi ?? 65535;
                         var mid = (lo + hi) / 2.0;
                         var req = new { scanner = _selectedScan.Scanner, id = _selectedScan.Id, channel = _channel, low = mid, high = (double?)null };
-                        bytes = await PostForBytesAsync("/api/xray-inspector/analyze/threshold", req);
+                        bytes = await XrayClient.AnalyzeThresholdBytesAsync(req);
                         break;
                     }
                 case "dual-energy-diff":
                     {
-                        var url = $"/api/xray-inspector/analyze/dual-energy-diff?scanner={_selectedScan.Scanner}&id={_selectedScan.Id}";
-                        bytes = await PostEmptyForBytesAsync(url);
+                        bytes = await XrayClient.AnalyzeDualEnergyDiffBytesAsync(_selectedScan.Scanner, _selectedScan.Id);
                         break;
                     }
                 case "composite":
                     {
                         // Composite is a GET — stream via ImageProxyController instead of base64
-                        var proxyUrl = BuildProxyUrl($"/api/xray-inspector/composite/{_selectedScan.Scanner}/{_selectedScan.Id}");
+                        var proxyUrl = BuildProxyUrl(NickScanWebApp.Shared.Services.XrayInspectorClient.BuildCompositePath(_selectedScan.Scanner, _selectedScan.Id));
                         await JS.InvokeVoidAsync("XrayInspector.loadImage", "xray-canvas-host", proxyUrl,
                             new { width = GetMetaInt("width"), height = GetMetaInt("height") });
                         Snackbar.Add("composite applied — use Analyze → Restore original view to revert", Severity.Info);
@@ -930,7 +926,7 @@
                 min_area = 100,
                 max_objects = 200
             };
-            var resp = await ApiService.PostAsync<object, DetectedObjectsResponseDto>("/api/xray-inspector/analyze/objects", req);
+            var resp = await XrayClient.AnalyzeObjectsAsync<DetectedObjectsResponseDto>(req);
             if (resp is null)
             {
                 Snackbar.Add("Object detection returned no response", Severity.Warning);
@@ -987,24 +983,6 @@
         StateHasChanged();
     }
 
-    private async Task<byte[]?> PostForBytesAsync(string url, object body)
-    {
-        var client = HttpClientFactory.CreateClient();
-        var baseUrl = Navigation.BaseUri.TrimEnd('/');
-        var resp = await client.PostAsJsonAsync($"{baseUrl}{url}", body);
-        if (!resp.IsSuccessStatusCode) return null;
-        return await resp.Content.ReadAsByteArrayAsync();
-    }
-
-    private async Task<byte[]?> PostEmptyForBytesAsync(string url)
-    {
-        var client = HttpClientFactory.CreateClient();
-        var baseUrl = Navigation.BaseUri.TrimEnd('/');
-        var resp = await client.PostAsync($"{baseUrl}{url}", new StringContent(""));
-        if (!resp.IsSuccessStatusCode) return null;
-        return await resp.Content.ReadAsByteArrayAsync();
-    }
-
     // ── Export actions ────────────────────────────────────────────
 
     private async Task DownloadRaw16()
@@ -1025,7 +1003,7 @@
         if (_selectedScan is null) return;
         try
         {
-            var bytes = await ApiService.GetBytesAsync($"/api/xray-inspector/vendor-jpeg/{_selectedScan.Scanner}/{_selectedScan.Id}");
+            var bytes = await XrayClient.GetVendorJpegBytesAsync(_selectedScan.Scanner, _selectedScan.Id);
             if (bytes is null) return;
             await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_vendor.jpg", "image/jpeg");
         }
@@ -1037,7 +1015,7 @@
         if (_selectedScan is null) return;
         try
         {
-            var bytes = await ApiService.GetBytesAsync($"/api/xray-inspector/image/{_selectedScan.Scanner}/{_selectedScan.Id}{qs}");
+            var bytes = await XrayClient.GetImageBytesAsync(_selectedScan.Scanner, _selectedScan.Id, qs);
             if (bytes is null) return;
             await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, filename, "image/png");
         }
@@ -1062,18 +1040,14 @@
                 channel = _channel,
                 rois = rois
             };
-            // Use HttpClient directly for CSV (non-JSON response)
-            var client = HttpClientFactory.CreateClient();
-            var baseUrl = Navigation.BaseUri.TrimEnd('/');
-            var resp = await client.PostAsJsonAsync($"{baseUrl}/api/xray-inspector/export/roi-csv", req);
-            if (resp.IsSuccessStatusCode)
+            var bytes = await XrayClient.ExportRoiCsvAsync(req);
+            if (bytes is { Length: > 0 })
             {
-                var bytes = await resp.Content.ReadAsByteArrayAsync();
                 await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_rois.csv", "text/csv");
             }
             else
             {
-                Snackbar.Add("CSV export failed: " + resp.StatusCode, Severity.Error);
+                Snackbar.Add("CSV export failed", Severity.Error);
             }
         }
         catch (Exception ex) { Snackbar.Add("CSV export error: " + ex.Message, Severity.Error); }
@@ -1094,17 +1068,14 @@
                 rois = rois,
                 include_composite = true
             };
-            var client = HttpClientFactory.CreateClient();
-            var baseUrl = Navigation.BaseUri.TrimEnd('/');
-            var resp = await client.PostAsJsonAsync($"{baseUrl}/api/xray-inspector/export/pdf-report", req);
-            if (resp.IsSuccessStatusCode)
+            var bytes = await XrayClient.ExportPdfReportAsync(req);
+            if (bytes is { Length: > 0 })
             {
-                var bytes = await resp.Content.ReadAsByteArrayAsync();
                 await JS.InvokeVoidAsync("XrayInspector.downloadBlob", bytes, $"{_selectedScan.ContainerNumber}_report.pdf", "application/pdf");
             }
             else
             {
-                Snackbar.Add("PDF export failed: " + resp.StatusCode, Severity.Error);
+                Snackbar.Add("PDF export failed", Severity.Error);
             }
         }
         catch (Exception ex) { Snackbar.Add("PDF export error: " + ex.Message, Severity.Error); }

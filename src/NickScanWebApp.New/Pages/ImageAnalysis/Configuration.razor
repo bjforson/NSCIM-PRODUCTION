@@ -3,10 +3,12 @@
 @attribute [Authorize(Policy = Permissions.PagesImageAnalysisManagement)]
 @implements IDisposable
 @using MudBlazor
+@using NickScanWebApp.Shared.Services
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.New.Services.DualNotificationService DualNotification
 @inject NavigationManager Nav
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 
 <MudPaper Class="pa-4">
     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
@@ -968,7 +970,7 @@
         StateHasChanged();
         try
         {
-            _waveMonitor = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+            _waveMonitor = await ManagementClient.GetWaveMonitorAsync<WaveMonitorResponse>();
         }
         catch (Exception ex)
         {
@@ -1087,7 +1089,10 @@
             var readyGroupsTask = SafeGetWithTimeout<List<ReadyGroup>>("/api/image-analysis-management/groups/ready", TimeSpan.FromSeconds(30));
             var activeAssignmentsTask = SafeGetWithTimeout<List<ActiveAssignment>>("/api/image-analysis-management/assignments", TimeSpan.FromSeconds(20));
             var statsTask = SafeGetWithTimeout<ManagementStats>("/api/image-analysis-management/stats", TimeSpan.FromSeconds(15));
-            var serviceStateTask = SafeGetWithTimeout<ServiceState>("/api/image-analysis-management/service-state", TimeSpan.FromSeconds(20));
+            var serviceStateTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.ServiceStatePath,
+                () => ManagementClient.GetServiceStateAsync<ServiceState>(),
+                TimeSpan.FromSeconds(20));
             var analystsTask = SafeGetWithTimeout<List<string>>("/api/image-analysis-management/analysts", TimeSpan.FromSeconds(15));
             
             // ✅ FIX: Wait for all tasks but don't fail if one times out - use WhenAll with error handling
@@ -1288,6 +1293,11 @@
 
     private async Task<T?> SafeGetWithTimeout<T>(string endpoint, TimeSpan timeout)
     {
+        return await SafeGetWithTimeout(endpoint, () => ApiService.GetAsync<T>(endpoint), timeout);
+    }
+
+    private async Task<T?> SafeGetWithTimeout<T>(string endpoint, Func<Task<T?>> apiCall, TimeSpan timeout)
+    {
         var startedUtc = DateTime.UtcNow;
         var attempt = 0;
         Exception? lastTransientException = null;
@@ -1303,7 +1313,7 @@
 
             try
             {
-                var apiTask = ApiService.GetAsync<T>(endpoint);
+                var apiTask = apiCall();
                 var delayTask = Task.Delay(remaining);
 
                 var completedTask = await Task.WhenAny(apiTask, delayTask);
@@ -1417,7 +1427,7 @@
             };
             
             var requestJson = System.Text.Json.JsonSerializer.Serialize(requestBody);
-            Console.WriteLine($"📤 POST /api/image-analysis-management/service-state");
+            Console.WriteLine($"📤 POST {ImageAnalysisManagementClient.ServiceStatePath}");
             Console.WriteLine($"   Request Body: {requestJson}");
             Console.WriteLine($"   ✅ Verify 'assignmentMode' in JSON is '{currentMode}'");
             
@@ -1451,7 +1461,7 @@
             object? response = null;
             try
             {
-                response = await ApiService.PostAsync<object, object>("/api/image-analysis-management/service-state", requestBody);
+                response = await ManagementClient.UpdateServiceStateAsync<object, object>(requestBody);
                 Console.WriteLine($"✅ POST request completed successfully");
             }
             catch (Exception apiEx)
@@ -1538,7 +1548,10 @@
             Console.WriteLine($"✅ LoadAll() completed. Current _assignmentMode: '{_assignmentMode}'");
             
             // ✅ FIX: Verify the assignment mode was actually saved
-            var serviceState = await SafeGet<ServiceState>("/api/image-analysis-management/service-state");
+            var serviceState = await SafeGetWithTimeout(
+                ImageAnalysisManagementClient.ServiceStatePath,
+                () => ManagementClient.GetServiceStateAsync<ServiceState>(),
+                TimeSpan.FromSeconds(20));
             if (serviceState != null)
             {
                 Console.WriteLine($"🔍 Verification: Expected={_assignmentMode}, Actual={serviceState.AssignmentMode}");

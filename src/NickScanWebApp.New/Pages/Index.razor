@@ -11,6 +11,8 @@
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ApiService ApiService
 @inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -617,7 +619,7 @@
     {
         try
         {
-            _readinessSnapshot = await ApiService.GetAsync<ReadinessSnapshotResponse>("/api/image-analysis/user/readiness-snapshot");
+            _readinessSnapshot = await ReadinessClient.GetReadinessSnapshotAsync<ReadinessSnapshotResponse>();
             // Compute age of oldest InAudit record so the banner can highlight SLA breaches
             try
             {
@@ -636,7 +638,7 @@
     {
         try
         {
-            var resp = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+            var resp = await ManagementClient.GetWaveMonitorAsync<WaveMonitorResponse>();
             if (resp != null)
             {
                 var parentDict = resp.ParentGroupStatusCounts ?? new List<StatusCount>();
