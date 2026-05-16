@@ -3471,6 +3471,12 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     }
 
                     var resolvedScannerType = parent.ScannerType ?? rcsForWave?.ScannerType ?? scannerFromCcs;
+                    var identityByContainer = await BuildWaveReadyContainerIdentityMapAsync(
+                        db,
+                        parent,
+                        rcsForWave?.Id,
+                        readyContainers,
+                        ct);
 
                     // Sprint 5G2 / B1 lock-the-door: redundant Status="Ready" removed (default value).
                     var waveGroup = new AnalysisGroup
@@ -3490,11 +3496,15 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     // Create AnalysisRecords for these containers
                     foreach (var wpc in readyContainers)
                     {
+                        identityByContainer.TryGetValue(NormalizeContainerKey(wpc.ContainerNumber), out var identity);
                         db.AnalysisRecords.Add(new AnalysisRecord
                         {
                             GroupId = waveGroup.Id,
                             ContainerNumber = wpc.ContainerNumber,
-                            ScannerType = resolvedScannerType,
+                            ScannerType = identity?.ScannerType ?? wpc.ScannerType ?? resolvedScannerType,
+                            ScanImageAssetId = identity?.ScanImageAssetId,
+                            OriginalScanRecordId = identity?.OriginalScanRecordId,
+                            SourceContainerLabel = identity?.SourceContainerLabel,
                             Status = "Ready",
                             CreatedAtUtc = DateTime.UtcNow
                         });
@@ -3563,6 +3573,121 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 }
             });
         }
+
+        private sealed record WaveReadyContainerIdentity(
+            Guid? ScanImageAssetId,
+            int? OriginalScanRecordId,
+            string? SourceContainerLabel,
+            string? ScannerType);
+
+        private static AnalysisRecord CreateAnalysisRecordFromReadyRecordChild(
+            Guid groupId,
+            RecordExpectedContainer child,
+            string? fallbackScannerType)
+        {
+            return new AnalysisRecord
+            {
+                GroupId = groupId,
+                ContainerNumber = child.ContainerNumber,
+                ScannerType = child.ScannerType ?? fallbackScannerType,
+                ScanImageAssetId = child.ScanImageAssetId,
+                OriginalScanRecordId = child.OriginalScanRecordId,
+                SourceContainerLabel = child.SourceContainerLabel,
+                Status = "Ready",
+                CreatedAtUtc = DateTime.UtcNow
+            };
+        }
+
+        private static async Task<Dictionary<string, WaveReadyContainerIdentity>> BuildWaveReadyContainerIdentityMapAsync(
+            ApplicationDbContext db,
+            AnalysisParentGroup parent,
+            int? recordCompletenessStatusId,
+            IReadOnlyCollection<WavePendingContainer> readyContainers,
+            CancellationToken ct)
+        {
+            var containerNumbers = readyContainers
+                .Select(w => w.ContainerNumber)
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim().ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var identityByContainer = new Dictionary<string, WaveReadyContainerIdentity>(StringComparer.OrdinalIgnoreCase);
+            if (containerNumbers.Count == 0)
+                return identityByContainer;
+
+            if (recordCompletenessStatusId.HasValue)
+            {
+                var recordIdentities = await db.RecordExpectedContainers
+                    .AsNoTracking()
+                    .Where(e => e.RecordId == recordCompletenessStatusId.Value
+                             && containerNumbers.Contains(e.ContainerNumber))
+                    .Select(e => new
+                    {
+                        e.ContainerNumber,
+                        e.ScanImageAssetId,
+                        e.OriginalScanRecordId,
+                        e.SourceContainerLabel,
+                        e.ScannerType
+                    })
+                    .ToListAsync(ct);
+
+                foreach (var identity in recordIdentities)
+                {
+                    identityByContainer[NormalizeContainerKey(identity.ContainerNumber)] = new WaveReadyContainerIdentity(
+                        identity.ScanImageAssetId,
+                        identity.OriginalScanRecordId,
+                        identity.SourceContainerLabel,
+                        identity.ScannerType);
+                }
+            }
+
+            var ccsIdentities = await db.ContainerCompletenessStatuses
+                .AsNoTracking()
+                .Where(s => containerNumbers.Contains(s.ContainerNumber)
+                         && (string.IsNullOrEmpty(parent.GroupIdentifier)
+                             || s.GroupIdentifier == parent.GroupIdentifier
+                             || string.IsNullOrEmpty(s.GroupIdentifier))
+                         && (string.IsNullOrEmpty(parent.ScannerType)
+                             || s.ScannerType == parent.ScannerType
+                             || string.IsNullOrEmpty(s.ScannerType)))
+                .OrderByDescending(s => s.UpdatedAt)
+                .Select(s => new
+                {
+                    s.ContainerNumber,
+                    s.ScanImageAssetId,
+                    s.OriginalScanRecordId,
+                    s.SourceContainerLabel,
+                    s.ScannerType
+                })
+                .ToListAsync(ct);
+
+            foreach (var identity in ccsIdentities)
+            {
+                var key = NormalizeContainerKey(identity.ContainerNumber);
+                var candidate = new WaveReadyContainerIdentity(
+                    identity.ScanImageAssetId,
+                    identity.OriginalScanRecordId,
+                    identity.SourceContainerLabel,
+                    identity.ScannerType);
+
+                if (!identityByContainer.TryGetValue(key, out var existing)
+                    || (!HasCanonicalScanIdentity(existing) && HasCanonicalScanIdentity(candidate)))
+                {
+                    identityByContainer[key] = candidate;
+                }
+            }
+
+            return identityByContainer;
+        }
+
+        private static string NormalizeContainerKey(string? containerNumber)
+            => (containerNumber ?? string.Empty).Trim().ToUpperInvariant();
+
+        private static bool HasCanonicalScanIdentity(WaveReadyContainerIdentity identity)
+            => identity.ScanImageAssetId.HasValue
+                || identity.OriginalScanRecordId.HasValue
+                || !string.IsNullOrWhiteSpace(identity.SourceContainerLabel);
 
         /// <summary>
         /// Auto-closes parent groups that have been active for longer than WaveAutoCloseDays.
@@ -4764,11 +4889,13 @@ RETURNING (xmax = 0)::int;";
         {
             var minBatchSize = Math.Max(1, settings.WaveMinBatchSize);
 
-            // Pull eligible records: Ready (all containers ready) OR PartiallyReady with
-            // at least minBatchSize ready. Skip records that already have a group linked.
+            // Pull eligible records: Ready (all containers ready) OR, when wave processing
+            // is enabled, PartiallyReady with at least minBatchSize ready. Skip records
+            // that already have a group linked.
             var eligibleRecords = await db.RecordCompletenessStatuses
                 .AsNoTracking()
-                .Where(r => (r.Status == "Ready" || (r.Status == "PartiallyReady" && r.ContainersReady >= minBatchSize))
+                .Where(r => (r.Status == "Ready"
+                         || (settings.EnableWaveProcessing && r.Status == "PartiallyReady" && r.ContainersReady >= minBatchSize))
                          && r.ArchivedAtUtc == null
                          && !db.AnalysisGroups.Any(g => g.RecordCompletenessStatusId == r.Id))
                 .OrderByDescending(r => r.LastNewContainerAtUtc ?? r.CreatedAtUtc)
@@ -4895,14 +5022,10 @@ RETURNING (xmax = 0)::int;";
 
                             foreach (var child in readyChildren)
                             {
-                                db.AnalysisRecords.Add(new AnalysisRecord
-                                {
-                                    GroupId = group.Id,
-                                    ContainerNumber = child.ContainerNumber,
-                                    ScannerType = child.ScannerType ?? scannerType,
-                                    Status = "Ready",
-                                    CreatedAtUtc = DateTime.UtcNow
-                                });
+                                db.AnalysisRecords.Add(CreateAnalysisRecordFromReadyRecordChild(
+                                    group.Id,
+                                    child,
+                                    scannerType));
                             }
                             await db.SaveChangesAsync(ct);
 
