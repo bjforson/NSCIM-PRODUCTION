@@ -209,7 +209,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     "EnsureGroupStatusFromWorkflowStageAsync: Promoted group {GroupIdentifier} from {OldStatus} to AnalystCompleted and released {Count} analyst assignment(s)",
                     groupIdentifier, oldStatus, analystAssignments.Count);
 
-                _readyGroupsCache?.InvalidateCache("Audit", "AnalystCompleted");
+                if (_readyGroupsCache != null)
+                {
+                    await _readyGroupsCache.InvalidateCacheAsync(
+                        "Audit",
+                        AnalysisStatuses.AnalystCompleted,
+                        HttpContext?.RequestAborted ?? CancellationToken.None);
+                }
 
                 // Invalidate my-assignments cache so completed record disappears from analyst's queue immediately
                 foreach (var assignment in analystAssignments)
@@ -2522,7 +2528,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 await _context.SaveChangesAsync();
 
                                 // Invalidate ReadyGroupsCache so Audit assignment sees the new AnalystCompleted group immediately
-                                _readyGroupsCache?.InvalidateCache("Audit", "AnalystCompleted");
+                                if (_readyGroupsCache != null)
+                                {
+                                    await _readyGroupsCache.InvalidateCacheAsync(
+                                        "Audit",
+                                        AnalysisStatuses.AnalystCompleted,
+                                        HttpContext?.RequestAborted ?? CancellationToken.None);
+                                }
 
                                 // Invalidate my-assignments cache so completed record disappears from analyst's queue immediately
                                 foreach (var analystUsername in analystUsernames)

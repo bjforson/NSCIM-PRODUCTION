@@ -30,7 +30,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IMemoryCache _cache;
         private readonly ReadyGroupsCacheService? _readyGroupsCache;
         private const string ReadyGroupsCacheKey = "ready-groups";
-        private static readonly TimeSpan ReadyGroupsCacheExpiration = TimeSpan.FromMinutes(2); // ✅ FIX: Increased to 2 minutes to reduce database load
+        private static readonly TimeSpan ReadyGroupsCacheExpiration = TimeSpan.FromSeconds(30);
 
         // ✅ Helper class for BOE lookup results (only the 3 columns we need)
         private class BoeLookupResult
@@ -468,17 +468,23 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 });
             }
 
-            // ✅ PERFORMANCE: Cache the result for 45 seconds to reduce database load
-            var cacheOptions = new MemoryCacheEntryOptions
+            if (result.Count > 0)
             {
-                AbsoluteExpirationRelativeToNow = ReadyGroupsCacheExpiration,
-                Size = 1, // Each cache entry counts as 1 unit toward the 1000 limit
-                Priority = CacheItemPriority.Normal
-            };
-            _cache.Set(ReadyGroupsCacheKey, result, cacheOptions);
+                var cacheOptions = new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = ReadyGroupsCacheExpiration,
+                    Size = 1,
+                    Priority = CacheItemPriority.Normal
+                };
+                _cache.Set(ReadyGroupsCacheKey, result, cacheOptions);
 
-            _logger.LogDebug("✅ [CACHE SET] Cached ready groups ({Count} groups) for {Seconds} seconds",
-                result.Count, ReadyGroupsCacheExpiration.TotalSeconds);
+                _logger.LogDebug("✅ [CACHE SET] Cached ready groups ({Count} groups) for {Seconds} seconds",
+                    result.Count, ReadyGroupsCacheExpiration.TotalSeconds);
+            }
+            else
+            {
+                _logger.LogDebug("✅ [CACHE SKIP] Ready groups returned empty; not caching an empty management queue");
+            }
 
             return Ok(result);
         }

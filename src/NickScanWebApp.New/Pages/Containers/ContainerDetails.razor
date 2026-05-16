@@ -13,7 +13,7 @@
 @using Microsoft.JSInterop
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ContainerValidationClient ContainerValidationClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject NickScanWebApp.Shared.Services.ExportService ExportService
 @inject NickScanWebApp.Shared.Services.ManualBoeClient ManualBoeClient
@@ -643,7 +643,7 @@
         _actionInProgress = true;
         try
         {
-            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/approve/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            await ContainerValidationClient.ApproveAsync(ContainerNumber);
             if (containerData != null) containerData.ValidationStatus = "Validated";
             Snackbar.Add($"Container {ContainerNumber} approved and queued for ICUMS submission.", Severity.Success);
         }
@@ -663,7 +663,7 @@
         _actionInProgress = true;
         try
         {
-            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/reject/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            await ContainerValidationClient.RejectAsync(ContainerNumber);
             Snackbar.Add($"Container {ContainerNumber} rejected.", Severity.Warning);
         }
         catch (Exception ex)
@@ -682,7 +682,7 @@
         _actionInProgress = true;
         try
         {
-            await ApiService.PostAsync<object, JsonElement?>($"/api/ContainerValidation/approve/{Uri.EscapeDataString(ContainerNumber)}", new { });
+            await ContainerValidationClient.ApproveAsync(ContainerNumber);
             if (containerData != null) containerData.ValidationStatus = "Validated";
             Snackbar.Add($"Container {ContainerNumber} queued for ICUMS submission.", Severity.Success);
         }
@@ -797,7 +797,7 @@
         _actionInProgress = true;
         try
         {
-            var details = await ApiService.GetAsync<ContainerValidationDetails>($"/api/ContainerValidation/details/{Uri.EscapeDataString(ContainerNumber)}");
+            var details = await ContainerValidationClient.GetDetailsAsync<ContainerValidationDetails>(ContainerNumber);
             if (details == null)
             {
                 Snackbar.Add("No validation details returned.", Severity.Warning);

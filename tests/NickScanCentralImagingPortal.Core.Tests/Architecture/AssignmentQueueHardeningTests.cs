@@ -36,6 +36,52 @@ public class AssignmentQueueHardeningTests
         Assert.Contains("InvalidateAllCachesBestEffortAsync", cacheService);
     }
 
+    [Fact]
+    public void ReadyGroupsCacheService_DoesNotCacheEmptyQueuesByDefault()
+    {
+        var cacheService = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ReadyGroupsCacheService.cs");
+        var managementController = ReadRepoFile("src/NickScanCentralImagingPortal.API/Controllers/ImageAnalysisManagementController.cs");
+
+        Assert.Contains("_cacheEmptyResults", cacheService);
+        Assert.Contains("ReadyGroupsCache:CacheEmptyResults", cacheService);
+        Assert.Contains("readyGroups.Count > 0 || _cacheEmptyResults", cacheService);
+        Assert.Contains("[CACHE-SKIP] Empty ready groups", cacheService);
+        Assert.DoesNotContain("Cache empty result too", cacheService);
+
+        Assert.Contains("TimeSpan.FromSeconds(30)", managementController);
+        Assert.Contains("result.Count > 0", managementController);
+        Assert.Contains("[CACHE SKIP] Ready groups returned empty", managementController);
+        Assert.DoesNotContain("TimeSpan.FromMinutes(2)", managementController);
+    }
+
+    [Fact]
+    public void AssignmentStateChanges_AwaitReadyGroupsCacheInvalidation()
+    {
+        var orchestrator = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisOrchestratorService.cs");
+        var decisionController = ReadRepoFile("src/NickScanCentralImagingPortal.API/Controllers/ImageAnalysisDecisionController.cs");
+
+        Assert.DoesNotContain("_readyGroupsCache.InvalidateCache(roleName, eligibleStatus);", orchestrator);
+        Assert.Contains("await _readyGroupsCache.InvalidateCacheAsync(roleName, eligibleStatus, stoppingToken);", orchestrator);
+        Assert.Contains("AnalysisStatuses.Ready", orchestrator);
+        Assert.Contains("AnalysisStatuses.AnalystCompleted", orchestrator);
+
+        Assert.DoesNotContain("_readyGroupsCache?.InvalidateCache(\"Audit\", \"AnalystCompleted\")", decisionController);
+        Assert.Contains("await _readyGroupsCache.InvalidateCacheAsync(", decisionController);
+        Assert.Contains("AnalysisStatuses.AnalystCompleted", decisionController);
+    }
+
+    [Fact]
+    public void RedisCacheService_PrefixInvalidationRemovesTrackedKeys()
+    {
+        var cacheService = ReadRepoFile("src/NickScanCentralImagingPortal.Services/Caching/RedisCacheService.cs");
+
+        Assert.DoesNotContain("not fully implemented", cacheService);
+        Assert.Contains("ConcurrentDictionary<string, byte>", cacheService);
+        Assert.Contains("_knownKeys[key] = 0", cacheService);
+        Assert.Contains("StartsWith(prefix, StringComparison.Ordinal)", cacheService);
+        Assert.Contains("_knownKeys.TryRemove(key, out _)", cacheService);
+    }
+
     private static string ReadRepoFile(string relativePath, [CallerFilePath] string callerPath = "")
     {
         return File.ReadAllText(Path.Combine(ResolveRepoRoot(callerPath), relativePath));

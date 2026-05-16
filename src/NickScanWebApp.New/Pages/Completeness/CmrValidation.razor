@@ -3,7 +3,7 @@
 @using Microsoft.AspNetCore.Authorization
 @using NickScanWebApp.Shared.Services
 @attribute [Authorize(Policy = Permissions.PagesCmrValidation)]
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.CmrValidationClient CmrValidationClient
 @inject ILogger<CmrValidation> Logger
 @inject ISnackbar Snackbar
 @inject IConfiguration Configuration
@@ -363,7 +363,7 @@
         _loadingStatistics = true;
         try
         {
-            _statistics = await ApiService.GetAsync<CMRValidationStatistics>("/api/CMRValidation/statistics");
+            _statistics = await CmrValidationClient.GetStatisticsAsync<CMRValidationStatistics>();
             if (_statistics == null)
             {
                 Snackbar.Add("No statistics data available", Severity.Warning);
@@ -385,7 +385,7 @@
         _loadingProblematic = true;
         try
         {
-            _problematicRecords = await ApiService.GetAsync<List<ProblematicCMRRecord>>("/api/CMRValidation/problematic-records");
+            _problematicRecords = await CmrValidationClient.GetProblematicRecordsAsync<ProblematicCMRRecord>();
             if (_problematicRecords == null)
             {
                 _problematicRecords = new List<ProblematicCMRRecord>();
@@ -408,7 +408,7 @@
         _loadingQueue = true;
         try
         {
-            _queueStatus = await ApiService.GetAsync<CMRRedownloadQueueStatus>("/api/CMRValidation/queue-status");
+            _queueStatus = await CmrValidationClient.GetQueueStatusAsync<CMRRedownloadQueueStatus>();
             if (_queueStatus == null)
             {
                 Snackbar.Add("No queue status data available", Severity.Warning);
@@ -430,7 +430,7 @@
         _loadingQueueStats = true;
         try
         {
-            _queueStats = await ApiService.GetAsync<CMRRedownloadStatistics>("/api/CMRValidation/queue-statistics");
+            _queueStats = await CmrValidationClient.GetQueueStatisticsAsync<CMRRedownloadStatistics>();
             if (_queueStats == null)
             {
                 Snackbar.Add("No queue statistics data available", Severity.Warning);
@@ -452,7 +452,7 @@
         try
         {
             var request = new { ContainerNumber = containerNumber, Reason = "Manual queue from admin UI" };
-            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/queue-redownload", request);
+            var result = await CmrValidationClient.QueueRedownloadAsync<object>(request);
             
             if (result != null)
             {
@@ -476,7 +476,7 @@
         {
             var containerNumbers = _problematicRecords.Select(r => r.ContainerNumber).ToList();
             var request = new { ContainerNumbers = containerNumbers, Reason = "Batch queue from admin UI" };
-            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/queue-batch-redownload", request);
+            var result = await CmrValidationClient.QueueBatchRedownloadAsync<object>(request);
             
             if (result != null)
             {
@@ -496,7 +496,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, object>("/api/CMRValidation/process-queue", new { });
+            var result = await CmrValidationClient.ProcessQueueAsync<object>();
             
             if (result != null)
             {
@@ -517,7 +517,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, ClearCompletedResult>("/api/CMRValidation/clear-completed", new { });
+            var result = await CmrValidationClient.ClearCompletedAsync<ClearCompletedResult>();
             
             if (result != null)
             {

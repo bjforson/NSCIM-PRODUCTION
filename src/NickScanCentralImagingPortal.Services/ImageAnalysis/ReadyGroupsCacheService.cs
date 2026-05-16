@@ -31,6 +31,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
         private readonly IMemoryCache? _memoryCache;
         private readonly int _cacheExpirationSeconds;
         private readonly int _maxReadyGroups;
+        private readonly bool _cacheEmptyResults;
         private const string CacheKeyPrefix = "ReadyGroups";
         private const string MyAssignmentsCacheKeyPrefix = "my-assignments";
 
@@ -46,6 +47,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             _memoryCache = memoryCache;
             _cacheExpirationSeconds = _configuration.GetValue<int>("ReadyGroupsCache:ExpirationSeconds", 30);
             _maxReadyGroups = _configuration.GetValue<int>("ReadyGroupsCache:MaxGroups", 200);
+            _cacheEmptyResults = _configuration.GetValue<bool>("ReadyGroupsCache:CacheEmptyResults", false);
         }
 
         /// <summary>
@@ -128,11 +130,17 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
             if (!eligibleGroups.Any())
             {
-                // Cache empty result too (prevents repeated queries for empty results)
                 var emptyResult = new List<AnalysisGroup>();
-                if (cache != null)
+                if (cache != null && _cacheEmptyResults)
                 {
                     await cache.SetAsync(cacheKey, emptyResult, TimeSpan.FromSeconds(_cacheExpirationSeconds), cancellationToken);
+                    _logger.LogInformation("[CACHE-SET] Cached empty ready groups for {Role} with status {Status} (expires in {Seconds}s)",
+                        roleName, eligibleStatus, _cacheExpirationSeconds);
+                }
+                else if (cache != null)
+                {
+                    _logger.LogDebug("[CACHE-SKIP] Empty ready groups for {Role} with status {Status} not cached",
+                        roleName, eligibleStatus);
                 }
                 return emptyResult;
             }
@@ -401,12 +409,18 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 .Select(x => x.Group)
                 .ToList();
 
-            // Cache the result (distributed cache when available)
-            if (cache != null)
+            // Cache the result (distributed cache when available). Empty queues are deliberately
+            // uncached by default so a missed invalidation cannot hide newly-ready work.
+            if (cache != null && (readyGroups.Count > 0 || _cacheEmptyResults))
             {
                 await cache.SetAsync(cacheKey, readyGroups, TimeSpan.FromSeconds(_cacheExpirationSeconds), cancellationToken);
                 _logger.LogInformation("[CACHE-SET] Cached {Count} ready groups for {Role} with status {Status} (expires in {Seconds}s)",
                     readyGroups.Count, roleName, eligibleStatus, _cacheExpirationSeconds);
+            }
+            else if (cache != null)
+            {
+                _logger.LogDebug("[CACHE-SKIP] Empty ready groups for {Role} with status {Status} not cached",
+                    roleName, eligibleStatus);
             }
 
             return readyGroups;
