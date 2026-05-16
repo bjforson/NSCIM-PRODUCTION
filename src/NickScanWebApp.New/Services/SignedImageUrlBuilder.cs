@@ -117,6 +117,15 @@ public class SignedImageUrlBuilder
         return full.StartsWith(_apiBaseUrl) ? full[_apiBaseUrl.Length..] : full;
     }
 
+    /// <summary>
+    /// Wrap a raw API/image URL in the same-origin ImageProxyController route.
+    /// </summary>
+    public static string BuildImageProxyUrl(string targetUrl)
+    {
+        var bytes = Encoding.UTF8.GetBytes(targetUrl);
+        return $"/api/imageproxy?url={Uri.EscapeDataString(Convert.ToBase64String(bytes))}";
+    }
+
     // IDENTICAL to SignedImageUrlMiddleware.SignedImageUrl.ComputeSignature in the API.
     // Keep in sync; any change requires coordinated redeploy of both services.
     private static string ComputeSignature(byte[] key, string path, string exp, string uid)

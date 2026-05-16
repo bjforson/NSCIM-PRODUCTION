@@ -3,6 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationXrayInspector)]
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
+@using NickScanWebApp.New.Services
 @using System.Text.Json
 @using System.Text.Json.Serialization
 @inject NickScanWebApp.Shared.Services.XrayInspectorClient XrayClient
@@ -685,7 +686,7 @@
                 // the uint16 buffer in JS and map to 8-bit via the
                 // current W/L every time the user drags.
                 var rawApiUrl = NickScanWebApp.Shared.Services.XrayInspectorClient.BuildImagePath(_selectedScan.Scanner, _selectedScan.Id, $"{qs}&format=bin");
-                var rawProxyUrl = BuildProxyUrl(rawApiUrl);
+                var rawProxyUrl = SignedImageUrlBuilder.BuildImageProxyUrl(rawApiUrl);
                 await JS.InvokeVoidAsync("XrayInspector.loadRaw16Image", "xray-canvas-host", rawProxyUrl);
             }
             else
@@ -693,7 +694,7 @@
                 // Cooked path: server produces an 8-bit PNG (clahe/percentile/
                 // log/gamma/window/colormap). Load via plain <img src>.
                 var innerApiUrl = NickScanWebApp.Shared.Services.XrayInspectorClient.BuildImagePath(_selectedScan.Scanner, _selectedScan.Id, qs);
-                var proxyUrl = BuildProxyUrl(innerApiUrl);
+                var proxyUrl = SignedImageUrlBuilder.BuildImageProxyUrl(innerApiUrl);
 
                 var metaObj = new
                 {
@@ -721,19 +722,6 @@
     {
         if (_scanMeta != null && _scanMeta.TryGetValue(key, out var s) && int.TryParse(s, out var i)) return i;
         return 0;
-    }
-
-    /// <summary>
-    /// Wrap an inner API URL in the existing ImageProxyController so the
-    /// browser can load it directly via <img src> without a JWT cookie
-    /// (the proxy uses the WebApp's server-side HttpClient with the
-    /// configured API base URL). Eliminates the base64 SignalR round-trip
-    /// for every pixel render.
-    /// </summary>
-    private static string BuildProxyUrl(string innerApiUrl)
-    {
-        var b64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(innerApiUrl));
-        return $"/api/imageproxy?url={Uri.EscapeDataString(b64)}";
     }
 
     // ── Toolbar actions ────────────────────────────────────────────
@@ -877,7 +865,7 @@
                 case "composite":
                     {
                         // Composite is a GET — stream via ImageProxyController instead of base64
-                        var proxyUrl = BuildProxyUrl(NickScanWebApp.Shared.Services.XrayInspectorClient.BuildCompositePath(_selectedScan.Scanner, _selectedScan.Id));
+                        var proxyUrl = SignedImageUrlBuilder.BuildImageProxyUrl(NickScanWebApp.Shared.Services.XrayInspectorClient.BuildCompositePath(_selectedScan.Scanner, _selectedScan.Id));
                         await JS.InvokeVoidAsync("XrayInspector.loadImage", "xray-canvas-host", proxyUrl,
                             new { width = GetMetaInt("width"), height = GetMetaInt("height") });
                         Snackbar.Add("composite applied — use Analyze → Restore original view to revert", Severity.Info);

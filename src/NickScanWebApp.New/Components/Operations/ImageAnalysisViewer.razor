@@ -1882,7 +1882,7 @@
 
             if (ShouldProxyCurrentImageUrl(baseUrl))
             {
-                baseUrl = BuildImageProxyUrl(baseUrl);
+                baseUrl = SignedImageUrlBuilder.BuildImageProxyUrl(baseUrl);
             }
         }
 
@@ -1907,12 +1907,6 @@
     private bool IsEagleA25()
     {
         return string.Equals(ScannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildImageProxyUrl(string targetUrl)
-    {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(targetUrl);
-        return $"/api/imageproxy?url={Uri.EscapeDataString(Convert.ToBase64String(bytes))}";
     }
 
     /// <summary>
@@ -2020,7 +2014,7 @@
 
             if (ShouldProxyCurrentImageUrl(ImageUrl))
             {
-                ImageUrl = BuildImageProxyUrl(ImageUrl);
+                ImageUrl = SignedImageUrlBuilder.BuildImageProxyUrl(ImageUrl);
             }
         }
         else if (!string.IsNullOrEmpty(ContainerNumber))
@@ -2031,7 +2025,7 @@
                 resolvedPath ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
                 _currentUsername);
             ImageUrl = IsEagleA25()
-                ? BuildImageProxyUrl(signedUrl)
+                ? SignedImageUrlBuilder.BuildImageProxyUrl(signedUrl)
                 : signedUrl;
         }
         
@@ -2330,7 +2324,7 @@
                 _currentUsername);
             if (IsEagleA25Scan)
             {
-                rawUrl = BuildImageProxyUrl(rawUrl);
+                rawUrl = SignedImageUrlBuilder.BuildImageProxyUrl(rawUrl);
             }
             var meta = await JS.InvokeAsync<RawPlaneMeta>(
                 "Raw16BitViewer.loadAndRender",
@@ -2554,9 +2548,8 @@
     {
         var imageUrl = GetCurrentImageUrl();
         if (string.IsNullOrEmpty(imageUrl)) return "";
-        var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(imageUrl));
         var baseUri = new Uri(Navigation.Uri).GetLeftPart(UriPartial.Authority);
-        return $"{baseUri}/api/imageproxy?url={Uri.EscapeDataString(encoded)}";
+        return $"{baseUri}{SignedImageUrlBuilder.BuildImageProxyUrl(imageUrl)}";
     }
 
     private async Task EnsureCanvasInitialized()
