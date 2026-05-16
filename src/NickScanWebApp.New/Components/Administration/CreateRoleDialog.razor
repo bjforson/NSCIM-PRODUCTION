@@ -1,6 +1,6 @@
 @using NickScanWebApp.New.Services
 @using NickScanCentralImagingPortal.Core.Models
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RoleAdminClient RoleAdminClient
 @inject RoleLookupService RoleLookup
 @inject ISnackbar Snackbar
 @using MudBlazor
@@ -200,7 +200,7 @@
             };
 
             Console.WriteLine($"Creating role: {_roleName} ({_displayName})");
-            await ApiService.PostAsync<object, object>("/api/Roles", request);
+            await RoleAdminClient.CreateRoleAsync<object>(request);
             RoleLookup.ClearCache();
             await RoleLookup.GetRolesAsync(forceRefresh: true);
             

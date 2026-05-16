@@ -3,7 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesAccessReview)]
 @using MudBlazor
 @using System.Text.Json
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AccessReviewClient AccessReviewClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<AccessReview> Logger
@@ -144,7 +144,7 @@
         {
             _isLoading = true;
             
-            var response = await ApiService.GetAsync<AccessReviewResponse>("api/accessreview/users?includeInactive=false&page=1&pageSize=100");
+            var response = await AccessReviewClient.GetUsersAsync<AccessReviewResponse>();
             
             if (response != null && response.Users != null)
             {
@@ -306,10 +306,9 @@
 
         try
         {
-            // Use correct endpoint: api/accessreview/users/{userId}/approve
             // Send request body with ReviewerId (using 0 as placeholder - API will use current user from auth context)
             var requestBody = new { ReviewerId = 0, Notes = "Approved via Access Review page" };
-            await ApiService.PostAsync<object, object>($"api/accessreview/users/{userId}/approve", requestBody);
+            await AccessReviewClient.ApproveUserAsync<object>(userId, requestBody);
             Snackbar.Add("Access approved", Severity.Success);
             await LoadReviews();
         }
@@ -331,10 +330,9 @@
 
         try
         {
-            // Use correct endpoint: api/accessreview/users/{userId}/revoke (not reject)
             // Send request body with ReviewerId and Reason
             var requestBody = new { ReviewerId = 0, Reason = "Access revoked via Access Review page" };
-            await ApiService.PostAsync<object, object>($"api/accessreview/users/{userId}/revoke", requestBody);
+            await AccessReviewClient.RevokeUserAsync<object>(userId, requestBody);
             Snackbar.Add("Access revoked", Severity.Success);
             await LoadReviews();
         }

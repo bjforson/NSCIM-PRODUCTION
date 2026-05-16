@@ -1,5 +1,5 @@
 @using NickScanWebApp.New.Services
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RoleAdminClient RoleAdminClient
 @inject RoleLookupService RoleLookup
 @inject ISnackbar Snackbar
 @using MudBlazor
@@ -95,7 +95,7 @@
             };
 
             Console.WriteLine($"Updating role {RoleId}: {_displayName}");
-            await ApiService.PutAsync<object, object>($"/api/Roles/{RoleId}", request);
+            await RoleAdminClient.UpdateRoleAsync<object>(RoleId, request);
             RoleLookup.ClearCache();
             await RoleLookup.GetRolesAsync(forceRefresh: true);
             

@@ -1,7 +1,7 @@
 @page "/admin/permissions"
 @attribute [Authorize(Policy = Permissions.PagesAdminPermissions)]
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.PermissionAdminClient PermissionAdminClient
 @using NickScanCentralImagingPortal.Core.Constants
 
 <PageTitle>NICKSCAN ERP — NSCIS — Permissions</PageTitle>
@@ -204,7 +204,7 @@
             Console.WriteLine("🔍 [Permissions] Loading permissions from API...");
             
             // ✅ CONNECTED TO BACKEND API - Fetch permissions grouped by category
-            var result = await ApiService.GetAsync<Dictionary<string, List<PermissionDto>>>("/api/Permissions/by-category");
+            var result = await PermissionAdminClient.GetByCategoryAsync<Dictionary<string, List<PermissionDto>>>();
             
             if (result != null)
             {
