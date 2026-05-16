@@ -3,7 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationRecordCompleteness)]
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
 @inject NavigationManager Navigation
 @inject ISnackbar Snackbar
 @inject ILogger<RecordCompleteness> Logger
@@ -345,7 +345,7 @@
     {
         try
         {
-            _summary = await ApiService.GetAsync<RecordSummaryCounts>("/api/recordcompleteness/summary");
+            _summary = await RecordCompletenessClient.GetSummaryAsync<RecordSummaryCounts>();
         }
         catch (Exception ex)
         {
@@ -365,8 +365,12 @@
                 "All" => "",
                 _ => _statusFilter
             };
-            var url = $"/api/recordcompleteness?status={Uri.EscapeDataString(statusParam)}&search={Uri.EscapeDataString(_search)}&onlyMultiContainer={_onlyMultiContainer}&page={_currentPage}&pageSize={_pageSize}";
-            _results = await ApiService.GetAsync<RecordListResponse>(url);
+            _results = await RecordCompletenessClient.GetRecordsAsync<RecordListResponse>(
+                statusParam,
+                _search,
+                _onlyMultiContainer,
+                _currentPage,
+                _pageSize);
         }
         catch (Exception ex)
         {
@@ -406,7 +410,7 @@
         StateHasChanged();
         try
         {
-            _detail = await ApiService.GetAsync<RecordDetail>($"/api/recordcompleteness/{row.Id}");
+            _detail = await RecordCompletenessClient.GetDetailAsync<RecordDetail>(row.Id);
         }
         catch (Exception ex)
         {
@@ -422,7 +426,7 @@
         StateHasChanged();
         try
         {
-            _detail = await ApiService.GetAsync<RecordDetail>($"/api/recordcompleteness/by-declaration/{Uri.EscapeDataString(declarationNumber)}");
+            _detail = await RecordCompletenessClient.GetByDeclarationAsync<RecordDetail>(declarationNumber);
         }
         catch (Exception ex)
         {

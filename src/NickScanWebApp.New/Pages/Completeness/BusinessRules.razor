@@ -1,7 +1,7 @@
 @page "/validation/rules"
 @page "/completeness/rules"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationRules)]
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.BusinessRulesClient BusinessRulesClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @using NickScanCentralImagingPortal.Core.Constants
@@ -271,7 +271,7 @@
         _isLoading = true;
         try
         {
-            var result = await ApiService.GetAsync<List<BusinessRuleItem>>("/api/BusinessRules");
+            var result = await BusinessRulesClient.GetRulesAsync<BusinessRuleItem>();
             _rules = result ?? new List<BusinessRuleItem>();
             ApplyFilters();
         }
@@ -292,7 +292,7 @@
         _isSeeding = true;
         try
         {
-            var response = await ApiService.PostAsync<object, SeedResponse>("/api/BusinessRules/seed", new { });
+            var response = await BusinessRulesClient.SeedAsync<SeedResponse>();
             Snackbar.Add(response?.Message ?? "Default rules seeded successfully", Severity.Success);
             await LoadRules();
         }
@@ -356,7 +356,7 @@
         {
             Console.WriteLine($"🔄 Toggling rule {rule.Name} to {(newStatus ? "Active" : "Inactive")}");
             
-            await ApiService.PutAsync<object, object>($"/api/BusinessRules/{rule.Id}/status", new { IsActive = newStatus });
+            await BusinessRulesClient.UpdateStatusAsync(rule.Id, newStatus);
             
             rule.IsActive = newStatus;
             await LoadRules(); // Reload to get updated data
@@ -421,7 +421,7 @@
                         ExecutionOrder = createdRule.ExecutionOrder
                     };
 
-                    await ApiService.PostAsync<object, BusinessRuleItem>("/api/BusinessRules", request);
+                    await BusinessRulesClient.CreateAsync<BusinessRuleItem>(request);
                     await LoadRules(); // Reload to get the new rule
                     Snackbar.Add($"Rule '{createdRule.Name}' created successfully", Severity.Success);
                 }
@@ -497,7 +497,7 @@
                         ExecutionOrder = updatedRule.ExecutionOrder
                     };
 
-                    await ApiService.PutAsync<object, BusinessRuleItem>($"/api/BusinessRules/{updatedRule.Id}", request);
+                    await BusinessRulesClient.UpdateAsync<BusinessRuleItem>(updatedRule.Id, request);
                     await LoadRules(); // Reload to get updated data
                     Snackbar.Add($"Rule '{updatedRule.Name}' updated successfully", Severity.Success);
                 }
@@ -528,7 +528,7 @@
             try
             {
                 Console.WriteLine($"🗑️ Deleting rule: {rule.Name}");
-                await ApiService.DeleteAsync($"/api/BusinessRules/{rule.Id}");
+                await BusinessRulesClient.DeleteAsync(rule.Id);
                 
                 await LoadRules(); // Reload to reflect deletion
                 Snackbar.Add($"Rule '{rule.Name}' deleted", Severity.Success);

@@ -277,6 +277,11 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.SplitSelectionClient>(
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsDownloadQueueClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsBatchClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerCompletenessClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerValidationClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ConsolidatedCargoClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.CmrValidationClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.BusinessRulesClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

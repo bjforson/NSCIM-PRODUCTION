@@ -3,6 +3,10 @@
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
+@inject NickScanWebApp.Shared.Services.ContainerCompletenessClient ContainerCompletenessClient
+@inject NickScanWebApp.Shared.Services.ContainerValidationClient ContainerValidationClient
+@inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject IJSRuntime JS
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<ContainerCompletenessLegacy> Logger
@@ -1287,7 +1291,7 @@
     {
         try
         {
-            _recordSummary = await ApiService.GetAsync<RecordIntegritySummary>("/api/recordcompleteness/summary");
+            _recordSummary = await RecordCompletenessClient.GetSummaryAsync<RecordIntegritySummary>();
         }
         catch (Exception ex)
         {
@@ -1359,7 +1363,7 @@
         {
             // ✅ CONNECTED TO REAL API
             // Load statistics
-            var stats = await ApiService.GetAsync<CompletenessStatsApi>("/api/containercompleteness/stats");
+            var stats = await ContainerCompletenessClient.GetStatsAsync<CompletenessStatsApi>();
             if (stats != null)
             {
                 totalContainers = stats.TotalContainers;
@@ -1383,7 +1387,7 @@
             }
             
             // Load missing containers
-            var missingResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/missing");
+            var missingResponse = await ContainerCompletenessClient.GetMissingAsync<ApiMissingContainer>();
             if (missingResponse != null)
             {
                 allMissingData = missingResponse.Select(m => new MissingContainerData
@@ -1402,7 +1406,7 @@
             }
             
             // Load complete containers
-            var completeResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/complete");
+            var completeResponse = await ContainerCompletenessClient.GetCompleteAsync<ApiMissingContainer>();
             if (completeResponse != null)
             {
                 completeData = completeResponse.Select(m => new CompleteContainerData
@@ -1490,7 +1494,7 @@
         try
         {
             // ✅ CONNECTED TO REAL API
-            var response = await ApiService.PostAsync<object, object>("/api/containercompleteness/trigger-check", new { });
+            var response = await ContainerCompletenessClient.TriggerCheckAsync();
             
             lastCheckTime = DateTime.Now;
             Snackbar.Add("Completeness check completed successfully", Severity.Success);
@@ -1543,7 +1547,7 @@
         try
         {
             // ✅ CONNECTED TO REAL API
-            await ApiService.PostAsync<object, object>($"/api/containercompleteness/request-boe/{containerNumber}", new { });
+            await ContainerCompletenessClient.RequestBoeAsync(containerNumber);
             Snackbar.Add($"BOE request queued for {containerNumber}", Severity.Success);
             await LoadData(); // Refresh
         }
@@ -1560,7 +1564,7 @@
         {
             // ✅ CONNECTED TO REAL API
             var containerNumbers = selectedMissing.Select(m => m.ContainerNumber).ToList();
-            await ApiService.PostAsync<List<string>, object>("/api/containercompleteness/request-boe-bulk", containerNumbers);
+            await ContainerCompletenessClient.RequestBoeBulkAsync(containerNumbers);
             Snackbar.Add($"BOE requests queued for {selectedMissing.Count} containers", Severity.Success);
             ClearSelection();
             await LoadData(); // Refresh
@@ -1674,7 +1678,7 @@
             // ✅ FIXED: Use currentPage variable and optimized pageSize (100 records per page to avoid timeout)
             // 100 records balances performance and data visibility - can be adjusted based on server performance
             var queryParams = $"page={currentPage}&pageSize=100&search={searchTerm}&scannerType={filterScannerType}&status={filterStatus}";
-            var response = await ApiService.GetAsync<PagedValidationApiResponse>($"/api/containervalidation/pending?{queryParams}");
+            var response = await ContainerValidationClient.GetPendingAsync<PagedValidationApiResponse>(queryParams);
             
             if (response?.Data != null)
             {
@@ -1777,7 +1781,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/approve/{containerNumber}", new { });
+            var result = await ContainerValidationClient.ApproveAsync(containerNumber);
             
             if (result != null)
             {
@@ -1796,7 +1800,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/reject/{containerNumber}", new { });
+            var result = await ContainerValidationClient.RejectAsync(containerNumber);
             
             if (result != null)
             {
@@ -1889,7 +1893,7 @@
             
             // ✅ PERFORMANCE FIX: Reduced pageSize from 100 to 25 for faster loading
             // Load non-consolidated cargo groups
-            var nonConsolidatedResponse = await ApiService.GetAsync<List<NonConsolidatedCargoGroup>>("/api/consolidatedcargo/non-consolidated?pageSize=25");
+            var nonConsolidatedResponse = await ConsolidatedCargoClient.GetNonConsolidatedAsync<NonConsolidatedCargoGroup>(25);
             if (nonConsolidatedResponse != null)
             {
                 nonConsolidatedGroups = nonConsolidatedResponse;
@@ -1904,7 +1908,7 @@
             
             // ✅ PERFORMANCE FIX: Reduced pageSize from 100 to 25 for faster loading
             // Load consolidated cargo groups
-            var consolidatedResponse = await ApiService.GetAsync<List<ConsolidatedCargoGroup>>("/api/consolidatedcargo/consolidated?pageSize=25");
+            var consolidatedResponse = await ConsolidatedCargoClient.GetConsolidatedAsync<ConsolidatedCargoGroup>(25);
             if (consolidatedResponse != null)
             {
                 consolidatedGroups = consolidatedResponse;

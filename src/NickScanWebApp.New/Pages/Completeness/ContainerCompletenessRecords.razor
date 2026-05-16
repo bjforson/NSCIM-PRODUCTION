@@ -15,7 +15,8 @@
 @using NickScanWebApp.Shared.Services
 @using NickScanWebApp.New.Components.Containers
 @using NickScanWebApp.New.Components.Completeness
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ContainerValidationClient ContainerValidationClient
+@inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject IDialogService DialogService
@@ -753,7 +754,7 @@
             
             var queryString = string.Join("&", queryParams);
             Console.WriteLine($"🔍 API Call: /api/containervalidation/pending?{queryString}");
-            var response = await ApiService.GetAsync<PagedValidationApiResponse>($"/api/containervalidation/pending?{queryString}");
+            var response = await ContainerValidationClient.GetPendingAsync<PagedValidationApiResponse>(queryString);
             
             if (response?.Data != null)
             {
@@ -927,7 +928,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/approve/{containerNumber}", new { });
+            var result = await ContainerValidationClient.ApproveAsync(containerNumber);
             
             if (result != null)
             {
@@ -946,7 +947,7 @@
     {
         try
         {
-            var result = await ApiService.PostAsync<object, object>($"/api/containervalidation/reject/{containerNumber}", new { });
+            var result = await ContainerValidationClient.RejectAsync(containerNumber);
             
             if (result != null)
             {
@@ -1101,7 +1102,7 @@
             {
                 // ✅ PERFORMANCE FIX: Reduced pageSize from 100 to 25 for faster loading
                 // Load non-consolidated cargo groups
-                var nonConsolidatedResponse = await ApiService.GetAsync<List<NonConsolidatedCargoGroup>>("/api/consolidatedcargo/non-consolidated?pageSize=25");
+                var nonConsolidatedResponse = await ConsolidatedCargoClient.GetNonConsolidatedAsync<NonConsolidatedCargoGroup>(25);
                 if (nonConsolidatedResponse != null)
                 {
                     nonConsolidatedGroups = nonConsolidatedResponse;
@@ -1125,7 +1126,7 @@
             // Load consolidated cargo groups
             try
             {
-                var consolidatedResponse = await ApiService.GetAsync<List<ConsolidatedCargoGroup>>("/api/consolidatedcargo/consolidated?pageSize=25");
+                var consolidatedResponse = await ConsolidatedCargoClient.GetConsolidatedAsync<ConsolidatedCargoGroup>(25);
                 if (consolidatedResponse != null)
                 {
                     consolidatedGroups = consolidatedResponse;

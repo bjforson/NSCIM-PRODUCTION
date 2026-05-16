@@ -1,6 +1,8 @@
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ContainerCompletenessClient ContainerCompletenessClient
+@inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject IJSRuntime JS
 @inject AuthenticationStateProvider AuthStateProvider
 @implements IDisposable
@@ -1112,7 +1114,7 @@
         try
         {
             // Load missing containers
-            var missingResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/missing");
+            var missingResponse = await ContainerCompletenessClient.GetMissingAsync<ApiMissingContainer>();
             if (missingResponse != null)
             {
                 allMissingData = missingResponse.Select(m => new MissingContainerData
@@ -1128,7 +1130,7 @@
             }
             
             // Load complete containers
-            var completeResponse = await ApiService.GetAsync<List<ApiMissingContainer>>("/api/containercompleteness/complete");
+            var completeResponse = await ContainerCompletenessClient.GetCompleteAsync<ApiMissingContainer>();
             if (completeResponse != null)
             {
                 completeData = completeResponse.Select(m => new CompleteContainerData
@@ -1158,14 +1160,14 @@
         {
             Console.WriteLine("[NewCompletenessModel] Loading cargo groups with completeness...");
             
-            var nonConsolidatedResponse = await ApiService.GetAsync<List<NonConsolidatedCargoGroup>>("/api/consolidatedcargo/non-consolidated?pageSize=500");
+            var nonConsolidatedResponse = await ConsolidatedCargoClient.GetNonConsolidatedAsync<NonConsolidatedCargoGroup>(500);
             if (nonConsolidatedResponse != null)
             {
                 nonConsolidatedGroupsWithCompleteness = nonConsolidatedResponse.Select(g => CalculateNonConsolidatedCompleteness(g)).ToList();
                 Console.WriteLine($"[NewCompletenessModel] Loaded {nonConsolidatedGroupsWithCompleteness.Count} non-consolidated cargo groups");
             }
             
-            var consolidatedResponse = await ApiService.GetAsync<List<ConsolidatedCargoGroup>>("/api/consolidatedcargo/consolidated?pageSize=500");
+            var consolidatedResponse = await ConsolidatedCargoClient.GetConsolidatedAsync<ConsolidatedCargoGroup>(500);
             if (consolidatedResponse != null)
             {
                 consolidatedGroupsWithCompleteness = consolidatedResponse.Select(g => CalculateConsolidatedCompleteness(g)).ToList();
@@ -1512,7 +1514,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/containercompleteness/request-boe/{containerNumber}", new { });
+            await ContainerCompletenessClient.RequestBoeAsync(containerNumber);
             Snackbar.Add($"BOE request queued for {containerNumber}", Severity.Success);
             await RefreshData();
         }
