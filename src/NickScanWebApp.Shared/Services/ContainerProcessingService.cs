@@ -10,14 +10,14 @@ namespace NickScanWebApp.Shared.Services
     /// </summary>
     public class ContainerProcessingService
     {
-        private readonly ApiService _apiService;
+        private readonly ContainerProcessingClient _containerProcessingClient;
         private readonly ILogger<ContainerProcessingService> _logger;
 
         public ContainerProcessingService(
-            ApiService apiService,
+            ContainerProcessingClient containerProcessingClient,
             ILogger<ContainerProcessingService> logger)
         {
-            _apiService = apiService;
+            _containerProcessingClient = containerProcessingClient;
             _logger = logger;
         }
 
@@ -25,16 +25,14 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = $"/api/ContainerProcessing/groups?page={page}&pageSize={pageSize}";
-
-                if (!string.IsNullOrEmpty(clearanceType))
-                {
-                    endpoint += $"&clearanceType={clearanceType}";
-                }
+                var endpoint = ContainerProcessingClient.BuildGroupsPath(clearanceType, page, pageSize);
 
                 _logger.LogInformation("Fetching container groups from {Endpoint}", endpoint);
 
-                var groups = await _apiService.GetAsync<List<ContainerGroupDto>>(endpoint) ?? new List<ContainerGroupDto>();
+                var groups = await _containerProcessingClient.GetGroupsAsync<List<ContainerGroupDto>>(
+                    clearanceType,
+                    page,
+                    pageSize) ?? new List<ContainerGroupDto>();
 
                 _logger.LogInformation("Fetched {Count} container groups", groups.Count);
 
@@ -51,13 +49,11 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = "/api/ContainerProcessing/summary";
-
                 _logger.LogInformation("Fetching container processing summary");
 
                 try
                 {
-                    var summary = await _apiService.GetAsync<ContainerProcessingSummaryDto>(endpoint);
+                    var summary = await _containerProcessingClient.GetSummaryAsync<ContainerProcessingSummaryDto>();
                     _logger.LogInformation("Fetched summary - {Total} total containers", summary?.TotalContainers ?? 0);
                     return summary;
                 }

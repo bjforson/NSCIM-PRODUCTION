@@ -30,7 +30,7 @@
 @using System.Security.Claims
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NickScanWebApp.New.Services.ReadinessKeepaliveCoordinator KeepaliveCoordinator
 @inject ILogger<ReadinessKeepalive> Logger
@@ -150,8 +150,7 @@
         UserReadinessSnapshot? snap = null;
         try
         {
-            snap = await ApiService.GetAsync<UserReadinessSnapshot>(
-                $"/api/image-analysis/user/readiness?role={role}");
+            snap = await ReadinessClient.GetReadinessAsync<UserReadinessSnapshot>(role);
         }
         catch (Exception ex)
         {
@@ -163,12 +162,7 @@
         {
             try
             {
-                await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
-                {
-                    Role = role,
-                    IsReady = true,
-                    SessionId = (string?)null
-                });
+                await ReadinessClient.SetReadyAsync(role, true);
                 Logger.LogInformation("[KEEPALIVE] Auto-flipped {Role} Ready=true on init (was {Was})",
                     role, snap is null ? "unknown" : "false");
             }
@@ -182,7 +176,7 @@
         // (because the user manually toggled off), a fresh heartbeat keeps the row alive.
         try
         {
-            await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = role });
+            await ReadinessClient.SendHeartbeatAsync(role);
         }
         catch (Exception ex)
         {
@@ -244,7 +238,7 @@
 
             try
             {
-                await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = role });
+                await ReadinessClient.SendHeartbeatAsync(role);
             }
             catch (Exception ex)
             {

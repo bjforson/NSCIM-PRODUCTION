@@ -1,9 +1,8 @@
 @using NickScanWebApp.New.Components.Containers
 @using MudBlazor
-@inject HttpClient Http
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AseClient AseClient
 
 
 <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
@@ -308,7 +307,7 @@
             Console.WriteLine("🔍 Loading ASE scanner data from API...");
             
             // Load ASE sync status and statistics
-            var syncStatus = await ApiService.GetAsync<AseSyncStatus>("/api/Ase/sync-status");
+            var syncStatus = await AseClient.GetSyncStatusAsync<AseSyncStatus>();
             if (syncStatus != null)
             {
                 _totalScans = syncStatus.TotalScans;
@@ -318,7 +317,10 @@
             }
             
             // Load recent scans
-            var scansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=20");
+            var scansResponse = await AseClient.GetScansAsync<AseScanResponse>(new NickScanWebApp.Shared.Services.AseScanQuery
+            {
+                PageSize = 20
+            });
             if (scansResponse?.Data != null)
             {
                 _recentScans = scansResponse.Data.Select(s => new AseScanRecord
@@ -339,7 +341,7 @@
             }
             
             // Load stats for chart
-            var stats = await ApiService.GetAsync<List<AseDailyStats>>("/api/Ase/stats");
+            var stats = await AseClient.GetStatsAsync<List<AseDailyStats>>();
             if (stats != null && stats.Any())
             {
                 GenerateChartData(stats);
@@ -418,29 +420,14 @@
         _isLoading = true;
         try
         {
-            var queryParams = new List<string>
+            var response = await AseClient.GetScansAsync<AseScanResponse>(new NickScanWebApp.Shared.Services.AseScanQuery
             {
-                $"page={state.Page + 1}",
-                $"pageSize={state.PageSize}"
-            };
-            
-            if (!string.IsNullOrEmpty(_searchContainerNumber))
-            {
-                queryParams.Add($"containerNumber={Uri.EscapeDataString(_searchContainerNumber)}");
-            }
-            
-            if (_startDate.HasValue)
-            {
-                queryParams.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
-            }
-            
-            if (_endDate.HasValue)
-            {
-                queryParams.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
-            }
-            
-            var url = $"/api/Ase/scans?{string.Join("&", queryParams)}";
-            var response = await ApiService.GetAsync<AseScanResponse>(url);
+                Page = state.Page + 1,
+                PageSize = state.PageSize,
+                ContainerNumber = _searchContainerNumber,
+                StartDate = _startDate,
+                EndDate = _endDate
+            });
             
             if (response != null)
             {

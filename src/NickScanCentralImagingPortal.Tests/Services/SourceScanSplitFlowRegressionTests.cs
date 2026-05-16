@@ -208,8 +208,8 @@ public sealed class SourceScanSplitFlowRegressionTests
         await using var db = NewInMemoryDb();
         var groupId = Guid.NewGuid();
         var jobId = Guid.NewGuid();
-        var smallerMain = new byte[] { 1, 2, 3 };
-        var largerMain = new byte[] { 4, 5, 6, 7, 8 };
+        var smallerMain = new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 };
+        var largerMain = new byte[] { 0xFF, 0xD8, 0xFF, 0x00, 0xD9 };
         var splitter = new StubImageSplitterService
         {
             SubmittedJob = new SplitJobReference(jobId, "pending"),
@@ -603,13 +603,15 @@ public sealed class SourceScanSplitFlowRegressionTests
     private static TwoContainerSplitIntakeService NewSplitIntake(
         ApplicationDbContext db,
         IImageSplitterService splitter,
-        IASEImageConverterService aseConverter)
+        IASEImageConverterService aseConverter,
+        IImageProcessingService? imageProcessing = null)
     {
         return new TwoContainerSplitIntakeService(
             db,
             splitter,
             Array.Empty<IScanFormatAdapter>(),
             aseConverter,
+            imageProcessing ?? new ThrowingImageProcessingService(),
             new ConfigurationBuilder().Build(),
             NullLogger<TwoContainerSplitIntakeService>.Instance);
     }

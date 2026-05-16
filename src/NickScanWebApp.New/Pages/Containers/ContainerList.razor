@@ -3,7 +3,7 @@
 @using NickScanWebApp.New.Components.Containers
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ContainersClient ContainersClient
 @inject NavigationManager NavigationManager
 
 <PageTitle>NICKSCAN ERP — NSCIS — Containers</PageTitle>
@@ -229,13 +229,13 @@
 
         try
         {
-            var queryParams = new List<string> { $"page={_currentPage}", $"pageSize={_pageSize}" };
-            if (!string.IsNullOrWhiteSpace(_search)) queryParams.Add($"search={Uri.EscapeDataString(_search)}");
-            if (!string.IsNullOrWhiteSpace(_stageFilter)) queryParams.Add($"stage={Uri.EscapeDataString(_stageFilter)}");
-            if (!string.IsNullOrWhiteSpace(_cargoTypeFilter)) queryParams.Add($"cargoType={Uri.EscapeDataString(_cargoTypeFilter)}");
-            if (!string.IsNullOrWhiteSpace(_clearanceFilter)) queryParams.Add($"clearanceType={Uri.EscapeDataString(_clearanceFilter)}");
-
-            var result = await ApiService.GetAsync<EnrichedResponse>($"/api/containers/enriched?{string.Join("&", queryParams)}");
+            var result = await ContainersClient.GetEnrichedAsync<EnrichedResponse>(
+                _currentPage,
+                _pageSize,
+                _search,
+                _stageFilter,
+                _cargoTypeFilter,
+                _clearanceFilter);
             if (result != null)
             {
                 _groups = result.Groups ?? new();

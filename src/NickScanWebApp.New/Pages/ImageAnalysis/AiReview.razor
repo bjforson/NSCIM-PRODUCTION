@@ -4,7 +4,7 @@
 @page "/operations/ai-shadow-dashboard"
 @page "/image-analysis/ai-shadow"
 @attribute [Authorize(Policy = Permissions.ControllersAiWorkflow)]
-@inject HttpClient Http
+@inject NickScanWebApp.Shared.Services.AiWorkflowClient AiWorkflowClient
 @inject ISnackbar Snackbar
 @inject IConfiguration Config
 @inject NavigationManager Navigation
@@ -385,11 +385,7 @@
         _suggestionsLoading = true;
         try
         {
-            var url = $"api/aiworkflow/image/suggestions?status={_statusFilter}";
-            if (!string.IsNullOrWhiteSpace(_search))
-                url += $"&containerNumber={Uri.EscapeDataString(_search)}";
-
-            var response = await Http.GetAsync(url);
+            using var response = await AiWorkflowClient.GetImageSuggestionsResponseAsync(_statusFilter, _search);
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();
@@ -425,7 +421,7 @@
     {
         try
         {
-            var response = await Http.PostAsJsonAsync($"api/aiworkflow/image/suggestions/{id}/resolve",
+            using var response = await AiWorkflowClient.ResolveImageSuggestionResponseAsync(id,
                 new { Decision = decision });
 
             if (response.IsSuccessStatusCode)
@@ -445,7 +441,7 @@
     {
         try
         {
-            var response = await Http.PostAsJsonAsync($"api/aiworkflow/image/suggestions/{id}/resolve",
+            using var response = await AiWorkflowClient.ResolveImageSuggestionResponseAsync(id,
                 new { Decision = (string?)null, CorrectionReason = "Dismissed by analyst" });
 
             if (response.IsSuccessStatusCode)
@@ -546,7 +542,7 @@
     {
         try
         {
-            var response = await Http.GetAsync("api/aiworkflow/shadow/metrics");
+            using var response = await AiWorkflowClient.GetShadowMetricsResponseAsync();
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();

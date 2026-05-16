@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.DatabaseAdminClient DatabaseAdminClient
 @inject ISnackbar Snackbar
 @inject ILogger<DatabasePanel> Logger
 
@@ -141,12 +141,12 @@
         try
         {
             _isLoading = true;
-            _connections = await ApiService.GetAsync<List<DatabaseConnectionDto>>("/api/DatabaseAdmin/connections");
+            _connections = await DatabaseAdminClient.GetConnectionsAsync<List<DatabaseConnectionDto>>();
             
             // Load tables
             try
             {
-                _tables = await ApiService.GetAsync<List<DatabaseTableDto>>("/api/DatabaseAdmin/tables");
+                _tables = await DatabaseAdminClient.GetTablesAsync<List<DatabaseTableDto>>();
             }
             catch { _tables = null; }
         }
@@ -173,7 +173,7 @@
         try
         {
             var request = new { Query = _queryText, ConnectionName = _selectedConnection };
-            _queryResult = await ApiService.PostAsync<object, QueryResultDto>("/api/DatabaseAdmin/query", request);
+            _queryResult = await DatabaseAdminClient.ExecuteQueryAsync<object, QueryResultDto>(request);
             Snackbar.Add("Query executed successfully", Severity.Success);
         }
         catch (Exception ex)

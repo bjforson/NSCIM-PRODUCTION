@@ -1,7 +1,7 @@
 @using MudBlazor
 @using Microsoft.AspNetCore.SignalR.Client
 @implements IAsyncDisposable
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ModuleMonitoringClient ModuleMonitoringClient
 @inject NavigationManager NavManager
 @inject IConfiguration Configuration
 @inject IWebHostEnvironment HostEnv
@@ -15,8 +15,8 @@
     (introduced 2026-05-07 with Sprint 5G2 / Bridge B1) through two API
     endpoints + a SignalR broadcast:
 
-      * GET /api/_module/queues/throughput?minutes=15
-      * GET /api/_module/queues/recent?limit=50
+      * queue throughput
+      * recent queue items
       * Hub event "AnalysisGroupTransition" on /hubs/image-analysis-dashboard
 
     The result is a real-time, always-on pipeline view: stage depths, Δ-last-60s
@@ -59,7 +59,7 @@
 else if (_throughput is null)
 {
     <MudAlert Severity="Severity.Warning" Class="mb-4">
-        Failed to load throughput from /api/_module/queues/throughput. Check API logs.
+        Failed to load throughput from @NickScanWebApp.Shared.Services.ModuleMonitoringClient.BuildQueueThroughputPath(WindowMinutes). Check API logs.
     </MudAlert>
 }
 else
@@ -315,8 +315,12 @@ else
 
     private async Task LoadInitialAsync()
     {
-        var throughputTask = SafeGetAsync<ThroughputResponse>($"/api/_module/queues/throughput?minutes={WindowMinutes}");
-        var recentTask = SafeGetAsync<RecentResponse>($"/api/_module/queues/recent?limit={RecentLimit}");
+        var throughputTask = SafeGetAsync(
+            NickScanWebApp.Shared.Services.ModuleMonitoringClient.BuildQueueThroughputPath(WindowMinutes),
+            () => ModuleMonitoringClient.GetQueueThroughputAsync<ThroughputResponse>(WindowMinutes));
+        var recentTask = SafeGetAsync(
+            NickScanWebApp.Shared.Services.ModuleMonitoringClient.BuildRecentQueueItemsPath(RecentLimit),
+            () => ModuleMonitoringClient.GetRecentQueueItemsAsync<RecentResponse>(RecentLimit));
         await Task.WhenAll(throughputTask, recentTask);
         ApplyThroughput(await throughputTask);
         ApplyRecent(await recentTask);
@@ -325,7 +329,9 @@ else
 
     private async Task LoadThroughputAsync()
     {
-        var t = await SafeGetAsync<ThroughputResponse>($"/api/_module/queues/throughput?minutes={WindowMinutes}");
+        var t = await SafeGetAsync(
+            NickScanWebApp.Shared.Services.ModuleMonitoringClient.BuildQueueThroughputPath(WindowMinutes),
+            () => ModuleMonitoringClient.GetQueueThroughputAsync<ThroughputResponse>(WindowMinutes));
         if (t is not null)
         {
             ApplyThroughput(t);
@@ -336,7 +342,9 @@ else
 
     private async Task LoadRecentAsync()
     {
-        var r = await SafeGetAsync<RecentResponse>($"/api/_module/queues/recent?limit={RecentLimit}");
+        var r = await SafeGetAsync(
+            NickScanWebApp.Shared.Services.ModuleMonitoringClient.BuildRecentQueueItemsPath(RecentLimit),
+            () => ModuleMonitoringClient.GetRecentQueueItemsAsync<RecentResponse>(RecentLimit));
         if (r is not null)
         {
             ApplyRecent(r);
@@ -345,11 +353,11 @@ else
         }
     }
 
-    private async Task<T?> SafeGetAsync<T>(string endpoint)
+    private async Task<T?> SafeGetAsync<T>(string endpoint, Func<Task<T?>> loader)
     {
         try
         {
-            return await ApiService.GetAsync<T>(endpoint);
+            return await loader();
         }
         catch (Exception ex)
         {
@@ -416,7 +424,7 @@ else
     {
         // Depth here = transitions INTO that stage in the throughput window
         // (this is "throughput", not "currently-resident depth"; the Module Queues
-        // tab covers steady-state depth via /api/_module/queues).
+        // tab covers steady-state depth via the module queue endpoint).
         foreach (var stage in _stages)
         {
             _stageDepths[stage] = _throughput?.ByTransition?

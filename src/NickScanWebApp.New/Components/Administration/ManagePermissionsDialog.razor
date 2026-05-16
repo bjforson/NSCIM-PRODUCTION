@@ -1,4 +1,5 @@
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.PermissionAdminClient PermissionAdminClient
+@inject NickScanWebApp.Shared.Services.RoleAdminClient RoleAdminClient
 @inject ISnackbar Snackbar
 @using MudBlazor
 
@@ -155,7 +156,7 @@
         try
         {
             Console.WriteLine("🔄 Loading all available permissions...");
-            var permissionsFromApi = await ApiService.GetAsync<List<PermissionDto>>("/api/Permissions/all");
+            var permissionsFromApi = await PermissionAdminClient.GetAllAsync<List<PermissionDto>>();
             if (permissionsFromApi != null && permissionsFromApi.Any())
             {
                 _allPermissions = permissionsFromApi.Select(p => new PermissionItem
@@ -175,7 +176,7 @@
                 List<string>? rolePermissions = null;
                 try
                 {
-                    rolePermissions = await ApiService.GetAsync<List<string>>($"/api/Roles/{RoleId}/permissions");
+                    rolePermissions = await RoleAdminClient.GetRolePermissionsAsync<List<string>>(RoleId);
                 }
                 catch (Exception ex)
                 {
@@ -282,7 +283,7 @@
             };
 
             Console.WriteLine($"Updating permissions for role {RoleId}: {_selectedPermissions.Count} permissions");
-            await ApiService.PutAsync<object, object>($"/api/Roles/{RoleId}/permissions", request);
+            await RoleAdminClient.UpdateRolePermissionsAsync<object>(RoleId, request);
             
             Snackbar.Add($"✅ Permissions updated successfully! {_selectedPermissions.Count} permissions assigned. Close dialog to continue.", Severity.Success);
             

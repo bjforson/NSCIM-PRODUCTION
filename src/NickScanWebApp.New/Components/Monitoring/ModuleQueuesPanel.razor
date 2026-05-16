@@ -1,9 +1,9 @@
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ModuleMonitoringClient ModuleMonitoringClient
 @inject ILogger<ModuleQueuesPanel> Logger
 
 @*
-    Phase B / B3 (2026-05-09) — surfaces /api/_module/queues so operators see the
+    Phase B / B3 (2026-05-09) — surfaces module queue depth so operators see the
     in-flight queue depths, the audit-stage backlog, and (most importantly) the
     audit-role userreadiness pool. The audit-queue empty symptom is operationally
     a dead-mans-switch on this pool — when no auditor is IsReady=true with a
@@ -24,7 +24,7 @@
 }
 else if (_response is null)
 {
-    <MudAlert Severity="Severity.Warning">Failed to load queue depths from /api/_module/queues. Check API logs.</MudAlert>
+    <MudAlert Severity="Severity.Warning">Failed to load queue depths from @NickScanWebApp.Shared.Services.ModuleMonitoringClient.QueuesPath. Check API logs.</MudAlert>
 }
 else
 {
@@ -133,11 +133,11 @@ else
     {
         try
         {
-            _response = await ApiService.GetAsync<ModuleQueuesResponse>("/api/_module/queues");
+            _response = await ModuleMonitoringClient.GetQueuesAsync<ModuleQueuesResponse>();
         }
         catch (Exception ex)
         {
-            Logger.LogWarning(ex, "Failed to load /api/_module/queues");
+            Logger.LogWarning(ex, "Failed to load {Endpoint}", NickScanWebApp.Shared.Services.ModuleMonitoringClient.QueuesPath);
             _response = null;
         }
         _isLoading = false;

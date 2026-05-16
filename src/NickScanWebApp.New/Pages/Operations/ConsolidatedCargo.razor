@@ -2,7 +2,7 @@
 @page "/operations/consolidated-cargo"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesConsolidatedCargo)]
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
 @inject ILogger<ConsolidatedCargo> Logger
@@ -84,11 +84,7 @@
     {
         try
         {
-            var query = string.IsNullOrWhiteSpace(_searchContainerNumber) 
-                ? "api/consolidatedcargo/containers"
-                : $"api/consolidatedcargo/containers?containerNumber={Uri.EscapeDataString(_searchContainerNumber)}";
-            
-            _consolidatedContainers = await ApiService.GetAsync<List<object>>(query);
+            _consolidatedContainers = await ConsolidatedCargoClient.GetContainersAsync<object>(_searchContainerNumber);
             Snackbar.Add($"Found {_consolidatedContainers?.Count ?? 0} consolidated containers", Severity.Success);
         }
         catch (Exception ex)

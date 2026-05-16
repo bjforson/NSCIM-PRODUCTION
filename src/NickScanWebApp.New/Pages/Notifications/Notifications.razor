@@ -1,6 +1,6 @@
 @page "/notifications"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesNotifications)]
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.NotificationClient NotificationClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @using Microsoft.AspNetCore.Components.Authorization
@@ -220,7 +220,10 @@
         try
         {
             var includeRead = _filterStatus != "Unread";
-            var result = await ApiService.GetAsync<List<NotificationDto>>($"/api/Notifications/user/{_currentUsername}?includeRead={includeRead}&limit=100");
+            var result = await NotificationClient.GetUserNotificationsRequiredAsync<List<NotificationDto>>(
+                _currentUsername,
+                includeRead,
+                limit: 100);
             _notifications = result ?? new List<NotificationDto>();
             ApplyFilters();
             Snackbar.Add("✅ Notifications loaded", Severity.Success);
@@ -277,7 +280,7 @@
     {
         try
         {
-            await ApiService.PutAsync<object, object>($"/api/Notifications/{notificationId}/read", new { });
+            await NotificationClient.MarkAsReadAsync<object>(notificationId);
             var notification = _notifications.FirstOrDefault(n => n.Id == notificationId);
             if (notification != null)
             {
@@ -297,7 +300,7 @@
     {
         try
         {
-            await ApiService.PutAsync<object, object>($"/api/Notifications/{notificationId}/unread", new { });
+            await NotificationClient.MarkAsUnreadAsync<object>(notificationId);
             var notification = _notifications.FirstOrDefault(n => n.Id == notificationId);
             if (notification != null)
             {
@@ -317,7 +320,7 @@
     {
         try
         {
-            await ApiService.PutAsync<object, object>($"/api/Notifications/user/{_currentUsername}/read-all", new { });
+            await NotificationClient.MarkAllAsReadForUserAsync<object>(_currentUsername);
             await LoadNotifications();
             Snackbar.Add("✅ All notifications marked as read", Severity.Success);
         }
@@ -331,7 +334,7 @@
     {
         try
         {
-            var result = await ApiService.DeleteAsync<ClearResponse>($"/api/Notifications/user/{_currentUsername}/clear-read");
+            var result = await NotificationClient.ClearReadForUserAsync<ClearResponse>(_currentUsername);
             await LoadNotifications();
             Snackbar.Add($"✅ Cleared {result?.Count ?? 0} read notifications", Severity.Success);
         }
@@ -353,7 +356,7 @@
 
             if (confirmed == true)
             {
-                var result = await ApiService.DeleteAsync<ClearResponse>($"/api/Notifications/user/{_currentUsername}/clear-all");
+                var result = await NotificationClient.ClearAllForUserAsync<ClearResponse>(_currentUsername);
                 await LoadNotifications();
                 Snackbar.Add($"✅ Cleared {result?.Count ?? 0} notifications", Severity.Success);
             }

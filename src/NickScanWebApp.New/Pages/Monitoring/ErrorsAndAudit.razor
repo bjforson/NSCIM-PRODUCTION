@@ -8,7 +8,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesOperationsErrors)]
 @using NickScanWebApp.New.Components.Monitoring
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.LogManagementClient LogManagementClient
 @inject NavigationManager NavManager
 @implements IDisposable
 
@@ -286,14 +286,15 @@
         StateHasChanged();
         try
         {
-            var queryParams = new List<string> { $"page={currentPage}", $"pageSize={pageSize}" };
-            if (filterLevel != "All") queryParams.Add($"level={filterLevel}");
-            if (!string.IsNullOrEmpty(searchTerm)) queryParams.Add($"search={Uri.EscapeDataString(searchTerm)}");
-            if (dateRange?.Start != null) queryParams.Add($"fromDate={dateRange.Start.Value:yyyy-MM-dd}");
-            if (dateRange?.End != null) queryParams.Add($"toDate={dateRange.End.Value:yyyy-MM-dd}");
-
-            var url = $"/api/LogManagement/logs?{string.Join("&", queryParams)}";
-            var result = await ApiService.GetAsync<PagedResultDto>(url);
+            var result = await LogManagementClient.GetLogsAsync<PagedResultDto>(new NickScanWebApp.Shared.Services.LogManagementQuery
+            {
+                Page = currentPage,
+                PageSize = pageSize,
+                Level = filterLevel,
+                Search = searchTerm,
+                FromDate = dateRange?.Start,
+                ToDate = dateRange?.End
+            });
             if (result != null)
             {
                 logs = result.Data ?? new();
@@ -323,7 +324,7 @@
     {
         try
         {
-            statistics = await ApiService.GetAsync<LogStatisticsDto>("/api/LogManagement/statistics?hoursBack=24");
+            statistics = await LogManagementClient.GetStatisticsAsync<LogStatisticsDto>();
         }
         catch { }
     }

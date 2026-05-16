@@ -1,7 +1,7 @@
 @page "/reports"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesReportsView)]
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ReportsClient ReportsClient
 @inject NavigationManager NavManager
 @inject IDialogService DialogService
 @inject IJSRuntime JSRuntime
@@ -93,14 +93,6 @@
         new() { Name = "Validation Report", Description = "Data completeness and validation analysis", Icon = Icons.Material.Outlined.FactCheck, Category = "Container", ReportType = "validation-summary" }
     };
 
-    private string BuildQueryString()
-    {
-        var parts = new List<string>();
-        if (_startDate.HasValue) parts.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
-        if (_endDate.HasValue) parts.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
-        return parts.Any() ? "?" + string.Join("&", parts) : "";
-    }
-
     private async Task ViewReport(ReportDefinition report)
     {
         try
@@ -108,8 +100,10 @@
             _isLoading = true;
             StateHasChanged();
 
-            var endpoint = $"/api/Reports/{report.ReportType}{BuildQueryString()}";
-            var reportData = await ApiService.GetAsync<System.Text.Json.JsonElement>(endpoint);
+            var reportData = await ReportsClient.GetReportAsync<System.Text.Json.JsonElement>(
+                report.ReportType,
+                _startDate,
+                _endDate);
 
             var parameters = new DialogParameters
             {
@@ -158,10 +152,7 @@
                 _ => report.ReportType
             };
 
-            var endpoint = $"/api/Reports/{exportType}/export?format={_exportFormat}{BuildQueryString().Replace("?", "&")}";
-
-            // Get the raw bytes from the API
-            var response = await ApiService.GetBytesAsync(endpoint);
+            var response = await ReportsClient.ExportReportAsync(exportType, _exportFormat, _startDate, _endDate);
             if (response != null && response.Length > 0)
             {
                 var extension = _exportFormat switch { "excel" => "xlsx", "pdf" => "pdf", _ => "csv" };

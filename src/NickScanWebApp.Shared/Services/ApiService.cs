@@ -311,6 +311,48 @@ namespace NickScanWebApp.Shared.Services
             }
         }
 
+        public async Task<byte[]?> PostForBytesAsync<TRequest>(string endpoint, TRequest data)
+        {
+            try
+            {
+                var client = await GetAuthenticatedClientAsync();
+                var response = await client.PostAsJsonAsync(endpoint, data);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadAsByteArrayAsync();
+                }
+
+                _logger.LogWarning("PostForBytesAsync {Endpoint} returned {Status}", endpoint, response.StatusCode);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PostForBytesAsync failed for {Endpoint}", endpoint);
+                return null;
+            }
+        }
+
+        public async Task<byte[]?> PostEmptyForBytesAsync(string endpoint)
+        {
+            try
+            {
+                var client = await GetAuthenticatedClientAsync();
+                var response = await client.PostAsync(endpoint, new StringContent(string.Empty));
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadAsByteArrayAsync();
+                }
+
+                _logger.LogWarning("PostEmptyForBytesAsync {Endpoint} returned {Status}", endpoint, response.StatusCode);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PostEmptyForBytesAsync failed for {Endpoint}", endpoint);
+                return null;
+            }
+        }
+
         /// <summary>
         /// POST request with authentication
         /// </summary>

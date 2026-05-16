@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.GatewayService GatewayService
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
 @inject ILogger<GatewayPanel> Logger
@@ -156,8 +156,12 @@
 
         try
         {
-            var queryParams = $"?includeImage={_includeImage}&includeScanner={_includeScanner}&includeICUMS={_includeICUMS}&includeValidation={_includeValidation}";
-            _containerData = await ApiService.GetAsync<object>($"/api/gateway/container/{_searchContainerNumber}{queryParams}");
+            _containerData = await GatewayService.GetContainerCompleteAsync<object>(
+                _searchContainerNumber,
+                _includeImage,
+                _includeScanner,
+                _includeICUMS,
+                _includeValidation);
             Snackbar.Add("Container data retrieved", Severity.Success);
         }
         catch (Exception ex)
@@ -177,8 +181,7 @@
 
         try
         {
-            var queryParams = $"?query={Uri.EscapeDataString(_globalSearchQuery)}&type={_searchType}";
-            var response = await ApiService.GetAsync<GlobalSearchResponseDto>($"/api/gateway/search{queryParams}");
+            var response = await GatewayService.SearchAsync<GlobalSearchResponseDto>(_globalSearchQuery, _searchType);
             _searchResults = response?.Results;
             Snackbar.Add($"Found {_searchResults?.Count ?? 0} results", Severity.Success);
         }
@@ -193,7 +196,7 @@
     {
         try
         {
-            _dashboardStats = await ApiService.GetAsync<DashboardStatsDto>("/api/gateway/dashboard/stats");
+            _dashboardStats = await GatewayService.GetDashboardStatsAsync<DashboardStatsDto>();
         }
         catch (Exception ex)
         {

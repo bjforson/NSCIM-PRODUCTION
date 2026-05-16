@@ -8,6 +8,7 @@
 @using System.Security.Claims
 @using System.IdentityModel.Tokens.Jwt
 @using System.Net.Http.Headers
+@using NickScanWebApp.Shared.Services
 @attribute [AllowAnonymous]
 @inject NavigationManager NavigationManager
 @inject ISnackbar Snackbar
@@ -32,7 +33,7 @@
     violet gradient swapped for NSCIM's sidebar slate for visual continuity across
     pre- and post-login screens.
 
-    Auth flow is unchanged from v2.9.7 — all the Username/Password → /api/Authentication/login
+    Auth flow is unchanged from v2.9.7 — all the Username/Password → AuthenticationRoutes.LoginPath
     → JWT → PopulatePermissionClaimsAsync → /dashboard logic lives in the @@code block
     below and was carried over verbatim.
 *@
@@ -639,7 +640,7 @@
 
     // Live system stats shown on the left panel. Defaults are conservative
     // "looks fine when the API is unreachable" placeholder values — if the
-    // /api/public/system-stats fetch fails, the page still looks polished.
+    // AuthenticationRoutes.PublicSystemStatsPath fetch fails, the page still looks polished.
     private PublicSystemStats _stats = new()
     {
         TotalContainers = 0,
@@ -702,7 +703,7 @@
         {
             using var httpClient = HttpClientFactory.CreateClient("NickScanAPI");
             httpClient.Timeout = TimeSpan.FromSeconds(5); // don't block the login flow
-            var fresh = await httpClient.GetFromJsonAsync<PublicSystemStats>("/api/public/system-stats");
+            var fresh = await httpClient.GetFromJsonAsync<PublicSystemStats>(AuthenticationRoutes.PublicSystemStatsPath);
             if (fresh != null)
             {
                 _stats = fresh;
@@ -807,7 +808,7 @@
                 Password = loginModel.Password
             };
 
-            var response = await httpClient.PostAsJsonAsync("/api/Authentication/login", loginRequest);
+            var response = await httpClient.PostAsJsonAsync(AuthenticationRoutes.LoginPath, loginRequest);
 
             if (response.IsSuccessStatusCode)
             {
@@ -996,7 +997,7 @@
                 try
                 {
                     httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                    var apiPermissions = await httpClient.GetFromJsonAsync<List<string>>("/api/permissions/my-permissions");
+                    var apiPermissions = await httpClient.GetFromJsonAsync<List<string>>(AuthenticationRoutes.MyPermissionsPath);
                     if (apiPermissions != null)
                     {
                         permissionClaims = apiPermissions

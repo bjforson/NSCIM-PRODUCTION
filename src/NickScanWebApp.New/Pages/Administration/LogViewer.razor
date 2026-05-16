@@ -1,7 +1,7 @@
 @page "/admin/logs"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesAdminLogs)]
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.LogManagementClient LogManagementClient
 
 <PageTitle>NICKSCAN ERP — NSCIS — System Logs</PageTitle>
 
@@ -97,14 +97,15 @@
         StateHasChanged();
         try
         {
-            var queryParams = new List<string> { $"page={currentPage}", $"pageSize={pageSize}" };
-            if (logLevel != "All") queryParams.Add($"level={logLevel}");
-            if (!string.IsNullOrEmpty(searchTerm)) queryParams.Add($"search={Uri.EscapeDataString(searchTerm)}");
-            if (dateRange?.Start != null) queryParams.Add($"fromDate={dateRange.Start.Value:yyyy-MM-dd}");
-            if (dateRange?.End != null) queryParams.Add($"toDate={dateRange.End.Value:yyyy-MM-dd}");
-
-            var url = $"/api/LogManagement/logs?{string.Join("&", queryParams)}";
-            var result = await ApiService.GetAsync<PagedResultDto>(url);
+            var result = await LogManagementClient.GetLogsAsync<PagedResultDto>(new NickScanWebApp.Shared.Services.LogManagementQuery
+            {
+                Page = currentPage,
+                PageSize = pageSize,
+                Level = logLevel,
+                Search = searchTerm,
+                FromDate = dateRange?.Start,
+                ToDate = dateRange?.End
+            });
             if (result != null)
             {
                 logs = result.Data ?? new();

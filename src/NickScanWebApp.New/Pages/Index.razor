@@ -2,15 +2,20 @@
 @page "/analytics"
 @page "/dashboard/analytics"
 @using Microsoft.AspNetCore.Authorization
-@using NickScanWebApp.New.Services
 @using Microsoft.AspNetCore.Components.Authorization
 @using NickScanWebApp.New.Components.Dashboard
 @attribute [Authorize(Policy = Permissions.PagesDashboardView)]
 @inject ILogger<Index> Logger
 @inject NavigationManager Navigation
 @inject AuthenticationStateProvider AuthStateProvider
-@inject ApiService ApiService
 @inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient DashboardClient
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
+@inject NickScanWebApp.Shared.Services.LogManagementClient LogManagementClient
+@inject NickScanWebApp.Shared.Services.FS6000Client FS6000Client
+@inject NickScanWebApp.Shared.Services.AseClient AseClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -561,7 +566,7 @@
     {
         try
         {
-            _healthData = await ApiService.GetAsync<HealthOverviewResponse>("/api/Monitoring/health/overview");
+            _healthData = await MonitoringClient.GetHealthOverviewAsync<HealthOverviewResponse>();
             _apiConnected = _healthData != null;
         }
         catch (Exception ex)
@@ -587,14 +592,14 @@
 
         try
         {
-            var dbStats = await ApiService.GetAsync<DbStatsResponse>("/api/Monitoring/database/statistics");
+            var dbStats = await MonitoringClient.GetDatabaseStatisticsAsync<DbStatsResponse>();
             _todayScans = dbStats?.TodayActivity?.TotalScans.ToString("N0") ?? "N/A";
         }
         catch { _todayScans = "N/A"; }
 
         try
         {
-            var apiMetrics = await ApiService.GetAsync<ApiMetricsResponse>("/api/Monitoring/api-metrics");
+            var apiMetrics = await MonitoringClient.GetApiMetricsAsync<ApiMetricsResponse>();
             _apiErrorRate = apiMetrics != null ? $"{apiMetrics.ErrorRate:F1}%" : "N/A";
         }
         catch { _apiErrorRate = "N/A"; }
@@ -617,7 +622,7 @@
     {
         try
         {
-            _readinessSnapshot = await ApiService.GetAsync<ReadinessSnapshotResponse>("/api/image-analysis/user/readiness-snapshot");
+            _readinessSnapshot = await ReadinessClient.GetReadinessSnapshotAsync<ReadinessSnapshotResponse>();
             // Compute age of oldest InAudit record so the banner can highlight SLA breaches
             try
             {
@@ -636,7 +641,7 @@
     {
         try
         {
-            var resp = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+            var resp = await ManagementClient.GetWaveMonitorAsync<WaveMonitorResponse>();
             if (resp != null)
             {
                 var parentDict = resp.ParentGroupStatusCounts ?? new List<StatusCount>();
@@ -660,7 +665,7 @@
     {
         try
         {
-            _safeguardData = await ApiService.GetAsync<SafeguardSummaryResponse>("/api/image-analysis/dashboard/safeguard-summary");
+            _safeguardData = await DashboardClient.GetSafeguardSummaryAsync<SafeguardSummaryResponse>();
         }
         catch (Exception ex) { Logger.LogWarning(ex, "Failed to load safeguard summary"); }
     }
@@ -669,7 +674,11 @@
     {
         try
         {
-            var resp = await ApiService.GetAsync<PagedLogResponse>("/api/LogManagement/logs?level=Error&pageSize=15");
+            var resp = await LogManagementClient.GetLogsAsync<PagedLogResponse>(new NickScanWebApp.Shared.Services.LogManagementQuery
+            {
+                Level = "Error",
+                PageSize = 15
+            });
             _recentErrors = resp?.Data ?? new List<LogEntryDto>();
         }
         catch (Exception ex)
@@ -683,7 +692,7 @@
     {
         try
         {
-            _logStats = await ApiService.GetAsync<LogStatsResponse>("/api/LogManagement/statistics?hoursBack=24");
+            _logStats = await LogManagementClient.GetStatisticsAsync<LogStatsResponse>();
         }
         catch (Exception ex) { Logger.LogWarning(ex, "Failed to load log statistics"); }
     }
@@ -693,13 +702,13 @@
         int fs6000 = 0, ase = 0;
         try
         {
-            var fs = await ApiService.GetAsync<FS6000StatsResponse>("/api/FS6000/statistics");
+            var fs = await FS6000Client.GetStatisticsAsync<FS6000StatsResponse>();
             fs6000 = fs?.Scans?.Total ?? 0;
         }
         catch { }
         try
         {
-            var a = await ApiService.GetAsync<AseSyncResponse>("/api/Ase/sync-status");
+            var a = await AseClient.GetSyncStatusAsync<AseSyncResponse>();
             ase = a?.TotalScans ?? 0;
         }
         catch { }

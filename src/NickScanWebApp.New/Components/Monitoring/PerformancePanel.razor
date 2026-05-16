@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.PerformanceMetricsClient PerformanceMetricsClient
 @inject ISnackbar Snackbar
 @inject ILogger<PerformancePanel> Logger
 
@@ -174,7 +174,7 @@
         try
         {
             _isLoading = true;
-            _metrics = await ApiService.GetAsync<PerformanceMetricsDto>("/api/PerformanceMetrics");
+            _metrics = await PerformanceMetricsClient.GetMetricsAsync<PerformanceMetricsDto>();
             
             // Endpoint statistics are included in the main metrics response
             // No separate endpoint needed - data is already in _metrics.EndpointMetrics
@@ -183,7 +183,7 @@
             // Load slowest endpoints (if API implemented)
             try
             {
-                _slowestEndpoints = await ApiService.GetAsync<List<SlowEndpointDto>>("/api/PerformanceMetrics/slowest");
+                _slowestEndpoints = await PerformanceMetricsClient.GetSlowestEndpointsAsync<List<SlowEndpointDto>>();
             }
             catch
             {

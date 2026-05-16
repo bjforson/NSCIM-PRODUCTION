@@ -3,6 +3,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services
 {
@@ -92,7 +93,7 @@ namespace NickScanWebApp.New.Services
                     password = defaultPassword
                 };
 
-                var response = await client.PostAsJsonAsync("/api/Authentication/login", loginRequest);
+                var response = await client.PostAsJsonAsync(AuthenticationRoutes.LoginPath, loginRequest);
 
                 if (response.IsSuccessStatusCode)
                 {

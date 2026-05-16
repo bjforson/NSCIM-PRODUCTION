@@ -10,6 +10,16 @@ namespace NickScanWebApp.Shared.Services
     /// </summary>
     public class SettingsService
     {
+        public const string BasePath = "/api/Settings";
+        public const string CategoriesPath = BasePath + "/categories";
+        public const string UpdatePath = BasePath + "/update";
+        public const string BulkUpdatePath = BasePath + "/bulk-update";
+        public const string ValidatePath = BasePath + "/validate";
+        public const string ExportPath = BasePath + "/export";
+        public const string RecentChangesPath = BasePath + "/recent-changes";
+        public const string AppSettingsSectionsPath = BasePath + "/appsettings/sections";
+        public const string AppSettingsAllPath = BasePath + "/appsettings/all";
+
         private readonly ApiService _apiService;
         private readonly ILogger<SettingsService> _logger;
 
@@ -26,7 +36,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<List<CategorySettingsDto>>("/api/Settings/categories")
+                return await _apiService.GetAsync<List<CategorySettingsDto>>(CategoriesPath)
                     ?? new List<CategorySettingsDto>();
             }
             catch (Exception ex)
@@ -41,7 +51,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<CategorySettingsDto>($"/api/Settings/category/{category}");
+                return await _apiService.GetAsync<CategorySettingsDto>(BuildCategoryPath(category));
             }
             catch (Exception ex)
             {
@@ -55,7 +65,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.PutAsync<UpdateSettingDto, SystemSettingDto>("/api/Settings/update", update);
+                return await _apiService.PutAsync<UpdateSettingDto, SystemSettingDto>(UpdatePath, update);
             }
             catch (Exception ex)
             {
@@ -69,7 +79,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.PutAsync<BulkSettingsUpdateDto, List<SystemSettingDto>>("/api/Settings/bulk-update", bulkUpdate)
+                return await _apiService.PutAsync<BulkSettingsUpdateDto, List<SystemSettingDto>>(BulkUpdatePath, bulkUpdate)
                     ?? new List<SystemSettingDto>();
             }
             catch (Exception ex)
@@ -85,7 +95,7 @@ namespace NickScanWebApp.Shared.Services
             try
             {
                 var request = new { Category = category, Key = key, Value = value };
-                return await _apiService.PostAsync<object, SettingsValidationResult>("/api/Settings/validate", request)
+                return await _apiService.PostAsync<object, SettingsValidationResult>(ValidatePath, request)
                     ?? new SettingsValidationResult();
             }
             catch (Exception ex)
@@ -100,7 +110,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.PostAsync<object?, ConnectionTestResult>($"/api/Settings/test-connection/{category}", null)
+                return await _apiService.PostAsync<object?, ConnectionTestResult>(BuildTestConnectionPath(category), null)
                     ?? new ConnectionTestResult();
             }
             catch (Exception ex)
@@ -116,7 +126,7 @@ namespace NickScanWebApp.Shared.Services
             try
             {
                 var request = new { ResetBy = resetBy };
-                await _apiService.PostAsync<object, object>($"/api/Settings/reset/{category}", request);
+                await _apiService.PostAsync<object, object>(BuildResetPath(category), request);
                 return true;
             }
             catch (Exception ex)
@@ -131,11 +141,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = string.IsNullOrEmpty(category)
-                    ? "/api/Settings/export"
-                    : $"/api/Settings/export?category={category}";
-
-                return await _apiService.GetAsync<SettingsExportDto>(endpoint);
+                return await _apiService.GetAsync<SettingsExportDto>(BuildExportPath(category));
             }
             catch (Exception ex)
             {
@@ -149,7 +155,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<List<SettingsHistoryDto>>($"/api/Settings/history/{category}/{key}?limit={limit}")
+                return await _apiService.GetAsync<List<SettingsHistoryDto>>(BuildHistoryPath(category, key, limit))
                     ?? new List<SettingsHistoryDto>();
             }
             catch (Exception ex)
@@ -164,7 +170,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<List<SettingsHistoryDto>>($"/api/Settings/recent-changes?limit={limit}")
+                return await _apiService.GetAsync<List<SettingsHistoryDto>>(BuildRecentChangesPath(limit))
                     ?? new List<SettingsHistoryDto>();
             }
             catch (Exception ex)
@@ -179,7 +185,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<List<string>>("/api/Settings/appsettings/sections")
+                return await _apiService.GetAsync<List<string>>(AppSettingsSectionsPath)
                     ?? new List<string>();
             }
             catch (Exception ex)
@@ -193,7 +199,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<Dictionary<string, object>>($"/api/Settings/appsettings/section/{section}")
+                return await _apiService.GetAsync<Dictionary<string, object>>(BuildAppSettingsSectionPath(section))
                     ?? new Dictionary<string, object>();
             }
             catch (Exception ex)
@@ -207,7 +213,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                return await _apiService.GetAsync<AppSettingsDto>("/api/Settings/appsettings/all")
+                return await _apiService.GetAsync<AppSettingsDto>(AppSettingsAllPath)
                     ?? new AppSettingsDto();
             }
             catch (Exception ex)
@@ -226,7 +232,9 @@ namespace NickScanWebApp.Shared.Services
                     Settings = settings,
                     ChangedBy = changedBy
                 };
-                await _apiService.PutAsync<UpdateAppSettingsRequest, object>($"/api/Settings/appsettings/section/{section}", request);
+                await _apiService.PutAsync<UpdateAppSettingsRequest, object>(
+                    BuildAppSettingsSectionPath(section),
+                    request);
                 return true;
             }
             catch (Exception ex)
@@ -234,6 +242,43 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogError(ex, "Error updating appsettings section {Section}", section);
                 throw;
             }
+        }
+
+        public static string BuildCategoryPath(string category)
+        {
+            return $"{BasePath}/category/{Uri.EscapeDataString(category)}";
+        }
+
+        public static string BuildTestConnectionPath(string category)
+        {
+            return $"{BasePath}/test-connection/{Uri.EscapeDataString(category)}";
+        }
+
+        public static string BuildResetPath(string category)
+        {
+            return $"{BasePath}/reset/{Uri.EscapeDataString(category)}";
+        }
+
+        public static string BuildExportPath(string? category = null)
+        {
+            return string.IsNullOrEmpty(category)
+                ? ExportPath
+                : $"{ExportPath}?category={Uri.EscapeDataString(category)}";
+        }
+
+        public static string BuildHistoryPath(string category, string key, int limit = 50)
+        {
+            return $"{BasePath}/history/{Uri.EscapeDataString(category)}/{Uri.EscapeDataString(key)}?limit={limit}";
+        }
+
+        public static string BuildRecentChangesPath(int limit = 100)
+        {
+            return $"{RecentChangesPath}?limit={limit}";
+        }
+
+        public static string BuildAppSettingsSectionPath(string section)
+        {
+            return $"{BasePath}/appsettings/section/{Uri.EscapeDataString(section)}";
         }
     }
 }

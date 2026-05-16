@@ -387,8 +387,8 @@
         var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
         if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
         {
-            var cropRoute = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) ? "image" : "lossless";
-            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/{cropRoute}/{Uri.EscapeDataString(side)}";
+            var lossless = !string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase);
+            return SplitSelectionClient.BuildResultImagePath(splitJobId.Value, splitResultId.Value.ToString(), side, lossless);
         }
 
         var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
@@ -397,7 +397,13 @@
             return null;
         }
 
-        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size={Uri.EscapeDataString(size)}&containerNumber={Uri.EscapeDataString(ContainerNumber)}";
+        return ScanAssetClient.BuildImagePath(
+            sourceScanId,
+            new ScanAssetImageQuery
+            {
+                Size = size,
+                ContainerNumber = ContainerNumber
+            });
     }
 
     private string SignImagePath(string url)

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Controllers
 {
@@ -46,7 +47,7 @@ namespace NickScanWebApp.New.Controllers
 
                 // Call backend API to validate credentials
                 var loginData = new { Username = request.Username, Password = request.Password };
-                var response = await client.PostAsJsonAsync("/api/Authentication/login", loginData);
+                var response = await client.PostAsJsonAsync(AuthenticationRoutes.LoginPath, loginData);
 
                 if (!response.IsSuccessStatusCode)
                 {

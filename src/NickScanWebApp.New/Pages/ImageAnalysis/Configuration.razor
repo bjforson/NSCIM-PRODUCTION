@@ -3,10 +3,12 @@
 @attribute [Authorize(Policy = Permissions.PagesImageAnalysisManagement)]
 @implements IDisposable
 @using MudBlazor
+@using NickScanWebApp.Shared.Services
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.New.Services.DualNotificationService DualNotification
 @inject NavigationManager Nav
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 
 <MudPaper Class="pa-4">
     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-3">
@@ -968,7 +970,7 @@
         StateHasChanged();
         try
         {
-            _waveMonitor = await ApiService.GetAsync<WaveMonitorResponse>("/api/image-analysis-management/wave-monitor");
+            _waveMonitor = await ManagementClient.GetWaveMonitorAsync<WaveMonitorResponse>();
         }
         catch (Exception ex)
         {
@@ -1084,11 +1086,26 @@
             // ✅ FIX: Use timeout wrapper to prevent hanging if one API call fails
             // ✅ FIX: Increased timeouts for potentially slow endpoints
             // groups/ready can be slow if there are many groups or complex queries
-            var readyGroupsTask = SafeGetWithTimeout<List<ReadyGroup>>("/api/image-analysis-management/groups/ready", TimeSpan.FromSeconds(30));
-            var activeAssignmentsTask = SafeGetWithTimeout<List<ActiveAssignment>>("/api/image-analysis-management/assignments", TimeSpan.FromSeconds(20));
-            var statsTask = SafeGetWithTimeout<ManagementStats>("/api/image-analysis-management/stats", TimeSpan.FromSeconds(15));
-            var serviceStateTask = SafeGetWithTimeout<ServiceState>("/api/image-analysis-management/service-state", TimeSpan.FromSeconds(20));
-            var analystsTask = SafeGetWithTimeout<List<string>>("/api/image-analysis-management/analysts", TimeSpan.FromSeconds(15));
+            var readyGroupsTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.ReadyGroupsPath,
+                () => ManagementClient.GetReadyGroupsAsync<ReadyGroup>(),
+                TimeSpan.FromSeconds(30));
+            var activeAssignmentsTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.AssignmentsPath,
+                () => ManagementClient.GetAssignmentsAsync<ActiveAssignment>(),
+                TimeSpan.FromSeconds(20));
+            var statsTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.StatsPath,
+                () => ManagementClient.GetStatsAsync<ManagementStats>(),
+                TimeSpan.FromSeconds(15));
+            var serviceStateTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.ServiceStatePath,
+                () => ManagementClient.GetServiceStateAsync<ServiceState>(),
+                TimeSpan.FromSeconds(20));
+            var analystsTask = SafeGetWithTimeout(
+                ImageAnalysisManagementClient.AnalystsPath,
+                () => ManagementClient.GetAnalystsAsync(),
+                TimeSpan.FromSeconds(15));
             
             // ✅ FIX: Wait for all tasks but don't fail if one times out - use WhenAll with error handling
             try
@@ -1204,7 +1221,10 @@
         _loadingMetrics = true;
         try
         {
-            _assignmentMetrics = await SafeGetWithTimeout<AssignmentMetrics>("/api/image-analysis/metrics", TimeSpan.FromSeconds(10));
+            _assignmentMetrics = await SafeGetWithTimeout(
+                ImageAnalysisWorkflowClient.MetricsPath,
+                () => WorkflowClient.GetMetricsAsync<AssignmentMetrics>(),
+                TimeSpan.FromSeconds(10));
             if (_assignmentMetrics == null)
             {
                 // Only show warning on manual refresh, not auto-refresh
@@ -1254,16 +1274,6 @@
         return (byRole[role] / (double)total) * 100;
     }
 
-    private async Task<T?> SafeGet<T>(string endpoint)
-    {
-        try { return await SafeGetWithTimeout<T>(endpoint, TimeSpan.FromSeconds(20)); }
-        catch (Exception ex) { 
-            Console.WriteLine($"❌ Error calling {endpoint}: {ex.Message}");
-            Snackbar.Add($"Error loading {endpoint}: {ex.Message}", Severity.Error); 
-            return default; 
-        }
-    }
-
     private static bool IsTransientApiFailure(Exception ex)
     {
         var message = ex.ToString();
@@ -1286,7 +1296,7 @@
         };
     }
 
-    private async Task<T?> SafeGetWithTimeout<T>(string endpoint, TimeSpan timeout)
+    private async Task<T?> SafeGetWithTimeout<T>(string endpoint, Func<Task<T?>> apiCall, TimeSpan timeout)
     {
         var startedUtc = DateTime.UtcNow;
         var attempt = 0;
@@ -1303,7 +1313,7 @@
 
             try
             {
-                var apiTask = ApiService.GetAsync<T>(endpoint);
+                var apiTask = apiCall();
                 var delayTask = Task.Delay(remaining);
 
                 var completedTask = await Task.WhenAny(apiTask, delayTask);
@@ -1417,7 +1427,7 @@
             };
             
             var requestJson = System.Text.Json.JsonSerializer.Serialize(requestBody);
-            Console.WriteLine($"📤 POST /api/image-analysis-management/service-state");
+            Console.WriteLine($"📤 POST {ImageAnalysisManagementClient.ServiceStatePath}");
             Console.WriteLine($"   Request Body: {requestJson}");
             Console.WriteLine($"   ✅ Verify 'assignmentMode' in JSON is '{currentMode}'");
             
@@ -1451,7 +1461,7 @@
             object? response = null;
             try
             {
-                response = await ApiService.PostAsync<object, object>("/api/image-analysis-management/service-state", requestBody);
+                response = await ManagementClient.UpdateServiceStateAsync<object, object>(requestBody);
                 Console.WriteLine($"✅ POST request completed successfully");
             }
             catch (Exception apiEx)
@@ -1538,7 +1548,10 @@
             Console.WriteLine($"✅ LoadAll() completed. Current _assignmentMode: '{_assignmentMode}'");
             
             // ✅ FIX: Verify the assignment mode was actually saved
-            var serviceState = await SafeGet<ServiceState>("/api/image-analysis-management/service-state");
+            var serviceState = await SafeGetWithTimeout(
+                ImageAnalysisManagementClient.ServiceStatePath,
+                () => ManagementClient.GetServiceStateAsync<ServiceState>(),
+                TimeSpan.FromSeconds(20));
             if (serviceState != null)
             {
                 Console.WriteLine($"🔍 Verification: Expected={_assignmentMode}, Actual={serviceState.AssignmentMode}");
@@ -1591,7 +1604,7 @@
     private async Task SyncStages()
     {
         _busy = true;
-        try { await ApiService.PostAsync<object, object>("/api/image-analysis-management/sync-stages", new { }); Snackbar.Add("Stages synced", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.SyncStagesAsync(); Snackbar.Add("Stages synced", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error syncing: {ex.Message}", title: "Sync Error"); }
         finally { _busy = false; }
     }
@@ -1599,7 +1612,7 @@
     private async Task RebuildIntake()
     {
         _busy = true;
-        try { await ApiService.PostAsync<object, object>("/api/image-analysis-management/rebuild-intake", new { }); Snackbar.Add("Intake rebuilt", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.RebuildIntakeAsync(); Snackbar.Add("Intake rebuilt", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error rebuilding intake: {ex.Message}", title: "Rebuild Error"); }
         finally { _busy = false; }
     }
@@ -1607,7 +1620,7 @@
     private async Task GetNextForSelf(string groupId)
     {
         _busy = true;
-        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{groupId}/assign", new { }); Snackbar.Add("Assigned to you", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.AssignGroupToSelfAsync(groupId); Snackbar.Add("Assigned to you", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error assigning: {ex.Message}", title: "Assignment Error"); }
         finally { _busy = false; }
     }
@@ -1622,7 +1635,7 @@
     {
         if (string.IsNullOrWhiteSpace(_manualAssignGroup) || string.IsNullOrWhiteSpace(_manualAssignUser)) return;
         _busy = true;
-        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{_manualAssignGroup}/assign", new { user = _manualAssignUser }); Snackbar.Add("Assigned", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.AssignGroupAsync(_manualAssignGroup, _manualAssignUser); Snackbar.Add("Assigned", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error assigning: {ex.Message}", title: "Assignment Error"); }
         finally { _busy = false; }
     }
@@ -1637,7 +1650,7 @@
     {
         if (string.IsNullOrWhiteSpace(_reassignGroup) || string.IsNullOrWhiteSpace(_reassignUser)) return;
         _busy = true;
-        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{_reassignGroup}/reassign", new { user = _reassignUser }); Snackbar.Add("Reassigned", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.ReassignGroupAsync(_reassignGroup, _reassignUser); Snackbar.Add("Reassigned", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error reassigning: {ex.Message}", title: "Reassignment Error"); }
         finally { _busy = false; }
     }
@@ -1645,7 +1658,7 @@
     private async Task Release(string groupId)
     {
         _busy = true;
-        try { await ApiService.PostAsync<object, object>($"/api/image-analysis-management/{groupId}/release", new { }); Snackbar.Add("Released", Severity.Success); await LoadAll(); }
+        try { await ManagementClient.ReleaseGroupAsync(groupId); Snackbar.Add("Released", Severity.Success); await LoadAll(); }
         catch (Exception ex) { await DualNotification.ShowErrorAsync($"Error releasing: {ex.Message}", title: "Release Error"); }
         finally { _busy = false; }
     }
@@ -1767,7 +1780,10 @@
     {
         try
         {
-            var settingsResult = await SafeGetWithTimeout<AgentSettingsResponse>("/api/image-analysis-management/agent/settings", TimeSpan.FromSeconds(10));
+            var settingsResult = await SafeGetWithTimeout(
+                ImageAnalysisManagementClient.AgentSettingsPath,
+                () => ManagementClient.GetAgentSettingsAsync<AgentSettingsResponse>(),
+                TimeSpan.FromSeconds(10));
             if (settingsResult != null)
             {
                 _agentEnabled = settingsResult.settings?.Enabled ?? false;
@@ -1782,10 +1798,16 @@
                 _agentConditions = settingsResult.conditions ?? new();
             }
 
-            var auditResult = await SafeGetWithTimeout<AgentAuditLogResponse>("/api/image-analysis-management/agent/audit-log?pageSize=20", TimeSpan.FromSeconds(10));
+            var auditResult = await SafeGetWithTimeout(
+                ImageAnalysisManagementClient.BuildAgentAuditLogPath(20),
+                () => ManagementClient.GetAgentAuditLogAsync<AgentAuditLogResponse>(20),
+                TimeSpan.FromSeconds(10));
             if (auditResult?.items != null) _agentAuditLogs = auditResult.items;
 
-            _agentStats = await SafeGetWithTimeout<AgentStatsDto>("/api/image-analysis-management/agent/stats", TimeSpan.FromSeconds(10)) ?? new();
+            _agentStats = await SafeGetWithTimeout(
+                ImageAnalysisManagementClient.AgentStatsPath,
+                () => ManagementClient.GetAgentStatsAsync<AgentStatsDto>(),
+                TimeSpan.FromSeconds(10)) ?? new();
         }
         catch (Exception ex)
         {
@@ -1806,7 +1828,7 @@
         try
         {
             // Save settings
-            await ApiService.PostAsync<object, object>("/api/image-analysis-management/agent/settings", new
+            await ManagementClient.SaveAgentSettingsAsync(new
             {
                 enabled = _agentEnabled,
                 shadowMode = _agentShadowMode,
@@ -1822,7 +1844,7 @@
             // Save each condition
             foreach (var c in _agentConditions)
             {
-                await ApiService.PostAsync<object, object>("/api/image-analysis-management/agent/conditions", new
+                await ManagementClient.SaveAgentConditionAsync(new
                 {
                     id = c.Id,
                     name = c.Name,
@@ -1867,14 +1889,14 @@
         {
             try
             {
-                await ApiService.GetAsync<object>($"/api/image-analysis-management/agent/conditions/{condition.Id}");
+                await ManagementClient.GetAgentConditionAsync(condition.Id);
             }
             catch { /* may not have DELETE via GET - handled by controller */ }
 
             try
             {
                 // Use POST to a delete endpoint pattern
-                var response = await ApiService.PostAsync<object, object>($"/api/image-analysis-management/agent/conditions", new
+                await ManagementClient.SaveAgentConditionAsync(new
                 {
                     id = condition.Id,
                     name = condition.Name,
@@ -1895,7 +1917,7 @@
         _busy = true;
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/image-analysis-management/agent/reverse/{auditLogId}", new { reason = "Manual reversal from UI" });
+            await ManagementClient.ReverseAgentDecisionAsync(auditLogId, "Manual reversal from UI");
             Snackbar.Add("Decision reversed — group returned to Ready", Severity.Success);
             await LoadAgentData();
         }

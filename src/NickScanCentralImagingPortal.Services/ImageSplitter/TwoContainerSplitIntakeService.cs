@@ -23,6 +23,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
         private readonly IImageSplitterService _splitter;
         private readonly IEnumerable<IScanFormatAdapter> _formatAdapters;
         private readonly IASEImageConverterService _aseConverter;
+        private readonly IImageProcessingService _imageProcessing;
         private readonly IConfiguration _configuration;
         private readonly ILogger<TwoContainerSplitIntakeService> _logger;
 
@@ -31,6 +32,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             IImageSplitterService splitter,
             IEnumerable<IScanFormatAdapter> formatAdapters,
             IASEImageConverterService aseConverter,
+            IImageProcessingService imageProcessing,
             IConfiguration configuration,
             ILogger<TwoContainerSplitIntakeService> logger)
         {
@@ -38,6 +40,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             _splitter = splitter;
             _formatAdapters = formatAdapters;
             _aseConverter = aseConverter;
+            _imageProcessing = imageProcessing;
             _configuration = configuration;
             _logger = logger;
         }
@@ -277,6 +280,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                     (scan, image) => new
                     {
                         ScanId = scan.Id,
+                        scan.ContainerNumber,
                         image.ImageData,
                         image.ImageType,
                         image.FileSizeBytes,
@@ -290,7 +294,90 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             if (row?.ImageData == null || row.ImageData.Length == 0)
                 return null;
 
-            return new SplitSourceImage(row.ScanId, row.ImageData);
+            if (IsSupportedImageBytes(row.ImageData))
+                return new SplitSourceImage(row.ScanId, row.ImageData);
+
+            try
+            {
+                var rendered = await _imageProcessing.GetCompleteContainerDataAsync(row.ContainerNumber, imageType: null);
+                if (rendered?.ImageBytes is { Length: > 0 } && IsSupportedImageBytes(rendered.ImageBytes))
+                {
+                    _logger.LogInformation(
+                        "{ServiceId} Rendered FS6000 source image for scan {ScanId} ({Container}) before split submission because stored {ImageType} blob is not a supported image file.",
+                        ServiceId,
+                        row.ScanId,
+                        row.ContainerNumber,
+                        row.ImageType);
+                    return new SplitSourceImage(row.ScanId, rendered.ImageBytes);
+                }
+
+                _logger.LogWarning(
+                    "{ServiceId} FS6000 source image for scan {ScanId} ({Container}) is unsupported ({ImageType}, {Bytes} bytes, magic={Magic}) and rendered fallback was unavailable.",
+                    ServiceId,
+                    row.ScanId,
+                    row.ContainerNumber,
+                    row.ImageType,
+                    row.ImageData.Length,
+                    GetMagicHex(row.ImageData));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "{ServiceId} Failed to render FS6000 source image for scan {ScanId} ({Container}) before split submission.",
+                    ServiceId,
+                    row.ScanId,
+                    row.ContainerNumber);
+            }
+
+            return null;
+        }
+
+        private static bool IsSupportedImageBytes(byte[] imageData)
+        {
+            if (imageData.Length >= 3
+                && imageData[0] == 0xFF
+                && imageData[1] == 0xD8
+                && imageData[2] == 0xFF)
+            {
+                return true;
+            }
+
+            if (imageData.Length >= 8
+                && imageData[0] == 0x89
+                && imageData[1] == 0x50
+                && imageData[2] == 0x4E
+                && imageData[3] == 0x47
+                && imageData[4] == 0x0D
+                && imageData[5] == 0x0A
+                && imageData[6] == 0x1A
+                && imageData[7] == 0x0A)
+            {
+                return true;
+            }
+
+            if (imageData.Length >= 12
+                && imageData[0] == 0x52
+                && imageData[1] == 0x49
+                && imageData[2] == 0x46
+                && imageData[3] == 0x46
+                && imageData[8] == 0x57
+                && imageData[9] == 0x45
+                && imageData[10] == 0x42
+                && imageData[11] == 0x50)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string GetMagicHex(byte[] imageData)
+        {
+            if (imageData.Length == 0)
+                return "empty";
+
+            return Convert.ToHexString(imageData.Take(Math.Min(imageData.Length, 8)).ToArray());
         }
 
         private async Task<SplitSourceImage?> LoadAseImageAsync(

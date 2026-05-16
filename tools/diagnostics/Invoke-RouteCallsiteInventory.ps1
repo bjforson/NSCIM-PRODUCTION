@@ -44,10 +44,15 @@ $KnownExternalServiceOnlyPaths = @(
 
 $IgnoredDirectoryNames = @(
     '.git',
+    '.mypy_cache',
+    '.pytest_cache',
     '.vs',
+    '.venv',
+    '__pycache__',
     'artifacts',
     'bin',
     'deploy-backups',
+    'deploy-staging',
     'dist',
     'logs',
     'node_modules',
@@ -55,6 +60,7 @@ $IgnoredDirectoryNames = @(
     'packages',
     'publish',
     'TestResults',
+    'venv',
     'wwwroot\lib'
 )
 $SourceFileCache = $null
@@ -96,10 +102,37 @@ function Get-SourceFiles {
     param([Parameter(Mandatory = $true)][string[]]$Extensions)
 
     if ($null -eq $script:SourceFileCache) {
-        $script:SourceFileCache = @(
-            Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { -not (Test-IsIgnoredPath -Path $_.FullName) }
-        )
+        $files = New-Object 'System.Collections.Generic.List[System.IO.FileInfo]'
+        $pendingDirectories = New-Object 'System.Collections.Generic.Queue[System.IO.DirectoryInfo]'
+        $pendingDirectories.Enqueue((Get-Item -LiteralPath $RepoRoot))
+
+        while ($pendingDirectories.Count -gt 0) {
+            $directory = $pendingDirectories.Dequeue()
+
+            try {
+                foreach ($childDirectory in $directory.EnumerateDirectories()) {
+                    if (-not (Test-IsIgnoredPath -Path $childDirectory.FullName)) {
+                        $pendingDirectories.Enqueue($childDirectory)
+                    }
+                }
+            }
+            catch {
+                # Ignore directories the current user cannot enumerate.
+            }
+
+            try {
+                foreach ($file in $directory.EnumerateFiles()) {
+                    if (-not (Test-IsIgnoredPath -Path $file.FullName)) {
+                        [void]$files.Add($file)
+                    }
+                }
+            }
+            catch {
+                # Ignore directories the current user cannot enumerate.
+            }
+        }
+
+        $script:SourceFileCache = $files.ToArray()
     }
 
     $extensionLookup = @{}

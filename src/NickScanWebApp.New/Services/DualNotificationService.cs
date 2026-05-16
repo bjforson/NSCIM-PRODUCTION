@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
 using MudBlazor;
 using NickScanWebApp.New.Services;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services
 {
@@ -11,18 +12,18 @@ namespace NickScanWebApp.New.Services
     public class DualNotificationService
     {
         private readonly ISnackbar _snackbar;
-        private readonly ApiService _apiService;
+        private readonly NotificationClient _notificationClient;
         private readonly AuthenticationStateProvider _authStateProvider;
         private readonly ILogger<DualNotificationService>? _logger;
 
         public DualNotificationService(
             ISnackbar snackbar,
-            ApiService apiService,
+            NotificationClient notificationClient,
             AuthenticationStateProvider authStateProvider,
             ILogger<DualNotificationService>? logger = null)
         {
             _snackbar = snackbar;
-            _apiService = apiService;
+            _notificationClient = notificationClient;
             _authStateProvider = authStateProvider;
             _logger = logger;
         }
@@ -104,7 +105,7 @@ namespace NickScanWebApp.New.Services
                     AdditionalData = (Dictionary<string, object>?)null
                 };
 
-                await _apiService.PostAsync<object, object>("/api/Notifications", notificationRequest);
+                await _notificationClient.CreateNotificationAsync(notificationRequest);
                 _logger?.LogInformation("Created database notification for {Severity}: {Message}", severity, message);
             }
             catch (Exception ex)

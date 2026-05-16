@@ -12,19 +12,27 @@ namespace NickScanWebApp.Shared.Services
     /// </summary>
     public class GatewayService
     {
+        public const string BasePath = "/api/Gateway";
+        public const string SearchPath = BasePath + "/search";
+        public const string HealthPath = BasePath + "/health";
+        public const string DashboardStatsPath = BasePath + "/dashboard/stats";
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<GatewayService> _logger;
+        private readonly ApiService _apiService;
         private const string API_CLIENT_NAME = "NickScanAPI";
 
         public GatewayService(
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ILogger<GatewayService> logger)
+            ILogger<GatewayService> logger,
+            ApiService apiService)
         {
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _logger = logger;
+            _apiService = apiService;
         }
 
         private HttpClient GetHttpClient()
@@ -46,18 +54,14 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-                var queryParams = new List<string>();
-
-                if (!includeImage) queryParams.Add("includeImage=false");
-                if (!includeScanner) queryParams.Add("includeScanner=false");
-                if (!includeICUMS) queryParams.Add("includeICUMS=false");
-                if (!includeValidation) queryParams.Add("includeValidation=false");
-                if (includeVehicles) queryParams.Add("includeVehicles=true");
-                if (includeHistory) queryParams.Add("includeHistory=true");
-
-                var queryString = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-                var url = $"{apiBaseUrl}/api/Gateway/container/{containerNumber}{queryString}";
+                var url = BuildApiUrl(BuildContainerCompletePath(
+                    containerNumber,
+                    includeImage,
+                    includeScanner,
+                    includeICUMS,
+                    includeValidation,
+                    includeVehicles,
+                    includeHistory));
 
                 _logger.LogInformation("Gateway: Requesting complete data for {Container}", containerNumber);
 
@@ -99,11 +103,56 @@ namespace NickScanWebApp.Shared.Services
         /// currently exists. If you need an image URL for an &lt;img src&gt; tag, use
         /// NickScanWebApp.New.Services.SignedImageUrlBuilder.Build(...) instead.
         /// </remarks>
-        [Obsolete("Use SignedImageUrlBuilder.Build(\"/api/Gateway/container/{n}/image\", userId) — unsigned URLs 401 after the Week-1 security rollout.", false)]
+        [Obsolete("Use SignedImageUrlBuilder.Build with the Gateway container image route and userId; unsigned URLs 401 after the Week-1 security rollout.", false)]
         public string GetContainerImageUrl(string containerNumber)
         {
-            var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-            return $"{apiBaseUrl}/api/Gateway/container/{containerNumber}/image";
+            return BuildApiUrl(BuildContainerImagePath(containerNumber));
+        }
+
+        public async Task<TResponse?> SearchAsync<TRequest, TResponse>(TRequest request)
+        {
+            try
+            {
+                var http = GetHttpClient();
+                using var response = await http.PostAsJsonAsync(SearchPath, request);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadFromJsonAsync<TResponse>();
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "Gateway: HTTP error searching via unified gateway");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Gateway: Error searching via unified gateway");
+                throw;
+            }
+        }
+
+        public Task<TResponse?> GetContainerCompleteAsync<TResponse>(
+            string containerNumber,
+            bool includeImage,
+            bool includeScanner,
+            bool includeICUMS,
+            bool includeValidation)
+        {
+            return _apiService.GetAsync<TResponse>(BuildContainerLookupPath(
+                containerNumber,
+                includeImage,
+                includeScanner,
+                includeICUMS,
+                includeValidation));
+        }
+
+        public Task<TResponse?> SearchAsync<TResponse>(string query, string type)
+        {
+            return _apiService.GetAsync<TResponse>(BuildSearchPath(query, type));
+        }
+
+        public Task<TStats?> GetDashboardStatsAsync<TStats>()
+        {
+            return _apiService.GetAsync<TStats>(DashboardStatsPath);
         }
 
         /// <summary>
@@ -113,17 +162,63 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
-                var url = $"{apiBaseUrl}/api/Gateway/health";
-
                 var http = GetHttpClient();
-                var response = await http.GetAsync(url);
+                var response = await http.GetAsync(HealthPath);
                 return response.IsSuccessStatusCode;
             }
             catch
             {
                 return false;
             }
+        }
+
+        public static string BuildContainerCompletePath(
+            string containerNumber,
+            bool includeImage = true,
+            bool includeScanner = true,
+            bool includeICUMS = true,
+            bool includeValidation = true,
+            bool includeVehicles = false,
+            bool includeHistory = false)
+        {
+            var queryParams = new List<string>();
+
+            if (!includeImage) queryParams.Add("includeImage=false");
+            if (!includeScanner) queryParams.Add("includeScanner=false");
+            if (!includeICUMS) queryParams.Add("includeICUMS=false");
+            if (!includeValidation) queryParams.Add("includeValidation=false");
+            if (includeVehicles) queryParams.Add("includeVehicles=true");
+            if (includeHistory) queryParams.Add("includeHistory=true");
+
+            var queryString = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
+            return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}{queryString}";
+        }
+
+        public static string BuildContainerLookupPath(
+            string containerNumber,
+            bool includeImage,
+            bool includeScanner,
+            bool includeICUMS,
+            bool includeValidation)
+        {
+            var queryParams = $"?includeImage={includeImage}&includeScanner={includeScanner}&includeICUMS={includeICUMS}&includeValidation={includeValidation}";
+            return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}{queryParams}";
+        }
+
+        public static string BuildContainerImagePath(string containerNumber)
+        {
+            return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/image";
+        }
+
+        public static string BuildSearchPath(string query, string type)
+        {
+            return $"{SearchPath}?query={Uri.EscapeDataString(query)}&type={type}";
+        }
+
+        private string BuildApiUrl(string path)
+        {
+            var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+            return $"{apiBaseUrl.TrimEnd('/')}{path}";
         }
     }
 }

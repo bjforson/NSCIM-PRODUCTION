@@ -3,7 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationBoeLookup)]
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject NavigationManager Navigation
 @inject ISnackbar Snackbar
 @inject ILogger<BoeLookup> Logger
@@ -16,7 +16,7 @@
     VIN matches via VehicleImports → BOEDocuments. Each result row shows the
     field that matched and links through to the standard ContainerDetails view.
 
-    Backed by GET /api/cargogroup/lookup?q=...&limit=...
+    Backed by the shared cargo-group lookup client.
 *@
 
 <PageTitle>NICKSCAN ERP — BOE Lookup</PageTitle>
@@ -210,9 +210,7 @@
         StateHasChanged();
         try
         {
-            var encoded = Uri.EscapeDataString(_query.Trim());
-            var url = $"/api/cargogroup/lookup?q={encoded}&limit=50";
-            _results = await ApiService.GetAsync<CargoLookupResponse>(url);
+            _results = await CargoGroupClient.LookupAsync<CargoLookupResponse>(_query.Trim(), limit: 50);
             if (_results == null)
             {
                 Snackbar.Add("Lookup returned no response", Severity.Warning);

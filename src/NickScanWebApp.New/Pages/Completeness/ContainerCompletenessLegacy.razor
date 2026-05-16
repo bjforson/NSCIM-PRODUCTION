@@ -2,7 +2,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationCompleteness)]
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.QueueHealthClient QueueHealthClient
 @inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
 @inject NickScanWebApp.Shared.Services.ContainerCompletenessClient ContainerCompletenessClient
 @inject NickScanWebApp.Shared.Services.ContainerValidationClient ContainerValidationClient
@@ -2074,7 +2074,7 @@
         {
             Logger.LogInformation("[ContainerCompleteness] Loading queue publishing health data...");
             
-            var response = await ApiService.GetAsync<QueuePublishingHealthResponse>("/api/QueueHealth/publishing");
+            var response = await QueueHealthClient.GetPublishingHealthAsync<QueuePublishingHealthResponse>();
             
             if (response != null)
             {

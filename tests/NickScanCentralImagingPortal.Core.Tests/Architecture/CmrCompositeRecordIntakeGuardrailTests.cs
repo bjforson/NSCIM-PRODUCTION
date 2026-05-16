@@ -63,8 +63,10 @@ public class CmrCompositeRecordIntakeGuardrailTests
 
         Assert.Contains("GetGoodsPanelLookupCandidates", viewer);
         Assert.Contains("TryLoadCargoGroupForGoodsPanel", viewer);
-        Assert.Contains("TryGetAsync<CargoGroupResponse>", viewer);
-        Assert.Contains("loadScannerData=false&loadImageData=false&loadICUMSData=true", viewer);
+        Assert.Contains("CargoGroupClient.TryGetCargoGroupAsync<CargoGroupResponse>", viewer);
+        Assert.Contains("loadScannerData: false", viewer);
+        Assert.Contains("loadImageData: false", viewer);
+        Assert.Contains("loadICUMSData: true", viewer);
     }
 
     [Fact]
@@ -85,7 +87,8 @@ public class CmrCompositeRecordIntakeGuardrailTests
 
         Assert.Contains("GetImageRequestContainerHint()", viewer);
         Assert.Contains("StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)", viewer);
-        Assert.Contains("containerNumber={Uri.EscapeDataString(containerHint)}", viewer);
+        Assert.Contains("ScanAssetClient.BuildImagePath", viewer);
+        Assert.Contains("ContainerNumber = containerHint", viewer);
         Assert.Contains("StrictSingleContainerToken(ContainerNumber)", viewer);
     }
 

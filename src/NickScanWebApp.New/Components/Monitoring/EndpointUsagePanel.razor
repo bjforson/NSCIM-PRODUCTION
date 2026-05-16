@@ -3,7 +3,7 @@
 @using System.Text.Json
 @using NickScanWebApp.New.Components.Monitoring
 @using NickScanCentralImagingPortal.Core.Models
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
 @inject ISnackbar Snackbar
 @inject ILogger<EndpointUsagePanel> Logger
 @inject IDialogService DialogService
@@ -306,7 +306,7 @@
     {
         try
         {
-            _deprecatedEndpoints = await ApiService.GetAsync<List<DeprecatedEndpointSummary>>("/api/monitoring/deprecated-endpoints/summary");
+            _deprecatedEndpoints = await MonitoringClient.GetDeprecatedEndpointsSummaryAsync<List<DeprecatedEndpointSummary>>();
             StateHasChanged();
         }
         catch (Exception ex)
@@ -320,7 +320,7 @@
     {
         try
         {
-            _phase3Routes = await ApiService.GetAsync<List<Phase3RouteSummary>>("/api/monitoring/phase3-routes/summary");
+            _phase3Routes = await MonitoringClient.GetPhase3RoutesSummaryAsync<List<Phase3RouteSummary>>();
             StateHasChanged();
         }
         catch (Exception ex)
@@ -334,7 +334,7 @@
     {
         try
         {
-            _safeToRemove = await ApiService.GetAsync<List<string>>("/api/monitoring/safe-to-remove?daysWithZeroUsage=30");
+            _safeToRemove = await MonitoringClient.GetSafeToRemoveAsync<List<string>>();
             StateHasChanged();
         }
         catch (Exception ex)
@@ -348,7 +348,7 @@
     {
         try
         {
-            _allEndpoints = await ApiService.GetAsync<List<AllEndpointsSummary>>("/api/monitoring/all-endpoints/summary");
+            _allEndpoints = await MonitoringClient.GetAllEndpointsSummaryAsync<List<AllEndpointsSummary>>();
             StateHasChanged();
         }
         catch (Exception ex)
@@ -362,7 +362,7 @@
     {
         try
         {
-            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            var callers = await MonitoringClient.GetEndpointCallersAsync<List<EndpointCaller>>(endpoint);
             
             var parameters = new DialogParameters
             {
@@ -384,7 +384,7 @@
     {
         try
         {
-            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            var callers = await MonitoringClient.GetEndpointCallersAsync<List<EndpointCaller>>(endpoint);
             
             var parameters = new DialogParameters
             {
@@ -406,7 +406,7 @@
     {
         try
         {
-            var callers = await ApiService.GetAsync<List<EndpointCaller>>($"/api/monitoring/endpoint-callers?ep={Uri.EscapeDataString(endpoint)}");
+            var callers = await MonitoringClient.GetEndpointCallersAsync<List<EndpointCaller>>(endpoint);
             
             var parameters = new DialogParameters
             {

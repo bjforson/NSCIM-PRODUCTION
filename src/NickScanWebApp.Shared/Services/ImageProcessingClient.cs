@@ -2,7 +2,7 @@ namespace NickScanWebApp.Shared.Services;
 
 public class ImageProcessingClient
 {
-    private const string BasePath = "/api/ImageProcessing";
+    public const string BasePath = "/api/ImageProcessing";
 
     private readonly ApiService _apiService;
 
@@ -32,6 +32,56 @@ public class ImageProcessingClient
     public Task<ImageProcessingStatsDto?> GetStatisticsAsync()
     {
         return _apiService.GetAsync<ImageProcessingStatsDto>($"{BasePath}/statistics");
+    }
+
+    public Task<TComplete?> GetCompleteContainerDataAsync<TComplete>(string containerNumber)
+    {
+        return _apiService.GetAsync<TComplete>(BuildCompleteContainerDataPath(containerNumber));
+    }
+
+    public static string BuildCompleteContainerDataPath(string containerNumber)
+    {
+        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/complete";
+    }
+
+    public static string BuildCompleteImagePath(string containerNumber, string? size = null, string? imageType = null)
+    {
+        var path = $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/complete/image";
+        var queryParams = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(size))
+        {
+            queryParams.Add($"size={Uri.EscapeDataString(size)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(imageType))
+        {
+            queryParams.Add($"imageType={Uri.EscapeDataString(imageType)}");
+        }
+
+        return queryParams.Count == 0
+            ? path
+            : $"{path}?{string.Join("&", queryParams)}";
+    }
+
+    public static string BuildModeCapabilitiesPath(string containerNumber)
+    {
+        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/mode-capabilities";
+    }
+
+    public static string BuildPixelPath(string containerNumber, int x, int y)
+    {
+        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/pixel?x={x}&y={y}";
+    }
+
+    public static string BuildRawPlanePath(string containerNumber, string plane)
+    {
+        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/raw?plane={Uri.EscapeDataString(plane)}";
+    }
+
+    public static string BuildRoiPath(string containerNumber, int x, int y, int width, int height)
+    {
+        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/roi?x={x}&y={y}&w={width}&h={height}";
     }
 }
 

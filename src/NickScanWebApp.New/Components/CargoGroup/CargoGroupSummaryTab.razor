@@ -2,7 +2,7 @@
 @using NickScanWebApp.New.Services
 @using NickScanWebApp.Shared.Services
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject CargoGroupClient CargoGroupClient
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
     @if (CargoGroup == null && !_isLoadingSummary)
@@ -481,10 +481,10 @@
             {
                 try
                 {
-                    var groupId = Uri.EscapeDataString(CargoGroup?.GroupIdentifier ?? "");
-                    if (!string.IsNullOrEmpty(groupId))
+                    var groupId = CargoGroup?.GroupIdentifier ?? "";
+                    if (!string.IsNullOrWhiteSpace(groupId))
                     {
-                        var saved = await ApiService.GetAsync<AiSummaryResponse>($"/api/cargogroup/{groupId}/ai-summary");
+                        var saved = await CargoGroupClient.GetAiSummaryAsync<AiSummaryResponse>(groupId);
                         if (saved != null && !string.IsNullOrWhiteSpace(saved.Summary))
                         {
                             _aiSummaryText = saved.Summary;
@@ -576,9 +576,9 @@
                 return;
             }
 
-            var groupId = Uri.EscapeDataString(CargoGroup.GroupIdentifier ?? "unknown");
-            var response = await ApiService.PostAsync<object, AiSummaryResponse>(
-                $"/api/cargogroup/{groupId}/ai-summary",
+            var groupId = CargoGroup.GroupIdentifier ?? "unknown";
+            var response = await CargoGroupClient.SaveAiSummaryAsync<object, AiSummaryResponse>(
+                groupId,
                 new { lineItems });
 
             _aiSummaryText = response?.Summary ?? "Unable to generate summary.";

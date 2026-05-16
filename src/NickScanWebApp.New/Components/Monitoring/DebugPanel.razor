@@ -1,5 +1,6 @@
 @using MudBlazor
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.DebugSystemClient DebugSystemClient
 @inject ISnackbar Snackbar
 @inject ILogger<DebugPanel> Logger
 
@@ -115,7 +116,7 @@
     {
         try
         {
-            var info = await ApiService.GetAsync<Dictionary<string, string>>("api/debug/system");
+            var info = await DebugSystemClient.GetSystemInfoAsync<Dictionary<string, string>>();
             _systemInfo = info;
         }
         catch (Exception ex)

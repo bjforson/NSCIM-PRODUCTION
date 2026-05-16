@@ -7,7 +7,8 @@
 @using NickScanWebApp.New.Models
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanWebApp.Shared.Models
-@inject ApiService ApiService
+@using NickScanWebApp.Shared.Services
+@inject AuditReviewClient AuditReviewClient
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject AuthenticationStateProvider AuthenticationStateProvider
@@ -664,12 +665,22 @@
         var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
         if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
         {
-            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/lossless/{Uri.EscapeDataString(side)}";
+            return NickScanWebApp.Shared.Services.SplitSelectionClient.BuildResultImagePath(
+                splitJobId.Value,
+                splitResultId.Value.ToString(),
+                side,
+                lossless: true);
         }
 
         var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
         return !string.IsNullOrWhiteSpace(sourceScanId)
-            ? $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size=full&containerNumber={Uri.EscapeDataString(containerNumber)}"
+            ? ScanAssetClient.BuildImagePath(
+                sourceScanId,
+                new ScanAssetImageQuery
+                {
+                    Size = "full",
+                    ContainerNumber = containerNumber
+                })
             : null;
     }
 
@@ -957,7 +968,7 @@
                 }
             };
 
-            var response = await ApiService.PostAsync<object, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+            var response = await AuditReviewClient.SubmitAsync<object, AuditSubmissionResponse>(request);
 
             Logger.LogInformation("📥 [AuditReviewDialog] SubmitSaveAndNext API response: Success={Success}, AuditedCount={Count}, AllDone={AllDone}, Message={Message}", 
                 response?.Success, response?.AuditedCount ?? 0, response?.AllContainersAudited ?? false, response?.Message ?? "(null)");
@@ -1043,7 +1054,7 @@
                 ContainerDecisions = containerDecisions
             };
 
-            var response = await ApiService.PostAsync<object, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+            var response = await AuditReviewClient.SubmitAsync<object, AuditSubmissionResponse>(request);
 
             Logger.LogInformation("📥 [AuditReviewDialog] SubmitAuditAll API response: Success={Success}, AuditedCount={Count}, Message={Message}", 
                 response?.Success, response?.AuditedCount ?? 0, response?.Message ?? "(null)");

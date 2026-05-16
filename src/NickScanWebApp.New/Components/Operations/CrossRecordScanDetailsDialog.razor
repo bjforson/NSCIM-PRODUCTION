@@ -4,7 +4,7 @@
 @using NickScanWebApp.New.Models
 @using NickScanCentralImagingPortal.Core.Models
 @using NickScanWebApp.Shared.Models
-@inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
@@ -365,7 +365,7 @@
         _loading = true;
         try
         {
-            _scan = await ApiService.GetAsync<CrossRecordScanDto>($"/api/CrossRecordScans/{ScanId}");
+            _scan = await CrossRecordScansClient.GetScanAsync<CrossRecordScanDto>(ScanId);
             if (_scan == null)
             {
                 Snackbar.Add("Failed to load scan details", Severity.Error);
@@ -486,7 +486,7 @@
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var uid = authState.User.Identity?.Name ?? "anon";
         var imageUrl = UrlBuilder.Build(
-            $"/api/ImageProcessing/container/{Uri.EscapeDataString(_scan.Container1)}/complete/image?size=full",
+            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(_scan.Container1, size: "full"),
             uid);
 
         var parameters = new DialogParameters

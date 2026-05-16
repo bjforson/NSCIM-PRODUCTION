@@ -115,7 +115,7 @@ namespace NickScanWebApp.New.Services.Permissions
                     return;
                 }
 
-                var profile = await _apiService.GetAsync<UserProfileDto>("api/auth/profile");
+                var profile = await _apiService.GetAsync<UserProfileDto>(AuthenticationRoutes.AuthProfilePath);
                 if (profile == null)
                 {
                     if (!silent)

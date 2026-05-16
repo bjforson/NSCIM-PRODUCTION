@@ -7,7 +7,10 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
 @using NickScanCentralImagingPortal.Core.Models
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AuditReviewClient AuditReviewClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager NavigationManager
@@ -488,11 +491,11 @@
             // 2026-05-09 (Phase B / B7 UX): parallelize the three GETs via Task.WhenAll
             // so the post-action refresh takes ~max(call) instead of ~sum(call). Cuts
             // the perceived refresh time roughly 3x for users on slower links.
-            var settingsTask = ApiService.GetAsync<AnalysisSettingsDto>("/api/image-analysis-management/service-state");
-            var assignmentsTask = ApiService.GetAsync<List<MyAssignmentDto>>("/api/image-analysis/my-assignments?role=Audit");
+            var settingsTask = ManagementClient.GetServiceStateAsync<AnalysisSettingsDto>();
+            var assignmentsTask = WorkflowClient.GetMyAssignmentsAsync<MyAssignmentDto>("Audit");
             // /available returns 400 outside UserClaim mode by design — wrap it so its
             // fault doesn't bubble through Task.WhenAll and abort the whole page-load.
-            var availableTask = TryGetAvailableAsync("/api/image-analysis/available?role=Audit");
+            var availableTask = TryGetAvailableAsync("Audit");
 
             await Task.WhenAll(settingsTask, assignmentsTask, availableTask);
 
@@ -533,10 +536,9 @@
 
     // /available returns 400 outside UserClaim mode by design. Decouple its fault
     // from Task.WhenAll so the mode-aware guard above can drop the result quietly.
-    private async Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string url)
+    private Task<List<MyAssignmentDto>?> TryGetAvailableAsync(string role)
     {
-        try { return await ApiService.GetAsync<List<MyAssignmentDto>>(url); }
-        catch { return null; }
+        return WorkflowClient.TryGetAvailableAsync<MyAssignmentDto>(role);
     }
 
     private async Task ClaimGroup(MyAssignmentDto group)
@@ -544,7 +546,7 @@
         try
         {
             _loading = true;
-            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{group.GroupId}/claim", new { });
+            var response = await WorkflowClient.ClaimGroupAsync(group.GroupId);
             
             if (response != null)
             {
@@ -568,7 +570,7 @@
         try
         {
             _loading = true;
-            var response = await ApiService.PostAsync<object, object>($"/api/image-analysis/groups/{assignment.GroupIdentifier}/lease/renew", new { });
+            var response = await WorkflowClient.RenewLeaseAsync(assignment.GroupIdentifier);
             
             if (response != null)
             {
@@ -596,7 +598,9 @@
 
             // ✅ FIX: Fetch specific group by GroupIdentifier instead of searching in ready queue
             // This allows opening assigned groups even if WorkflowStage is not 'Audit'
-            var response = await ApiService.GetAsync<ApiResponse<AuditGroupDto>>($"/api/AuditReview/group/{Uri.EscapeDataString(assignment.GroupIdentifier)}?scannerType={Uri.EscapeDataString(assignment.ScannerType ?? "")}");
+            var response = await AuditReviewClient.GetGroupAsync<ApiResponse<AuditGroupDto>>(
+                assignment.GroupIdentifier,
+                assignment.ScannerType ?? "");
             
             if (response?.Success == true && response.Data != null)
             {
@@ -872,12 +876,7 @@
             }
             
             // Always send via API for persistence
-            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/ready", new
-            {
-                Role = _userRole,
-                IsReady = ready,
-                SessionId = (string?)null
-            });
+            var response = await ReadinessClient.SetReadyAsync(_userRole, ready);
             
             Logger.LogInformation("✅ [AUDIT] API readiness call succeeded");
             
@@ -912,7 +911,7 @@
         try
         {
             // Always send heartbeat via API to keep record alive
-            var response = await ApiService.PostAsync<object, object>("/api/image-analysis/user/heartbeat", new { Role = _userRole });
+            var response = await ReadinessClient.SendHeartbeatAsync(_userRole);
             
             if (response != null)
             {

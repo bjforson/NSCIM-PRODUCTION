@@ -6,7 +6,7 @@
 @using Microsoft.AspNetCore.Components.Web
 @using System.Globalization
 @using System.Text.Json.Serialization
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageSplitterReviewClient ImageSplitterReviewClient
 @inject ISnackbar Snackbar
 @inject ILogger<SplitReview> Logger
 @inject AuthenticationStateProvider AuthStateProvider
@@ -649,7 +649,7 @@ else
         {
             try
             {
-                var health = await ApiService.GetAsync<SplitterHealthDto>("/api/image-splitter/health");
+                var health = await ImageSplitterReviewClient.GetHealthAsync<SplitterHealthDto>();
                 _serviceHealthy = health?.Status == "healthy";
             }
             catch
@@ -660,10 +660,10 @@ else
             if (_serviceHealthy)
             {
                 _reviewSummary =
-                    await TryLoadReviewSummaryAsync("/api/image-splitter/jobs/review-summary?since_hours=72")
-                    ?? await TryLoadReviewSummaryAsync("/api/image-splitter/jobs/review-summary");
+                    await TryLoadReviewSummaryAsync(72)
+                    ?? await TryLoadReviewSummaryAsync(null);
 
-                _jobs = await ApiService.GetAsync<List<SplitJobDto>>(BuildJobsEndpoint()) ?? new();
+                _jobs = await ImageSplitterReviewClient.GetPendingJobsAsync<SplitJobDto>(BuildJobsQuery()) ?? new();
             }
             else
             {
@@ -705,36 +705,36 @@ else
         }
     }
 
-    private string BuildJobsEndpoint()
+    private SplitReviewQueueQuery BuildJobsQuery()
     {
-        var parts = new List<string>();
         if (string.Equals(_reviewScope, ScopeRecent, StringComparison.OrdinalIgnoreCase))
         {
-            parts.Add("mode=recent");
-            parts.Add("since_hours=72");
-            parts.Add("limit=100");
+            return new SplitReviewQueueQuery
+            {
+                Mode = "recent",
+                SinceHours = 72,
+                Limit = 100,
+                ScannerType = IsAllScannerFilter(_scannerFilter) ? null : _scannerFilter
+            };
         }
-        else
+
+        return new SplitReviewQueueQuery
         {
-            parts.Add("mode=backlog");
-            parts.Add("limit=500");
-        }
-
-        if (!IsAllScannerFilter(_scannerFilter))
-            parts.Add($"scanner_type={Uri.EscapeDataString(_scannerFilter)}");
-
-        return $"/api/image-splitter/jobs/pending?{string.Join("&", parts)}";
+            Mode = "backlog",
+            Limit = 500,
+            ScannerType = IsAllScannerFilter(_scannerFilter) ? null : _scannerFilter
+        };
     }
 
-    private async Task<SplitReviewSummaryDto?> TryLoadReviewSummaryAsync(string endpoint)
+    private async Task<SplitReviewSummaryDto?> TryLoadReviewSummaryAsync(int? sinceHours)
     {
         try
         {
-            return await ApiService.GetAsync<SplitReviewSummaryDto>(endpoint);
+            return await ImageSplitterReviewClient.GetReviewSummaryAsync<SplitReviewSummaryDto>(sinceHours);
         }
         catch (Exception ex)
         {
-            Logger.LogDebug(ex, "Split review summary endpoint failed: {Endpoint}", endpoint);
+            Logger.LogDebug(ex, "Split review summary endpoint failed for since_hours={SinceHours}", sinceHours);
             return null;
         }
     }
@@ -774,13 +774,13 @@ else
 
         try
         {
-            state.Results = (await ApiService.GetAsync<List<SplitResultDto>>($"/api/image-splitter/jobs/{job.Id}/results") ?? new())
+            state.Results = (await ImageSplitterReviewClient.GetJobResultsAsync<SplitResultDto>(job.Id) ?? new())
                 .OrderByDescending(r => string.Equals(r.StrategyName, job.BestStrategy, StringComparison.OrdinalIgnoreCase))
                 .ThenByDescending(r => r.Confidence ?? 0)
                 .ToList();
 
             state.OriginalImageUrl = UrlBuilder.Build(
-                $"/api/image-splitter/jobs/{job.Id}/original",
+                ImageSplitterReviewClient.BuildOriginalImagePath(job.Id),
                 _currentUser);
 
             state.ImageWidth = job.ImageWidth > 0 ? job.ImageWidth : 1621;
@@ -899,7 +899,7 @@ else
         state.ActionBusy = true;
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/approve", new
+            await ImageSplitterReviewClient.ApproveAsync(job.Id, new
             {
                 result_id = selected.Id,
                 container_left = state.ContainerLeft,
@@ -930,7 +930,7 @@ else
         state.ActionBusy = true;
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/manual", new
+            await ImageSplitterReviewClient.SubmitManualAsync(job.Id, new
             {
                 split_x = state.ManualSplitX.Value,
                 submitted_by = _currentUser
@@ -966,7 +966,7 @@ else
         state.ActionBusy = true;
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/image-splitter/jobs/{job.Id}/reject", new
+            await ImageSplitterReviewClient.RejectAsync(job.Id, new
             {
                 correct_split_x = state.RejectLabel == SplitLabelRejected ? state.ManualSplitX : null,
                 rejected_by = _currentUser,
@@ -1237,7 +1237,7 @@ else
 
     private string GetResultImageUrl(Guid jobId, Guid resultId, string side) =>
         UrlBuilder.Build(
-            $"/api/image-splitter/jobs/{jobId}/results/{resultId}/image/{side}",
+            ImageSplitterReviewClient.BuildResultImagePath(jobId, resultId, side),
             _currentUser);
 
     private static string GetCandidateLabel(int index) =>

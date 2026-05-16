@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MatchCorrectionAdminClient MatchCorrectionAdminClient
 @inject ISnackbar Snackbar
 
 <MudDialog>
@@ -60,7 +60,7 @@
                 Severity = _severity,
                 Reason = _reason.Trim(),
             };
-            await ApiService.PostAsync<object, object>("/api/admin/match-corrections/flag", body);
+            await MatchCorrectionAdminClient.CreateManualFlagAsync<object, object>(body);
             MudDialog.Close(DialogResult.Ok(true));
         }
         catch (Exception ex)

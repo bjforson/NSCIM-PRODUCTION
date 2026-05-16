@@ -152,6 +152,8 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public long IngestedBytes { get; set; }
         public int AlreadyPresent { get; set; }
         public int MissingFiles { get; set; }
+        public int InvalidChannels { get; set; }
+        public int AcceptedInvalidChannels { get; set; }
         public int FailedChannels { get; set; }
         public string? ErrorMessage { get; set; }
         public string? LastError { get; set; }

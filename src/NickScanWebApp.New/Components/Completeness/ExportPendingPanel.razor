@@ -1,7 +1,7 @@
 @using NickScanWebApp.Shared.Services
 @using NickScanWebApp.New.Components.Containers
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject ImageAnalysisDashboardClient DashboardClient
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject IDialogService DialogService
@@ -339,14 +339,14 @@
         _loading = true;
         try
         {
-            var qp = new List<string> { $"page={_page}", $"pageSize={_pageSize}" };
-            if (!string.IsNullOrWhiteSpace(_search))
-                qp.Add($"search={Uri.EscapeDataString(_search.Trim())}");
-            if (!string.IsNullOrWhiteSpace(_scannerFilter) && _scannerFilter != "All")
-                qp.Add($"scannerType={Uri.EscapeDataString(_scannerFilter)}");
-
-            var url = $"/api/image-analysis/dashboard/export-pending?{string.Join("&", qp)}";
-            var response = await ApiService.GetAsync<ExportPendingResponse>(url);
+            var response = await DashboardClient.GetExportPendingAsync<ExportPendingResponse>(
+                new ImageAnalysisExportPendingQuery
+                {
+                    Page = _page,
+                    PageSize = _pageSize,
+                    Search = _search,
+                    ScannerType = _scannerFilter
+                });
 
             if (response != null)
             {
@@ -362,8 +362,10 @@
                 {
                     try
                     {
-                        var allFs = await ApiService.GetAsync<ExportPendingResponse>("/api/image-analysis/dashboard/export-pending?scannerType=FS6000&pageSize=1");
-                        var allAse = await ApiService.GetAsync<ExportPendingResponse>("/api/image-analysis/dashboard/export-pending?scannerType=ASE&pageSize=1");
+                        var allFs = await DashboardClient.GetExportPendingAsync<ExportPendingResponse>(
+                            new ImageAnalysisExportPendingQuery { ScannerType = "FS6000", PageSize = 1 });
+                        var allAse = await DashboardClient.GetExportPendingAsync<ExportPendingResponse>(
+                            new ImageAnalysisExportPendingQuery { ScannerType = "ASE", PageSize = 1 });
                         _fs6000Count = allFs?.TotalCount ?? _fs6000Count;
                         _aseCount = allAse?.TotalCount ?? _aseCount;
                     }

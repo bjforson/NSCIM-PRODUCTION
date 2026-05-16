@@ -2,7 +2,7 @@
 @using System.Security.Claims
 @inject NavigationManager NavigationManager
 @inject NickScanWebApp.New.Services.ThemeService ThemeService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.NotificationClient NotificationClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @implements IDisposable
@@ -248,12 +248,11 @@
         {
             if (string.IsNullOrEmpty(_username) || _username == "Guest User") return;
 
-            try { _notificationCount = await ApiService.GetAsync<int>($"/api/Notifications/user/{_username}/count"); }
-            catch (HttpRequestException ex) when (ex.Message.Contains("404")) { _notificationCount = 0; return; }
+            _notificationCount = await NotificationClient.GetUnreadCountAsync(_username);
 
             try
             {
-                var notifications = await ApiService.GetAsync<List<NotificationDto>>($"/api/Notifications/user/{_username}?includeRead=false&limit=10");
+                var notifications = await NotificationClient.GetUserNotificationsAsync<List<NotificationDto>>(_username);
                 _notifications = notifications?.Select(n => new NotificationItem
                 {
                     Id = n.Id, Message = n.Message,
@@ -261,7 +260,7 @@
                     Timestamp = n.CreatedAt
                 }).ToList() ?? new List<NotificationItem>();
             }
-            catch (HttpRequestException ex) when (ex.Message.Contains("404")) { _notifications = new List<NotificationItem>(); }
+            catch { _notifications = new List<NotificationItem>(); }
         }
         catch
         {
@@ -294,7 +293,7 @@
         try
         {
             if (string.IsNullOrEmpty(_username) || _username == "Guest User") return;
-            await ApiService.DeleteAsync<object>($"/api/Notifications/user/{_username}/clear-all");
+            await NotificationClient.ClearAllForUserAsync<object>(_username);
             _notifications.Clear(); _notificationCount = 0; _notificationsOpen = false;
             await InvokeAsync(StateHasChanged);
         }
@@ -305,7 +304,7 @@
     {
         try
         {
-            await ApiService.DeleteAsync<object>($"/api/Notifications/{notification.Id}");
+            await NotificationClient.DeleteNotificationAsync<object>(notification.Id);
             _notifications.Remove(notification); _notificationCount = _notifications.Count;
             await InvokeAsync(StateHasChanged);
         }

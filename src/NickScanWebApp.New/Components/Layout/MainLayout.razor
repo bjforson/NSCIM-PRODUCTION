@@ -6,7 +6,7 @@
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject ILogger<MainLayout> Logger
 @implements IDisposable
 
@@ -129,8 +129,7 @@
             var role = roleClaim?.Value;
             if (role is not ("Audit" or "Analyst")) return;
 
-            var snap = await ApiService.GetAsync<UserReadinessSnapshot>(
-                $"/api/image-analysis/user/readiness?role={role}");
+            var snap = await ReadinessClient.GetReadinessAsync<UserReadinessSnapshot>(role);
 
             var stale = snap?.LastHeartbeat is null
                 || (DateTime.UtcNow - snap.LastHeartbeat.Value).TotalMinutes > 60;

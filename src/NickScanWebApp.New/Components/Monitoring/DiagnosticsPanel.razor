@@ -1,6 +1,6 @@
 @using MudBlazor
 @implements IDisposable
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ModuleMonitoringClient ModuleMonitoringClient
 @inject ILogger<DiagnosticsPanel> Logger
 
 @*
@@ -8,9 +8,9 @@
     SQL probes the dev team had to run by hand from C:\temp\nscim-probe during
     the 2026-05-08/09 audit-queue investigation:
 
-      * /api/_module/diagnostics/completeness  (B7CompletenessSnap)
-      * /api/_module/diagnostics/da-posture    (B2VerifyDeploy §1+§4+§6 / DA singleton)
-      * /api/_module/diagnostics/drift-counts  (B7FycoBlastRadius + adjacent drift)
+      * completeness snapshot
+      * DA posture
+      * drift counts
 
     Three collapsible sections, each calling one endpoint. "Run all" button at
     the top fires Task.WhenAll across the three to refresh the whole panel.
@@ -59,7 +59,7 @@
             @if (_completeness is null)
             {
                 <MudAlert Severity="Severity.Warning">
-                    Failed to load /api/_module/diagnostics/completeness. Check API logs.
+                    Failed to load @NickScanWebApp.Shared.Services.ModuleMonitoringClient.CompletenessDiagnosticsPath. Check API logs.
                 </MudAlert>
             }
             else
@@ -186,7 +186,7 @@
             @if (_daPosture is null)
             {
                 <MudAlert Severity="Severity.Warning">
-                    Failed to load /api/_module/diagnostics/da-posture. Check API logs.
+                    Failed to load @NickScanWebApp.Shared.Services.ModuleMonitoringClient.DaPostureDiagnosticsPath. Check API logs.
                 </MudAlert>
             }
             else if (_daPosture.Settings is null)
@@ -334,7 +334,7 @@
             @if (_drift is null)
             {
                 <MudAlert Severity="Severity.Warning">
-                    Failed to load /api/_module/diagnostics/drift-counts. Check API logs.
+                    Failed to load @NickScanWebApp.Shared.Services.ModuleMonitoringClient.DriftCountsDiagnosticsPath. Check API logs.
                 </MudAlert>
             }
             else
@@ -421,9 +421,15 @@
             // Three independent endpoints — fire in parallel. Any individual
             // failure resolves to null via SafeGetAsync; the sections that
             // failed render their own Warning alert.
-            var completenessTask = SafeGetAsync<CompletenessSnapshot>("/api/_module/diagnostics/completeness");
-            var daPostureTask = SafeGetAsync<DaPostureSnapshot>("/api/_module/diagnostics/da-posture");
-            var driftTask = SafeGetAsync<DriftSnapshot>("/api/_module/diagnostics/drift-counts");
+            var completenessTask = SafeGetAsync(
+                NickScanWebApp.Shared.Services.ModuleMonitoringClient.CompletenessDiagnosticsPath,
+                () => ModuleMonitoringClient.GetCompletenessDiagnosticsAsync<CompletenessSnapshot>());
+            var daPostureTask = SafeGetAsync(
+                NickScanWebApp.Shared.Services.ModuleMonitoringClient.DaPostureDiagnosticsPath,
+                () => ModuleMonitoringClient.GetDaPostureDiagnosticsAsync<DaPostureSnapshot>());
+            var driftTask = SafeGetAsync(
+                NickScanWebApp.Shared.Services.ModuleMonitoringClient.DriftCountsDiagnosticsPath,
+                () => ModuleMonitoringClient.GetDriftCountsDiagnosticsAsync<DriftSnapshot>());
             await Task.WhenAll(completenessTask, daPostureTask, driftTask);
             _completeness = await completenessTask;
             _daPosture = await daPostureTask;
@@ -437,11 +443,11 @@
         }
     }
 
-    private async Task<T?> SafeGetAsync<T>(string endpoint)
+    private async Task<T?> SafeGetAsync<T>(string endpoint, Func<Task<T?>> loader)
     {
         try
         {
-            return await ApiService.GetAsync<T>(endpoint);
+            return await loader();
         }
         catch (Exception ex)
         {

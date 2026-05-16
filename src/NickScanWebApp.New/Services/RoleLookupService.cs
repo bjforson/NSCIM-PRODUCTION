@@ -1,17 +1,19 @@
+using NickScanWebApp.Shared.Services;
+
 namespace NickScanWebApp.New.Services
 {
     public class RoleLookupService
     {
-        private readonly ApiService _apiService;
+        private readonly RoleAdminClient _roleAdminClient;
         private readonly ILogger<RoleLookupService> _logger;
         private readonly SemaphoreSlim _syncLock = new(1, 1);
         private IReadOnlyList<RoleOption> _cachedRoles = Array.Empty<RoleOption>();
         private DateTime _lastFetchUtc = DateTime.MinValue;
         private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
 
-        public RoleLookupService(ApiService apiService, ILogger<RoleLookupService> logger)
+        public RoleLookupService(RoleAdminClient roleAdminClient, ILogger<RoleLookupService> logger)
         {
-            _apiService = apiService;
+            _roleAdminClient = roleAdminClient;
             _logger = logger;
         }
 
@@ -31,7 +33,7 @@ namespace NickScanWebApp.New.Services
                 }
 
                 _logger.LogInformation("[RoleLookup] Fetching roles from API...");
-                var rolesFromApi = await _apiService.GetAsync<List<RoleDto>>("/api/Roles");
+                var rolesFromApi = await _roleAdminClient.GetRolesAsync<List<RoleDto>>();
 
                 if (rolesFromApi == null)
                 {

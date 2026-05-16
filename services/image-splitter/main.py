@@ -568,7 +568,11 @@ async def create_split_job(
     if not image_data:
         raise HTTPException(400, "Either image_base64 or image_url must be provided")
 
-    w, h = get_image_dimensions(image_data)
+    try:
+        w, h = get_image_dimensions(image_data)
+    except Exception as exc:
+        logger.warning("Rejected split job for %s: invalid image payload (%s)", request.container_numbers, exc)
+        raise HTTPException(400, "Invalid image payload; expected JPEG/PNG/WebP bytes") from exc
 
     job = ImageSplitJob(
         container_numbers=request.container_numbers,
@@ -607,7 +611,11 @@ async def create_split_job_upload(
 ):
     """Submit a split job with direct file upload."""
     image_data = await _read_upload_with_limit(file)
-    w, h = get_image_dimensions(image_data)
+    try:
+        w, h = get_image_dimensions(image_data)
+    except Exception as exc:
+        logger.warning("Rejected split upload for %s: invalid image payload (%s)", container_numbers, exc)
+        raise HTTPException(400, "Invalid image payload; expected JPEG/PNG/WebP bytes") from exc
 
     parsed_source_image_id = None
     if source_image_id:

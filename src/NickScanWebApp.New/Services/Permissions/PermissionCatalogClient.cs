@@ -66,7 +66,7 @@ namespace NickScanWebApp.New.Services.Permissions
                     return _catalog;
                 }
 
-                var catalog = await _apiService.GetAsync<PermissionCatalogDto>("api/permissions/catalog");
+                var catalog = await _apiService.GetAsync<PermissionCatalogDto>(AuthenticationRoutes.PermissionCatalogPath);
                 if (catalog == null)
                 {
                     _logger.LogWarning("Permission catalog returned null response from API.");

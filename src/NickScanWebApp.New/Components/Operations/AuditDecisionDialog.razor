@@ -1,7 +1,8 @@
 @using MudBlazor
 @using NickScanWebApp.New.Services
 @using NickScanWebApp.New.Models
-@inject ApiService ApiService
+@using NickScanWebApp.Shared.Services
+@inject AuditReviewClient AuditReviewClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
@@ -235,7 +236,7 @@
                 ContainerDecisions = _auditDecisions ?? new()
             };
 
-            var response = await ApiService.PostAsync<AuditSubmissionRequest, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+            var response = await AuditReviewClient.SubmitAsync<AuditSubmissionRequest, AuditSubmissionResponse>(request);
 
             if (response?.Success == true)
             {

@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +38,12 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
     {
         private readonly ApplicationDbContext _db;
         private readonly ILogger<FS6000RawChannelIngester> _logger;
+        private static readonly ConcurrentDictionary<string, string> InvalidChannelSignatures = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly object AcceptedInvalidLock = new();
+        private static readonly string AcceptedInvalidChannelsPath =
+            @"C:\Shared\NSCIM_PRODUCTION\Data\FS6000\accepted-invalid-raw-channels.json";
+        private static DateTime _acceptedInvalidLoadedAtUtc = DateTime.MinValue;
+        private static Dictionary<string, AcceptedInvalidRawChannel> _acceptedInvalidBySignature = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly (string Suffix, string ImageType)[] KnownChannels = new[]
         {
@@ -97,6 +107,28 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     continue;
                 }
 
+                var fileInfo = new FileInfo(file);
+                var invalidSignature = BuildInvalidChannelSignature(scanId, imageType, fileInfo);
+                if (TryGetAcceptedInvalidChannel(invalidSignature, out var accepted))
+                {
+                    result.AcceptedInvalidChannels++;
+                    result.LastError = $"accepted-unrecoverable: {accepted.Reason}";
+                    _logger.LogDebug(
+                        "[FS6000-RAW] Accepted unrecoverable {ImageType} for scan {ScanId}: {Reason} — file {File} is formally excluded from raw-channel ingestion",
+                        imageType, scanId, accepted.Reason, Path.GetFileName(file));
+                    continue;
+                }
+
+                if (InvalidChannelSignatures.TryGetValue(invalidSignature, out var cachedReason))
+                {
+                    result.InvalidChannels++;
+                    result.LastError = cachedReason;
+                    _logger.LogDebug(
+                        "[FS6000-RAW] Skipping known invalid {ImageType} for scan {ScanId}: {Reason} — file {File} is unchanged since first rejection",
+                        imageType, scanId, cachedReason, Path.GetFileName(file));
+                    continue;
+                }
+
                 try
                 {
                     // 2026-04-19 (v2.9.5): two-stage read to defeat file-lock
@@ -128,10 +160,11 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     // handling (v2.14.0) instead of looking renderable.
                     if (!IsHeaderConsistent(bytes, imageType, out var reason))
                     {
-                        result.FailedChannels++;
+                        result.InvalidChannels++;
                         result.LastError = $"header-inconsistent: {reason}";
+                        InvalidChannelSignatures[invalidSignature] = result.LastError;
                         _logger.LogWarning(
-                            "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} will be retried on next cycle (scanner may still be writing)",
+                            "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} is structurally incomplete and will remain pending until a complete replacement is available",
                             imageType, scanId, reason, Path.GetFileName(file));
                         _db.ChangeTracker.Clear();
                         continue; // skip to next channel; don't pollute DB
@@ -181,6 +214,71 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             return result;
+        }
+
+        private static bool TryGetAcceptedInvalidChannel(string invalidSignature, out AcceptedInvalidRawChannel accepted)
+        {
+            accepted = null!;
+
+            if (!File.Exists(AcceptedInvalidChannelsPath))
+            {
+                return false;
+            }
+
+            var lastWriteUtc = File.GetLastWriteTimeUtc(AcceptedInvalidChannelsPath);
+            lock (AcceptedInvalidLock)
+            {
+                if (lastWriteUtc > _acceptedInvalidLoadedAtUtc)
+                {
+                    _acceptedInvalidBySignature = LoadAcceptedInvalidChannels();
+                    _acceptedInvalidLoadedAtUtc = lastWriteUtc;
+                }
+
+                return _acceptedInvalidBySignature.TryGetValue(invalidSignature, out accepted!);
+            }
+        }
+
+        private static Dictionary<string, AcceptedInvalidRawChannel> LoadAcceptedInvalidChannels()
+        {
+            try
+            {
+                var json = File.ReadAllText(AcceptedInvalidChannelsPath);
+                var ledger = JsonSerializer.Deserialize<AcceptedInvalidRawChannelLedger>(json, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    ReadCommentHandling = JsonCommentHandling.Skip,
+                });
+
+                return (ledger?.Entries ?? new List<AcceptedInvalidRawChannel>())
+                    .Where(e => e.AcceptedAsUnrecoverable)
+                    .Where(e => e.ScanId != Guid.Empty && !string.IsNullOrWhiteSpace(e.ImageType) && !string.IsNullOrWhiteSpace(e.FilePath))
+                    .ToDictionary(BuildInvalidChannelSignature, e => e, StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return new Dictionary<string, AcceptedInvalidRawChannel>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static string BuildInvalidChannelSignature(Guid scanId, string imageType, FileInfo file)
+        {
+            file.Refresh();
+            return string.Join("|",
+                scanId.ToString("N"),
+                imageType,
+                file.FullName,
+                file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                file.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        private static string BuildInvalidChannelSignature(AcceptedInvalidRawChannel accepted)
+        {
+            return string.Join("|",
+                accepted.ScanId.ToString("N"),
+                accepted.ImageType,
+                accepted.FilePath,
+                accepted.FileSizeBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                accepted.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         /// <summary>
@@ -364,6 +462,12 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
         /// <summary>Channels whose .img file was not found in the folder.</summary>
         public int MissingFiles { get; set; }
 
+        /// <summary>Channels whose file was readable but structurally invalid.</summary>
+        public int InvalidChannels { get; set; }
+
+        /// <summary>Channels formally accepted as unrecoverable in the ops ledger.</summary>
+        public int AcceptedInvalidChannels { get; set; }
+
         /// <summary>Channels that threw during read/insert.</summary>
         public int FailedChannels { get; set; }
 
@@ -372,5 +476,35 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
 
         /// <summary>Most recent per-channel error, if any.</summary>
         public string? LastError { get; set; }
+    }
+
+    internal sealed class AcceptedInvalidRawChannelLedger
+    {
+        [JsonPropertyName("entries")]
+        public List<AcceptedInvalidRawChannel> Entries { get; set; } = new();
+    }
+
+    internal sealed class AcceptedInvalidRawChannel
+    {
+        [JsonPropertyName("scanId")]
+        public Guid ScanId { get; set; }
+
+        [JsonPropertyName("imageType")]
+        public string ImageType { get; set; } = string.Empty;
+
+        [JsonPropertyName("filePath")]
+        public string FilePath { get; set; } = string.Empty;
+
+        [JsonPropertyName("fileSizeBytes")]
+        public long FileSizeBytes { get; set; }
+
+        [JsonPropertyName("lastWriteTimeUtc")]
+        public DateTime LastWriteTimeUtc { get; set; }
+
+        [JsonPropertyName("acceptedAsUnrecoverable")]
+        public bool AcceptedAsUnrecoverable { get; set; }
+
+        [JsonPropertyName("reason")]
+        public string Reason { get; set; } = "Source FS6000 raw channel file is structurally truncated and cannot be recovered by ingestion.";
     }
 }

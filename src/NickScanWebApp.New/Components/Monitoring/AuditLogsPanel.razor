@@ -1,6 +1,6 @@
 @inject HttpClient Http
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AuditLogClient AuditLogClient
 @using NickScanCentralImagingPortal.Core.Constants
 
 
@@ -96,7 +96,7 @@
             Console.WriteLine("🔍 Loading audit logs from API...");
             
             // Try to load audit logs from backend API
-            var auditData = await ApiService.GetAsync<List<AuditLogDto>>("/api/Audit?limit=100");
+            var auditData = await AuditLogClient.GetAuditLogsAsync<List<AuditLogDto>>(limit: 100);
             if (auditData != null && auditData.Any())
             {
                 _auditLogs = auditData.Select(a => new AuditLogEntry

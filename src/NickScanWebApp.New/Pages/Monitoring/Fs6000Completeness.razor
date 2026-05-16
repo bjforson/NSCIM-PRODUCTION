@@ -2,7 +2,7 @@
 @page "/monitoring/fs6000-completeness"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesFs6000Completeness)]
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.Fs6000CompletenessClient Fs6000CompletenessClient
 @inject ISnackbar Snackbar
 @inject ILogger<Fs6000Completeness> Logger
 
@@ -112,12 +112,12 @@
         try
         {
             _isLoading = true;
-            _stats = await ApiService.GetAsync<FS6000CompletenessStatsDto>("api/fs6000imagecompleteness/stats");
+            _stats = await Fs6000CompletenessClient.GetStatsAsync<FS6000CompletenessStatsDto>();
             
             // Use correct endpoint - scans-without-images instead of missing
             try
             {
-                var missingResponse = await ApiService.GetAsync<FS6000MissingImagesResponse>("api/fs6000imagecompleteness/scans-without-images?limit=100");
+                var missingResponse = await Fs6000CompletenessClient.GetScansWithoutImagesAsync<FS6000MissingImagesResponse>(100);
                 _missingImages = missingResponse?.Scans ?? new List<FS6000MissingImageItem>();
             }
             catch

@@ -11,6 +11,8 @@
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject CargoGroupService CargoGroupService
@@ -1273,7 +1275,7 @@
         {
             // Consolidated: GroupIdentifier IS the container number. Hit the route
             // directly; no declarationNumber discriminator needed.
-            return $"/api/containerdetails/{endpoint}/{Uri.EscapeDataString(groupIdentifier)}?page={page}&pageSize={pageSize}";
+            return ContainerDetailsRoutes.BuildImageAnalysisGroupEndpointPath(endpoint, groupIdentifier, page, pageSize);
         }
 
         // Non-consolidated: GroupIdentifier is a declaration number. Use a
@@ -1285,7 +1287,7 @@
             ?? throw new InvalidOperationException(
                 "BuildContainerEndpointUrl: non-consolidated path requires a routeContainer (typically Containers.First()).");
         var decl = NormalizeDataLookupGroupIdentifier(declarationNumber ?? groupIdentifier);
-        return $"/api/containerdetails/{endpoint}/{Uri.EscapeDataString(routeCn)}?page={page}&pageSize={pageSize}&declarationNumber={Uri.EscapeDataString(decl)}";
+        return ContainerDetailsRoutes.BuildImageAnalysisContainerEndpointPath(endpoint, routeCn, decl, page, pageSize);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -2386,8 +2388,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<OverallDecisionDto>(
-                $"/api/ImageAnalysisDecision/group/{GroupIdentifier}/overall");
+            var response = await DecisionClient.GetGroupOverallDecisionAsync<OverallDecisionDto>(GroupIdentifier);
             
             if (response != null)
             {
@@ -2402,8 +2403,7 @@
             if (IsConsolidated)
             {
                 // For consolidated, GroupIdentifier = Container Number
-                _allDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
-                    $"/api/ImageAnalysisDecision/container/{GroupIdentifier}") ?? new();
+                _allDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(GroupIdentifier) ?? new();
             }
             else
             {
@@ -2413,8 +2413,7 @@
                 {
                     foreach (var container in Containers)
                     {
-                        var containerDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
-                            $"/api/ImageAnalysisDecision/container/{container}") ?? new();
+                        var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(container) ?? new();
                         _allDecisions.AddRange(containerDecisions);
                     }
                 }
@@ -2624,8 +2623,7 @@
                         IsConsolidated
                     };
 
-                    var response = await ApiService.PostAsync<object, ImageAnalysisViewer.DecisionSaveResponse>(
-                        "/api/ImageAnalysisDecision", request);
+                    var response = await DecisionClient.SaveDecisionAsync<object, ImageAnalysisViewer.DecisionSaveResponse>(request);
 
                     if (response?.Success == true) saved++;
                     else skipped++;
@@ -2663,7 +2661,7 @@
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var uid = authState.User.Identity?.Name ?? "anon";
             var imageUrl = UrlBuilder.Build(
-                $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image",
+                ImageProcessingClient.BuildCompleteImagePath(containerNumber),
                 uid);
             var sourceResolution = await ContainerDetailsService.ResolveScanAssetAsync(
                 containerNumber,
@@ -2768,8 +2766,7 @@
         try
         {
             // Get all decisions for this group
-            var overallDecision = await ApiService.GetAsync<OverallDecisionResponse>(
-                $"/api/ImageAnalysisDecision/group/{GroupIdentifier}/overall");
+            var overallDecision = await DecisionClient.GetGroupOverallDecisionAsync<OverallDecisionResponse>(GroupIdentifier);
 
             if (overallDecision == null)
             {
@@ -2820,8 +2817,7 @@
                 }
                 
                 // Check if container has decisions
-                var containerDecisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
-                    $"/api/ImageAnalysisDecision/container/{container}");
+                var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(container);
                 
                 if (containerDecisions != null && containerDecisions.Any(d => 
                     d.Decision != "Pending" && !string.IsNullOrEmpty(d.Decision)))
@@ -2946,11 +2942,11 @@
         try
         {
             // First, look up the group ID from the GroupIdentifier
-            var groupResponse = await ApiService.GetAsync<GroupLookupDto>($"/api/image-analysis/group-by-identifier?identifier={Uri.EscapeDataString(GroupIdentifier)}&scannerType={Uri.EscapeDataString(ScannerType)}");
+            var groupResponse = await WorkflowClient.GetGroupByIdentifierAsync<GroupLookupDto>(GroupIdentifier, ScannerType);
             if (groupResponse?.GroupId == null)
                 return;
 
-            _waveContext = await ApiService.GetAsync<WaveContextDto>($"/api/image-analysis/wave-context/{groupResponse.GroupId}");
+            _waveContext = await WorkflowClient.GetWaveContextAsync<WaveContextDto>(groupResponse.GroupId.Value);
         }
         catch (Exception ex)
         {

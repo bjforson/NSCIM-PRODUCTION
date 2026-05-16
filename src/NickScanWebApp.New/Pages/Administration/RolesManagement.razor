@@ -2,7 +2,7 @@
 @attribute [Authorize(Policy = Permissions.PagesAdminRoles)]
 @using NickScanWebApp.New.Services
 @using NickScanCentralImagingPortal.Core.Constants
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RoleAdminClient RoleAdminClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @using Microsoft.AspNetCore.Components.Authorization
@@ -168,7 +168,7 @@
         try
         {
             Console.WriteLine("🔄 Loading roles from API...");
-            var rolesFromApi = await ApiService.GetAsync<List<RoleDto>>("/api/Roles");
+            var rolesFromApi = await RoleAdminClient.GetRolesAsync<List<RoleDto>>();
             
             if (rolesFromApi != null && rolesFromApi.Any())
             {
@@ -182,7 +182,7 @@
                     
                     try
                     {
-                        permissions = await ApiService.GetAsync<List<string>>($"/api/Roles/{role.Id}/permissions");
+                        permissions = await RoleAdminClient.GetRolePermissionsAsync<List<string>>(role.Id);
                     }
                     catch (Exception ex)
                     {
@@ -191,7 +191,7 @@
                     
                     try
                     {
-                        users = await ApiService.GetAsync<List<UserDtoSimple>>($"/api/Roles/{role.Id}/users");
+                        users = await RoleAdminClient.GetRoleUsersAsync<List<UserDtoSimple>>(role.Id);
                     }
                     catch (Exception ex)
                     {
@@ -357,7 +357,7 @@
         {
             try
             {
-                await ApiService.DeleteAsync($"/api/Roles/{role.Id}?deletedBy={Uri.EscapeDataString(_currentUsername)}");
+                await RoleAdminClient.DeleteRoleAsync(role.Id, _currentUsername);
                 RoleLookup.ClearCache();
                 await RoleLookup.GetRolesAsync(forceRefresh: true);
                 Snackbar.Add($"✅ Role '{role.DisplayName}' deleted successfully!", Severity.Success);

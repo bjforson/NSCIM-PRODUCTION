@@ -65,7 +65,7 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogInformation("Fetching basic info for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<ContainerBasicInfo>(
-                    $"/api/containerdetails/basic/{Uri.EscapeDataString(normalizedContainerNumber)}");
+                    ContainerDetailsRoutes.BuildBasicPath(normalizedContainerNumber));
 
                 if (response != null)
                 {
@@ -120,7 +120,7 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogInformation("Fetching full details for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<ContainerFullDetails>(
-                    $"/api/containerdetails/full/{Uri.EscapeDataString(normalizedContainerNumber)}");
+                    ContainerDetailsRoutes.BuildFullPath(normalizedContainerNumber));
 
                 if (response != null)
                 {
@@ -175,7 +175,7 @@ namespace NickScanWebApp.Shared.Services
 
                 _logger.LogInformation("Fetching scanner data for container {ContainerNumber} page {Page} from API", normalizedContainerNumber, page);
 
-                var url = $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?page={page}&pageSize={pageSize}";
+                var url = ContainerDetailsRoutes.BuildScannerPagedPath(normalizedContainerNumber, page, pageSize);
                 var response = await _apiService.GetAsync<PagedResult<ScannerDataRecord>>(url);
 
                 if (response != null)
@@ -225,7 +225,7 @@ namespace NickScanWebApp.Shared.Services
                     return cachedResolution;
                 }
 
-                var query = BuildResolutionQuery(
+                var query = ContainerDetailsRoutes.BuildSourceScanQuery(
                     normalizedContainerNumber,
                     groupIdentifier,
                     analysisRecordId,
@@ -306,21 +306,31 @@ namespace NickScanWebApp.Shared.Services
                         return cachedData;
                     }
 
-                    var query = BuildResolutionQuery(
-                        normalizedContainerNumber,
-                        groupIdentifier,
-                        resolution.AnalysisRecordId,
-                        resolution.SplitJobId,
-                        resolution,
-                        page,
-                        pageSize);
-
-                    var sourceEndpoint = $"/api/scan-assets/{sourceScanId}/scanner-data?{query}";
+                    var sourceEndpoint = ScanAssetClient.BuildScannerDataPath(
+                        sourceScanId,
+                        new ScanAssetScannerDataQuery
+                        {
+                            ContainerNumber = normalizedContainerNumber,
+                            GroupIdentifier = groupIdentifier,
+                            AnalysisRecordId = resolution.AnalysisRecordId,
+                            SplitJobId = resolution.SplitJobId,
+                            SplitResultId = resolution.SplitResultId,
+                            Side = resolution.EffectiveSplitSide,
+                            Page = page,
+                            PageSize = pageSize
+                        });
                     var response = await _apiService.TryGetAsync<PagedResult<ScannerDataRecord>>(sourceEndpoint);
 
                     if (response == null)
                     {
-                        var aliasEndpoint = $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?{query}";
+                        var aliasEndpoint = ContainerDetailsRoutes.BuildScannerAliasWithSourceScanQueryPath(
+                            normalizedContainerNumber,
+                            groupIdentifier,
+                            resolution.AnalysisRecordId,
+                            resolution.SplitJobId,
+                            resolution,
+                            page,
+                            pageSize);
                         response = await _apiService.TryGetAsync<PagedResult<ScannerDataRecord>>(aliasEndpoint);
                     }
 
@@ -367,7 +377,7 @@ namespace NickScanWebApp.Shared.Services
 
                 // ✅ Phase 2: Use ?full=true parameter to get FullScannerDataRecord directly
                 var fullRecord = await _apiService.GetAsync<FullScannerDataRecord>(
-                    $"/api/containerdetails/scanner/{Uri.EscapeDataString(normalizedContainerNumber)}?full=true");
+                    ContainerDetailsRoutes.BuildScannerFullPath(normalizedContainerNumber));
 
                 if (fullRecord == null)
                 {
@@ -427,7 +437,7 @@ namespace NickScanWebApp.Shared.Services
 
                 _logger.LogInformation("Fetching ICUMS data for container {ContainerNumber} page {Page} from API", normalizedContainerNumber, page);
 
-                var url = $"/api/containerdetails/icums/{Uri.EscapeDataString(normalizedContainerNumber)}?page={page}&pageSize={pageSize}";
+                var url = ContainerDetailsRoutes.BuildIcumsPagedPath(normalizedContainerNumber, page, pageSize);
                 var response = await _apiService.GetAsync<PagedResult<ICUMSDataRecord>>(url);
 
                 if (response != null)
@@ -472,7 +482,7 @@ namespace NickScanWebApp.Shared.Services
 
                 // ✅ Phase 2: Use ?full=true parameter to get FullBOEDataRecord directly
                 var fullRecord = await _apiService.GetAsync<FullBOEDataRecord>(
-                    $"/api/containerdetails/icums/{Uri.EscapeDataString(normalizedContainerNumber)}?full=true");
+                    ContainerDetailsRoutes.BuildIcumsFullPath(normalizedContainerNumber));
 
                 if (fullRecord == null)
                 {
@@ -517,7 +527,7 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogInformation("Fetching image metadata for container {ContainerNumber} from API", normalizedContainerNumber);
 
                 var response = await _apiService.GetAsync<List<ImageMetadata>>(
-                    $"/api/containerdetails/images/{Uri.EscapeDataString(normalizedContainerNumber)}");
+                    ContainerDetailsRoutes.BuildImagesPath(normalizedContainerNumber));
 
                 if (response != null)
                 {
@@ -585,20 +595,28 @@ namespace NickScanWebApp.Shared.Services
                         return cachedMetadata;
                     }
 
-                    var query = BuildResolutionQuery(
-                        normalizedContainerNumber,
-                        groupIdentifier,
-                        resolution.AnalysisRecordId,
-                        resolution.SplitJobId,
-                        resolution);
-
                     var response = await _apiService.TryGetAsync<List<ImageMetadata>>(
-                        $"/api/scan-assets/{sourceScanId}/images?{query}");
+                        ScanAssetClient.BuildImagesPath(
+                            sourceScanId,
+                            new ScanAssetImageQuery
+                            {
+                                ContainerNumber = normalizedContainerNumber,
+                                GroupIdentifier = groupIdentifier,
+                                AnalysisRecordId = resolution.AnalysisRecordId,
+                                SplitJobId = resolution.SplitJobId,
+                                SplitResultId = resolution.SplitResultId,
+                                Side = resolution.EffectiveSplitSide
+                            }));
 
                     if (response == null)
                     {
                         response = await _apiService.TryGetAsync<List<ImageMetadata>>(
-                            $"/api/containerdetails/images/{Uri.EscapeDataString(normalizedContainerNumber)}?{query}");
+                            ContainerDetailsRoutes.BuildImagesWithQueryPath(
+                            normalizedContainerNumber,
+                            groupIdentifier,
+                            resolution.AnalysisRecordId,
+                            resolution.SplitJobId,
+                            resolution));
                     }
 
                     response = response?.Where(image => image != null).ToList();
@@ -653,7 +671,7 @@ namespace NickScanWebApp.Shared.Services
 
                 _logger.LogInformation("Fetching full image {ImageId} from API", imageId);
 
-                var response = await _apiService.GetAsync<ImageWithTools>($"/api/containerdetails/image/{imageId}");
+                var response = await _apiService.GetAsync<ImageWithTools>(ContainerDetailsRoutes.BuildImageByIdPath(imageId));
 
                 if (response != null)
                 {
@@ -694,7 +712,7 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogInformation("Searching container {ContainerNumber} for query '{Query}'", containerNumber, query);
 
                 var searchRequest = new { ContainerNumber = containerNumber, Query = query };
-                var response = await _apiService.PostAsync<object, UnifiedSearchResults>("/api/containerdetails/search", searchRequest);
+                var response = await _apiService.PostAsync<object, UnifiedSearchResults>(ContainerDetailsRoutes.BuildSearchPath(), searchRequest);
 
                 if (response != null)
                 {
@@ -787,69 +805,6 @@ namespace NickScanWebApp.Shared.Services
                 : value.Trim().ToUpperInvariant();
         }
 
-        private static string BuildResolutionQuery(
-            string? containerNumber,
-            string? groupIdentifier,
-            int? analysisRecordId,
-            Guid? splitJobId,
-            ScanAssetResolution? resolution = null,
-            int? page = null,
-            int? pageSize = null,
-            bool includeContainerWhenEmpty = true)
-        {
-            var parts = new List<string>();
-
-            if (!string.IsNullOrWhiteSpace(containerNumber) || includeContainerWhenEmpty)
-            {
-                parts.Add($"containerNumber={Uri.EscapeDataString(containerNumber ?? string.Empty)}");
-            }
-
-            if (!string.IsNullOrWhiteSpace(groupIdentifier))
-            {
-                parts.Add($"groupIdentifier={Uri.EscapeDataString(groupIdentifier.Trim())}");
-            }
-
-            var effectiveAnalysisRecordId = analysisRecordId ?? resolution?.AnalysisRecordId;
-            if (effectiveAnalysisRecordId.HasValue)
-            {
-                parts.Add($"analysisRecordId={effectiveAnalysisRecordId.Value}");
-            }
-
-            var effectiveSourceScanId = resolution?.EffectiveSourceScanId;
-            if (!string.IsNullOrWhiteSpace(effectiveSourceScanId))
-            {
-                parts.Add($"sourceScanId={Uri.EscapeDataString(effectiveSourceScanId)}");
-            }
-
-            var effectiveSplitJobId = splitJobId ?? resolution?.SplitJobId;
-            if (effectiveSplitJobId.HasValue)
-            {
-                parts.Add($"splitJobId={effectiveSplitJobId.Value}");
-            }
-
-            if (resolution?.SplitResultId.HasValue == true)
-            {
-                parts.Add($"splitResultId={resolution.SplitResultId.Value}");
-            }
-
-            if (!string.IsNullOrWhiteSpace(resolution?.EffectiveSplitSide))
-            {
-                parts.Add($"side={Uri.EscapeDataString(resolution.EffectiveSplitSide!)}");
-            }
-
-            if (page.HasValue)
-            {
-                parts.Add($"page={page.Value}");
-            }
-
-            if (pageSize.HasValue)
-            {
-                parts.Add($"pageSize={pageSize.Value}");
-            }
-
-            return string.Join("&", parts);
-        }
-
         private void NormalizeImageUrls(IEnumerable<ImageMetadata> images)
         {
             var apiBaseUrl = _configuration?["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
@@ -920,33 +875,17 @@ namespace NickScanWebApp.Shared.Services
             ScanAssetResolution resolution,
             string size)
         {
-            var parts = new List<string>
-            {
-                $"size={Uri.EscapeDataString(size)}"
-            };
-
             var containerHint = StrictSingleContainerToken(containerNumber);
-            if (!string.IsNullOrWhiteSpace(containerHint))
-            {
-                parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
-            }
-
-            if (resolution.SplitJobId.HasValue)
-            {
-                parts.Add($"splitJobId={resolution.SplitJobId.Value}");
-            }
-
-            if (resolution.SplitResultId.HasValue)
-            {
-                parts.Add($"splitResultId={resolution.SplitResultId.Value}");
-            }
-
-            if (!string.IsNullOrWhiteSpace(resolution.EffectiveSplitSide))
-            {
-                parts.Add($"side={Uri.EscapeDataString(resolution.EffectiveSplitSide!)}");
-            }
-
-            return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+            return ScanAssetClient.BuildImagePath(
+                sourceScanId,
+                new ScanAssetImageQuery
+                {
+                    Size = size,
+                    ContainerNumber = containerHint,
+                    SplitJobId = resolution.SplitJobId,
+                    SplitResultId = resolution.SplitResultId,
+                    Side = resolution.EffectiveSplitSide
+                });
         }
 
         private static string? StrictSingleContainerToken(string? value)
@@ -1001,7 +940,7 @@ namespace NickScanWebApp.Shared.Services
             }
 
             var context = await _apiService.TryGetAsync<PredictiveContainerContext>(
-                $"/api/cache/predictive/container/{Uri.EscapeDataString(normalizedContainerNumber)}");
+                ContainerDetailsRoutes.BuildPredictiveCacheContainerPath(normalizedContainerNumber));
 
             if (context == null)
             {

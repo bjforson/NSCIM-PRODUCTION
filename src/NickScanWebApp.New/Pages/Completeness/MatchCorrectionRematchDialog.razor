@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MatchCorrectionAdminClient MatchCorrectionAdminClient
 @inject ISnackbar Snackbar
 
 <MudDialog>
@@ -57,7 +57,7 @@
                 ScannerType = CurrentScannerType,
                 Reason = _reason.Trim(),
             };
-            await ApiService.PostAsync<object, object>("/api/admin/match-corrections/rematch", body);
+            await MatchCorrectionAdminClient.RematchAsync<object, object>(body);
             Snackbar.Add($"Container {ContainerNumber} rematched to BOE {_newBoeId}", Severity.Success);
             MudDialog.Close(DialogResult.Ok(true));
         }

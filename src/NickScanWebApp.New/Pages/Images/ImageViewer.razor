@@ -10,7 +10,10 @@
 @inject NavigationManager NavigationManager
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
-@inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
+@inject NickScanWebApp.Shared.Services.ImageProcessingClient ImageProcessingClient
+@inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -489,7 +492,7 @@
     private string _currentUsername = "System";
 
     // AI training flywheel — controlled finding categories.
-    // Both nullable. Loaded once from /api/inspection-finding-categories on init.
+    // Both nullable. Loaded once from the finding-category API on init.
     private List<FindingCategoryDto> _threatCategories = new();
     private List<FindingCategoryDto> _revenueAnomalyCategories = new();
     private int? _selectedThreatCategoryId;
@@ -522,12 +525,10 @@
     {
         try
         {
-            var threat = await ApiService.GetAsync<List<FindingCategoryDto>>(
-                "/api/inspection-finding-categories/threat");
+            var threat = await FindingCategoryClient.GetThreatCategoriesAsync<FindingCategoryDto>();
             _threatCategories = threat ?? new List<FindingCategoryDto>();
 
-            var revenue = await ApiService.GetAsync<List<FindingCategoryDto>>(
-                "/api/inspection-finding-categories/revenue-anomaly");
+            var revenue = await FindingCategoryClient.GetRevenueAnomalyCategoriesAsync<FindingCategoryDto>();
             _revenueAnomalyCategories = revenue ?? new List<FindingCategoryDto>();
         }
         catch (Exception ex)
@@ -547,8 +548,7 @@
         // row was never loading at all.
         try
         {
-            var data = await ApiService.GetAsync<ContainerImageDataResponse>(
-                $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete");
+            var data = await ImageProcessingClient.GetCompleteContainerDataAsync<ContainerImageDataResponse>(ContainerNumber);
             if (data != null)
             {
                 _scannerType = data.DetectedScanner.ToString();
@@ -565,8 +565,7 @@
     {
         try
         {
-            _ocrResult = await ApiService.GetAsync<OcrResultDto>(
-                $"/api/image-analysis/{ContainerNumber}/ocr");
+            _ocrResult = await WorkflowClient.GetOcrAsync<OcrResultDto>(ContainerNumber);
         }
         catch (Exception ex)
         {
@@ -578,8 +577,7 @@
     {
         try
         {
-            _detectionResult = await ApiService.GetAsync<ObjectDetectionResultDto>(
-                $"/api/image-analysis/{ContainerNumber}/detect");
+            _detectionResult = await WorkflowClient.GetDetectionAsync<ObjectDetectionResultDto>(ContainerNumber);
         }
         catch (Exception ex)
         {
@@ -591,8 +589,7 @@
     {
         try
         {
-            _qualityAssessment = await ApiService.GetAsync<QualityAssessmentDto>(
-                $"/api/image-analysis/{ContainerNumber}/quality");
+            _qualityAssessment = await WorkflowClient.GetQualityAsync<QualityAssessmentDto>(ContainerNumber);
         }
         catch (Exception ex)
         {
@@ -604,8 +601,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
             
             var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
             if (decision != null)
@@ -633,8 +629,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
             
             var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
             if (!string.IsNullOrEmpty(decision?.SuspiciousAreas))
@@ -747,12 +742,12 @@
         if (_useEnhancedImage && !string.IsNullOrEmpty(ContainerNumber))
         {
             return UrlBuilder.Build(
-                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/enhanced",
+                NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient.BuildEnhancedImagePath(ContainerNumber),
                 _currentUsername);
         }
 
         return UrlBuilder.Build(
-            $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
+            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
             _currentUsername);
     }
     
@@ -1025,7 +1020,7 @@
                 ReviewedBy = _currentUsername
             };
 
-            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision/rectangles", request);
+            await DecisionClient.SaveRectanglesAsync(request);
         }
         catch (Exception ex)
         {
@@ -1101,7 +1096,7 @@
                 RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
             };
 
-            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision", request);
+            await DecisionClient.SaveDecisionAsync(request);
             Snackbar.Add("Decision and tags saved", Severity.Success);
             
             // Close the page after successful save
@@ -1188,7 +1183,7 @@
 
     /// <summary>
     /// Wire-format projection of a finding category, mirroring CategoryDto on
-    /// /api/inspection-finding-categories/{threat,revenue-anomaly}.
+    /// the threat and revenue-anomaly finding-category routes.
     /// </summary>
     public class FindingCategoryDto
     {

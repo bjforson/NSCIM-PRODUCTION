@@ -5,7 +5,7 @@
 @using NickScanCentralImagingPortal.Core.Constants
 @using NickScanWebApp.Shared.Services
 @using RoleOption = NickScanWebApp.New.Services.RoleLookupService.RoleOption
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.UserAdminClient UserAdminClient
 @inject RoleLookupService RoleLookup
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -327,7 +327,7 @@
         try
         {
             Console.WriteLine("🔄 LoadUsers: Fetching users from API...");
-            var usersFromApi = await ApiService.GetAsync<List<UserDto>>("/api/Users");
+            var usersFromApi = await UserAdminClient.GetUsersAsync<List<UserDto>>();
             
             if (usersFromApi != null && usersFromApi.Any())
             {
@@ -465,7 +465,7 @@
                 CreatedBy = "superadmin"
             };
 
-            await ApiService.PostAsync<object, object>("/api/Users", createRequest);
+            await UserAdminClient.CreateUserAsync<object>(createRequest);
             Snackbar.Add($"✅ User '{_newUser.Username}' created successfully!", Severity.Success);
             
             _showCreateForm = false;
@@ -603,7 +603,7 @@
             Console.WriteLine($"   Department: {_editUserDto.Department}");
             Console.WriteLine($"   PhoneNumber: {_editUserDto.PhoneNumber}");
             
-            await ApiService.PutAsync<object, object>($"/api/Users/{_editingUser.Id}", updateRequest);
+            await UserAdminClient.UpdateUserAsync<object>(_editingUser.Id, updateRequest);
             
             Console.WriteLine("✅ API returned success for user update");
             Snackbar.Add($"✅ User '{_editingUser.Username}' updated successfully!", Severity.Success);
@@ -637,7 +637,7 @@
         {
             try
             {
-                var response = await ApiService.PostAsync<object, ResetPasswordResponse>($"/api/Users/{user.Id}/reset-password", new { });
+                var response = await UserAdminClient.ResetPasswordAsync<ResetPasswordResponse>(user.Id);
                 
                 if (!string.IsNullOrEmpty(response?.TemporaryPassword))
                 {
@@ -686,7 +686,7 @@
                     UpdatedBy = "superadmin"
                 };
                 
-                await ApiService.PutAsync<object, object>($"/api/Users/{user.Id}", updateRequest);
+                await UserAdminClient.UpdateUserAsync<object>(user.Id, updateRequest);
                 user.IsActive = newStatus;
                 Snackbar.Add($"✅ User {user.Username} {(newStatus ? "activated" : "deactivated")}", Severity.Success);
             }
@@ -708,7 +708,7 @@
         {
             try
             {
-                await ApiService.DeleteAsync($"/api/Users/{user.Id}");
+                await UserAdminClient.DeleteUserAsync(user.Id);
                 _users.Remove(user);
                 _filteredUsers = _users;
                 Snackbar.Add($"✅ User {user.Username} deleted successfully", Severity.Success);

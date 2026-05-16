@@ -1,9 +1,10 @@
 @using NickScanCentralImagingPortal.Core.Interfaces
 @using NickScanCentralImagingPortal.Core.Models
 @using NickScanWebApp.New.Pages.Administration
+@using NickScanWebApp.Shared.Services
 @using MudBlazor
 @implements IDisposable
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject ErrorInvestigationClient ErrorInvestigationClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 
@@ -231,7 +232,7 @@
     {
         try
         {
-            _stats = await ApiService.GetAsync<InvestigationStatisticsDto>("/api/ErrorInvestigation/statistics");
+            _stats = await ErrorInvestigationClient.GetStatisticsAsync<InvestigationStatisticsDto>();
         }
         catch
         {
@@ -289,17 +290,12 @@
         _loading = true;
         try
         {
-            var q = new List<string>
-            {
-                $"page={state.Page + 1}",
-                $"pageSize={state.PageSize}"
-            };
-            if (!string.IsNullOrEmpty(_filterStatus)) q.Add($"status={Uri.EscapeDataString(_filterStatus)}");
-            if (!string.IsNullOrEmpty(_filterPriority)) q.Add($"priority={Uri.EscapeDataString(_filterPriority)}");
-            if (!string.IsNullOrWhiteSpace(_search)) q.Add($"search={Uri.EscapeDataString(_search.Trim())}");
-
-            var url = $"/api/ErrorInvestigation?{string.Join("&", q)}";
-            var page = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Models.PagedResult<ErrorInvestigationDto>>(url);
+            var page = await ErrorInvestigationClient.GetInvestigationsAsync<NickScanCentralImagingPortal.Core.Models.PagedResult<ErrorInvestigationDto>>(
+                state.Page + 1,
+                state.PageSize,
+                _filterStatus,
+                _filterPriority,
+                _search);
             if (page?.Data != null)
                 return new GridData<ErrorInvestigationDto> { Items = page.Data, TotalItems = page.TotalCount };
             return new GridData<ErrorInvestigationDto> { Items = new List<ErrorInvestigationDto>(), TotalItems = 0 };
@@ -319,7 +315,7 @@
     {
         try
         {
-            _detail = await ApiService.GetAsync<ErrorInvestigationDto>($"/api/ErrorInvestigation/{id}");
+            _detail = await ErrorInvestigationClient.GetInvestigationAsync<ErrorInvestigationDto>(id);
             StateHasChanged();
         }
         catch (Exception ex)
@@ -343,8 +339,9 @@
         if (notes == null) return;
         try
         {
-            await ApiService.PostAsync<NotesRequest, object>(
-                $"/api/ErrorInvestigation/{_detail.Id}/proposals/{fp.Id}/approve",
+            await ErrorInvestigationClient.ApproveProposalAsync<NotesRequest, object>(
+                _detail.Id,
+                fp.Id,
                 new NotesRequest { Notes = string.IsNullOrWhiteSpace(notes) ? null : notes });
             Snackbar.Add("Proposal approved", Severity.Success);
             await OpenDetailAsync(_detail.Id);
@@ -364,8 +361,9 @@
         if (string.IsNullOrWhiteSpace(reason)) return;
         try
         {
-            await ApiService.PostAsync<ReasonRequest, object>(
-                $"/api/ErrorInvestigation/{_detail.Id}/proposals/{fp.Id}/reject",
+            await ErrorInvestigationClient.RejectProposalAsync<ReasonRequest, object>(
+                _detail.Id,
+                fp.Id,
                 new ReasonRequest { Reason = reason });
             Snackbar.Add("Proposal rejected", Severity.Info);
             await OpenDetailAsync(_detail.Id);
@@ -385,8 +383,8 @@
         if (reason == null) return;
         try
         {
-            await ApiService.PostAsync<NotesRequest, object>(
-                $"/api/ErrorInvestigation/{_detail.Id}/ignore",
+            await ErrorInvestigationClient.IgnoreInvestigationAsync<NotesRequest, object>(
+                _detail.Id,
                 new NotesRequest { Reason = string.IsNullOrWhiteSpace(reason) ? null : reason });
             Snackbar.Add("Investigation ignored", Severity.Info);
             await OpenDetailAsync(_detail.Id);
