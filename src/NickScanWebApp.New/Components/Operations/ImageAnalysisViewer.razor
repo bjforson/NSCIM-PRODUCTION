@@ -13,6 +13,7 @@
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
+@inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -3364,8 +3365,7 @@
     {
         try
         {
-            _crossRecordInfo = await ApiService.GetAsync<CrossRecordImageInfoDto>(
-                $"/api/CrossRecordScans/container/{ContainerNumber}");
+            _crossRecordInfo = await CrossRecordScansClient.GetContainerInfoAsync<CrossRecordImageInfoDto>(ContainerNumber);
             
             if (_crossRecordInfo?.IsCrossRecordImage == true)
             {
