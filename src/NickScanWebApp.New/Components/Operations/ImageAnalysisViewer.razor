@@ -1728,7 +1728,7 @@
             $"size={Uri.EscapeDataString(size)}"
         };
 
-        var containerHint = StrictSingleContainerToken(ContainerNumber);
+        var containerHint = GetImageRequestContainerHint();
         if (!string.IsNullOrWhiteSpace(containerHint))
         {
             parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
@@ -1779,6 +1779,15 @@
             ?? StrictSingleContainerToken(SourceScanResolution?.SplitContext?.ContainerNumber)
             ?? StrictSingleContainerToken(ContainerNumber)
             ?? ContainerNumber;
+    }
+
+    private string? GetImageRequestContainerHint()
+    {
+        return StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(SourceScanResolution?.SplitContext?.ContainerNumber)
+            ?? StrictSingleContainerToken(ContainerNumber);
     }
 
     /// <summary>

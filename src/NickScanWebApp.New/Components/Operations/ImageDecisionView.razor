@@ -782,11 +782,14 @@
     }
 
     private string GetDecisionContainerNumber()
+        => GetDecisionContainerNumber(SourceScanResolution);
+
+    private string GetDecisionContainerNumber(ScanAssetResolution? resolution)
     {
-        return StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)
-            ?? StrictSingleContainerToken(SourceScanResolution?.NormalizedContainerNumber)
-            ?? StrictSingleContainerToken(SourceScanResolution?.RequestedContainerNumber)
-            ?? StrictSingleContainerToken(SourceScanResolution?.SplitContext?.ContainerNumber)
+        return StrictSingleContainerToken(resolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.SplitContext?.ContainerNumber)
             ?? StrictSingleContainerToken(ContainerNumber)
             ?? ContainerNumber;
     }
@@ -1110,10 +1113,16 @@
         Console.WriteLine($"🖼️ Opening advanced image viewer for: {image.ImageType} - {image.FullImageUrl}");
         await LogToBrowserConsole($"🖼️ [ImageDecisionView] Opening fullscreen viewer for container: {ContainerNumber}, image: {image.ImageType}");
         
-        // ✅ Capture container info in closure (don't capture images - use component field directly in callback)
-        var currentContainerNumber = ContainerNumber;
+        var effectiveResolution = GetEffectiveImageResolution(image);
+
+        // Capture the resolved child container for the fullscreen handoff. CMR
+        // and split-parent rows can render with a parent/group identifier, but
+        // the viewer and decision save must use the actual analysis record
+        // container so the selected crop stays attached to the right child row.
+        var currentContainerNumber = GetDecisionContainerNumber(effectiveResolution);
         var currentGroupIdentifier = GroupIdentifier;
         var currentIsConsolidated = IsConsolidated;
+        var fullImageUrl = GetFullImageSrc(image);
         
         // ✅ CRITICAL: Notify parent that this container is being processed
         // This ensures _currentProcessingContainer is set correctly for auto-progression
@@ -1129,13 +1138,13 @@
         IDialogReference? dialogRef = null;
         var parameters = new DialogParameters
         {
-            ["ImageUrl"] = GetFullImageSrc(image),
+            ["ImageUrl"] = fullImageUrl,
             ["ContainerNumber"] = currentContainerNumber,
             ["ScannerType"] = image.ImageType,
             ["ScanDate"] = DateTime.Now,
             ["GroupIdentifier"] = currentGroupIdentifier,
             ["IsConsolidated"] = currentIsConsolidated,
-            ["SourceScanResolution"] = GetEffectiveImageResolution(image),
+            ["SourceScanResolution"] = effectiveResolution,
             ["OnClose"] = EventCallback.Factory.Create(this, () =>
             {
                 // ✅ Close the dialog when OnClose is called

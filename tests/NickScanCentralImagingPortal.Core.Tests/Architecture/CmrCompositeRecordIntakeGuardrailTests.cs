@@ -67,6 +67,28 @@ public class CmrCompositeRecordIntakeGuardrailTests
         Assert.Contains("loadScannerData=false&loadImageData=false&loadICUMSData=true", viewer);
     }
 
+    [Fact]
+    public void SplitChoiceFullscreenHandoff_UsesResolvedChildContainerAndResolution()
+    {
+        var decisionView = ReadRepoFile("src/NickScanWebApp.New/Components/Operations/ImageDecisionView.razor");
+
+        Assert.Contains("GetDecisionContainerNumber(effectiveResolution)", decisionView);
+        Assert.Contains("[\"ContainerNumber\"] = currentContainerNumber", decisionView);
+        Assert.Contains("[\"SourceScanResolution\"] = effectiveResolution", decisionView);
+        Assert.Contains("var fullImageUrl = GetFullImageSrc(image)", decisionView);
+    }
+
+    [Fact]
+    public void SplitChoiceFullscreenImageRequests_PreferResolvedScanContainerHint()
+    {
+        var viewer = ReadRepoFile("src/NickScanWebApp.New/Components/Operations/ImageAnalysisViewer.razor");
+
+        Assert.Contains("GetImageRequestContainerHint()", viewer);
+        Assert.Contains("StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)", viewer);
+        Assert.Contains("containerNumber={Uri.EscapeDataString(containerHint)}", viewer);
+        Assert.Contains("StrictSingleContainerToken(ContainerNumber)", viewer);
+    }
+
     private static string ReadRepoFile(string relativePath, [CallerFilePath] string callerPath = "")
     {
         return File.ReadAllText(Path.Combine(ResolveRepoRoot(callerPath), relativePath));
