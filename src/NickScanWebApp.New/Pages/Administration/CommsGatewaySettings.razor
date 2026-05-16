@@ -4,7 +4,7 @@
 @using NickScanWebApp.Shared.Models
 @using NickScanCentralImagingPortal.Core.Constants
 @inject NickScanWebApp.Shared.Services.SettingsService SettingsService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.CommsGatewayClient CommsGatewayClient
 @inject ISnackbar Snackbar
 @inject ILogger<CommsGatewaySettings> Logger
 
@@ -263,7 +263,7 @@
         _isTesting = true;
         try
         {
-            var result = await ApiService.GetAsync<PingResultDto>("/api/CommsGateway/ping");
+            var result = await CommsGatewayClient.PingAsync<PingResultDto>();
             if (result?.Ok == true)
                 Snackbar.Add($"Connected to {result.BaseUrl}", Severity.Success);
             else
@@ -289,8 +289,7 @@
         _isSendingEmail = true;
         try
         {
-            var result = await ApiService.PostAsync<TestEmailDto, TestSendResultDto>(
-                "/api/CommsGateway/test-email",
+            var result = await CommsGatewayClient.SendTestEmailAsync<TestEmailDto, TestSendResultDto>(
                 new TestEmailDto { To = _testEmailTo, Subject = _testEmailSubject, Body = _testEmailBody });
             if (result?.Success == true)
                 Snackbar.Add($"Email queued ({result.MessageId}).", Severity.Success);
@@ -318,8 +317,7 @@
         _isSendingSms = true;
         try
         {
-            var result = await ApiService.PostAsync<TestSmsDto, TestSendResultDto>(
-                "/api/CommsGateway/test-sms",
+            var result = await CommsGatewayClient.SendTestSmsAsync<TestSmsDto, TestSendResultDto>(
                 new TestSmsDto { PhoneNumber = _testSmsPhone, Message = _testSmsMessage });
             if (result?.Success == true)
                 Snackbar.Add($"SMS queued ({result.MessageId}).", Severity.Success);
@@ -341,7 +339,7 @@
     {
         try
         {
-            _history = await ApiService.GetAsync<NickCommsHistoryDto>("/api/CommsGateway/history?page=1&pageSize=25")
+            _history = await CommsGatewayClient.GetHistoryAsync<NickCommsHistoryDto>()
                        ?? new NickCommsHistoryDto();
         }
         catch (Exception ex)

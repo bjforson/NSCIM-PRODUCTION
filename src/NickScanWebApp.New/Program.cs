@@ -302,6 +302,8 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.UserAdminClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.RoleAdminClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.PermissionAdminClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AccessReviewClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.NotificationClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.CommsGatewayClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();
