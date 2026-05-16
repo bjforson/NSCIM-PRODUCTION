@@ -1,6 +1,7 @@
 @implements IDisposable
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
+@inject NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient SubmissionQueueClient
 
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
@@ -570,7 +571,7 @@
             
             // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
             // Get download queue stats
-            var downloadStats = await ApiService.GetAsync<DownloadQueueStatsDto>("/api/ICUMSDownloadQueue/stats");
+            var downloadStats = await DownloadQueueClient.GetStatsAsync<DownloadQueueStatsDto>();
             if (downloadStats != null)
             {
                 var completed = downloadStats.Completed;
@@ -583,13 +584,13 @@
                 }
                 
                 // Get queue size
-                var queueItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?limit=1000");
+                var queueItems = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(limit: 1000);
                 _currentQueueSize = queueItems?.Count ?? 0;
                 _queueUtilization = _maxQueueCapacity > 0 ? (double)_currentQueueSize / _maxQueueCapacity * 100 : 0;
             }
             
             // Get submission queue stats for success rate
-            var submissionStats = await ApiService.GetAsync<SubmissionQueueStatsDto>("/api/ICUMSSubmissionQueue/stats");
+            var submissionStats = await SubmissionQueueClient.GetStatsAsync<SubmissionQueueStatsDto>();
             if (submissionStats != null)
             {
                 var successful = submissionStats.Successful;
@@ -636,7 +637,9 @@
         {
             // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
             // Get failed queue items to analyze errors
-            var failedItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?status=Failed&limit=100");
+            var failedItems = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(
+                limit: 100,
+                status: "Failed");
             
             if (failedItems != null && failedItems.Any())
             {
@@ -728,8 +731,14 @@
             
             // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
             // Query completed downloads grouped by date
-            var allCompleted = await ApiService.GetAsync<List<DownloadQueueItemDto>>($"/api/ICUMSDownloadQueue?startDate={startDate:yyyy-MM-dd}&endDate={endDate:yyyy-MM-dd}&status=Completed");
-            var allFailed = await ApiService.GetAsync<List<DownloadQueueItemDto>>($"/api/ICUMSDownloadQueue?startDate={startDate:yyyy-MM-dd}&endDate={endDate:yyyy-MM-dd}&status=Failed");
+            var allCompleted = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(
+                status: "Completed",
+                startDate: startDate,
+                endDate: endDate);
+            var allFailed = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(
+                status: "Failed",
+                startDate: startDate,
+                endDate: endDate);
             
             // Group by date
             var completedByDate = allCompleted?
@@ -792,7 +801,9 @@
         {
             // ✅ FIX: Use proper DTOs instead of dynamic with GetProperty()
             // Get completed items to analyze processing times
-            var completedItems = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?status=Completed&limit=1000");
+            var completedItems = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(
+                limit: 1000,
+                status: "Completed");
             
             if (completedItems != null && completedItems.Any())
             {

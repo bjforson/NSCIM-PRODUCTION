@@ -11,7 +11,7 @@
 @using NickScanWebApp.New.Components.Customs
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
 @inject IConfiguration Configuration
 @inject NavigationManager NavManager
 
@@ -339,7 +339,7 @@
     {
         try
         {
-            var items = await ApiService.GetAsync<List<DownloadQueueItem>>("/api/ICUMSDownloadQueue?limit=100");
+            var items = await DownloadQueueClient.GetItemsAsync<DownloadQueueItem>(limit: 100);
             queueItems = items ?? new List<DownloadQueueItem>();
         }
         catch (Exception ex)
@@ -353,7 +353,7 @@
     {
         try
         {
-            var stats = await ApiService.GetAsync<QueueStats>("/api/ICUMSDownloadQueue/stats");
+            var stats = await DownloadQueueClient.GetStatsAsync<QueueStats>();
             if (stats != null)
             {
                 highPriorityCount = stats.HighPriority;
@@ -370,7 +370,10 @@
             try
             {
                 // Get completed items from yesterday
-                var yesterdayItems = await ApiService.GetAsync<List<DownloadQueueItem>>($"/api/ICUMSDownloadQueue?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}&status=Completed");
+                var yesterdayItems = await DownloadQueueClient.GetItemsAsync<DownloadQueueItem>(
+                    status: "Completed",
+                    startDate: yesterdayStart,
+                    endDate: yesterdayEnd);
                 completedYesterday = yesterdayItems?.Count ?? 0;
             }
             catch (Exception ex)
@@ -414,7 +417,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{id}", new { });
+            await DownloadQueueClient.RetryAsync(id);
             await LoadQueueData();
             Snackbar.Add("Retry initiated", Severity.Success);
             StateHasChanged();
@@ -429,7 +432,7 @@
     {
         try
         {
-            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+            await DownloadQueueClient.DeleteAsync(id);
             await LoadQueueData();
             Snackbar.Add("Item removed from queue", Severity.Success);
             StateHasChanged();
@@ -455,7 +458,7 @@
         {
             try
             {
-                await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{item.Id}", new { });
+                await DownloadQueueClient.RetryAsync(item.Id);
                 successCount++;
             }
             catch
@@ -483,7 +486,7 @@
     {
         try
         {
-            var stats = await ApiService.GetAsync<ArchiveStatsDto>("/api/ICUMSDownloadQueue/archive/stats");
+            var stats = await DownloadQueueClient.GetArchiveStatsAsync<ArchiveStatsDto>();
             if (stats != null)
             {
                 _archiveCount = stats.TotalArchived;
@@ -528,7 +531,7 @@
                 RequestedBy = "Admin"
             };
             
-            var response = await ApiService.PostAsync<object, RequeueResponse>("/api/ICUMSDownloadQueue/requeue", requeueRequest);
+            var response = await DownloadQueueClient.RequeueFromArchiveAsync<RequeueResponse>(requeueRequest);
             
             if (response != null)
             {
@@ -575,7 +578,7 @@
                 ResetTimestamps = result.ResetTimestamps
             };
             
-            var response = await ApiService.PostAsync<object, RequeuePendingResponse>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            var response = await DownloadQueueClient.RequeuePendingAsync<RequeuePendingResponse>(requeueRequest);
             
             if (response != null)
             {
@@ -602,7 +605,7 @@
                 ResetTimestamps = true
             };
             
-            var response = await ApiService.PostAsync<object, RequeuePendingResponse>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            var response = await DownloadQueueClient.RequeuePendingAsync<RequeuePendingResponse>(requeueRequest);
             
             if (response != null)
             {
@@ -633,7 +636,7 @@
             int deletedCount = 0;
             foreach (var id in ids)
             {
-                await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+                await DownloadQueueClient.DeleteAsync(id);
                 deletedCount++;
             }
             
@@ -677,7 +680,7 @@
                 var item = queueItems.FirstOrDefault(x => x.Id == id);
                 if (item != null)
                 {
-                    await ApiService.PutAsync<object, object>($"/api/ICUMSDownloadQueue/priority", new 
+                    await DownloadQueueClient.UpdatePriorityAsync(new
                     { 
                         ContainerNumber = item.ContainerNumber, 
                         Priority = newPriority 
