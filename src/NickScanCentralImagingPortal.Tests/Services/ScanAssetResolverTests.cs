@@ -171,6 +171,38 @@ public sealed class ScanAssetResolverTests
         Assert.Equal("TGBU5483870", result.SourceContainerNumbers);
     }
 
+    [Fact]
+    public async Task ResolveAsync_ExactFs6000_UsesImageRowsWhenSummaryFlagsAreStale()
+    {
+        await using var db = CreateDb();
+        var scanId = Guid.NewGuid();
+        db.FS6000Scans.Add(new FS6000Scan
+        {
+            Id = scanId,
+            ContainerNumber = "HASU1135624",
+            PicNumber = "PIC-STALE",
+            ScanTime = DateTime.UtcNow,
+            HasImage = false,
+            ImageCount = 0
+        });
+        db.FS6000Images.Add(new FS6000Image
+        {
+            ScanId = scanId,
+            ImageType = "Main",
+            FileName = "23301FS01202605160017.jpg",
+            FileSizeBytes = 311_958,
+            ImageData = new byte[] { 0xFF, 0xD8, 0xFF }
+        });
+        await db.SaveChangesAsync();
+
+        var result = await CreateResolver(db).ResolveAsync("HASU1135624");
+
+        Assert.True(result.Found);
+        Assert.True(result.HasImage);
+        Assert.Equal(311_958, result.ImageSizeBytes);
+        Assert.Equal("23301FS01202605160017.jpg", result.ImageDisplayName);
+    }
+
     private static ScanAssetResolver CreateResolver(ApplicationDbContext db) =>
         new(db, NullLogger<ScanAssetResolver>.Instance);
 

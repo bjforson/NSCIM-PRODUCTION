@@ -4528,11 +4528,20 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     return cachedCount;
                 }
 
-                var count = await db.ContainerCompletenessStatuses
-                    .Where(s => s.Status.StartsWith("Complete")
-                        && (string.IsNullOrEmpty(s.WorkflowStage)
-                            || s.WorkflowStage == "Pending"
-                            || s.WorkflowStage == "ImageAnalysis"))
+                var minBatchSize = await db.AnalysisSettings
+                    .Select(s => s.WaveMinBatchSize)
+                    .FirstOrDefaultAsync(stoppingToken);
+                minBatchSize = Math.Max(1, minBatchSize);
+
+                // Intake is now record-anchored. The old container-completeness
+                // counter included rows already sitting in ImageAnalysis, so the
+                // orchestrator kept reporting hundreds of "work" items even after
+                // the real record intake backlog had drained.
+                var count = await db.RecordCompletenessStatuses
+                    .Where(r => (r.Status == "Ready"
+                            || (r.Status == "PartiallyReady" && r.ContainersReady >= minBatchSize))
+                        && r.ArchivedAtUtc == null
+                        && !db.AnalysisGroups.Any(g => g.RecordCompletenessStatusId == r.Id))
                     .CountAsync(stoppingToken);
 
                 // Cache result for this cycle

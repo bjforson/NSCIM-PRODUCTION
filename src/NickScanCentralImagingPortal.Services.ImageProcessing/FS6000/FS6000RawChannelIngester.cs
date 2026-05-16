@@ -213,7 +213,44 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 }
             }
 
+            await RefreshScanImageSummaryAsync(scanId, ct);
             return result;
+        }
+
+        private async Task RefreshScanImageSummaryAsync(Guid scanId, CancellationToken ct)
+        {
+            try
+            {
+                var summary = await _db.FS6000Images
+                    .AsNoTracking()
+                    .Where(i => i.ScanId == scanId)
+                    .GroupBy(i => i.ScanId)
+                    .Select(g => new
+                    {
+                        Count = g.Count(),
+                        LatestCreatedAt = g.Max(i => i.CreatedAt)
+                    })
+                    .FirstOrDefaultAsync(ct);
+
+                if (summary == null || summary.Count <= 0)
+                    return;
+
+                await _db.FS6000Scans
+                    .Where(s => s.Id == scanId
+                        && (!s.HasImage
+                            || s.ImageCount != summary.Count
+                            || s.ImageIngestedAt == null
+                            || s.ImageValidationError != null))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(s => s.HasImage, true)
+                        .SetProperty(s => s.ImageCount, summary.Count)
+                        .SetProperty(s => s.ImageIngestedAt, summary.LatestCreatedAt)
+                        .SetProperty(s => s.ImageValidationError, (string?)null), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "[FS6000-RAW] Failed to refresh image summary for scan {ScanId}", scanId);
+            }
         }
 
         private static bool TryGetAcceptedInvalidChannel(string invalidSignature, out AcceptedInvalidRawChannel accepted)
