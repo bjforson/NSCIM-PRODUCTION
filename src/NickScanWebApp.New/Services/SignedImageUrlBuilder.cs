@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Security;
+using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services;
 
@@ -122,8 +123,7 @@ public class SignedImageUrlBuilder
     /// </summary>
     public static string BuildImageProxyUrl(string targetUrl)
     {
-        var bytes = Encoding.UTF8.GetBytes(targetUrl);
-        return $"/api/imageproxy?url={Uri.EscapeDataString(Convert.ToBase64String(bytes))}";
+        return ImageProxyUrlBuilder.Build(targetUrl);
     }
 
     // IDENTICAL to SignedImageUrlMiddleware.SignedImageUrl.ComputeSignature in the API.

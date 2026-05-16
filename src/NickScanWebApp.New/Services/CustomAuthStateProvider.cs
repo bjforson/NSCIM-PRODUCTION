@@ -626,7 +626,7 @@ namespace NickScanWebApp.New.Services
                 using var scope = _serviceProvider.CreateScope();
                 var apiService = scope.ServiceProvider.GetRequiredService<ApiService>();
 
-                var permissions = await apiService.GetAsync<List<string>>("api/permissions/my-permissions");
+                var permissions = await apiService.GetAsync<List<string>>(AuthenticationRoutes.MyPermissionsPath);
                 if (permissions != null && permissions.Count > 0)
                 {
                     lock (_permissionLock)

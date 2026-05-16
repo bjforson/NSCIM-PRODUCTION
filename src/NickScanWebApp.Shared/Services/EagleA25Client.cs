@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 
 namespace NickScanWebApp.Shared.Services;
 
@@ -46,8 +45,7 @@ public sealed class EagleA25Client
 
     public static string BuildImageProxyUrl(string targetUrl)
     {
-        var bytes = Encoding.UTF8.GetBytes(targetUrl);
-        return $"/api/imageproxy?url={Uri.EscapeDataString(Convert.ToBase64String(bytes))}";
+        return ImageProxyUrlBuilder.Build(targetUrl);
     }
 
     private static string BuildScansQuery(EagleA25ScanQuery? query)
