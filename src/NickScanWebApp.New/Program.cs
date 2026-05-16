@@ -308,6 +308,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.CargoGroupClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.QueueHealthClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.CrossRecordScansClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.MatchCorrectionAdminClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.LooseCargoClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

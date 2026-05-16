@@ -4,7 +4,7 @@
 @using NickScanWebApp.Shared.Services
 @using NickScanWebApp.New.Components.ICUMS
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject LooseCargoClient LooseCargoClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @implements IDisposable
@@ -344,7 +344,7 @@
     {
         try
         {
-            var statsResponse = await ApiService.GetAsync<StatsApiResponse>("/api/LooseCargo/stats");
+            var statsResponse = await LooseCargoClient.GetStatsAsync<StatsApiResponse>();
             
             if (statsResponse?.Success == true && statsResponse.Data != null)
             {
@@ -366,40 +366,17 @@
         _loading = true;
         try
         {
-            // Build query string
-            var queryParams = new List<string>();
-            
-            if (_selectedClearanceType != "All")
-                queryParams.Add($"clearanceType={Uri.EscapeDataString(_selectedClearanceType)}");
-            
-            if (_selectedCrmsLevel != "All")
-                queryParams.Add($"crmsLevel={Uri.EscapeDataString(_selectedCrmsLevel)}");
-            
-            if (!string.IsNullOrWhiteSpace(_searchTerm))
-                queryParams.Add($"search={Uri.EscapeDataString(_searchTerm)}");
-            
-            if (!string.IsNullOrWhiteSpace(_countryOfOrigin))
-                queryParams.Add($"countryOfOrigin={Uri.EscapeDataString(_countryOfOrigin)}");
-            
-            if (!string.IsNullOrWhiteSpace(_regimeCode))
-                queryParams.Add($"regimeCode={Uri.EscapeDataString(_regimeCode)}");
-            
-            if (_fromDate.HasValue)
-                queryParams.Add($"fromDate={_fromDate.Value:yyyy-MM-dd}");
-            
-            if (_toDate.HasValue)
-                queryParams.Add($"toDate={_toDate.Value:yyyy-MM-dd}");
-            
-            queryParams.Add($"pageNumber={_currentPage}");
-            queryParams.Add($"pageSize={_pageSize}");
-            queryParams.Add("sortBy=CreatedAt");
-            queryParams.Add("sortDescending=true");
-            
-            var queryString = string.Join("&", queryParams);
-            var url = $"/api/LooseCargo?{queryString}";
-            
             // ✅ FIX: Handle both camelCase and PascalCase response formats
-            var response = await ApiService.GetAsync<SearchApiResponse>(url);
+            var response = await LooseCargoClient.SearchAsync<SearchApiResponse>(
+                _selectedClearanceType,
+                _selectedCrmsLevel,
+                _searchTerm,
+                _countryOfOrigin,
+                _regimeCode,
+                _fromDate,
+                _toDate,
+                _currentPage,
+                _pageSize);
             
             // Check if response is null or has no data
             if (response == null)
