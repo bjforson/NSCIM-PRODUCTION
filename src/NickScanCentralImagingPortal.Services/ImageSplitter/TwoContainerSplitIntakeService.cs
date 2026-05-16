@@ -625,6 +625,9 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                         ImageUrl = composite.ImageUrl,
                         MetadataRef = composite.MetadataRef,
                         CompletenessRef = composite.CompletenessRef,
+                        ScanImageAssetId = composite.ScanImageAssetId,
+                        OriginalScanRecordId = composite.OriginalScanRecordId,
+                        SourceContainerLabel = composite.SourceContainerLabel,
                         Status = composite.Status,
                         CreatedAtUtc = DateTime.UtcNow
                     };

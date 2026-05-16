@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using NickScanCentralImagingPortal.API.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
@@ -357,10 +358,41 @@ namespace NickScanCentralImagingPortal.API.Controllers
             if (string.IsNullOrWhiteSpace(normalizedContainer))
                 return null;
 
+            var displayContainer = containerNumber.Trim().ToUpperInvariant();
+            var linkedOriginalScanIds = await _context.SourceScanContainerLinks
+                .AsNoTracking()
+                .Where(link => link.ScannerType == CommonScannerTypes.ASE
+                    && link.NormalizedContainerNumber == normalizedContainer
+                    && link.OriginalScanRecordId.HasValue)
+                .OrderByDescending(link => link.UpdatedAtUtc)
+                .Select(link => link.OriginalScanRecordId!.Value)
+                .Distinct()
+                .Take(10)
+                .ToListAsync(cancellationToken);
+
+            if (linkedOriginalScanIds.Count > 0)
+            {
+                var linkedQuery = _context.AseScans
+                    .AsNoTracking()
+                    .Where(scan => scan.OriginalScanRecordId.HasValue
+                        && linkedOriginalScanIds.Contains(scan.OriginalScanRecordId.Value));
+
+                if (requireImage)
+                    linkedQuery = linkedQuery.Where(scan => scan.ScanImage != null);
+
+                var linked = await linkedQuery
+                    .OrderByDescending(scan => scan.ScanTime)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (linked != null)
+                    return linked;
+            }
+
             var exactQuery = _context.AseScans
                 .AsNoTracking()
                 .Where(scan => scan.ContainerNumber != null
-                    && scan.ContainerNumber.ToUpper() == normalizedContainer);
+                    && (scan.ContainerNumber.ToUpper() == normalizedContainer
+                        || scan.ContainerNumber.ToUpper() == displayContainer));
 
             if (requireImage)
                 exactQuery = exactQuery.Where(scan => scan.ScanImage != null);
@@ -372,10 +404,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
             if (exact != null)
                 return exact;
 
+            var requestedTokens = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber);
+            var lookupToken = requestedTokens.FirstOrDefault() ?? normalizedContainer;
             var tokenizedQuery = _context.AseScans
                 .AsNoTracking()
                 .Where(scan => scan.ContainerNumber != null
-                    && scan.ContainerNumber.ToUpper().Contains(normalizedContainer));
+                    && scan.ContainerNumber.ToUpper().Contains(lookupToken));
 
             if (requireImage)
                 tokenizedQuery = tokenizedQuery.Where(scan => scan.ScanImage != null);
@@ -386,7 +420,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .ToListAsync(cancellationToken);
 
             return candidates.FirstOrDefault(scan =>
-                ContainerNumberListMatcher.ContainsContainer(scan.ContainerNumber, normalizedContainer));
+                ContainerNumberListMatcher.ContainsAllContainers(scan.ContainerNumber, containerNumber));
         }
 
         /// <summary>
@@ -2261,9 +2295,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 try
                 {
                     var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+                    var requestedTokens = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber);
+                    var lookupToken = requestedTokens.FirstOrDefault() ?? normalizedContainer;
                     var aseScanCandidates = await _context.AseScans
                         .Where(a => a.ContainerNumber != null
-                            && a.ContainerNumber.ToUpper().Contains(normalizedContainer)
+                            && a.ContainerNumber.ToUpper().Contains(lookupToken)
                             && !string.IsNullOrEmpty(a.ImageDisplayName)
                             && a.ScanImage != null && a.ScanImage.Length > 1000)
                         .OrderByDescending(a => a.ScanTime)
@@ -2277,7 +2313,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         .ToListAsync(cts.Token);
 
                     var aseScans = aseScanCandidates
-                        .Where(a => ContainerNumberListMatcher.ContainsContainer(a.ContainerNumber, normalizedContainer))
+                        .Where(a => ContainerNumberListMatcher.ContainsAllContainers(a.ContainerNumber, containerNumber))
                         .ToList();
 
                     if (aseScans.Any())

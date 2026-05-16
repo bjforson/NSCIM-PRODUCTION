@@ -60,6 +60,16 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(20)]
         public string? ScannerType { get; set; }
 
+        /// <summary>
+        /// Canonical source image identity bound when scanner evidence arrives.
+        /// </summary>
+        public Guid? ScanImageAssetId { get; set; }
+
+        public int? OriginalScanRecordId { get; set; }
+
+        [StringLength(500)]
+        public string? SourceContainerLabel { get; set; }
+
         public DateTime FirstSeenUtc { get; set; } = DateTime.UtcNow;
         public DateTime? ScannedAtUtc { get; set; }
         public DateTime? BecameReadyUtc { get; set; }

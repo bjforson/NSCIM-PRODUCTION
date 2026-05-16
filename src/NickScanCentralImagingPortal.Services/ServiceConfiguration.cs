@@ -445,6 +445,7 @@ namespace NickScanCentralImagingPortal.Services
 
             // Image Processing Services - Using fully qualified names to avoid ambiguity
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IScanAssetResolver, NickScanCentralImagingPortal.Services.ImageProcessing.ScanAssetResolver>();
+            services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IScanIdentityService, NickScanCentralImagingPortal.Services.ScanIdentity.ScanIdentityService>();
             services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IImageProcessingService, NickScanCentralImagingPortal.Services.ImageProcessing.ImageProcessingService>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.IImageCacheService, NickScanCentralImagingPortal.Services.ImageProcessing.ImageCacheService>();
             services.AddScoped<NickScanCentralImagingPortal.Services.ImageProcessing.ASE.IASEImageConverterService, NickScanCentralImagingPortal.Services.ImageProcessing.ASE.ASEImageConverterService>();

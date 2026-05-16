@@ -15,6 +15,7 @@ public sealed class ScanAssetResolution
     public string? GroupIdentifier { get; set; }
     public int? AnalysisRecordId { get; set; }
     public string? SourceScannerType { get; set; }
+    public Guid? ScanImageAssetId { get; set; }
     public string? SourceScanId { get; set; }
     public int? OriginalScanRecordId { get; set; }
     public Guid? ScannerScanId { get; set; }

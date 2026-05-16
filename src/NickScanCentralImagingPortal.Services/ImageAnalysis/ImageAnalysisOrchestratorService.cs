@@ -934,13 +934,23 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                                 Interlocked.Increment(ref localProcessedCount);
 
-                                var containerNumbers = await db.ContainerCompletenessStatuses
+                                var containerEvidence = await db.ContainerCompletenessStatuses
                                     .Where(s => s.GroupIdentifier == g.GroupIdentifier)
-                                    .Select(s => s.ContainerNumber)
+                                    .Select(s => new
+                                    {
+                                        s.ContainerNumber,
+                                        s.ScanImageAssetId,
+                                        s.OriginalScanRecordId,
+                                        s.SourceContainerLabel
+                                    })
+                                    .ToListAsync(stoppingToken);
+
+                                var containerNumbers = containerEvidence
+                                    .Select(row => row.ContainerNumber)
                                     .Where(c => !string.IsNullOrWhiteSpace(c))
                                     .Select(c => c!.Trim().ToUpperInvariant())
-                                    .Distinct()
-                                    .ToListAsync(stoppingToken);
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
 
                                 if (containerNumbers.Count == 0)
                                 {
@@ -965,13 +975,25 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
 
                                 if (newContainerNumbers.Count > 0)
                                 {
+                                    var identityByContainer = containerEvidence
+                                        .Where(row => !string.IsNullOrWhiteSpace(row.ContainerNumber))
+                                        .GroupBy(row => row.ContainerNumber!.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
+                                        .ToDictionary(
+                                            group => group.Key,
+                                            group => group.First(),
+                                            StringComparer.OrdinalIgnoreCase);
+
                                     foreach (var containerNumber in newContainerNumbers)
                                     {
+                                        identityByContainer.TryGetValue(containerNumber, out var identity);
                                         db.AnalysisRecords.Add(new AnalysisRecord
                                         {
                                             GroupId = group.Id,
                                             ContainerNumber = containerNumber,
                                             ScannerType = g.ScannerType,
+                                            ScanImageAssetId = identity?.ScanImageAssetId,
+                                            OriginalScanRecordId = identity?.OriginalScanRecordId,
+                                            SourceContainerLabel = identity?.SourceContainerLabel,
                                             Status = "Ready",
                                             CreatedAtUtc = DateTime.UtcNow
                                         });
@@ -3145,13 +3167,22 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     }
 
                     // 4. Create AnalysisRecords for ready containers only
+                    var readyIdentityByContainer = readyContainers
+                        .Where(c => !string.IsNullOrWhiteSpace(c.ContainerNumber))
+                        .GroupBy(c => c.ContainerNumber!.Trim().ToUpperInvariant(), StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
                     foreach (var containerNumber in readyContainerNumbers)
                     {
+                        readyIdentityByContainer.TryGetValue(containerNumber, out var identity);
                         db.AnalysisRecords.Add(new AnalysisRecord
                         {
                             GroupId = waveGroup.Id,
                             ContainerNumber = containerNumber,
                             ScannerType = scannerType,
+                            ScanImageAssetId = identity?.ScanImageAssetId,
+                            OriginalScanRecordId = identity?.OriginalScanRecordId,
+                            SourceContainerLabel = identity?.SourceContainerLabel,
                             Status = "Ready",
                             CreatedAtUtc = DateTime.UtcNow
                         });

@@ -13,6 +13,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.Logging;
 
@@ -110,16 +111,17 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var queueRepository = scope.ServiceProvider.GetRequiredService<IContainerScanQueueRepository>();
             var queuePublisher = scope.ServiceProvider.GetRequiredService<IContainerScanQueuePublisher>();
+            var scanIdentityService = scope.ServiceProvider.GetService<IScanIdentityService>();
 
             var recoveryStats = new RecoveryStatistics();
 
             try
             {
                 // Recover FS6000 scans
-                await RecoverFS6000ScansAsync(dbContext, queueRepository, queuePublisher, recoveryStats, cancellationToken);
+                await RecoverFS6000ScansAsync(dbContext, queueRepository, queuePublisher, scanIdentityService, recoveryStats, cancellationToken);
 
                 // Recover ASE scans
-                await RecoverAseScansAsync(dbContext, queueRepository, queuePublisher, recoveryStats, cancellationToken);
+                await RecoverAseScansAsync(dbContext, queueRepository, queuePublisher, scanIdentityService, recoveryStats, cancellationToken);
 
                 var duration = DateTime.UtcNow - startTime;
                 _logger.LogInformation(
@@ -158,6 +160,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             ApplicationDbContext dbContext,
             IContainerScanQueueRepository queueRepository,
             IContainerScanQueuePublisher queuePublisher,
+            IScanIdentityService? scanIdentityService,
             RecoveryStatistics stats,
             CancellationToken cancellationToken)
         {
@@ -177,6 +180,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 .Select(s => new FS6000ScanInfo
                 {
                     Id = s.Id,
+                    OriginalScanRecordId = s.OriginalScanRecordId,
                     ContainerNumber = s.ContainerNumber,
                     ScanTime = s.ScanTime,
                     CreatedAt = s.CreatedAt
@@ -199,7 +203,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             for (int i = 0; i < fs6000Scans.Count; i += BatchSize)
             {
                 var batch = fs6000Scans.Skip(i).Take(BatchSize).ToList();
-                await ProcessFS6000BatchAsync(batch, queueRepository, queuePublisher, stats, cancellationToken);
+                await ProcessFS6000BatchAsync(batch, queueRepository, queuePublisher, scanIdentityService, stats, cancellationToken);
             }
         }
 
@@ -207,6 +211,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             List<FS6000ScanInfo> batch,
             IContainerScanQueueRepository queueRepository,
             IContainerScanQueuePublisher queuePublisher,
+            IScanIdentityService? scanIdentityService,
             RecoveryStatistics stats,
             CancellationToken cancellationToken)
         {
@@ -234,6 +239,19 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                     if (!isQueued)
                     {
+                        var identity = scanIdentityService == null
+                            ? null
+                            : await scanIdentityService.EnsureSourceIdentityAsync(new ScanIdentityRequest
+                            {
+                                OriginalScanRecordId = scan.OriginalScanRecordId,
+                                ScannerType = CommonScannerTypes.FS6000,
+                                ScannerNativeId = scan.Id.ToString(),
+                                SourceContainerLabel = containerNumber,
+                                ContainerNumbers = new[] { containerNumber },
+                                ScanTimeUtc = scanDate,
+                                StorageKind = ScanImageAssetStorageKinds.Database
+                            }, cancellationToken);
+
                         // Scan not in queue - add to recovery list
                         scansToQueue.Add(new ContainerScanInfo
                         {
@@ -242,7 +260,11 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             InspectionId = inspectionId,
                             ScanDate = scanDate,
                             Priority = 1, // Higher priority for recovered scans
-                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\"}}"
+                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\"}}",
+                            ScanImageAssetId = identity?.Asset.Id,
+                            OriginalScanRecordId = scan.OriginalScanRecordId,
+                            SourceContainerLabel = containerNumber,
+                            ScanContainerPosition = identity?.FindLink(containerNumber)?.Position
                         });
                         stats.TotalFound++;
                     }
@@ -284,6 +306,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             ApplicationDbContext dbContext,
             IContainerScanQueueRepository queueRepository,
             IContainerScanQueuePublisher queuePublisher,
+            IScanIdentityService? scanIdentityService,
             RecoveryStatistics stats,
             CancellationToken cancellationToken)
         {
@@ -302,10 +325,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 .OrderBy(s => s.CreatedAt)
                 .Select(s => new AseScanInfo
                 {
+                    Id = s.Id,
                     InspectionId = s.InspectionId,
+                    OriginalScanRecordId = s.OriginalScanRecordId,
                     ContainerNumber = s.ContainerNumber,
                     ScanTime = s.ScanTime,
-                    CreatedAt = s.CreatedAt
+                    CreatedAt = s.CreatedAt,
+                    ImageDisplayName = s.ImageDisplayName,
+                    ImageSizeBytes = s.ScanImage != null ? s.ScanImage.Length : 0
                 })
                 .ToListAsync(cancellationToken);
 
@@ -325,7 +352,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             for (int i = 0; i < aseScans.Count; i += BatchSize)
             {
                 var batch = aseScans.Skip(i).Take(BatchSize).ToList();
-                await ProcessAseBatchAsync(batch, queueRepository, queuePublisher, stats, cancellationToken);
+                await ProcessAseBatchAsync(batch, queueRepository, queuePublisher, scanIdentityService, stats, cancellationToken);
             }
         }
 
@@ -333,6 +360,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             List<AseScanInfo> batch,
             IContainerScanQueueRepository queueRepository,
             IContainerScanQueuePublisher queuePublisher,
+            IScanIdentityService? scanIdentityService,
             RecoveryStatistics stats,
             CancellationToken cancellationToken)
         {
@@ -343,7 +371,6 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 try
                 {
                     var containerNumber = scan.ContainerNumber?.Trim();
-                    var inspectionId = scan.InspectionId.ToString(); // ASE uses int InspectionId
                     var scanDate = scan.ScanTime;
 
                     if (string.IsNullOrWhiteSpace(containerNumber))
@@ -352,29 +379,58 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                         continue;
                     }
 
-                    // Check if already in queue
-                    var isQueued = await queueRepository.IsInQueueAsync(
-                        containerNumber,
-                        CommonScannerTypes.ASE,
-                        inspectionId);
+                    var identity = scanIdentityService == null
+                        ? null
+                        : await scanIdentityService.EnsureSourceIdentityAsync(new ScanIdentityRequest
+                        {
+                            OriginalScanRecordId = scan.OriginalScanRecordId,
+                            ScannerType = CommonScannerTypes.ASE,
+                            ScannerNativeId = scan.InspectionId.ToString(),
+                            SourceContainerLabel = containerNumber,
+                            ContainerNumbers = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber),
+                            ImageDisplayName = scan.ImageDisplayName,
+                            FileSizeBytes = scan.ImageSizeBytes,
+                            ScanTimeUtc = scanDate,
+                            StorageKind = ScanImageAssetStorageKinds.Database
+                        }, cancellationToken);
 
-                    if (!isQueued)
+                    var tokens = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber);
+                    if (tokens.Count == 0)
+                        tokens = new[] { containerNumber }.ToList();
+
+                    for (var index = 0; index < tokens.Count; index++)
                     {
+                        var token = tokens[index];
+                        var inspectionId = tokens.Count > 1
+                            ? $"{scan.InspectionId}-{(char)('a' + index)}"
+                            : scan.InspectionId.ToString();
+
+                        var isQueued = await queueRepository.IsInQueueAsync(
+                            token,
+                            CommonScannerTypes.ASE,
+                            inspectionId);
+
+                        if (isQueued)
+                        {
+                            stats.TotalSkipped++;
+                            continue;
+                        }
+
                         // Scan not in queue - add to recovery list
                         scansToQueue.Add(new ContainerScanInfo
                         {
-                            ContainerNumber = containerNumber,
+                            ContainerNumber = token,
                             ScannerType = CommonScannerTypes.ASE,
                             InspectionId = inspectionId,
                             ScanDate = scanDate,
                             Priority = 1, // Higher priority for recovered scans
-                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\"}}"
+                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\", \"OriginalContainerNumber\": \"{containerNumber.Replace("\"", "\\\"")}\"}}",
+                            ScanImageAssetId = identity?.Asset.Id,
+                            OriginalScanRecordId = scan.OriginalScanRecordId,
+                            SourceContainerLabel = containerNumber,
+                            ScanContainerPosition = identity?.FindLink(token)?.Position
                         });
                         stats.TotalFound++;
-                    }
-                    else
-                    {
-                        stats.TotalSkipped++;
                     }
                 }
                 catch (Exception ex)
@@ -420,6 +476,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         private class FS6000ScanInfo
         {
             public Guid Id { get; set; }
+            public int? OriginalScanRecordId { get; set; }
             public string ContainerNumber { get; set; } = string.Empty;
             public DateTime ScanTime { get; set; }
             public DateTime CreatedAt { get; set; }
@@ -461,10 +518,14 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
         private class AseScanInfo
         {
+            public Guid Id { get; set; }
             public int InspectionId { get; set; }
+            public int? OriginalScanRecordId { get; set; }
             public string? ContainerNumber { get; set; }
             public DateTime ScanTime { get; set; }
             public DateTime CreatedAt { get; set; }
+            public string? ImageDisplayName { get; set; }
+            public long? ImageSizeBytes { get; set; }
         }
     }
 }

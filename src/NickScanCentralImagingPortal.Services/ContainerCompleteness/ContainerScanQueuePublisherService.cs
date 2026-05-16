@@ -163,7 +163,13 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     Status = ContainerScanQueueStatus.Pending,
                     Priority = s.Priority,
                     MaxRetries = 3,
-                    Metadata = s.Metadata
+                    Metadata = s.Metadata,
+                    ScanImageAssetId = s.ScanImageAssetId,
+                    OriginalScanRecordId = s.OriginalScanRecordId,
+                    SourceContainerLabel = s.SourceContainerLabel,
+                    ScanContainerPosition = s.ScanContainerPosition,
+                    SplitJobId = s.SplitJobId,
+                    SplitResultId = s.SplitResultId
                 }).ToList();
 
                 // Add batch to queue with retry logic (repository handles deduplication)

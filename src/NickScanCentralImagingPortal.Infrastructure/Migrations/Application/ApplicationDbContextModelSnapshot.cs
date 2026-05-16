@@ -687,10 +687,23 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("character varying(200)")
                         .HasColumnName("metadataref");
 
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
                     b.Property<string>("ScannerType")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("scannertype");
+
+                    b.Property<Guid?>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
 
                     b.Property<Guid?>("SplitJobId")
                         .HasColumnType("uuid")
@@ -726,6 +739,14 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
 
                     b.HasKey("Id")
                         .HasName("pk_analysisrecords");
+
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_analysisrecords_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_analysisrecords_scanimageassetid")
+                        .HasFilter("\"ScanImageAssetId\" IS NOT NULL");
 
                     b.HasIndex("SplitJobId")
                         .HasDatabaseName("ix_analysisrecords_splitjobid")
@@ -1862,6 +1883,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("integer")
                         .HasColumnName("overallcompleteness");
 
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer")
                         .HasColumnName("retrycount");
@@ -1879,6 +1904,15 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("scannertype");
+
+                    b.Property<Guid?>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -1908,6 +1942,14 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
 
                     b.HasIndex("HasICUMSData")
                         .HasDatabaseName("ix_containercompletenessstatuses_hasicumsdata");
+
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_containercompletenessstatuses_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_containercompletenessstatuses_scanimageassetid")
+                        .HasFilter("\"ScanImageAssetId\" IS NOT NULL");
 
                     b.HasIndex("ScannerType")
                         .HasDatabaseName("ix_containercompletenessstatuses_scannertype");
@@ -2036,6 +2078,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("queuedat");
 
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
                     b.Property<int>("RetryCount")
                         .HasColumnType("integer")
                         .HasColumnName("retrycount");
@@ -2044,11 +2090,33 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("scandate");
 
+                    b.Property<string>("ScanContainerPosition")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("scancontainerposition");
+
                     b.Property<string>("ScannerType")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("scannertype");
+
+                    b.Property<Guid?>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
+
+                    b.Property<Guid?>("SplitJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("splitjobid");
+
+                    b.Property<Guid?>("SplitResultId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("splitresultid");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -2062,6 +2130,18 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
 
                     b.HasKey("Id")
                         .HasName("pk_containerscanqueues");
+
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_containerscanqueues_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_containerscanqueues_scanimageassetid")
+                        .HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+
+                    b.HasIndex("SplitJobId")
+                        .HasDatabaseName("ix_containerscanqueues_splitjobid")
+                        .HasFilter("\"SplitJobId\" IS NOT NULL");
 
                     b.ToTable("containerscanqueues");
                 });
@@ -3821,6 +3901,10 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("nextretryat");
 
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
                     b.Property<int>("Priority")
                         .HasColumnType("integer")
                         .HasColumnName("priority");
@@ -3834,11 +3918,20 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("integer")
                         .HasColumnName("retrycount");
 
+                    b.Property<Guid?>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
                     b.Property<string>("ScannerType")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("scannertype");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -3868,8 +3961,16 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.HasIndex("NextRetryAt")
                         .HasDatabaseName("ix_icumssubmissionqueues_nextretryat");
 
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_icumssubmissionqueues_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
                     b.HasIndex("Priority")
                         .HasDatabaseName("ix_icumssubmissionqueues_priority");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_icumssubmissionqueues_scanimageassetid")
+                        .HasFilter("\"ScanImageAssetId\" IS NOT NULL");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_icumssubmissionqueues_status");
@@ -4923,10 +5024,23 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("scannedatutc");
 
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
                     b.Property<string>("ScannerType")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("scannertype");
+
+                    b.Property<Guid?>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -4940,6 +5054,14 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.HasIndex("ContainerNumber")
                         .HasDatabaseName("ix_recordexpectedcontainers_containernumber");
 
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_recordexpectedcontainers_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_recordexpectedcontainers_scanimageassetid")
+                        .HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_recordexpectedcontainers_status");
 
@@ -4948,6 +5070,208 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasDatabaseName("ix_recordexpectedcontainers_recordid_containernumber");
 
                     b.ToTable("recordexpectedcontainers");
+                });
+
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AssetKind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("assetkind");
+
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("contenthash");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("createdatutc");
+
+                    b.Property<long?>("FileSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("filesizebytes");
+
+                    b.Property<string>("ImageDisplayName")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("imagedisplayname");
+
+                    b.Property<string>("LocalPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("localpath");
+
+                    b.Property<string>("MimeType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("mimetype");
+
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
+                    b.Property<DateTime?>("ScanTimeUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("scantimeutc");
+
+                    b.Property<string>("ScannerNativeId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("scannernativeid");
+
+                    b.Property<string>("ScannerType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("scannertype");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
+
+                    b.Property<string>("SourcePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("sourcepath");
+
+                    b.Property<string>("StorageKind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("storagekind");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updatedatutc");
+
+                    b.HasKey("Id")
+                        .HasName("pk_scanimageassets");
+
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_scanimageassets_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("ScanTimeUtc")
+                        .HasDatabaseName("ix_scanimageassets_scantimeutc");
+
+                    b.HasIndex("ScannerType", "ScannerNativeId", "AssetKind")
+                        .HasDatabaseName("ix_scanimageassets_scannertype_scannernativeid_assetkind")
+                        .HasFilter("\"ScannerNativeId\" IS NOT NULL");
+
+                    b.ToTable("scanimageassets");
+                });
+
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.SourceScanContainerLink", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("BoeDocumentId")
+                        .HasColumnType("integer")
+                        .HasColumnName("boedocumentid");
+
+                    b.Property<string>("Confidence")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("confidence");
+
+                    b.Property<string>("ContainerNumber")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("containernumber");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("createdatutc");
+
+                    b.Property<string>("NormalizedContainerNumber")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("normalizedcontainernumber");
+
+                    b.Property<int?>("OriginalScanRecordId")
+                        .HasColumnType("integer")
+                        .HasColumnName("originalscanrecordid");
+
+                    b.Property<string>("Position")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("position");
+
+                    b.Property<int?>("RecordExpectedContainerId")
+                        .HasColumnType("integer")
+                        .HasColumnName("recordexpectedcontainerid");
+
+                    b.Property<Guid>("ScanImageAssetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("scanimageassetid");
+
+                    b.Property<string>("ScannerNativeId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("scannernativeid");
+
+                    b.Property<string>("ScannerType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("scannertype");
+
+                    b.Property<string>("SourceContainerLabel")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("sourcecontainerlabel");
+
+                    b.Property<Guid?>("SplitJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("splitjobid");
+
+                    b.Property<Guid?>("SplitResultId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("splitresultid");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updatedatutc");
+
+                    b.HasKey("Id")
+                        .HasName("pk_sourcescancontainerlinks");
+
+                    b.HasIndex("OriginalScanRecordId")
+                        .HasDatabaseName("ix_sourcescancontainerlinks_originalscanrecordid")
+                        .HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+
+                    b.HasIndex("RecordExpectedContainerId")
+                        .HasDatabaseName("ix_sourcescancontainerlinks_recordexpectedcontainerid")
+                        .HasFilter("\"RecordExpectedContainerId\" IS NOT NULL");
+
+                    b.HasIndex("ScanImageAssetId")
+                        .HasDatabaseName("ix_sourcescancontainerlinks_scanimageassetid");
+
+                    b.HasIndex("NormalizedContainerNumber", "ScannerType")
+                        .HasDatabaseName("ix_sscl_normcontainer_scannertype");
+
+                    b.HasIndex("ScanImageAssetId", "NormalizedContainerNumber")
+                        .IsUnique()
+                        .HasDatabaseName("ix_sscl_scanimageassetid_normcontainer");
+
+                    b.ToTable("sourcescancontainerlinks");
                 });
 
             modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.RecordReconciliationState", b =>
@@ -6763,6 +7087,37 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.Navigation("Container");
                 });
 
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", b =>
+                {
+                    b.HasOne("NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord", "OriginalScanRecord")
+                        .WithMany()
+                        .HasForeignKey("OriginalScanRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_scanimageassets_originalscanrecords_originalscanrecordid");
+
+                    b.Navigation("OriginalScanRecord");
+                });
+
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.SourceScanContainerLink", b =>
+                {
+                    b.HasOne("NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord", "OriginalScanRecord")
+                        .WithMany()
+                        .HasForeignKey("OriginalScanRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_sscl_originalscanrecord");
+
+                    b.HasOne("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", "ScanImageAsset")
+                        .WithMany("ContainerLinks")
+                        .HasForeignKey("ScanImageAssetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_sscl_scanimageasset");
+
+                    b.Navigation("OriginalScanRecord");
+
+                    b.Navigation("ScanImageAsset");
+                });
+
             modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.RecordExpectedContainer", b =>
                 {
                     b.HasOne("NickScanCentralImagingPortal.Core.Entities.RecordCompletenessStatus", "Record")
@@ -7088,6 +7443,11 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.Navigation("RolePermissions");
 
                     b.Navigation("Users");
+                });
+
+            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", b =>
+                {
+                    b.Navigation("ContainerLinks");
                 });
 
             modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.ShiftAttendance.ShiftAssignment", b =>

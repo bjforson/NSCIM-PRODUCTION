@@ -642,7 +642,16 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                 // Check which ones have scanner evidence in ANY source
                 var withCompleteness = await appDb.ContainerCompletenessStatuses
                     .Where(c => awaitingNumbers.Contains(c.ContainerNumber))
-                    .Select(c => new { c.ContainerNumber, c.ScannerType, c.InspectionId, c.HasImageData })
+                    .Select(c => new
+                    {
+                        c.ContainerNumber,
+                        c.ScannerType,
+                        c.InspectionId,
+                        c.HasImageData,
+                        c.ScanImageAssetId,
+                        c.OriginalScanRecordId,
+                        c.SourceContainerLabel
+                    })
                     .ToListAsync(ct);
 
                 var evidenceByContainer = withCompleteness
@@ -656,6 +665,9 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                     row.ScannedAtUtc = nowUtc;
                     row.InspectionId = evidence.InspectionId;
                     row.ScannerType = evidence.ScannerType;
+                    row.ScanImageAssetId = evidence.ScanImageAssetId;
+                    row.OriginalScanRecordId = evidence.OriginalScanRecordId;
+                    row.SourceContainerLabel = evidence.SourceContainerLabel;
                     row.Status = evidence.HasImageData ? "Ready" : "Pending";
                     if (evidence.HasImageData)
                     {
@@ -690,17 +702,27 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                 var pendingNumbers = pending.Select(p => p.ContainerNumber).Distinct().ToList();
                 var withImages = await appDb.ContainerCompletenessStatuses
                     .Where(c => pendingNumbers.Contains(c.ContainerNumber) && c.HasImageData)
-                    .Select(c => c.ContainerNumber)
-                    .Distinct()
+                    .Select(c => new
+                    {
+                        c.ContainerNumber,
+                        c.ScanImageAssetId,
+                        c.OriginalScanRecordId,
+                        c.SourceContainerLabel
+                    })
                     .ToListAsync(ct);
 
-                var readyNowSet = new HashSet<string>(withImages, StringComparer.OrdinalIgnoreCase);
+                var readyNowByContainer = withImages
+                    .GroupBy(row => row.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
                 int pendingPromoted = 0;
                 var pendingParentsToBump = new HashSet<int>();
                 foreach (var row in pending)
                 {
-                    if (!readyNowSet.Contains(row.ContainerNumber)) continue;
+                    if (!readyNowByContainer.TryGetValue(row.ContainerNumber, out var evidence)) continue;
                     row.Status = "Ready";
+                    row.ScanImageAssetId ??= evidence.ScanImageAssetId;
+                    row.OriginalScanRecordId ??= evidence.OriginalScanRecordId;
+                    row.SourceContainerLabel ??= evidence.SourceContainerLabel;
                     row.BecameReadyUtc = nowUtc;
                     pendingPromoted++;
                     pendingParentsToBump.Add(row.RecordId);

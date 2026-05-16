@@ -29,6 +29,16 @@ namespace NickScanCentralImagingPortal.Core.Entities.Analysis
         [StringLength(200)]
         public string? CompletenessRef { get; set; }
 
+        /// <summary>
+        /// Canonical source image identity for analyst review and downstream submission.
+        /// </summary>
+        public Guid? ScanImageAssetId { get; set; }
+
+        public int? OriginalScanRecordId { get; set; }
+
+        [StringLength(500)]
+        public string? SourceContainerLabel { get; set; }
+
         [StringLength(20)]
         public string Status { get; set; } = "Ready";
 

@@ -10,6 +10,7 @@ using NickScanCentralImagingPortal.Core.Configuration;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 
 namespace NickScanCentralImagingPortal.Services.ASE
@@ -287,6 +288,44 @@ namespace NickScanCentralImagingPortal.Services.ASE
 
                     await context.SaveChangesAsync();
 
+                    var identityResults = new Dictionary<Guid, ScanIdentityResult>();
+                    var scanIdentityService = scope.ServiceProvider.GetService<IScanIdentityService>();
+                    if (scanIdentityService != null)
+                    {
+                        foreach (var scan in aseScans)
+                        {
+                            try
+                            {
+                                var identity = await scanIdentityService.EnsureSourceIdentityAsync(new ScanIdentityRequest
+                                {
+                                    OriginalScanRecordId = scan.OriginalScanRecordId,
+                                    ScannerType = CommonScannerTypes.ASE,
+                                    ScannerNativeId = scan.InspectionId.ToString(),
+                                    SourceContainerLabel = scan.ContainerNumber,
+                                    ContainerNumbers = ContainerNumberListMatcher.ExtractContainerTokens(scan.ContainerNumber),
+                                    ImageDisplayName = scan.ImageDisplayName,
+                                    FileSizeBytes = scan.ScanImage?.LongLength,
+                                    ScanTimeUtc = DateTime.SpecifyKind(scan.ScanTime, DateTimeKind.Utc),
+                                    StorageKind = ScanImageAssetStorageKinds.Database
+                                });
+
+                                identityResults[scan.Id] = identity;
+                            }
+                            catch (Exception identityEx)
+                            {
+                                _logger.LogWarning(
+                                    identityEx,
+                                    "{ServiceId} Failed to ensure scan image identity for ASE InspectionId {InspectionId}",
+                                    SERVICE_ID,
+                                    scan.InspectionId);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("{ServiceId} IScanIdentityService not available - ASE scans saved without canonical image identity", SERVICE_ID);
+                    }
+
                     _logger.LogInformation("{ServiceId} Added {Count} new ASE records with {OriginalCount} original scan audit records",
                         SERVICE_ID, newRecordsToAdd.Count, originalRecords.Count);
 
@@ -319,7 +358,9 @@ namespace NickScanCentralImagingPortal.Services.ASE
                             var queueItems = aseScans
                                 .Where(s => !string.IsNullOrWhiteSpace(s.ContainerNumber)
                                             && !string.Equals(s.ContainerNumber, "Unknown", StringComparison.OrdinalIgnoreCase))
-                                .SelectMany(scan => SplitAseScanIntoQueueItems(scan))
+                                .SelectMany(scan => SplitAseScanIntoQueueItems(
+                                    scan,
+                                    identityResults.TryGetValue(scan.Id, out var identity) ? identity : null))
                                 .ToList();
 
                             if (queueItems.Any())
@@ -435,7 +476,7 @@ namespace NickScanCentralImagingPortal.Services.ASE
         /// The audit trail of the original joined string lives in asescans.containernumber
         /// (verbatim) and in the queue metadata field (OriginalContainerNumber).
         /// </summary>
-        private static IEnumerable<ContainerScanInfo> SplitAseScanIntoQueueItems(AseScan scan)
+        private static IEnumerable<ContainerScanInfo> SplitAseScanIntoQueueItems(AseScan scan, ScanIdentityResult? identity)
         {
             var raw = (scan.ContainerNumber ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(raw))
@@ -451,7 +492,11 @@ namespace NickScanCentralImagingPortal.Services.ASE
                     InspectionId = scan.InspectionId.ToString(),
                     ScanDate = scan.ScanTime,
                     Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\" }}"
+                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\" }}",
+                    ScanImageAssetId = identity?.Asset.Id,
+                    OriginalScanRecordId = scan.OriginalScanRecordId,
+                    SourceContainerLabel = scan.ContainerNumber,
+                    ScanContainerPosition = identity?.FindLink(raw)?.Position
                 };
                 yield break;
             }
@@ -477,7 +522,11 @@ namespace NickScanCentralImagingPortal.Services.ASE
                     InspectionId = scan.InspectionId.ToString(),
                     ScanDate = scan.ScanTime,
                     Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\" }}"
+                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\" }}",
+                    ScanImageAssetId = identity?.Asset.Id,
+                    OriginalScanRecordId = scan.OriginalScanRecordId,
+                    SourceContainerLabel = scan.ContainerNumber,
+                    ScanContainerPosition = identity?.FindLink(tokens[0])?.Position
                 };
                 yield break;
             }
@@ -493,7 +542,11 @@ namespace NickScanCentralImagingPortal.Services.ASE
                     InspectionId = $"{scan.InspectionId}-{suffix}",
                     ScanDate = scan.ScanTime,
                     Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\", \"MultiContainerScan\": true, \"SplitTokenIndex\": {i}, \"SplitTokenCount\": {tokens.Count} }}"
+                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\", \"MultiContainerScan\": true, \"SplitTokenIndex\": {i}, \"SplitTokenCount\": {tokens.Count} }}",
+                    ScanImageAssetId = identity?.Asset.Id,
+                    OriginalScanRecordId = scan.OriginalScanRecordId,
+                    SourceContainerLabel = scan.ContainerNumber,
+                    ScanContainerPosition = identity?.FindLink(tokens[i])?.Position
                 };
             }
         }

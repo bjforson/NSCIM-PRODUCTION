@@ -17,6 +17,16 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(20)]
         public string ScannerType { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Canonical source image identity used to build the submitted image paths.
+        /// </summary>
+        public Guid? ScanImageAssetId { get; set; }
+
+        public int? OriginalScanRecordId { get; set; }
+
+        [StringLength(500)]
+        public string? SourceContainerLabel { get; set; }
+
         [Required]
         public string ImagePaths { get; set; } = string.Empty; // JSON array of image paths
 

@@ -466,6 +466,9 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                         ContainerNumber = queueItem.ContainerNumber,
                                         ScannerType = queueItem.ScannerType,
                                         InspectionId = queueItem.InspectionId,
+                                        ScanImageAssetId = queueItem.ScanImageAssetId,
+                                        OriginalScanRecordId = queueItem.OriginalScanRecordId,
+                                        SourceContainerLabel = queueItem.SourceContainerLabel,
                                         ScanDate = queueItem.ScanDate,
                                         HasScannerData = true,
                                         HasICUMSData = false,
@@ -827,6 +830,9 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 ContainerNumber = queueItem.ContainerNumber,
                                 ScannerType = queueItem.ScannerType, // ✅ Dynamic - works with ANY scanner type!
                                 InspectionId = queueItem.InspectionId,
+                                ScanImageAssetId = queueItem.ScanImageAssetId,
+                                OriginalScanRecordId = queueItem.OriginalScanRecordId,
+                                SourceContainerLabel = queueItem.SourceContainerLabel,
                                 ScanDate = queueItem.ScanDate,
                                 HasScannerData = true,
                                 HasICUMSData = hasICUMSData,
@@ -996,11 +1002,21 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                     .OrderBy(c => c.LastCheckedAt == null ? DateTime.MinValue : c.LastCheckedAt) // ✅ Prioritize nulls (treated as oldest), then oldest LastCheckedAt
                     .ThenByDescending(c => c.ScanDate) // Then by scan date (newest first) for tie-breaking
                     .Take(100) // Process 100 per cycle
-                    .Select(c => new { c.Id, c.ContainerNumber, c.ScannerType, c.ScanDate, c.InspectionId })
+                    .Select(c => new
+                    {
+                        c.Id,
+                        c.ContainerNumber,
+                        c.ScannerType,
+                        c.ScanDate,
+                        c.InspectionId,
+                        c.ScanImageAssetId,
+                        c.OriginalScanRecordId,
+                        c.SourceContainerLabel
+                    })
                     .ToListAsync(stoppingToken);
 
                 var allContainers = containersNeedingCheck
-                    .Select(c => (c.Id, c.ContainerNumber, c.ScannerType, c.ScanDate, c.InspectionId))
+                    .Select(c => (c.Id, c.ContainerNumber, c.ScannerType, c.ScanDate, c.InspectionId, c.ScanImageAssetId, c.OriginalScanRecordId, c.SourceContainerLabel))
                     .ToList();
 
                 _logger.LogInformation("{ServiceId} Found {Count} EXISTING containers needing re-check",
@@ -1309,10 +1325,15 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                          existingStatus.IsConsolidated != isConsolidated ||
                                          existingStatus.BOEDocumentId != primaryBOEId ||
                                          existingStatus.ClearanceType != clearanceType ||
-                                         existingStatus.GroupIdentifier != groupIdentifier; // ✅ Also check GroupIdentifier
+                                         existingStatus.GroupIdentifier != groupIdentifier ||
+                                         existingStatus.ScanImageAssetId != container.ScanImageAssetId ||
+                                         existingStatus.OriginalScanRecordId != container.OriginalScanRecordId; // ✅ Also check GroupIdentifier
 
                         if (dataChanged)
                         {
+                            existingStatus.ScanImageAssetId = container.ScanImageAssetId ?? existingStatus.ScanImageAssetId;
+                            existingStatus.OriginalScanRecordId = container.OriginalScanRecordId ?? existingStatus.OriginalScanRecordId;
+                            existingStatus.SourceContainerLabel = container.SourceContainerLabel ?? existingStatus.SourceContainerLabel;
                             existingStatus.HasICUMSData = hasICUMSData;
                             existingStatus.HasImageData = hasImages;
                             existingStatus.ICUMSDataCompleteness = hasICUMSData ? 100 : 0;
@@ -1800,6 +1821,28 @@ LIMIT {take} OFFSET {skip}";
             try
             {
                 int imageCount = 0;
+                var normalizedContainer = NickScanCentralImagingPortal.Core.Utilities.ContainerNumberListMatcher.Normalize(containerNumber);
+
+                var linkedAsset = await dbContext.SourceScanContainerLinks
+                    .AsNoTracking()
+                    .Where(link => link.NormalizedContainerNumber == normalizedContainer
+                        && link.ScannerType == scannerType)
+                    .OrderByDescending(link => link.UpdatedAtUtc)
+                    .Select(link => new
+                    {
+                        link.OriginalScanRecordId,
+                        link.ScanImageAssetId,
+                        link.ScanImageAsset!.FileSizeBytes,
+                        link.ScanImageAsset.ImageDisplayName
+                    })
+                    .FirstOrDefaultAsync();
+
+                if (linkedAsset != null
+                    && (linkedAsset.FileSizeBytes.GetValueOrDefault() > 0
+                        || !string.IsNullOrWhiteSpace(linkedAsset.ImageDisplayName)))
+                {
+                    return (true, 1);
+                }
 
                 if (scannerType == "FS6000")
                 {
@@ -1817,6 +1860,17 @@ LIMIT {take} OFFSET {skip}";
                 }
                 else if (scannerType == "ASE")
                 {
+                    if (linkedAsset?.OriginalScanRecordId != null)
+                    {
+                        var hasLinkedAseImage = await dbContext.AseScans
+                            .AnyAsync(s => s.OriginalScanRecordId == linkedAsset.OriginalScanRecordId
+                                && ((s.ScanImage != null && s.ScanImage.Length > 0)
+                                    || !string.IsNullOrEmpty(s.ImageDisplayName)));
+
+                        if (hasLinkedAseImage)
+                            return (true, 1);
+                    }
+
                     // ✅ FIX: Check ImageDisplayName instead of just record existence
                     // ImageDisplayName is indexed and indicates image likely exists
                     // This aligns with GetImageMetadata endpoint logic (ContainerDetailsController.cs line 2053)

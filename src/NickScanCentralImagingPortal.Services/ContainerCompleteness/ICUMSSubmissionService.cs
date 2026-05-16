@@ -174,6 +174,9 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             {
                 ContainerNumber = submissionData.ContainerNumber,
                 ScannerType = submissionData.ScannerType,
+                ScanImageAssetId = submissionData.ScanImageAssetId,
+                OriginalScanRecordId = submissionData.OriginalScanRecordId,
+                SourceContainerLabel = submissionData.SourceContainerLabel,
                 ImagePaths = JsonSerializer.Serialize(submissionData.ImagePaths),
                 ReportData = JsonSerializer.Serialize(submissionData.ReportData),
                 Status = ICUMSSubmissionQueueStatus.Pending,

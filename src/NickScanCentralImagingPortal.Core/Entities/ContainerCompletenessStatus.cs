@@ -25,6 +25,17 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(50)]
         public string? InspectionId { get; set; }
 
+        /// <summary>
+        /// Canonical source image identity for the scanner evidence that produced
+        /// this completeness row. ContainerNumber remains the declaration match key.
+        /// </summary>
+        public Guid? ScanImageAssetId { get; set; }
+
+        public int? OriginalScanRecordId { get; set; }
+
+        [StringLength(500)]
+        public string? SourceContainerLabel { get; set; }
+
         public DateTime ScanDate { get; set; }
 
         public bool HasICUMSData { get; set; } = false;

@@ -38,6 +38,8 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
 
         // Original scan audit records
         public DbSet<OriginalScanRecord> OriginalScanRecords { get; set; }
+        public DbSet<ScanImageAsset> ScanImageAssets { get; set; }
+        public DbSet<SourceScanContainerLink> SourceScanContainerLinks { get; set; }
 
         // FS6000 tables
         public DbSet<FS6000Scan> FS6000Scans { get; set; }
@@ -214,9 +216,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.ImageUrl).HasMaxLength(500);
                 entity.Property(e => e.MetadataRef).HasMaxLength(200);
                 entity.Property(e => e.CompletenessRef).HasMaxLength(200);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
                 entity.Property(e => e.Status).IsRequired().HasMaxLength(20);
                 entity.HasIndex(e => new { e.GroupId, e.ContainerNumber }).IsUnique();
                 entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.ScanImageAssetId).HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
                 entity.Property(e => e.SplitPosition).HasMaxLength(10);
                 entity.Property(e => e.SplitStatus).HasMaxLength(20);
                 entity.HasIndex(e => e.SplitJobId).HasFilter("\"SplitJobId\" IS NOT NULL");
@@ -317,9 +322,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.ConsigneeName).HasMaxLength(500);
                 entity.Property(e => e.InspectionId).HasMaxLength(50);
                 entity.Property(e => e.ScannerType).HasMaxLength(20);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
 
                 entity.HasIndex(e => new { e.RecordId, e.ContainerNumber }).IsUnique();
                 entity.HasIndex(e => e.ContainerNumber);
+                entity.HasIndex(e => e.ScanImageAssetId).HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
                 entity.HasIndex(e => e.Status);
 
                 entity.HasOne(e => e.Record)
@@ -539,9 +547,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.ScannerType).IsRequired().HasMaxLength(20);
                 entity.Property(e => e.Status).IsRequired().HasMaxLength(20);
                 entity.Property(e => e.ErrorMessage).HasMaxLength(1000);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
 
                 entity.HasIndex(e => e.ContainerNumber);
                 entity.HasIndex(e => e.ScannerType);
+                entity.HasIndex(e => e.ScanImageAssetId).HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
                 entity.HasIndex(e => new { e.ContainerNumber, e.ScannerType, e.InspectionId })
                     .HasDatabaseName("IX_ContainerCompletenessStatuses_Container_Scanner_Inspection");
                 entity.HasIndex(e => e.Status);
@@ -607,6 +618,16 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.HasIndex(e => new { e.ContainerNumber, e.Status });
             });
 
+            // ContainerScanQueue source-image identity configuration
+            modelBuilder.Entity<ContainerScanQueue>(entity =>
+            {
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
+                entity.Property(e => e.ScanContainerPosition).HasMaxLength(20);
+                entity.HasIndex(e => e.ScanImageAssetId).HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+                entity.HasIndex(e => e.SplitJobId).HasFilter("\"SplitJobId\" IS NOT NULL");
+            });
+
             // ICUMSSubmissionQueue configuration
             modelBuilder.Entity<ICUMSSubmissionQueue>(entity =>
             {
@@ -616,11 +637,14 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.Property(e => e.ImagePaths).IsRequired();
                 entity.Property(e => e.ReportData).IsRequired();
                 entity.Property(e => e.Status).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
                 entity.Property(e => e.ICUMSResponseId).HasMaxLength(100);
                 entity.Property(e => e.ErrorMessage).HasMaxLength(1000);
                 entity.Property(e => e.SubmittedBy).HasMaxLength(50);
 
                 entity.HasIndex(e => e.ContainerNumber);
+                entity.HasIndex(e => e.ScanImageAssetId).HasFilter("\"ScanImageAssetId\" IS NOT NULL");
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
                 entity.HasIndex(e => e.Status);
                 entity.HasIndex(e => e.Priority);
                 entity.HasIndex(e => e.NextRetryAt);
@@ -978,6 +1002,64 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.HasIndex(e => e.PicNumber);
                 entity.HasIndex(e => e.InspectionId);
                 entity.HasIndex(e => e.IngestedAt);
+            });
+
+            modelBuilder.Entity<ScanImageAsset>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ScannerType).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.ScannerNativeId).HasMaxLength(100);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
+                entity.Property(e => e.AssetKind).IsRequired().HasMaxLength(30);
+                entity.Property(e => e.StorageKind).IsRequired().HasMaxLength(30);
+                entity.Property(e => e.SourcePath).HasMaxLength(1000);
+                entity.Property(e => e.LocalPath).HasMaxLength(1000);
+                entity.Property(e => e.MimeType).HasMaxLength(100);
+                entity.Property(e => e.ImageDisplayName).HasMaxLength(300);
+                entity.Property(e => e.ContentHash).HasMaxLength(128);
+
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+                entity.HasIndex(e => new { e.ScannerType, e.ScannerNativeId, e.AssetKind })
+                    .HasFilter("\"ScannerNativeId\" IS NOT NULL");
+                entity.HasIndex(e => e.ScanTimeUtc);
+
+                entity.HasOne(e => e.OriginalScanRecord)
+                      .WithMany()
+                      .HasForeignKey(e => e.OriginalScanRecordId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<SourceScanContainerLink>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ScannerType).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.ScannerNativeId).HasMaxLength(100);
+                entity.Property(e => e.ContainerNumber).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.NormalizedContainerNumber).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.SourceContainerLabel).HasMaxLength(500);
+                entity.Property(e => e.Position).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.Confidence).IsRequired().HasMaxLength(30);
+
+                entity.HasIndex(e => e.ScanImageAssetId);
+                entity.HasIndex(e => e.OriginalScanRecordId).HasFilter("\"OriginalScanRecordId\" IS NOT NULL");
+                entity.HasIndex(e => new { e.NormalizedContainerNumber, e.ScannerType })
+                      .HasDatabaseName("ix_sscl_normcontainer_scannertype");
+                entity.HasIndex(e => new { e.ScanImageAssetId, e.NormalizedContainerNumber })
+                      .IsUnique()
+                      .HasDatabaseName("ix_sscl_scanimageassetid_normcontainer");
+                entity.HasIndex(e => e.RecordExpectedContainerId).HasFilter("\"RecordExpectedContainerId\" IS NOT NULL");
+
+                entity.HasOne(e => e.ScanImageAsset)
+                      .WithMany(e => e.ContainerLinks)
+                      .HasForeignKey(e => e.ScanImageAssetId)
+                      .OnDelete(DeleteBehavior.Cascade)
+                      .HasConstraintName("fk_sscl_scanimageasset");
+
+                entity.HasOne(e => e.OriginalScanRecord)
+                      .WithMany()
+                      .HasForeignKey(e => e.OriginalScanRecordId)
+                      .OnDelete(DeleteBehavior.SetNull)
+                      .HasConstraintName("fk_sscl_originalscanrecord");
             });
 
             // FS6000Scan -> OriginalScanRecord FK

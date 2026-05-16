@@ -648,6 +648,19 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 foreach (var mapping in mappings)
                 {
                     var imagePaths = await GetImagePathsForContainer(dbContext, mapping.ContainerNumber);
+                    var sourceIdentity = await dbContext.ContainerCompletenessStatuses
+                        .AsNoTracking()
+                        .Where(status => status.ContainerNumber == mapping.ContainerNumber
+                            && status.ScannerType == mapping.ScannerType
+                            && status.HasImageData)
+                        .OrderByDescending(status => status.ScanDate)
+                        .Select(status => new
+                        {
+                            status.ScanImageAssetId,
+                            status.OriginalScanRecordId,
+                            status.SourceContainerLabel
+                        })
+                        .FirstOrDefaultAsync();
 
                     readyContainers.Add(new ContainerSubmissionData
                     {
@@ -656,6 +669,9 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                         ScannerDataId = mapping.ScannerDataId,
                         ICUMSDataId = mapping.ICUMSDataId,
                         RelationId = readyContainers.Count + 1,
+                        ScanImageAssetId = sourceIdentity?.ScanImageAssetId,
+                        OriginalScanRecordId = sourceIdentity?.OriginalScanRecordId,
+                        SourceContainerLabel = sourceIdentity?.SourceContainerLabel,
                         ImagePaths = imagePaths,
                         ReportData = new Dictionary<string, object>(),
                         ScanDate = mapping.CreatedAt,

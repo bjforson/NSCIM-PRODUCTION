@@ -51,6 +51,12 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public DateTime ScanDate { get; set; }
         public int Priority { get; set; } = 0;
         public string? Metadata { get; set; }
+        public Guid? ScanImageAssetId { get; set; }
+        public int? OriginalScanRecordId { get; set; }
+        public string? SourceContainerLabel { get; set; }
+        public string? ScanContainerPosition { get; set; }
+        public Guid? SplitJobId { get; set; }
+        public Guid? SplitResultId { get; set; }
     }
 }
 

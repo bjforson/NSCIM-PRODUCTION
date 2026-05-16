@@ -449,7 +449,16 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
 
             var evidence = await appDb.ContainerCompletenessStatuses
                 .Where(c => containerNumbers.Contains(c.ContainerNumber))
-                .Select(c => new { c.ContainerNumber, c.ScannerType, c.InspectionId, c.HasImageData })
+                .Select(c => new
+                {
+                    c.ContainerNumber,
+                    c.ScannerType,
+                    c.InspectionId,
+                    c.HasImageData,
+                    c.ScanImageAssetId,
+                    c.OriginalScanRecordId,
+                    c.SourceContainerLabel
+                })
                 .ToListAsync(ct);
 
             var evidenceByContainer = evidence
@@ -468,6 +477,9 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                     child.ScannedAtUtc = nowUtc;
                     child.InspectionId = ev.InspectionId;
                     child.ScannerType = ev.ScannerType;
+                    child.ScanImageAssetId = ev.ScanImageAssetId;
+                    child.OriginalScanRecordId = ev.OriginalScanRecordId;
+                    child.SourceContainerLabel = ev.SourceContainerLabel;
                     child.Status = ev.HasImageData ? "Ready" : "Pending";
                     if (ev.HasImageData)
                         child.BecameReadyUtc = nowUtc;
@@ -476,6 +488,9 @@ namespace NickScanCentralImagingPortal.Services.RecordCompleteness
                 else if (child.Status == "Pending" && ev.HasImageData)
                 {
                     child.Status = "Ready";
+                    child.ScanImageAssetId ??= ev.ScanImageAssetId;
+                    child.OriginalScanRecordId ??= ev.OriginalScanRecordId;
+                    child.SourceContainerLabel ??= ev.SourceContainerLabel;
                     child.BecameReadyUtc = nowUtc;
                     promoted++;
                 }

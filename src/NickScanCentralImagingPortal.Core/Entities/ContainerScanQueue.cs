@@ -90,6 +90,24 @@ namespace NickScanCentralImagingPortal.Core.Entities
         public string? Metadata { get; set; }
 
         /// <summary>
+        /// Canonical source image identity. ContainerNumber remains the child
+        /// workflow key, but image evidence should follow this identity.
+        /// </summary>
+        public Guid? ScanImageAssetId { get; set; }
+
+        public int? OriginalScanRecordId { get; set; }
+
+        [MaxLength(500)]
+        public string? SourceContainerLabel { get; set; }
+
+        [MaxLength(20)]
+        public string? ScanContainerPosition { get; set; }
+
+        public Guid? SplitJobId { get; set; }
+
+        public Guid? SplitResultId { get; set; }
+
+        /// <summary>
         /// Timestamp when record was created
         /// </summary>
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

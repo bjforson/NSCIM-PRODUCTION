@@ -72,6 +72,10 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             return ScanAssetResolution.NotFound(containerNumber, "ContainerNumberMissing");
         }
 
+        var linkedSource = await ResolveLinkedSourceAsync(normalizedContainer, recordContext, cancellationToken);
+        if (linkedSource != null)
+            return ApplyWorkflowContext(linkedSource, recordContext, splitJobId, linkedSource.ResolvedBy ?? "SourceScanContainerLink");
+
         var exactFs6000 = await ResolveExactFs6000Async(normalizedContainer, cancellationToken);
         if (exactFs6000 != null)
             return ApplyWorkflowContext(exactFs6000, recordContext, splitJobId, "ExactFs6000");
@@ -193,6 +197,72 @@ public sealed class ScanAssetResolver : IScanAssetResolver
         return await query
             .OrderByDescending(record => record.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<ScanAssetResolution?> ResolveLinkedSourceAsync(
+        string normalizedContainer,
+        AnalysisRecord? recordContext,
+        CancellationToken cancellationToken)
+    {
+        var query =
+            from link in _db.SourceScanContainerLinks.AsNoTracking()
+            join asset in _db.ScanImageAssets.AsNoTracking()
+                on link.ScanImageAssetId equals asset.Id
+            where link.NormalizedContainerNumber == normalizedContainer
+            select new
+            {
+                Link = link,
+                Asset = asset
+            };
+
+        if (recordContext?.ScanImageAssetId.HasValue == true)
+        {
+            var assetId = recordContext.ScanImageAssetId.Value;
+            query = query.Where(row => row.Asset.Id == assetId);
+        }
+        else if (recordContext?.OriginalScanRecordId.HasValue == true)
+        {
+            var originalId = recordContext.OriginalScanRecordId.Value;
+            query = query.Where(row => row.Asset.OriginalScanRecordId == originalId || row.Link.OriginalScanRecordId == originalId);
+        }
+
+        var match = await query
+            .OrderByDescending(row => row.Link.UpdatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (match == null)
+            return null;
+
+        return new ScanAssetResolution
+        {
+            Status = ScanAssetResolutionStatuses.Resolved,
+            Found = true,
+            RequestedContainerNumber = normalizedContainer,
+            NormalizedContainerNumber = normalizedContainer,
+            ContainerNumber = match.Link.ContainerNumber,
+            SourceScannerType = match.Asset.ScannerType,
+            ScanImageAssetId = match.Asset.Id,
+            SourceScanId = match.Asset.OriginalScanRecordId.HasValue
+                ? match.Asset.OriginalScanRecordId.Value.ToString(CultureInfo.InvariantCulture)
+                : match.Asset.Id.ToString(),
+            OriginalScanRecordId = match.Asset.OriginalScanRecordId ?? match.Link.OriginalScanRecordId,
+            SourceContainerNumbers = match.Asset.SourceContainerLabel ?? match.Link.SourceContainerLabel ?? match.Link.ContainerNumber,
+            ResolvedBy = "SourceScanContainerLink",
+            MatchKind = ScanAssetMatchKinds.Exact,
+            ResolutionReason = "CanonicalSourceIdentity",
+            ScanTime = match.Asset.ScanTimeUtc,
+            ImageSizeBytes = match.Asset.FileSizeBytes,
+            ImageDisplayName = match.Asset.ImageDisplayName,
+            HasImage = match.Asset.FileSizeBytes.GetValueOrDefault() > 0
+                || !string.IsNullOrWhiteSpace(match.Asset.ImageDisplayName),
+            CacheKey = BuildCacheKey(
+                match.Asset.ScannerType,
+                match.Asset.OriginalScanRecordId.HasValue
+                    ? match.Asset.OriginalScanRecordId.Value.ToString(CultureInfo.InvariantCulture)
+                    : match.Asset.Id.ToString(),
+                recordContext?.SplitJobId,
+                recordContext?.SplitResultId)
+        };
     }
 
     private async Task<ScanAssetResolution?> ResolveExactFs6000Async(
@@ -338,10 +408,13 @@ public sealed class ScanAssetResolver : IScanAssetResolver
         CancellationToken cancellationToken)
     {
         var candidates = new List<ScanAssetResolutionCandidate>();
+        var requestedTokens = ContainerNumberListMatcher.ExtractContainerTokens(normalizedContainer);
+        var lookupToken = requestedTokens.FirstOrDefault() ?? normalizedContainer;
+
         var aseRows = await _db.AseScans
             .AsNoTracking()
             .Where(scan => scan.ContainerNumber != null
-                && scan.ContainerNumber.ToUpper().Contains(normalizedContainer)
+                && scan.ContainerNumber.ToUpper().Contains(lookupToken)
                 && scan.ContainerNumber != normalizedContainer)
             .OrderByDescending(scan => scan.ScanTime)
             .Take(20)
@@ -357,7 +430,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             .ToListAsync(cancellationToken);
 
         candidates.AddRange(aseRows
-            .Where(row => ContainerNumberListMatcher.ContainsContainer(row.ContainerNumber, normalizedContainer))
+            .Where(row => ContainerNumberListMatcher.ContainsAllContainers(row.ContainerNumber, normalizedContainer))
             .Select(row => ToCandidate(
                 "ASE",
                 row.Id,
@@ -371,7 +444,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
         var originalRows = await _db.OriginalScanRecords
             .AsNoTracking()
             .Where(original => original.OriginalContainerNumbers != null
-                && original.OriginalContainerNumbers.ToUpper().Contains(normalizedContainer))
+                && original.OriginalContainerNumbers.ToUpper().Contains(lookupToken))
             .OrderByDescending(original => original.ScanTime)
             .Take(20)
             .Select(original => new
@@ -384,7 +457,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             .ToListAsync(cancellationToken);
 
         foreach (var original in originalRows
-            .Where(row => ContainerNumberListMatcher.ContainsContainer(row.OriginalContainerNumbers, normalizedContainer)))
+            .Where(row => ContainerNumberListMatcher.ContainsAllContainers(row.OriginalContainerNumbers, normalizedContainer)))
         {
             if (candidates.Any(candidate => candidate.OriginalScanRecordId == original.Id))
                 continue;

@@ -2074,6 +2074,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ FIX: Filter by GroupIdentifier so we only get HasImageData for THIS group (prevents cross-group contamination)
                             var escapedGroupId = (normalizedForCompleteness ?? "").Replace("'", "''");
                             containersWithImages = new List<string>();
+                            var containersWithImageRows = new List<ContainerCompletenessStatus>();
                             const int batchSize = 500; // Process in batches to avoid SQL parameter limits
 
                             if (groupContainers.Count > 0)
@@ -2097,6 +2098,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         .FromSqlRaw(sql)
                                         .AsNoTracking()
                                         .ToListAsync();
+
+                                    containersWithImageRows.AddRange(batchResults);
 
                                     // Filter and project in memory (no EF Core SQL generation)
                                     var batchContainerNumbers = batchResults
@@ -2133,13 +2136,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                                 if (missingRecordContainers.Any())
                                 {
+                                    var identityByContainer = containersWithImageRows
+                                        .GroupBy(row => row.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                                        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
                                     foreach (var container in missingRecordContainers)
                                     {
+                                        identityByContainer.TryGetValue(container, out var identity);
                                         _context.AnalysisRecords.Add(new AnalysisRecord
                                         {
                                             GroupId = analysisGroup.Id,
                                             ContainerNumber = container,
                                             ScannerType = groupScannerType,
+                                            ScanImageAssetId = identity?.ScanImageAssetId,
+                                            OriginalScanRecordId = identity?.OriginalScanRecordId,
+                                            SourceContainerLabel = identity?.SourceContainerLabel,
                                             Status = "Ready",
                                             CreatedAtUtc = DateTime.UtcNow
                                         });
