@@ -289,6 +289,8 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisWorkflowC
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisManagementClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageSplitterReviewClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.XrayInspectorClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.MonitoringClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.LogManagementClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

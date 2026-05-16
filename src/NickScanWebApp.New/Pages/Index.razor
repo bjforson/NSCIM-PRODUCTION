@@ -14,6 +14,8 @@
 @inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient DashboardClient
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
+@inject NickScanWebApp.Shared.Services.LogManagementClient LogManagementClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -564,7 +566,7 @@
     {
         try
         {
-            _healthData = await ApiService.GetAsync<HealthOverviewResponse>("/api/Monitoring/health/overview");
+            _healthData = await MonitoringClient.GetHealthOverviewAsync<HealthOverviewResponse>();
             _apiConnected = _healthData != null;
         }
         catch (Exception ex)
@@ -590,14 +592,14 @@
 
         try
         {
-            var dbStats = await ApiService.GetAsync<DbStatsResponse>("/api/Monitoring/database/statistics");
+            var dbStats = await MonitoringClient.GetDatabaseStatisticsAsync<DbStatsResponse>();
             _todayScans = dbStats?.TodayActivity?.TotalScans.ToString("N0") ?? "N/A";
         }
         catch { _todayScans = "N/A"; }
 
         try
         {
-            var apiMetrics = await ApiService.GetAsync<ApiMetricsResponse>("/api/Monitoring/api-metrics");
+            var apiMetrics = await MonitoringClient.GetApiMetricsAsync<ApiMetricsResponse>();
             _apiErrorRate = apiMetrics != null ? $"{apiMetrics.ErrorRate:F1}%" : "N/A";
         }
         catch { _apiErrorRate = "N/A"; }
@@ -672,7 +674,11 @@
     {
         try
         {
-            var resp = await ApiService.GetAsync<PagedLogResponse>("/api/LogManagement/logs?level=Error&pageSize=15");
+            var resp = await LogManagementClient.GetLogsAsync<PagedLogResponse>(new NickScanWebApp.Shared.Services.LogManagementQuery
+            {
+                Level = "Error",
+                PageSize = 15
+            });
             _recentErrors = resp?.Data ?? new List<LogEntryDto>();
         }
         catch (Exception ex)
@@ -686,7 +692,7 @@
     {
         try
         {
-            _logStats = await ApiService.GetAsync<LogStatsResponse>("/api/LogManagement/statistics?hoursBack=24");
+            _logStats = await LogManagementClient.GetStatisticsAsync<LogStatsResponse>();
         }
         catch (Exception ex) { Logger.LogWarning(ex, "Failed to load log statistics"); }
     }

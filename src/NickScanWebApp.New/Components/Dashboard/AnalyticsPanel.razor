@@ -2,7 +2,7 @@
 @using Microsoft.AspNetCore.SignalR.Client
 @using NickScanWebApp.New.Services
 @using Microsoft.AspNetCore.Hosting
-@inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
 @inject NavigationManager Navigation
 @inject ILogger<AnalyticsPanel> Logger
 @inject ISnackbar Snackbar
@@ -494,7 +494,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<HealthOverviewResponse>("/api/Monitoring/health/overview");
+            var response = await MonitoringClient.GetHealthOverviewAsync<HealthOverviewResponse>();
             if (response != null)
             {
                 _systemStatus = response.SystemHealth?.OverallStatus ?? "Unknown";
@@ -525,7 +525,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<DatabaseStatsResponse>("/api/Monitoring/database/statistics");
+            var response = await MonitoringClient.GetDatabaseStatisticsAsync<DatabaseStatsResponse>();
             if (response != null)
             {
                 _totalContainers = response.TotalContainers;
@@ -552,7 +552,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<PerformanceMetricsResponse>("/api/Monitoring/performance/metrics");
+            var response = await MonitoringClient.GetPerformanceMetricsAsync<PerformanceMetricsResponse>();
             if (response != null)
             {
                 if (response.ProcessMetrics != null)
@@ -586,7 +586,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<Dictionary<string, ServiceHealthResponse>>("/api/Monitoring/health/services");
+            var response = await MonitoringClient.GetServicesHealthAsync<Dictionary<string, ServiceHealthResponse>>();
             if (response != null)
             {
                 _backgroundServices = response.Select(kvp => new ServiceStatus
@@ -607,7 +607,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<RecentEventsResponse>("/api/Monitoring/events/recent");
+            var response = await MonitoringClient.GetRecentEventsAsync<RecentEventsResponse>();
             if (response?.Events != null)
             {
                 _recentEvents = response.Events.Select(e => new SystemEvent
@@ -633,7 +633,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<FileSystemStatusResponse>("/api/Monitoring/filesystem/status");
+            var response = await MonitoringClient.GetFileSystemStatusAsync<FileSystemStatusResponse>();
             if (response?.DiskSpace != null)
             {
                 _diskDrives = response.DiskSpace.Select(d => new DiskDriveInfo
@@ -656,7 +656,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<ApiMetricsResponse>("/api/Monitoring/api-metrics");
+            var response = await MonitoringClient.GetApiMetricsAsync<ApiMetricsResponse>();
             if (response != null)
             {
                 _apiRequests24h = response.TotalRequests;
