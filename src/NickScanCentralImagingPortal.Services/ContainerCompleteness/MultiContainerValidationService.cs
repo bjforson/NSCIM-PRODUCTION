@@ -317,7 +317,7 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             }
 
             var completeData = await _imageProcessing.GetCompleteContainerDataAsync(
-                crossRecord.Container1, crossRecord.ScannerType);
+                crossRecord.Container1, imageType: null);
             if (completeData?.ImageBytes == null || completeData.ImageBytes.Length == 0)
             {
                 _logger.LogWarning(

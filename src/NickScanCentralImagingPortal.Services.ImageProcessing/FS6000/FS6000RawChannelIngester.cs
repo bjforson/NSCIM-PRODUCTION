@@ -128,10 +128,10 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     // handling (v2.14.0) instead of looking renderable.
                     if (!IsHeaderConsistent(bytes, imageType, out var reason))
                     {
-                        result.FailedChannels++;
+                        result.InvalidChannels++;
                         result.LastError = $"header-inconsistent: {reason}";
                         _logger.LogWarning(
-                            "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} will be retried on next cycle (scanner may still be writing)",
+                            "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} is structurally incomplete and will remain pending until a complete replacement is available",
                             imageType, scanId, reason, Path.GetFileName(file));
                         _db.ChangeTracker.Clear();
                         continue; // skip to next channel; don't pollute DB
@@ -363,6 +363,9 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
 
         /// <summary>Channels whose .img file was not found in the folder.</summary>
         public int MissingFiles { get; set; }
+
+        /// <summary>Channels whose file was readable but structurally invalid.</summary>
+        public int InvalidChannels { get; set; }
 
         /// <summary>Channels that threw during read/insert.</summary>
         public int FailedChannels { get; set; }

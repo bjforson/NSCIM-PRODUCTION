@@ -25,19 +25,39 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
         {
             try
             {
+                var mediaType = DetectSupportedImageMediaType(imageData);
+                if (mediaType == null)
+                {
+                    _logger.LogWarning(
+                        "[IMAGE-SPLITTER] Submit skipped for {Containers} ({ScannerType}): unsupported image bytes ({Length} bytes, magic={Magic})",
+                        containerNumbers,
+                        scannerType ?? "unknown",
+                        imageData?.Length ?? 0,
+                        GetMagicHex(imageData));
+                    return null;
+                }
+
                 using var content = new MultipartFormDataContent();
                 content.Add(new StringContent(containerNumbers), "container_numbers");
                 if (scannerType != null) content.Add(new StringContent(scannerType), "scanner_type");
                 if (sourceImageId.HasValue) content.Add(new StringContent(sourceImageId.Value.ToString()), "source_image_id");
 
                 var imageContent = new ByteArrayContent(imageData);
-                imageContent.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+                imageContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
                 content.Add(imageContent, "file", "scan.jpg");
 
                 var response = await _httpClient.PostAsync("/api/split/upload", content, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogWarning("[IMAGE-SPLITTER] Submit failed: {Status}", response.StatusCode);
+                    var body = await ReadErrorBodyAsync(response, cancellationToken);
+                    _logger.LogWarning(
+                        "[IMAGE-SPLITTER] Submit failed for {Containers} ({ScannerType}, {Length} bytes, {MediaType}): {Status} {Body}",
+                        containerNumbers,
+                        scannerType ?? "unknown",
+                        imageData.Length,
+                        mediaType,
+                        response.StatusCode,
+                        body);
                     return null;
                 }
 
@@ -250,6 +270,72 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 (containerNumbers ?? string.Empty)
                     .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Where(token => !string.IsNullOrWhiteSpace(token)));
+        }
+
+        private static string? DetectSupportedImageMediaType(byte[]? imageData)
+        {
+            if (imageData == null || imageData.Length < 4)
+                return null;
+
+            if (imageData.Length >= 3
+                && imageData[0] == 0xFF
+                && imageData[1] == 0xD8
+                && imageData[2] == 0xFF)
+            {
+                return "image/jpeg";
+            }
+
+            if (imageData.Length >= 8
+                && imageData[0] == 0x89
+                && imageData[1] == 0x50
+                && imageData[2] == 0x4E
+                && imageData[3] == 0x47
+                && imageData[4] == 0x0D
+                && imageData[5] == 0x0A
+                && imageData[6] == 0x1A
+                && imageData[7] == 0x0A)
+            {
+                return "image/png";
+            }
+
+            if (imageData.Length >= 12
+                && imageData[0] == 0x52
+                && imageData[1] == 0x49
+                && imageData[2] == 0x46
+                && imageData[3] == 0x46
+                && imageData[8] == 0x57
+                && imageData[9] == 0x45
+                && imageData[10] == 0x42
+                && imageData[11] == 0x50)
+            {
+                return "image/webp";
+            }
+
+            return null;
+        }
+
+        private static string GetMagicHex(byte[]? imageData)
+        {
+            if (imageData == null || imageData.Length == 0)
+                return "empty";
+
+            return Convert.ToHexString(imageData.Take(Math.Min(imageData.Length, 8)).ToArray());
+        }
+
+        private static async Task<string> ReadErrorBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (string.IsNullOrWhiteSpace(body))
+                    return "(empty)";
+
+                return body.Length <= 500 ? body : body[..500];
+            }
+            catch
+            {
+                return "(unreadable)";
+            }
         }
     }
 }

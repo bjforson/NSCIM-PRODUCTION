@@ -611,6 +611,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing
                 IngestedBytes = r.IngestedBytes,
                 AlreadyPresent = r.AlreadyPresent,
                 MissingFiles = r.MissingFiles,
+                InvalidChannels = r.InvalidChannels,
                 FailedChannels = r.FailedChannels,
                 ErrorMessage = r.ErrorMessage,
                 LastError = r.LastError,

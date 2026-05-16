@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -19,9 +20,10 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
     /// stop, and monitor.
     ///
     /// What this supervisor does:
-    /// 1. After a short startup delay (let NSCIM_API get healthy first), launches
-    ///    <c>python.exe -m uvicorn main:app --host 127.0.0.1 --port 5320</c> from the
-    ///    image-splitter working directory using its venv.
+    /// 1. After a short startup delay (let NSCIM_API get healthy first), adopts
+    ///    an already-healthy splitter on the configured endpoint, otherwise
+    ///    launches <c>python.exe -m uvicorn main:app --host 127.0.0.1 --port 5320</c>
+    ///    from the image-splitter working directory using its venv.
     /// 2. Streams child stdout/stderr into NSCIM_API's Serilog pipeline so all
     ///    splitter logs flow into <c>Data\Logs\nickscan-*.txt</c> — no separate
     ///    log file to babysit.
@@ -139,6 +141,21 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             {
                 try
                 {
+                    if (await IsSplitterHealthyAsync(stoppingToken))
+                    {
+                        await MonitorExternalSplitterAsync(stoppingToken);
+                        continue;
+                    }
+
+                    if (await IsPortAcceptingConnectionsAsync(stoppingToken))
+                    {
+                        _logger.LogWarning(
+                            "[SPLITTER-SUPERVISOR] Port {Host}:{Port} is already occupied but the splitter health probe is not healthy. Waiting instead of spawning a duplicate child.",
+                            _host, _port);
+                        await Task.Delay(_healthCheckInterval, stoppingToken);
+                        continue;
+                    }
+
                     await RunChildOnceAsync(stoppingToken);
                 }
                 catch (OperationCanceledException)
@@ -221,18 +238,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 if (completed == exitTask) break;
 
                 // Child still running — check health
-                bool healthy;
-                try
-                {
-                    using var scope = _serviceProvider.CreateScope();
-                    var splitter = scope.ServiceProvider.GetRequiredService<IImageSplitterService>();
-                    healthy = await splitter.IsHealthyAsync(stoppingToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogDebug(ex, "[SPLITTER-SUPERVISOR] Health probe error (treating as unhealthy)");
-                    healthy = false;
-                }
+                var healthy = await IsSplitterHealthyAsync(stoppingToken);
 
                 if (!healthy)
                 {
@@ -287,6 +293,68 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             {
                 try { c.Dispose(); } catch { }
                 _child = null;
+            }
+        }
+
+        private async Task MonitorExternalSplitterAsync(CancellationToken stoppingToken)
+        {
+            _logger.LogInformation(
+                "[SPLITTER-SUPERVISOR] Existing healthy splitter detected at {Host}:{Port}. Adopting external process and skipping child spawn while it remains healthy.",
+                _host, _port);
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(_healthCheckInterval, stoppingToken);
+
+                if (await IsSplitterHealthyAsync(stoppingToken))
+                {
+                    continue;
+                }
+
+                _logger.LogWarning(
+                    "[SPLITTER-SUPERVISOR] Adopted splitter at {Host}:{Port} is no longer healthy. Supervisor will re-evaluate whether it can spawn a managed child.",
+                    _host, _port);
+                return;
+            }
+        }
+
+        private async Task<bool> IsSplitterHealthyAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var splitter = scope.ServiceProvider.GetRequiredService<IImageSplitterService>();
+                return await splitter.IsHealthyAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[SPLITTER-SUPERVISOR] Health probe error (treating as unhealthy)");
+                return false;
+            }
+        }
+
+        private async Task<bool> IsPortAcceptingConnectionsAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var client = new TcpClient();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(2));
+                await client.ConnectAsync(_host, _port, timeout.Token);
+                return true;
+            }
+            catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[SPLITTER-SUPERVISOR] Port probe failed for {Host}:{Port}", _host, _port);
+                return false;
             }
         }
     }

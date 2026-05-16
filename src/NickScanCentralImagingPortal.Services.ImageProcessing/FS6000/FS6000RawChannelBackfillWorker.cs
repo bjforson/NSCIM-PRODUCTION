@@ -133,7 +133,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                 "[FS6000-RAW-WORKER] cycle starting — {Count} scan(s) with missing channels",
                 candidates.Count);
 
-            int ingested = 0, alreadyComplete = 0, pending = 0, failed = 0;
+            int ingested = 0, alreadyComplete = 0, pending = 0, invalid = 0, failed = 0;
             long bytes = 0;
 
             foreach (var scan in candidates)
@@ -149,6 +149,14 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     if (r.IngestedChannels > 0)
                     {
                         ingested++;
+                    }
+                    else if (r.InvalidChannels > 0)
+                    {
+                        // File is readable, but the FS6000 header proves it is
+                        // truncated or otherwise structurally incomplete. Keep
+                        // it out of the DB, but don't report it as a transient
+                        // worker failure every cycle.
+                        invalid++;
                     }
                     else if (r.FailedChannels > 0)
                     {
@@ -184,8 +192,8 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             _logger.LogInformation(
-                "[FS6000-RAW-WORKER] cycle done. ingested={Ingested} alreadyComplete={Done} pendingNextCycle={Pending} failed={Failed} bytes={Bytes}",
-                ingested, alreadyComplete, pending, failed, bytes);
+                "[FS6000-RAW-WORKER] cycle done. ingested={Ingested} alreadyComplete={Done} pendingNextCycle={Pending} invalid={Invalid} failed={Failed} bytes={Bytes}",
+                ingested, alreadyComplete, pending, invalid, failed, bytes);
         }
 
         /// <summary>
