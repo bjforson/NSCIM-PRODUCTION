@@ -1,12 +1,13 @@
 @page "/admin/icums-payloads"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsPayloads)]
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject IcumsPayloadClient IcumsPayloadClient
 @inject IConfiguration Configuration
 @inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 @inject AuthenticationStateProvider AuthStateProvider
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Shared.Services
 
 <PageTitle>NICKSCAN ERP — NSCIS — ICUMS Payload Viewer</PageTitle>
 
@@ -315,16 +316,16 @@
         loading = true;
         try
         {
-            JsonElement? s = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/summary");
+            JsonElement? s = await IcumsPayloadClient.GetSummaryAsync<JsonElement>();
             if (s != null) { summary = s.Value; hasSummary = true; }
 
-            JsonElement? internalResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?limit=100");
+            JsonElement? internalResult = await IcumsPayloadClient.ListPayloadsAsync<JsonElement>(limit: 100);
             internalFiles = ParseFileList(internalResult);
 
-            JsonElement? icumsResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?subfolder=ICUMS&limit=100");
+            JsonElement? icumsResult = await IcumsPayloadClient.ListPayloadsAsync<JsonElement>(limit: 100, subfolder: "ICUMS");
             icumsFiles = ParseFileList(icumsResult);
 
-            JsonElement? ackResult = await ApiService.GetAsync<JsonElement>("/api/IcumsPayload/list?subfolder=ICUMS%2FAcknowledged&limit=100");
+            JsonElement? ackResult = await IcumsPayloadClient.ListPayloadsAsync<JsonElement>(limit: 100, subfolder: "ICUMS/Acknowledged");
             acknowledgedFiles = ParseFileList(ackResult);
         }
         catch (Exception ex)
@@ -426,11 +427,7 @@
 
         try
         {
-            var url = $"/api/IcumsPayload/read?fileName={Uri.EscapeDataString(fileName)}";
-            if (!string.IsNullOrEmpty(subfolder))
-                url += $"&subfolder={Uri.EscapeDataString(subfolder)}";
-
-            JsonElement? result = await ApiService.GetAsync<JsonElement>(url);
+            JsonElement? result = await IcumsPayloadClient.ReadPayloadAsync<JsonElement>(fileName, subfolder);
             if (result != null && result.Value.TryGetProperty("content", out var content))
             {
                 selectedPayload = content;
@@ -681,7 +678,7 @@
                 }
             };
 
-            var result = await ApiService.PostAsync<object, JsonElement?>("/api/IcumsPayload/verify-status", payload);
+            var result = await IcumsPayloadClient.VerifyStatusAsync<object, JsonElement?>(payload);
             if (result.HasValue)
             {
                 verifyResults = result;
