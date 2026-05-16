@@ -13,6 +13,7 @@
 @inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient DashboardClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -662,7 +663,7 @@
     {
         try
         {
-            _safeguardData = await ApiService.GetAsync<SafeguardSummaryResponse>("/api/image-analysis/dashboard/safeguard-summary");
+            _safeguardData = await DashboardClient.GetSafeguardSummaryAsync<SafeguardSummaryResponse>();
         }
         catch (Exception ex) { Logger.LogWarning(ex, "Failed to load safeguard summary"); }
     }

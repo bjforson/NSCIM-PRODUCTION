@@ -6,7 +6,7 @@
 @using NickScanWebApp.Shared.Models
 @using NickScanCentralImagingPortal.Core.Models
 @using MudBlazor
-@inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient DashboardClient
 @inject NavigationManager Navigation
 @inject ILogger<OperationsDashboardPanel> Logger
 @inject ISnackbar Snackbar
@@ -1973,8 +1973,7 @@
 
         try
         {
-            var response = await ApiService.GetAsync<ImageAnalysisDashboardData>(
-                "/api/image-analysis/dashboard/overview");
+            var response = await DashboardClient.GetOverviewAsync<ImageAnalysisDashboardData>();
 
             if (response != null)
             {
@@ -2212,8 +2211,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<UserActivityData>(
-                "/api/image-analysis/dashboard/user-productivity");
+            var response = await DashboardClient.GetUserProductivityAsync<UserActivityData>();
 
             if (response != null)
             {
@@ -2232,8 +2230,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<QualityMetricsData>(
-                "/api/image-analysis/dashboard/quality");
+            var response = await DashboardClient.GetQualityAsync<QualityMetricsData>();
 
             if (response != null)
             {
@@ -2252,8 +2249,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<BottleneckAnalysisData>(
-                "/api/image-analysis/dashboard/bottlenecks");
+            var response = await DashboardClient.GetBottlenecksAsync<BottleneckAnalysisData>();
 
             if (response != null)
             {
@@ -2272,8 +2268,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<HistoricalTrendsData>(
-                $"/api/image-analysis/dashboard/trends?period={_trendsPeriod}");
+            var response = await DashboardClient.GetTrendsAsync<HistoricalTrendsData>(_trendsPeriod);
 
             if (response != null)
             {
@@ -2291,8 +2286,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<SafeguardSummaryData>(
-                "/api/image-analysis/dashboard/safeguard-summary");
+            var response = await DashboardClient.GetSafeguardSummaryAsync<SafeguardSummaryData>();
 
             if (response != null)
             {
@@ -2358,8 +2352,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<PredictiveAnalyticsData>(
-                "/api/image-analysis/dashboard/predictions");
+            var response = await DashboardClient.GetPredictionsAsync<PredictiveAnalyticsData>();
 
             if (response != null)
             {
@@ -2378,8 +2371,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<DashboardAlertsData>(
-                "/api/image-analysis/dashboard/alerts");
+            var response = await DashboardClient.GetAlertsAsync<DashboardAlertsData>();
 
             if (response != null)
             {
@@ -2398,9 +2390,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>(
-                $"/api/image-analysis/dashboard/alerts/{alertId}/acknowledge",
-                new { });
+            await DashboardClient.AcknowledgeAlertAsync(alertId);
 
             Snackbar.Add("Alert acknowledged", Severity.Success);
             await LoadAlertsData(); // Refresh alerts
@@ -2429,16 +2419,11 @@
             _isExporting = true;
             StateHasChanged();
 
-            var startDate = _exportStartDate?.ToString("yyyy-MM-dd") ?? DateTime.UtcNow.AddDays(-7).ToString("yyyy-MM-dd");
-            var endDate = _exportEndDate?.ToString("yyyy-MM-dd") ?? DateTime.UtcNow.ToString("yyyy-MM-dd");
+            var exportBytes = await DashboardClient.GetExportBytesAsync(format, _exportStartDate, _exportEndDate);
 
-            var csvText = await ApiService.GetAsync<string>(
-                $"/api/image-analysis/dashboard/export/{format}?startDate={startDate}&endDate={endDate}");
-
-            if (!string.IsNullOrEmpty(csvText))
+            if (exportBytes is { Length: > 0 })
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(csvText);
-                var base64 = Convert.ToBase64String(bytes);
+                var base64 = Convert.ToBase64String(exportBytes);
                 var fileName = $"dashboard-export-{DateTime.UtcNow:yyyyMMdd-HHmmss}.{format}";
                 await JSRuntime.InvokeVoidAsync("downloadFile", fileName, base64, contentType);
                 Snackbar.Add($"{format.ToUpper()} export downloaded", Severity.Success);
@@ -2464,8 +2449,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<SystemHealthData>(
-                "/api/image-analysis/dashboard/system-health");
+            var response = await DashboardClient.GetSystemHealthAsync<SystemHealthData>();
 
             if (response != null)
             {

@@ -397,7 +397,13 @@
             return null;
         }
 
-        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size={Uri.EscapeDataString(size)}&containerNumber={Uri.EscapeDataString(ContainerNumber)}";
+        return ScanAssetClient.BuildImagePath(
+            sourceScanId,
+            new ScanAssetImageQuery
+            {
+                Size = size,
+                ContainerNumber = ContainerNumber
+            });
     }
 
     private string SignImagePath(string url)

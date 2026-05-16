@@ -719,17 +719,14 @@
             return null;
         }
 
-        var parts = new List<string>
-        {
-            $"size={Uri.EscapeDataString(size)}"
-        };
         var containerHint = StrictSingleContainerToken(ContainerNumber);
-        if (!string.IsNullOrWhiteSpace(containerHint))
-        {
-            parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
-        }
-
-        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+        return ScanAssetClient.BuildImagePath(
+            sourceScanId,
+            new ScanAssetImageQuery
+            {
+                Size = size,
+                ContainerNumber = containerHint
+            });
     }
 
     private static string? StrictSingleContainerToken(string? value)

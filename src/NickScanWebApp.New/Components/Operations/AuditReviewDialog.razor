@@ -7,7 +7,8 @@
 @using NickScanWebApp.New.Models
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanWebApp.Shared.Models
-@inject ApiService ApiService
+@using NickScanWebApp.Shared.Services
+@inject NickScanWebApp.New.Services.ApiService ApiService
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject AuthenticationStateProvider AuthenticationStateProvider
@@ -673,7 +674,13 @@
 
         var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
         return !string.IsNullOrWhiteSpace(sourceScanId)
-            ? $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size=full&containerNumber={Uri.EscapeDataString(containerNumber)}"
+            ? ScanAssetClient.BuildImagePath(
+                sourceScanId,
+                new ScanAssetImageQuery
+                {
+                    Size = "full",
+                    ContainerNumber = containerNumber
+                })
             : null;
     }
 

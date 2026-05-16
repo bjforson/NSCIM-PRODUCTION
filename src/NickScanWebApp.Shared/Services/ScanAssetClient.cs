@@ -38,6 +38,33 @@ public sealed class ScanAssetClient
         return _apiService.TryGetAsync<List<ImageMetadata>>(BuildImagesPath(sourceScanId, query));
     }
 
+    public Task<PagedResult<ScannerDataRecord>?> TryGetScannerDataAsync(
+        string sourceScanId,
+        ScanAssetScannerDataQuery? query = null)
+    {
+        return _apiService.TryGetAsync<PagedResult<ScannerDataRecord>>(BuildScannerDataPath(sourceScanId, query));
+    }
+
+    public Task<FullScannerDataRecord?> TryGetFullScannerDataAsync(
+        string sourceScanId,
+        ScanAssetScannerDataQuery? query = null)
+    {
+        var fullQuery = new ScanAssetScannerDataQuery
+        {
+            ContainerNumber = query?.ContainerNumber,
+            GroupIdentifier = query?.GroupIdentifier,
+            AnalysisRecordId = query?.AnalysisRecordId,
+            SplitJobId = query?.SplitJobId,
+            SplitResultId = query?.SplitResultId,
+            Side = query?.Side,
+            Page = query?.Page,
+            PageSize = query?.PageSize,
+            Full = true
+        };
+
+        return _apiService.TryGetAsync<FullScannerDataRecord>(BuildScannerDataPath(sourceScanId, fullQuery));
+    }
+
     public static string BuildResolvePath(
         string containerNumber,
         string? groupIdentifier = null,
@@ -83,6 +110,24 @@ public sealed class ScanAssetClient
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/images{ToQueryString(parts)}";
     }
 
+    public static string BuildScannerDataPath(
+        string sourceScanId,
+        ScanAssetScannerDataQuery? query = null)
+    {
+        var parts = new List<string>();
+        Add(parts, "containerNumber", query?.ContainerNumber);
+        Add(parts, "groupIdentifier", query?.GroupIdentifier);
+        Add(parts, "analysisRecordId", query?.AnalysisRecordId);
+        Add(parts, "splitJobId", query?.SplitJobId);
+        Add(parts, "splitResultId", query?.SplitResultId);
+        Add(parts, "side", query?.Side);
+        Add(parts, "page", query?.Page);
+        Add(parts, "pageSize", query?.PageSize);
+        Add(parts, "full", query?.Full);
+
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/scanner-data{ToQueryString(parts)}";
+    }
+
     private static void Add(List<string> parts, string name, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value))
@@ -107,6 +152,14 @@ public sealed class ScanAssetClient
         }
     }
 
+    private static void Add(List<string> parts, string name, bool? value)
+    {
+        if (value.HasValue)
+        {
+            parts.Add($"{name}={value.Value.ToString().ToLowerInvariant()}");
+        }
+    }
+
     private static string ToQueryString(List<string> parts)
     {
         return parts.Count == 0 ? string.Empty : $"?{string.Join("&", parts)}";
@@ -123,4 +176,17 @@ public sealed class ScanAssetImageQuery
     public Guid? SplitJobId { get; set; }
     public Guid? SplitResultId { get; set; }
     public string? Side { get; set; }
+}
+
+public sealed class ScanAssetScannerDataQuery
+{
+    public string? ContainerNumber { get; set; }
+    public string? GroupIdentifier { get; set; }
+    public int? AnalysisRecordId { get; set; }
+    public Guid? SplitJobId { get; set; }
+    public Guid? SplitResultId { get; set; }
+    public string? Side { get; set; }
+    public int? Page { get; set; }
+    public int? PageSize { get; set; }
+    public bool? Full { get; set; }
 }

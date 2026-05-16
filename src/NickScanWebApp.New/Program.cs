@@ -283,6 +283,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerValidationCli
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ConsolidatedCargoClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.CmrValidationClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.BusinessRulesClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisManagementClient>();
