@@ -5,10 +5,11 @@
 @page "/scanners/eagle-a25"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesScannersView)]
 @using NickScanWebApp.New.Components.Scanners
-@inject HttpClient Http
 @inject NavigationManager NavManager
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.FS6000Client FS6000Client
+@inject NickScanWebApp.Shared.Services.AseClient AseClient
+@inject NickScanWebApp.Shared.Services.EagleA25Client EagleA25Client
 
 <PageTitle>NICKSCAN ERP — NSCIS — Scanner Overview</PageTitle>
 
@@ -448,7 +449,7 @@
             // Load FS6000 statistics directly
             try
             {
-                var fs6000Stats = await ApiService.GetAsync<FS6000Statistics>("/api/FS6000/statistics");
+                var fs6000Stats = await FS6000Client.GetStatisticsAsync<FS6000Statistics>();
                 if (fs6000Stats != null)
                 {
                     _totalFS6000Scans = fs6000Stats.Scans?.Total ?? 0;
@@ -457,7 +458,10 @@
                 }
                 
                 // Get last scan time - ensure we get the most recent scan
-                var fs6000ScansResponse = await ApiService.GetAsync<FS6000ScanResponse>("/api/FS6000/scans?pageSize=1");
+                var fs6000ScansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+                {
+                    PageSize = 1
+                });
                 if (fs6000ScansResponse?.Data != null && fs6000ScansResponse.Data.Any())
                 {
                     // API returns scans ordered by ScanTime descending, so First() is most recent
@@ -478,7 +482,7 @@
             // Load ASE statistics directly
             try
             {
-                var aseStats = await ApiService.GetAsync<AseSyncStatus>("/api/Ase/sync-status");
+                var aseStats = await AseClient.GetSyncStatusAsync<AseSyncStatus>();
                 if (aseStats != null)
                 {
                     _totalAseScans = aseStats.TotalScans;
@@ -492,7 +496,10 @@
                 // The response structure is: { Data: AseScan[], TotalCount, Page, PageSize, TotalPages }
                 try
                 {
-                    var aseScansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=1");
+                    var aseScansResponse = await AseClient.GetScansAsync<AseScanResponse>(new NickScanWebApp.Shared.Services.AseScanQuery
+                    {
+                        PageSize = 1
+                    });
                     if (aseScansResponse?.Data != null && aseScansResponse.Data.Any())
                     {
                         // API returns scans ordered by ScanTime descending, so First() is most recent
@@ -528,7 +535,7 @@
             // Load Eagle A25 statistics directly. This scanner is captured but assignment intake stays disabled by config.
             try
             {
-                var eagleStatus = await ApiService.GetAsync<EagleA25SyncStatus>("/api/EagleA25/sync-status");
+                var eagleStatus = await EagleA25Client.GetSyncStatusAsync();
                 if (eagleStatus != null)
                 {
                     _totalEagleA25Scans = eagleStatus.TotalScans;
@@ -536,8 +543,12 @@
 
                     var todayUtc = DateTime.UtcNow.Date;
                     var tomorrowUtc = todayUtc.AddDays(1);
-                    var todayResponse = await ApiService.GetAsync<EagleA25ScanResponse>(
-                        $"/api/EagleA25/scans?pageSize=1&startDate={todayUtc:yyyy-MM-dd}&endDate={tomorrowUtc:yyyy-MM-dd}");
+                    var todayResponse = await EagleA25Client.GetScansAsync(new NickScanWebApp.Shared.Services.EagleA25ScanQuery
+                    {
+                        PageSize = 1,
+                        StartDate = todayUtc,
+                        EndDate = tomorrowUtc
+                    });
                     _eagleA25Scans = todayResponse?.TotalCount ?? 0;
 
                     Console.WriteLine($"✅ Loaded Eagle A25 stats: Total={_totalEagleA25Scans}, Today={_eagleA25Scans}");
@@ -570,7 +581,11 @@
             
             try
             {
-                var fs6000Yesterday = await ApiService.GetAsync<List<FS6000DailyStats>>($"/api/FS6000/stats?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}");
+                var fs6000Yesterday = await FS6000Client.GetStatsAsync<List<FS6000DailyStats>>(new NickScanWebApp.Shared.Services.ScannerDailyStatsQuery
+                {
+                    StartDate = yesterdayStart,
+                    EndDate = yesterdayEnd
+                });
                 int fs6000YesterdayCount = 0;
                 if (fs6000Yesterday != null && fs6000Yesterday.Any())
                 {
@@ -578,7 +593,7 @@
                 }
                 
                 // Get yesterday's ASE scans from stats
-                var aseStats = await ApiService.GetAsync<List<AseDailyStats>>("/api/Ase/stats");
+                var aseStats = await AseClient.GetStatsAsync<List<AseDailyStats>>();
                 int aseYesterdayCount = 0;
                 if (aseStats != null)
                 {
@@ -777,7 +792,10 @@
             _recentActivity.Clear();
             
             // Get recent FS6000 scans
-            var fs6000ScansResponse = await ApiService.GetAsync<FS6000ScanResponse>("/api/FS6000/scans?pageSize=5");
+            var fs6000ScansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+            {
+                PageSize = 5
+            });
             if (fs6000ScansResponse?.Data != null)
             {
                 foreach (var scan in fs6000ScansResponse.Data.OrderByDescending(s => s.ScanTime).Take(5))
@@ -793,7 +811,10 @@
             }
             
             // Get recent ASE scans
-            var aseScansResponse = await ApiService.GetAsync<AseScanResponse>("/api/Ase/scans?pageSize=5");
+            var aseScansResponse = await AseClient.GetScansAsync<AseScanResponse>(new NickScanWebApp.Shared.Services.AseScanQuery
+            {
+                PageSize = 5
+            });
             if (aseScansResponse?.Data != null)
             {
                 foreach (var scan in aseScansResponse.Data.OrderByDescending(s => s.ScanTime).Take(5))
@@ -826,7 +847,10 @@
         {
             // Get recent scans and calculate average time between scans
             // This is a simplified calculation - ideally would use actual processing start/end times
-            var fs6000ScansResponse = await ApiService.GetAsync<FS6000ScanResponse>("/api/FS6000/scans?pageSize=100");
+            var fs6000ScansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+            {
+                PageSize = 100
+            });
             if (fs6000ScansResponse?.Data != null && fs6000ScansResponse.Data.Count > 1)
             {
                 var sortedScans = fs6000ScansResponse.Data.OrderBy(s => s.ScanTime).ToList();

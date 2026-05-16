@@ -1,9 +1,8 @@
 @using NickScanWebApp.New.Components.Containers
 @using MudBlazor
-@inject HttpClient Http
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.FS6000Client FS6000Client
 
 
 <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
@@ -308,7 +307,7 @@
             Console.WriteLine("🔍 Loading FS6000 scanner data from API...");
             
             // Load FS6000 statistics
-            var stats = await ApiService.GetAsync<FS6000Statistics>("/api/FS6000/statistics");
+            var stats = await FS6000Client.GetStatisticsAsync<FS6000Statistics>();
             if (stats != null)
             {
                 _totalScans = stats.Scans?.Total ?? 0;
@@ -318,7 +317,10 @@
             }
             
             // Load recent scans from FS6000 API
-            var scansResponse = await ApiService.GetAsync<FS6000ScanResponse>("/api/FS6000/scans?pageSize=20");
+            var scansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+            {
+                PageSize = 20
+            });
             if (scansResponse?.Data != null && scansResponse.Data.Any())
             {
                 _lastScanTime = scansResponse.Data.OrderByDescending(s => s.ScanTime).First().ScanTime;
@@ -351,7 +353,11 @@
             try
             {
                 // Query yesterday's scans directly from API or calculate from stats
-                var yesterdayStats = await ApiService.GetAsync<List<FS6000DailyStats>>($"/api/FS6000/stats?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}");
+                var yesterdayStats = await FS6000Client.GetStatsAsync<List<FS6000DailyStats>>(new NickScanWebApp.Shared.Services.ScannerDailyStatsQuery
+                {
+                    StartDate = yesterdayStart,
+                    EndDate = yesterdayEnd
+                });
                 if (yesterdayStats != null && yesterdayStats.Any())
                 {
                     _yesterdayScans = yesterdayStats.Sum(s => s.Count);
@@ -359,7 +365,11 @@
                 else
                 {
                     // Fallback: query scans for yesterday date range
-                    var yesterdayScansResponse = await ApiService.GetAsync<FS6000ScanResponse>($"/api/FS6000/scans?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}");
+                    var yesterdayScansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+                    {
+                        StartDate = yesterdayStart,
+                        EndDate = yesterdayEnd
+                    });
                     _yesterdayScans = yesterdayScansResponse?.TotalCount ?? 0;
                 }
                 Console.WriteLine($"✅ Calculated yesterday's FS6000 scans: {_yesterdayScans}");
@@ -410,34 +420,15 @@
         _isLoading = true;
         try
         {
-            var queryParams = new List<string>
+            var response = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
             {
-                $"page={state.Page + 1}",
-                $"pageSize={state.PageSize}"
-            };
-            
-            if (!string.IsNullOrEmpty(_searchContainerNumber))
-            {
-                queryParams.Add($"containerNumber={Uri.EscapeDataString(_searchContainerNumber)}");
-            }
-            
-            if (_startDate.HasValue)
-            {
-                queryParams.Add($"startDate={_startDate.Value:yyyy-MM-dd}");
-            }
-            
-            if (_endDate.HasValue)
-            {
-                queryParams.Add($"endDate={_endDate.Value:yyyy-MM-dd}");
-            }
-            
-            if (!string.IsNullOrEmpty(_filterSyncStatus))
-            {
-                queryParams.Add($"syncStatus={Uri.EscapeDataString(_filterSyncStatus)}");
-            }
-            
-            var url = $"/api/FS6000/scans?{string.Join("&", queryParams)}";
-            var response = await ApiService.GetAsync<FS6000ScanResponse>(url);
+                Page = state.Page + 1,
+                PageSize = state.PageSize,
+                ContainerNumber = _searchContainerNumber,
+                SyncStatus = _filterSyncStatus,
+                StartDate = _startDate,
+                EndDate = _endDate
+            });
             
             if (response != null)
             {
@@ -589,7 +580,10 @@
         {
             // Get recent scans and calculate average time between consecutive scans
             // This approximates detection/processing speed
-            var scansResponse = await ApiService.GetAsync<FS6000ScanResponse>("/api/FS6000/scans?pageSize=100");
+            var scansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
+            {
+                PageSize = 100
+            });
             if (scansResponse?.Data != null && scansResponse.Data.Count > 1)
             {
                 var sortedScans = scansResponse.Data.OrderBy(s => s.ScanTime).ToList();

@@ -2,20 +2,20 @@
 @page "/analytics"
 @page "/dashboard/analytics"
 @using Microsoft.AspNetCore.Authorization
-@using NickScanWebApp.New.Services
 @using Microsoft.AspNetCore.Components.Authorization
 @using NickScanWebApp.New.Components.Dashboard
 @attribute [Authorize(Policy = Permissions.PagesDashboardView)]
 @inject ILogger<Index> Logger
 @inject NavigationManager Navigation
 @inject AuthenticationStateProvider AuthStateProvider
-@inject ApiService ApiService
 @inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient DashboardClient
 @inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
 @inject NickScanWebApp.Shared.Services.LogManagementClient LogManagementClient
+@inject NickScanWebApp.Shared.Services.FS6000Client FS6000Client
+@inject NickScanWebApp.Shared.Services.AseClient AseClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -702,13 +702,13 @@
         int fs6000 = 0, ase = 0;
         try
         {
-            var fs = await ApiService.GetAsync<FS6000StatsResponse>("/api/FS6000/statistics");
+            var fs = await FS6000Client.GetStatisticsAsync<FS6000StatsResponse>();
             fs6000 = fs?.Scans?.Total ?? 0;
         }
         catch { }
         try
         {
-            var a = await ApiService.GetAsync<AseSyncResponse>("/api/Ase/sync-status");
+            var a = await AseClient.GetSyncStatusAsync<AseSyncResponse>();
             ase = a?.TotalScans ?? 0;
         }
         catch { }
