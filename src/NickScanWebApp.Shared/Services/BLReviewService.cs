@@ -10,6 +10,10 @@ namespace NickScanWebApp.Shared.Services
     /// </summary>
     public class BLReviewService
     {
+        public const string BasePath = "/api/BLReview";
+        public const string SavePath = BasePath + "/save";
+        public const string StatisticsPath = BasePath + "/statistics";
+
         private readonly ApiService _apiService;
         private readonly ILogger<BLReviewService> _logger;
 
@@ -28,12 +32,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = $"/api/BLReview/groups?page={page}&pageSize={pageSize}";
-
-                if (!string.IsNullOrEmpty(status))
-                {
-                    endpoint += $"&status={status}";
-                }
+                var endpoint = BuildGroupsPath(status, page, pageSize);
 
                 _logger.LogInformation("🔍 Fetching BL groups from {Endpoint}", endpoint);
 
@@ -57,7 +56,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = $"/api/BLReview/details/{Uri.EscapeDataString(masterBlNumber)}";
+                var endpoint = BuildDetailsPath(masterBlNumber);
 
                 _logger.LogInformation("🔍 Fetching BL details for {BLNumber}", masterBlNumber);
 
@@ -87,11 +86,9 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = "/api/BLReview/save";
-
                 _logger.LogInformation("💾 Saving review for BL {BLNumber}", submission.MasterBlNumber);
 
-                var result = await _apiService.PostAsync<BLReviewSubmission, BLReviewSaveResult>(endpoint, submission);
+                var result = await _apiService.PostAsync<BLReviewSubmission, BLReviewSaveResult>(SavePath, submission);
 
                 _logger.LogInformation("✅ Saved review - Status: {Status}, Decision: {Decision}",
                     result?.ReviewStatus, result?.FinalDecision);
@@ -112,7 +109,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = $"/api/BLReview/history/{Uri.EscapeDataString(masterBlNumber)}";
+                var endpoint = BuildHistoryPath(masterBlNumber);
 
                 _logger.LogInformation("🔍 Fetching review history for BL {BLNumber}", masterBlNumber);
 
@@ -137,11 +134,9 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = "/api/BLReview/statistics";
-
                 _logger.LogInformation("🔍 Fetching BL review statistics");
 
-                var stats = await _apiService.GetAsync<BLReviewStatistics>(endpoint);
+                var stats = await _apiService.GetAsync<BLReviewStatistics>(StatisticsPath);
 
                 _logger.LogInformation("✅ Fetched statistics - {TotalBLs} total BLs", stats?.TotalBLs ?? 0);
 
@@ -161,7 +156,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var endpoint = $"/api/BLReview/container/completeness/{Uri.EscapeDataString(containerNumber)}";
+                var endpoint = BuildContainerCompletenessPath(containerNumber);
 
                 var result = await _apiService.GetAsync<ContainerCompletenessResult>(endpoint);
 
@@ -172,6 +167,33 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogError(ex, "❌ Error checking container completeness for {Container}", containerNumber);
                 return false;
             }
+        }
+
+        public static string BuildGroupsPath(string? status = null, int page = 1, int pageSize = 20)
+        {
+            var endpoint = $"{BasePath}/groups?page={page}&pageSize={pageSize}";
+
+            if (!string.IsNullOrEmpty(status))
+            {
+                endpoint += $"&status={Uri.EscapeDataString(status)}";
+            }
+
+            return endpoint;
+        }
+
+        public static string BuildDetailsPath(string masterBlNumber)
+        {
+            return $"{BasePath}/details/{Uri.EscapeDataString(masterBlNumber)}";
+        }
+
+        public static string BuildHistoryPath(string masterBlNumber)
+        {
+            return $"{BasePath}/history/{Uri.EscapeDataString(masterBlNumber)}";
+        }
+
+        public static string BuildContainerCompletenessPath(string containerNumber)
+        {
+            return $"{BasePath}/container/completeness/{Uri.EscapeDataString(containerNumber)}";
         }
     }
 }
