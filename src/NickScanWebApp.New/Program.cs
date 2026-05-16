@@ -288,6 +288,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.BusinessRulesClient>()
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisDashboardClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.AiWorkflowClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisManagementClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageSplitterReviewClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.XrayInspectorClient>();
@@ -295,6 +296,10 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.MonitoringClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.LogManagementClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.FS6000Client>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AseClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IngestionClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.Fs6000CompletenessClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.AseSyncClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.DebugSystemClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.InspectionFindingCategoryClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.DiagnosticsClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.PerformanceMetricsClient>();

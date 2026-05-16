@@ -1,6 +1,6 @@
 @using MudBlazor
 @using System.Text.Json
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IngestionClient IngestionClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<IngestionPanel> Logger
@@ -110,7 +110,7 @@
         try
         {
             _isLoading = true;
-            var response = await ApiService.GetAsync<PendingFilesResponseDto>("api/ingestion/pending-files");
+            var response = await IngestionClient.GetPendingFilesAsync<PendingFilesResponseDto>();
             
             if (response?.Files != null)
             {
@@ -146,7 +146,7 @@
     {
         try
         {
-            _ingestionStatus = await ApiService.GetAsync<IngestionStatusDto>("api/ingestion/service-status");
+            _ingestionStatus = await IngestionClient.GetServiceStatusAsync<IngestionStatusDto>();
         }
         catch (Exception ex)
         {
@@ -158,7 +158,7 @@
     {
         try
         {
-            var response = await ApiService.PostAsync<object, ProcessFileResponseDto>($"api/ingestion/process-file/{fileId}", new { });
+            var response = await IngestionClient.ProcessFileAsync<ProcessFileResponseDto>(fileId);
             Snackbar.Add(response?.Message ?? "File processed", Severity.Success);
             await LoadPendingFiles();
         }
@@ -173,7 +173,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"api/ingestion/reset-file-status/{fileId}", new { });
+            await IngestionClient.ResetFileStatusAsync<object>(fileId);
             Snackbar.Add("File status reset to Pending", Severity.Success);
             await LoadPendingFiles();
         }
@@ -195,7 +195,7 @@
 
         try
         {
-            await ApiService.PostAsync<object, object>("api/ingestion/manual-trigger", new { });
+            await IngestionClient.TriggerManualIngestionAsync<object>();
             Snackbar.Add("Ingestion triggered", Severity.Success);
             await LoadPendingFiles();
         }

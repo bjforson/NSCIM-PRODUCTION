@@ -24,6 +24,11 @@ public sealed class ConsolidatedCargoClient
             $"{BasePath}/consolidated?pageSize={pageSize.ToString(CultureInfo.InvariantCulture)}");
     }
 
+    public Task<List<TContainer>?> GetContainersAsync<TContainer>(string? containerNumber = null)
+    {
+        return _apiService.GetAsync<List<TContainer>>(BuildContainersPath(containerNumber));
+    }
+
     public Task<List<THouseBl>?> GetHouseBlsByContainerAsync<THouseBl>(string containerNumber)
     {
         return _apiService.GetAsync<List<THouseBl>>(
@@ -34,5 +39,15 @@ public sealed class ConsolidatedCargoClient
     {
         return _apiService.GetAsync<List<string>>(
             $"{BasePath}/declaration/{Uri.EscapeDataString(declarationNumber)}/containers");
+    }
+
+    public static string BuildContainersPath(string? containerNumber = null)
+    {
+        if (string.IsNullOrWhiteSpace(containerNumber))
+        {
+            return $"{BasePath}/containers";
+        }
+
+        return $"{BasePath}/containers?containerNumber={Uri.EscapeDataString(containerNumber)}";
     }
 }

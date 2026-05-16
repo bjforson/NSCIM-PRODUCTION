@@ -2,7 +2,7 @@
 @page "/monitoring/ase-sync"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesAseSync)]
 @using MudBlazor
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AseSyncClient AseSyncClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<AseSync> Logger
@@ -110,7 +110,7 @@
         try
         {
             // Use statistics endpoint instead of status (which doesn't exist)
-            var stats = await ApiService.GetAsync<AseSyncStatisticsDto>("api/asesync/statistics");
+            var stats = await AseSyncClient.GetStatisticsAsync<AseSyncStatisticsDto>();
             if (stats != null)
             {
                 // Convert statistics to status format
@@ -128,7 +128,7 @@
             // Load sync history
             try
             {
-                _syncHistory = await ApiService.GetAsync<List<object>>("api/asesync/history");
+                _syncHistory = await AseSyncClient.GetHistoryAsync<List<object>>();
             }
             catch { }
         }
@@ -150,7 +150,7 @@
 
         try
         {
-            await ApiService.PostAsync<object, object>("api/asesync/trigger", new { });
+            await AseSyncClient.TriggerSyncAsync<object>();
             Snackbar.Add("ASE sync triggered", Severity.Success);
             await LoadSyncStatus();
         }

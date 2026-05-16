@@ -11,6 +11,7 @@
 @inject NickScanWebApp.New.Services.ApiService ApiService
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
+@inject NickScanWebApp.Shared.Services.AiWorkflowClient AiWorkflowClient
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
@@ -2503,8 +2504,7 @@
     {
         try
         {
-            var items = await ApiService.GetAsync<List<AiSuggestionViewDto>>(
-                $"api/aiworkflow/image/suggestions?status=all&containerNumber={Uri.EscapeDataString(ContainerNumber)}&pageSize=1");
+            var items = await AiWorkflowClient.GetContainerSuggestionProbeAsync<AiSuggestionViewDto>(ContainerNumber);
 
             _aiSuggestion = items?.FirstOrDefault();
             if (_aiSuggestion?.SuggestionPayloadJson != null)
