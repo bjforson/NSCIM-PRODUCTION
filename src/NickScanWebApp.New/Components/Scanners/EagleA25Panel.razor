@@ -1,6 +1,7 @@
 @using MudBlazor
+@using NickScanWebApp.Shared.Services
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject EagleA25Client EagleA25Client
 @inject IDialogService DialogService
 
 <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
@@ -187,7 +188,7 @@
 
         try
         {
-            var status = await ApiService.GetAsync<EagleA25SyncStatus>("/api/EagleA25/sync-status");
+            var status = await EagleA25Client.GetSyncStatusAsync();
             if (status != null)
             {
                 _totalScans = status.TotalScans;
@@ -211,28 +212,14 @@
 
     private async Task LoadScans()
     {
-        var queryParams = new List<string>
+        var response = await EagleA25Client.GetScansAsync(new EagleA25ScanQuery
         {
-            "page=1",
-            "pageSize=50"
-        };
-
-        if (!string.IsNullOrWhiteSpace(_accession))
-        {
-            queryParams.Add($"accession={Uri.EscapeDataString(_accession)}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(_cargoIdentifier))
-        {
-            queryParams.Add($"cargoIdentifier={Uri.EscapeDataString(_cargoIdentifier)}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(_airWaybill))
-        {
-            queryParams.Add($"airWaybill={Uri.EscapeDataString(_airWaybill)}");
-        }
-
-        var response = await ApiService.GetAsync<EagleA25ScanResponse>($"/api/EagleA25/scans?{string.Join("&", queryParams)}");
+            Page = 1,
+            PageSize = 50,
+            Accession = _accession,
+            CargoIdentifier = _cargoIdentifier,
+            AirWaybill = _airWaybill
+        });
         _scans = response?.Data ?? new List<EagleA25ScanDto>();
         _totalRecords = response?.TotalCount ?? 0;
     }
@@ -338,56 +325,4 @@
         return $"{Display(originFrom)} -> {Display(originTo)}";
     }
 
-    public class EagleA25SyncStatus
-    {
-        public int TotalScans { get; set; }
-        public int TotalAssets { get; set; }
-        public EagleA25LastScan? LastScan { get; set; }
-        public EagleA25SyncLog? LastSync { get; set; }
-    }
-
-    public class EagleA25LastScan
-    {
-        public long Accession { get; set; }
-        public DateTime ScanDateUtc { get; set; }
-        public string? CargoIdentifier { get; set; }
-        public string? AirWaybill { get; set; }
-    }
-
-    public class EagleA25SyncLog
-    {
-        public DateTime StartedAtUtc { get; set; }
-        public DateTime? CompletedAtUtc { get; set; }
-        public bool Succeeded { get; set; }
-    }
-
-    public class EagleA25ScanResponse
-    {
-        public List<EagleA25ScanDto>? Data { get; set; }
-        public int TotalCount { get; set; }
-        public int Page { get; set; }
-        public int PageSize { get; set; }
-        public int TotalPages { get; set; }
-    }
-
-    public class EagleA25ScanDto
-    {
-        public Guid Id { get; set; }
-        public long Accession { get; set; }
-        public long? ScanAccession { get; set; }
-        public DateTime ScanDateUtc { get; set; }
-        public string? CargoIdentifier { get; set; }
-        public string? AirWaybill { get; set; }
-        public string? FlightNumber { get; set; }
-        public string? TransitType { get; set; }
-        public string? Weight { get; set; }
-        public string? Company { get; set; }
-        public string? Quantity { get; set; }
-        public string? QuantityType { get; set; }
-        public string? OriginFrom { get; set; }
-        public string? OriginTo { get; set; }
-        public bool InspectDone { get; set; }
-        public bool InspectSuspicious { get; set; }
-        public int AssetCount { get; set; }
-    }
 }

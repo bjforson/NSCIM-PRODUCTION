@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.DTOs.ScanAssets;
+using NickScanCentralImagingPortal.Core.Entities.ASE;
+using NickScanCentralImagingPortal.Core.Entities.EagleA25;
+using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 
@@ -231,6 +234,65 @@ public sealed class ScanAssetsController : ControllerBase
         });
     }
 
+    [HttpGet("{sourceScanId}/scanner-data")]
+    public async Task<IActionResult> GetSourceScannerData(
+        string sourceScanId,
+        [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
+        [FromQuery] Guid? splitJobId = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        [FromQuery] bool full = false,
+        CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+
+        var resolution = !string.IsNullOrWhiteSpace(containerNumber)
+            ? await _resolver.ResolveAsync(containerNumber, groupIdentifier, analysisRecordId, splitJobId, cancellationToken)
+            : await ResolveBySourceScanIdAsync(sourceScanId, cancellationToken);
+
+        if (resolution.IsAmbiguous)
+            return Conflict(resolution);
+
+        if (!resolution.Found || string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
+            return NotFound(resolution);
+
+        if (!SourceIdMatches(sourceScanId, resolution))
+            return NotFound(new
+            {
+                error = "Source scan id does not match resolved container source",
+                sourceScanId,
+                resolution
+            });
+
+        var scannerRecords = await BuildSourceScannerRecordsAsync(resolution, cancellationToken);
+
+        if (full)
+        {
+            return Ok(BuildFullScannerDataResponse(resolution, scannerRecords));
+        }
+
+        var totalCount = scannerRecords.Count;
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        return Ok(new PagedResult<ScannerDataRecord>
+        {
+            Data = scannerRecords
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToList(),
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize,
+            TotalPages = totalPages,
+            Status = totalCount > 0 ? "Found" : "NoData"
+        });
+    }
+
     private static string BuildSourceImagePath(
         string sourceScanId,
         string? containerNumber,
@@ -266,6 +328,350 @@ public sealed class ScanAssetsController : ControllerBase
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
     }
+
+    private async Task<List<ScannerDataRecord>> BuildSourceScannerRecordsAsync(
+        ScanAssetResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        if (IsFs6000(resolution.SourceScannerType))
+        {
+            var scan = await FindFs6000ScanAsync(resolution, cancellationToken);
+            if (scan != null)
+                return BuildFs6000ScannerRecords(scan, resolution);
+        }
+
+        if (IsAse(resolution.SourceScannerType))
+        {
+            var scan = await FindAseScanAsync(resolution, cancellationToken);
+            if (scan != null)
+                return BuildAseScannerRecords(scan, resolution);
+        }
+
+        if (IsEagleA25(resolution.SourceScannerType))
+        {
+            var scan = await FindEagleA25ScanAsync(resolution, cancellationToken);
+            if (scan != null)
+                return BuildEagleA25ScannerRecords(scan, resolution);
+        }
+
+        var ase = await FindAseScanAsync(resolution, cancellationToken);
+        if (ase != null)
+            return BuildAseScannerRecords(ase, resolution);
+
+        var fs6000 = await FindFs6000ScanAsync(resolution, cancellationToken);
+        if (fs6000 != null)
+            return BuildFs6000ScannerRecords(fs6000, resolution);
+
+        var eagle = await FindEagleA25ScanAsync(resolution, cancellationToken);
+        return eagle != null
+            ? BuildEagleA25ScannerRecords(eagle, resolution)
+            : new List<ScannerDataRecord>();
+    }
+
+    private async Task<AseScan?> FindAseScanAsync(
+        ScanAssetResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        if (resolution.ScannerScanId.HasValue)
+        {
+            var scan = await _db.AseScans
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == resolution.ScannerScanId.Value, cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        if (resolution.OriginalScanRecordId.HasValue)
+        {
+            var scan = await _db.AseScans
+                .AsNoTracking()
+                .Where(s => s.OriginalScanRecordId == resolution.OriginalScanRecordId.Value)
+                .OrderByDescending(s => s.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        var candidates = GetCandidateContainerNumbers(resolution);
+        return candidates.Count == 0
+            ? null
+            : await _db.AseScans
+                .AsNoTracking()
+                .Where(s => s.ContainerNumber != null && candidates.Contains(s.ContainerNumber))
+                .OrderByDescending(s => s.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<FS6000Scan?> FindFs6000ScanAsync(
+        ScanAssetResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        if (resolution.ScannerScanId.HasValue)
+        {
+            var scan = await _db.FS6000Scans
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == resolution.ScannerScanId.Value, cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        if (resolution.OriginalScanRecordId.HasValue)
+        {
+            var scan = await _db.FS6000Scans
+                .AsNoTracking()
+                .Where(s => s.OriginalScanRecordId == resolution.OriginalScanRecordId.Value)
+                .OrderByDescending(s => s.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        var candidates = GetCandidateContainerNumbers(resolution);
+        return candidates.Count == 0
+            ? null
+            : await _db.FS6000Scans
+                .AsNoTracking()
+                .Where(s => candidates.Contains(s.ContainerNumber))
+                .OrderByDescending(s => s.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<EagleA25Scan?> FindEagleA25ScanAsync(
+        ScanAssetResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        if (resolution.ScannerScanId.HasValue)
+        {
+            var scan = await _db.EagleA25Scans
+                .Include(s => s.Assets)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == resolution.ScannerScanId.Value, cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        var lookupId = NormalizeSourceScanIdForLookup(resolution.SourceScanId);
+        if (int.TryParse(lookupId, out var sourceScanId))
+        {
+            var scan = await _db.EagleA25Scans
+                .Include(s => s.Assets)
+                .AsNoTracking()
+                .Where(s => s.SourceScanId == sourceScanId)
+                .OrderByDescending(s => s.ScanDateUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (scan != null)
+                return scan;
+        }
+
+        var candidates = GetCandidateContainerNumbers(resolution);
+        if (candidates.Count == 0)
+            return null;
+
+        var accessions = candidates
+            .Select(candidate => long.TryParse(candidate, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                ? value
+                : (long?)null)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToList();
+
+        return await _db.EagleA25Scans
+            .Include(s => s.Assets)
+            .AsNoTracking()
+            .Where(s =>
+                accessions.Contains(s.Accession)
+                || (s.CargoIdentifier != null && candidates.Contains(s.CargoIdentifier)))
+            .OrderByDescending(s => s.ScanDateUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private static FullScannerDataRecordDto BuildFullScannerDataResponse(
+        ScanAssetResolution resolution,
+        IReadOnlyList<ScannerDataRecord> scannerRecords)
+    {
+        var allFields = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        foreach (var record in scannerRecords)
+        {
+            allFields[record.Field] = record.Value;
+        }
+
+        if (allFields.Count == 0)
+        {
+            allFields["Status"] = "NoData";
+            allFields["Source Scan Id"] = resolution.SourceScanId ?? "N/A";
+        }
+
+        return new FullScannerDataRecordDto
+        {
+            ContainerNumber = GetDisplayContainerNumber(resolution),
+            ScannerType = resolution.SourceScannerType ?? "Unknown",
+            ScanTime = scannerRecords.FirstOrDefault()?.Timestamp ?? resolution.ScanTime ?? DateTime.UtcNow,
+            AllFields = allFields,
+            AvailableFields = allFields.Keys.ToList(),
+            MissingFields = new List<string>()
+        };
+    }
+
+    private static List<ScannerDataRecord> BuildAseScannerRecords(
+        AseScan scan,
+        ScanAssetResolution resolution)
+    {
+        var timestamp = scan.ScanTime;
+        return new List<ScannerDataRecord>
+        {
+            ScannerRecord("Container Number", resolution.ContainerNumber ?? scan.ContainerNumber, "Container Info", timestamp),
+            ScannerRecord("Source Container Number(s)", scan.ContainerNumber, "Source Scan", timestamp),
+            ScannerRecord("Source Scan Id", resolution.SourceScanId ?? scan.OriginalScanRecordId?.ToString(CultureInfo.InvariantCulture) ?? scan.Id.ToString(), "Source Scan", timestamp),
+            ScannerRecord("Scanner Record Id", scan.Id, "Source Scan", timestamp),
+            ScannerRecord("Original Scan Record Id", scan.OriginalScanRecordId, "Source Scan", timestamp),
+            ScannerRecord("Resolution", resolution.ResolvedBy ?? resolution.ResolutionReason ?? "AseContainerLookup", "Source Scan", timestamp),
+            ScannerRecord("Scanner Type", "ASE", "Scanner Info", timestamp),
+            ScannerRecord("Scan Time", scan.ScanTime, "Scanner Info", timestamp),
+            ScannerRecord("Inspection ID", scan.InspectionId, "Scanner Info", timestamp),
+            ScannerRecord("Inspection UUID", scan.InspectionUuid, "Scanner Info", timestamp),
+            ScannerRecord("Vehicle Number", scan.TruckPlate, "Vehicle Info", timestamp),
+            ScannerRecord("Image Display Name", scan.ImageDisplayName, "Image Info", timestamp),
+            ScannerRecord("Has Scan Image", scan.ScanImage != null, "Image Info", timestamp),
+            ScannerRecord("Image Size", scan.ScanImage?.Length is int length ? $"{length} bytes" : null, "Image Info", timestamp),
+            ScannerRecord("Synced At", scan.SyncedAt, "Status", timestamp)
+        };
+    }
+
+    private static List<ScannerDataRecord> BuildFs6000ScannerRecords(
+        FS6000Scan scan,
+        ScanAssetResolution resolution)
+    {
+        var timestamp = scan.ScanTime;
+        return new List<ScannerDataRecord>
+        {
+            ScannerRecord("Container Number", scan.ContainerNumber, "Container Info", timestamp),
+            ScannerRecord("Source Container Number(s)", resolution.SourceContainerNumbers ?? scan.ContainerNumber, "Source Scan", timestamp),
+            ScannerRecord("Source Scan Id", resolution.SourceScanId ?? scan.OriginalScanRecordId?.ToString(CultureInfo.InvariantCulture) ?? scan.Id.ToString(), "Source Scan", timestamp),
+            ScannerRecord("Scanner Record Id", scan.Id, "Source Scan", timestamp),
+            ScannerRecord("Original Scan Record Id", scan.OriginalScanRecordId, "Source Scan", timestamp),
+            ScannerRecord("Resolution", resolution.ResolvedBy ?? resolution.ResolutionReason ?? "Fs6000ContainerLookup", "Source Scan", timestamp),
+            ScannerRecord("Scanner Type", "FS6000", "Scanner Info", timestamp),
+            ScannerRecord("Scan Time", scan.ScanTime, "Scanner Info", timestamp),
+            ScannerRecord("Picture Number", scan.PicNumber, "Scanner Info", timestamp),
+            ScannerRecord("Vessel Name", scan.VesselName, "Vessel Info", timestamp),
+            ScannerRecord("Operator ID", scan.OperatorId, "Operator Info", timestamp),
+            ScannerRecord("Scan Result", scan.ScanResult, "Scan Result", timestamp),
+            ScannerRecord("Goods Description", scan.GoodsDescription, "Cargo Info", timestamp),
+            ScannerRecord("Shipping Company", scan.ShippingCompany, "Shipping Info", timestamp),
+            ScannerRecord("Consignee", scan.Consignee, "Party Info", timestamp),
+            ScannerRecord("FYCO Present", scan.FycoPresent, "Security Info", timestamp),
+            ScannerRecord("File Path", scan.FilePath, "File Info", timestamp),
+            ScannerRecord("Has Image", scan.HasImage, "Image Info", timestamp),
+            ScannerRecord("Image Count", scan.ImageCount, "Image Info", timestamp),
+            ScannerRecord("Sync Status", scan.SyncStatus, "Status", timestamp)
+        };
+    }
+
+    private static List<ScannerDataRecord> BuildEagleA25ScannerRecords(
+        EagleA25Scan scan,
+        ScanAssetResolution resolution)
+    {
+        var timestamp = scan.ScanDateUtc;
+        var assets = scan.Assets?.ToList() ?? new List<EagleA25ScanAsset>();
+        return new List<ScannerDataRecord>
+        {
+            ScannerRecord("Container Number", resolution.ContainerNumber ?? scan.CargoIdentifier ?? scan.Accession.ToString(CultureInfo.InvariantCulture), "Container Info", timestamp),
+            ScannerRecord("Source Container Number(s)", resolution.SourceContainerNumbers ?? scan.Accession.ToString(CultureInfo.InvariantCulture), "Source Scan", timestamp),
+            ScannerRecord("Source Scan Id", resolution.SourceScanId ?? scan.SourceScanId.ToString(CultureInfo.InvariantCulture), "Source Scan", timestamp),
+            ScannerRecord("Scanner Record Id", scan.Id, "Source Scan", timestamp),
+            ScannerRecord("Resolution", resolution.ResolvedBy ?? resolution.ResolutionReason ?? "EagleA25Lookup", "Source Scan", timestamp),
+            ScannerRecord("Scanner Type", "EAGLE_A25", "Scanner Info", timestamp),
+            ScannerRecord("Scan Time", scan.ScanDateUtc, "Scanner Info", timestamp),
+            ScannerRecord("Accession", scan.Accession, "Scanner Info", timestamp),
+            ScannerRecord("Scan Accession", scan.ScanAccession, "Scanner Info", timestamp),
+            ScannerRecord("Cargo Identifier", scan.CargoIdentifier, "Cargo Info", timestamp),
+            ScannerRecord("Air Waybill", scan.AirWaybill, "Cargo Info", timestamp),
+            ScannerRecord("Flight Number", scan.FlightNumber, "Cargo Info", timestamp),
+            ScannerRecord("Transit Type", scan.TransitType, "Cargo Info", timestamp),
+            ScannerRecord("Weight", scan.Weight, "Cargo Info", timestamp),
+            ScannerRecord("Company", scan.Company, "Cargo Info", timestamp),
+            ScannerRecord("Quantity", scan.Quantity, "Cargo Info", timestamp),
+            ScannerRecord("Origin From", scan.OriginFrom, "Route Info", timestamp),
+            ScannerRecord("Origin To", scan.OriginTo, "Route Info", timestamp),
+            ScannerRecord("XRay Done", scan.XRayDone, "Status", timestamp),
+            ScannerRecord("Ready Inspect", scan.ReadyInspect, "Status", timestamp),
+            ScannerRecord("Inspect Done", scan.InspectDone, "Status", timestamp),
+            ScannerRecord("Inspect Suspicious", scan.InspectSuspicious, "Status", timestamp),
+            ScannerRecord("Search Found", scan.SearchFound, "Status", timestamp),
+            ScannerRecord("Asset Count", assets.Count, "Image Info", timestamp),
+            ScannerRecord("XRay Asset Count", assets.Count(asset => asset.IsXray || string.Equals(asset.FileType, "XRAY", StringComparison.OrdinalIgnoreCase)), "Image Info", timestamp),
+            ScannerRecord("Sync Status", scan.SyncStatus, "Status", timestamp)
+        };
+    }
+
+    private static ScannerDataRecord ScannerRecord(
+        string field,
+        object? value,
+        string category,
+        DateTime? timestamp)
+    {
+        return new ScannerDataRecord
+        {
+            Field = field,
+            Value = FormatScannerValue(value),
+            Category = category,
+            Timestamp = timestamp
+        };
+    }
+
+    private static string FormatScannerValue(object? value)
+    {
+        return value switch
+        {
+            null => "N/A",
+            string text => string.IsNullOrWhiteSpace(text) ? "N/A" : text,
+            DateTime date => date.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+            bool flag => flag ? "Yes" : "No",
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "N/A",
+            _ => value.ToString() ?? "N/A"
+        };
+    }
+
+    private static List<string> GetCandidateContainerNumbers(ScanAssetResolution resolution)
+    {
+        return new[]
+            {
+                resolution.SourceContainerNumbers,
+                resolution.ContainerNumber,
+                resolution.RequestedContainerNumber,
+                resolution.NormalizedContainerNumber
+            }
+            .SelectMany(SplitContainerCandidates)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static IEnumerable<string> SplitContainerCandidates(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            yield break;
+
+        foreach (var token in value.Split(
+                     new[] { ',', ';', '|', '\t', '\r', '\n' },
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!string.IsNullOrWhiteSpace(token))
+                yield return token;
+        }
+    }
+
+    private static string GetDisplayContainerNumber(ScanAssetResolution resolution)
+        => GetCandidateContainerNumbers(resolution).FirstOrDefault()
+            ?? resolution.ContainerNumber
+            ?? resolution.SourceContainerNumbers
+            ?? resolution.RequestedContainerNumber
+            ?? string.Empty;
 
     private async Task<SplitCropAsset?> GetSplitCropAsync(
         Guid splitJobId,
@@ -577,6 +983,12 @@ public sealed class ScanAssetsController : ControllerBase
     private static bool IsEagleA25(string? scannerType)
         => string.Equals(scannerType, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
             || string.Equals(scannerType, "EagleA25", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFs6000(string? scannerType)
+        => string.Equals(scannerType, "FS6000", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAse(string? scannerType)
+        => string.Equals(scannerType, "ASE", StringComparison.OrdinalIgnoreCase);
 
     private static ScanAssetResolution ToEagleA25Resolution(
         NickScanCentralImagingPortal.Core.Entities.EagleA25.EagleA25Scan scan,

@@ -1,7 +1,8 @@
 @using MudBlazor
 @using NickScanWebApp.Shared.Models
+@using NickScanWebApp.Shared.Services
 @using System.Security.Claims
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject SplitSelectionClient SplitSelectionClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
@@ -324,8 +325,7 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
                 ?? await ContainerDetailsService.ResolveScanAssetAsync(ContainerNumber, GroupIdentifier);
 
             var response = await TryLoadSplitOptionsFromIdentityAsync(_resolution)
-                ?? await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
-                    $"/api/image-splitter/container/{Uri.EscapeDataString(ContainerNumber)}/split-options");
+                ?? await SplitSelectionClient.TryGetContainerOptionsAsync(ContainerNumber);
 
             if (response == null)
             {
@@ -428,11 +428,9 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         var analysisRecordId = resolution?.AnalysisRecordId;
         if (analysisRecordId.HasValue)
         {
-            context = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
-                $"/api/image-analysis/records/{analysisRecordId.Value}/split-options");
+            context = await SplitSelectionClient.TryGetAnalysisRecordOptionsAsync(analysisRecordId.Value);
 
-            var splitterByRecord = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
-                $"/api/image-splitter/records/{analysisRecordId.Value}/split-options");
+            var splitterByRecord = await SplitSelectionClient.TryGetSplitterRecordOptionsAsync(analysisRecordId.Value);
             var mergedByRecord = MergeSplitOptionResponses(splitterByRecord, context, resolution);
             if (HasUsableSplitOptionPayload(mergedByRecord))
             {
@@ -444,8 +442,7 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         if (splitJobId.HasValue)
         {
             var containerKey = GetSingleContainerHint(resolution) ?? ContainerNumber;
-            var byJob = await ApiService.TryGetAsync<ImageAnalysisSplitOptionsResponse>(
-                $"/api/image-splitter/jobs/{splitJobId.Value}/split-options?containerNumber={Uri.EscapeDataString(containerKey)}");
+            var byJob = await SplitSelectionClient.TryGetJobOptionsAsync(splitJobId.Value, containerKey);
             var mergedByJob = MergeSplitOptionResponses(byJob, context, resolution);
             if (HasUsableSplitOptionPayload(mergedByJob))
             {
@@ -552,8 +549,8 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
                 ResultId = resultId,
                 Strategy = option.Strategy,
                 Side = side,
-                CropImageUrl = $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(resultId)}/lossless/{Uri.EscapeDataString(side)}",
-                PreviewImageUrl = $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(resultId)}/image/{Uri.EscapeDataString(side)}",
+                CropImageUrl = SplitSelectionClient.BuildResultImagePath(splitJobId.Value, resultId, side, lossless: true),
+                PreviewImageUrl = SplitSelectionClient.BuildResultImagePath(splitJobId.Value, resultId, side, lossless: false),
                 Reasoning = option.Reasoning
             });
         }
@@ -580,19 +577,19 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         var sourceScanId = response.EffectiveSourceScanId ?? resolution?.EffectiveSourceScanId;
         if (!string.IsNullOrWhiteSpace(sourceScanId))
         {
-            var parts = new List<string> { "size=thumbnail" };
             var containerHint = GetStrictSingleContainerHint(response, resolution);
-            if (!string.IsNullOrWhiteSpace(containerHint))
-            {
-                parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
-            }
-
-            return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+            return ScanAssetClient.BuildImagePath(
+                sourceScanId,
+                new ScanAssetImageQuery
+                {
+                    Size = "thumbnail",
+                    ContainerNumber = containerHint
+                });
         }
 
         var splitJobId = response.EffectiveSplitJobId ?? resolution?.SplitJobId;
         return splitJobId.HasValue
-            ? $"/api/image-splitter/jobs/{splitJobId.Value}/original"
+            ? SplitSelectionClient.BuildOriginalImagePath(splitJobId.Value)
             : null;
     }
 
@@ -605,7 +602,7 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             return null;
         }
 
-        return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(option.ResultId)}/lossless/{Uri.EscapeDataString(side)}";
+        return SplitSelectionClient.BuildResultImagePath(splitJobId.Value, option.ResultId, side, lossless: true);
     }
 
     private string? BuildPreviewImageUrl(ImageAnalysisSplitOptionsResponse response, ImageAnalysisSplitOption option)
@@ -617,7 +614,7 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             return null;
         }
 
-        return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{Uri.EscapeDataString(option.ResultId)}/image/{Uri.EscapeDataString(side)}";
+        return SplitSelectionClient.BuildResultImagePath(splitJobId.Value, option.ResultId, side, lossless: false);
     }
 
     private string? GetSingleContainerHint(
@@ -854,37 +851,18 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             var userName = authState.User?.Identity?.Name ?? "unknown";
             var recordContainer = GetRecordContainerHint();
 
-            var request = new
+            Guid? splitJobId = Guid.TryParse(_jobId, out var parsedSplitJobId) ? parsedSplitJobId : null;
+            var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
+            await SplitSelectionClient.ChooseSplitAsync(new SplitSelectionChoiceCommand
             {
-                resultId,
-                approvedBy = userName,
-                splitJobId = _jobId,
-                sourceScanId = _resolution?.EffectiveSourceScanId,
-                containerNumber = recordContainer
-            };
-
-            var saved = false;
-            if (_analysisRecordId.HasValue)
-            {
-                saved = await ApiService.TryPostAsync(
-                    $"/api/image-analysis/records/{_analysisRecordId.Value}/choose-split",
-                    request);
-            }
-
-            if (!saved && Guid.TryParse(_jobId, out var splitJobId))
-            {
-                saved = await ApiService.TryPostAsync(
-                    $"/api/image-splitter/jobs/{splitJobId}/choose-split",
-                    request);
-            }
-
-            if (!saved)
-            {
-                var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
-                await ApiService.PostAsync<object, object>(
-                    $"/api/image-splitter/container/{Uri.EscapeDataString(containerKey)}/choose-split",
-                    request);
-            }
+                ResultId = resultId,
+                ApprovedBy = userName,
+                AnalysisRecordId = _analysisRecordId,
+                SplitJobId = splitJobId,
+                SourceScanId = _resolution?.EffectiveSourceScanId,
+                ContainerNumber = recordContainer,
+                FallbackContainerNumber = containerKey
+            });
 
             var chosenResolution = ApplyChosenSplitToResolution(resultId);
             ClearSplitRelatedCaches();
@@ -918,36 +896,17 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             var userName = authState.User?.Identity?.Name ?? "unknown";
             var recordContainer = GetRecordContainerHint();
 
-            var request = new
+            Guid? splitJobId = Guid.TryParse(_jobId, out var parsedSplitJobId) ? parsedSplitJobId : null;
+            var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
+            await SplitSelectionClient.SkipSplitAsync(new SplitSelectionSkipCommand
             {
-                skippedBy = userName,
-                splitJobId = _jobId,
-                sourceScanId = _resolution?.EffectiveSourceScanId,
-                containerNumber = recordContainer
-            };
-
-            var saved = false;
-            if (_analysisRecordId.HasValue)
-            {
-                saved = await ApiService.TryPostAsync(
-                    $"/api/image-analysis/records/{_analysisRecordId.Value}/skip-split",
-                    request);
-            }
-
-            if (!saved && Guid.TryParse(_jobId, out var splitJobId))
-            {
-                saved = await ApiService.TryPostAsync(
-                    $"/api/image-splitter/jobs/{splitJobId}/skip-split",
-                    request);
-            }
-
-            if (!saved)
-            {
-                var containerKey = recordContainer ?? GetSingleContainerHint(_resolution) ?? ContainerNumber;
-                await ApiService.PostAsync<object, object>(
-                    $"/api/image-splitter/container/{Uri.EscapeDataString(containerKey)}/skip-split",
-                    request);
-            }
+                SkippedBy = userName,
+                AnalysisRecordId = _analysisRecordId,
+                SplitJobId = splitJobId,
+                SourceScanId = _resolution?.EffectiveSourceScanId,
+                ContainerNumber = recordContainer,
+                FallbackContainerNumber = containerKey
+            });
 
             ClearSplitRelatedCaches();
             _splitStatus = "Skipped";

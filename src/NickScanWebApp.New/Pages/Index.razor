@@ -10,6 +10,7 @@
 @inject NavigationManager Navigation
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.RecordCompletenessClient RecordCompletenessClient
 @implements IDisposable
 
 <PageTitle>NickScan Central Imaging System</PageTitle>
@@ -506,7 +507,7 @@
 
     // Section data
     private HealthOverviewResponse? _healthData;
-    private RecordPipelineSummary? _recordPipeline;
+    private NickScanWebApp.Shared.Services.RecordCompletenessSummaryCounts? _recordPipeline;
     private WaveMonitorStats? _waveStats;
     private SafeguardSummaryResponse? _safeguardData;
     private List<LogEntryDto>? _recentErrors;
@@ -574,7 +575,7 @@
     {
         try
         {
-            var pipeline = await ApiService.GetAsync<RecordPipelineSummary>("/api/record-completeness/summary");
+            var pipeline = await RecordCompletenessClient.GetSummaryAsync();
             if (pipeline != null)
             {
                 _totalRecords = pipeline.TotalRecords.ToString("N0");
@@ -603,7 +604,7 @@
     {
         try
         {
-            _recordPipeline = await ApiService.GetAsync<RecordPipelineSummary>("/api/recordcompleteness/summary");
+            _recordPipeline = await RecordCompletenessClient.GetSummaryAsync();
         }
         catch (Exception ex) { Logger.LogWarning(ex, "Failed to load record pipeline"); }
     }
@@ -620,7 +621,7 @@
             // Compute age of oldest InAudit record so the banner can highlight SLA breaches
             try
             {
-                var oldest = await ApiService.GetAsync<OldestInAuditResponse>("/api/recordcompleteness/oldest-in-audit");
+                var oldest = await RecordCompletenessClient.GetOldestInAuditAsync();
                 if (oldest?.OldestCreatedAtUtc != null)
                 {
                     _auditOldestAgeHours = (int)Math.Max(0, (DateTime.UtcNow - oldest.OldestCreatedAtUtc.Value).TotalHours);
@@ -815,21 +816,6 @@
         public double ErrorRate { get; set; }
     }
 
-    private class RecordPipelineSummary
-    {
-        public int TotalRecords { get; set; }
-        public int TotalMultiContainer { get; set; }
-        public int IntegrityGapContainers { get; set; }
-        public int Pending { get; set; }
-        public int PartiallyReady { get; set; }
-        public int Ready { get; set; }
-        public int InAnalysis { get; set; }
-        public int InAudit { get; set; }
-        public int Submitted { get; set; }
-        public int Completed { get; set; }
-        public int Archived { get; set; }
-    }
-
     private class ReadinessSnapshotResponse
     {
         public DateTime Timestamp { get; set; }
@@ -842,12 +828,6 @@
     {
         public int Count { get; set; }
         public List<object>? Users { get; set; }
-    }
-
-    private class OldestInAuditResponse
-    {
-        public DateTime? OldestCreatedAtUtc { get; set; }
-        public int TotalInAudit { get; set; }
     }
 
     private class WaveMonitorResponse

@@ -167,6 +167,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// the top of the Blazor page without requiring a separate query per status.
         /// </summary>
         [HttpGet("summary")]
+        [HttpGet("~/api/record-completeness/summary")]
         public async Task<ActionResult<RecordCompletenessSummaryCounts>> GetSummary()
         {
             var counts = await _db.RecordCompletenessStatuses
