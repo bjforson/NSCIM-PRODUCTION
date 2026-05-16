@@ -173,6 +173,19 @@ WHERE upper(coalesce(ccs.clearancetype, '')) = 'CMR'
   AND coalesce(ccs.hasscannerdata, false) = true
   AND ccs.scanimageassetid IS NOT NULL
   AND ccs.boedocumentid IS NOT NULL
+  AND (
+    coalesce(ccs.hasimagedata, false) = false
+    OR coalesce(ccs.status, '') <> 'Complete'
+    OR coalesce(ccs.workflowstage, '') <> 'ImageAnalysis'
+    OR nullif(trim(coalesce(ccs.groupidentifier, '')), '') IS NULL
+    OR NOT EXISTS (
+      SELECT 1
+      FROM sourcescancontainerlinks scl
+      WHERE scl.scanimageassetid = ccs.scanimageassetid
+        AND scl.normalizedcontainernumber = upper(regexp_replace(coalesce(ccs.containernumber, ''), '[^A-Za-z0-9]', '', 'g'))
+        AND scl.recordexpectedcontainerid IS NOT NULL
+    )
+  )
   $containerClause
 ORDER BY ccs.id, ccs.updatedat DESC
 LIMIT @Limit;
