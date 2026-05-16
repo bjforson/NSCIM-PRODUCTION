@@ -486,7 +486,7 @@
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var uid = authState.User.Identity?.Name ?? "anon";
         var imageUrl = UrlBuilder.Build(
-            $"/api/ImageProcessing/container/{Uri.EscapeDataString(_scan.Container1)}/complete/image?size=full",
+            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(_scan.Container1, size: "full"),
             uid);
 
         var parameters = new DialogParameters

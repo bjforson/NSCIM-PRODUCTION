@@ -1,4 +1,4 @@
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject ILogger<AnnotationOverlay> Logger
 
 @if (_rectangles.Any())
@@ -49,8 +49,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<DecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<DecisionDto>(ContainerNumber);
 
             if (decisions == null) return;
 

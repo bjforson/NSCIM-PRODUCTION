@@ -8,6 +8,7 @@
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
 @inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -1821,7 +1822,7 @@
                 // Eagle A25 native images need to keep server-side render
                 // parameters on the signed API URL before proxying.
                 baseUrl = UrlBuilder.Build(
-                    $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
+                    NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
                     _currentUsername);
             }
             // ImageUrl should already be a full URL (converted in OnInitializedAsync)
@@ -1859,7 +1860,7 @@
             else if (!string.IsNullOrEmpty(ContainerNumber))
             {
                 baseUrl = UrlBuilder.Build(
-                    $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
+                    NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
                     _currentUsername);
             }
             else
@@ -2034,7 +2035,7 @@
             // Signed URL for browser <img src>; middleware validates before Authorize.
             var resolvedPath = BuildPreferredImagePath("full");
             var signedUrl = UrlBuilder.Build(
-                resolvedPath ?? $"/api/ImageProcessing/container/{ContainerNumber}/complete/image?size=full",
+                resolvedPath ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
                 _currentUsername);
             ImageUrl = IsEagleA25()
                 ? BuildImageProxyUrl(signedUrl)
@@ -2102,7 +2103,7 @@
         try
         {
             var caps = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
-                $"/api/ImageProcessing/container/{ContainerNumber}/mode-capabilities");
+                NickScanWebApp.Shared.Services.ImageProcessingClient.BuildModeCapabilitiesPath(ContainerNumber));
             if (caps != null)
             {
                 _scanVariant    = caps.Variant ?? "";
@@ -2264,7 +2265,7 @@
                 try
                 {
                     var probe = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
-                        $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/pixel?x={_probeLastX}&y={_probeLastY}");
+                        NickScanWebApp.Shared.Services.ImageProcessingClient.BuildPixelPath(ContainerNumber, _probeLastX, _probeLastY));
                     if (probe != null && _pixelProbeEnabled)
                     {
                         _probeData = probe;
@@ -2334,7 +2335,7 @@
             // to the signing key. Same UX as the JPEG path but now the tone
             // mapping runs in the browser instead of re-rendering on the server.
             var rawUrl = UrlBuilder.Build(
-                $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/raw?plane={Uri.EscapeDataString(_rawPlane)}",
+                NickScanWebApp.Shared.Services.ImageProcessingClient.BuildRawPlanePath(ContainerNumber, _rawPlane),
                 _currentUsername);
             if (IsEagleA25Scan)
             {
@@ -2455,7 +2456,7 @@
                 return;
             }
 
-            var url = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/roi?x={x}&y={y}&w={w}&h={h}";
+            var url = NickScanWebApp.Shared.Services.ImageProcessingClient.BuildRoiPath(ContainerNumber, x, y, w, h);
             var roi = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(url);
             _roiData = roi;
             if (roi == null)
@@ -3384,8 +3385,7 @@
         try
         {
             Console.WriteLine($"[LoadExistingTags] Loading for container={ContainerNumber}, scanner={ScannerType}");
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
             
             Console.WriteLine($"[LoadExistingTags] API returned {decisions?.Count ?? 0} decision(s)");
             if (decisions != null)
@@ -3906,7 +3906,7 @@
                 RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
             };
 
-            var response = await ApiService.PostAsync<object, DecisionSaveResponse>("/api/ImageAnalysisDecision", request);
+            var response = await DecisionClient.SaveDecisionAsync<object, DecisionSaveResponse>(request);
             
             // ✅ Verify the save was successful before closing
             // Response will be null if API threw an exception (caught in catch block below)
@@ -3985,8 +3985,7 @@
                 var splitSide = SourceScanResolution?.EffectiveSplitSide;
                 
                 // Get existing decision for this image
-                var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                    $"/api/ImageAnalysisDecision/container/{decisionContainerNumber}");
+                var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(decisionContainerNumber);
                 
                 var existingDecision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
 
@@ -4021,7 +4020,7 @@
                     RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
                 };
 
-                await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision", request);
+                await DecisionClient.SaveDecisionAsync(request);
             }
             catch (Exception ex)
             {
@@ -4051,8 +4050,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
 
             var decision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
 
@@ -4458,7 +4456,7 @@
             };
 
             Console.WriteLine($"[SaveRectangles] Posting JSON ({rectanglesJson.Length} chars): {rectanglesJson.Substring(0, Math.Min(200, rectanglesJson.Length))}...");
-            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision/rectangles", request);
+            await DecisionClient.SaveRectanglesAsync(request);
 
             // Mark every rectangle as persisted — from here on they require admin to delete
             foreach (var r in _rectangles) r.IsPersisted = true;

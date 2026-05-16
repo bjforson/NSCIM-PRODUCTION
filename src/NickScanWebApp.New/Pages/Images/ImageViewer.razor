@@ -11,6 +11,8 @@
 @inject IConfiguration Configuration
 @inject IJSRuntime JS
 @inject ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
+@inject NickScanWebApp.Shared.Services.ImageProcessingClient ImageProcessingClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -547,8 +549,7 @@
         // row was never loading at all.
         try
         {
-            var data = await ApiService.GetAsync<ContainerImageDataResponse>(
-                $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete");
+            var data = await ImageProcessingClient.GetCompleteContainerDataAsync<ContainerImageDataResponse>(ContainerNumber);
             if (data != null)
             {
                 _scannerType = data.DetectedScanner.ToString();
@@ -604,8 +605,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
             
             var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
             if (decision != null)
@@ -633,8 +633,7 @@
     {
         try
         {
-            var decisions = await ApiService.GetAsync<List<ImageDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}");
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
             
             var decision = decisions?.FirstOrDefault(d => string.IsNullOrEmpty(_scannerType) || d.ScannerType == _scannerType);
             if (!string.IsNullOrEmpty(decision?.SuspiciousAreas))
@@ -752,7 +751,7 @@
         }
 
         return UrlBuilder.Build(
-            $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image?size=full",
+            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
             _currentUsername);
     }
     
@@ -1025,7 +1024,7 @@
                 ReviewedBy = _currentUsername
             };
 
-            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision/rectangles", request);
+            await DecisionClient.SaveRectanglesAsync(request);
         }
         catch (Exception ex)
         {
@@ -1101,7 +1100,7 @@
                 RevenueAnomalyCategoryId = _selectedRevenueAnomalyCategoryId
             };
 
-            await ApiService.PostAsync<object, object>("/api/ImageAnalysisDecision", request);
+            await DecisionClient.SaveDecisionAsync(request);
             Snackbar.Add("Decision and tags saved", Severity.Success);
             
             // Close the page after successful save

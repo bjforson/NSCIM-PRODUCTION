@@ -1,6 +1,6 @@
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ContainerCompletenessClient ContainerCompletenessClient
 @inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject IJSRuntime JS
@@ -1298,8 +1298,7 @@
 
             if (!allGroupIds.Any()) return;
 
-            var batchParam = string.Join(",", allGroupIds.Take(200).Select(Uri.EscapeDataString));
-            var result = await ApiService.GetAsync<Dictionary<string, AnalysisStatusDto>>($"/api/ImageAnalysisDecision/groups/batch?groups={batchParam}");
+            var result = await DecisionClient.GetGroupStatusBatchAsync<AnalysisStatusDto>(allGroupIds.Take(200));
             if (result == null) return;
 
             foreach (var group in nonConsolidatedGroupsWithCompleteness)

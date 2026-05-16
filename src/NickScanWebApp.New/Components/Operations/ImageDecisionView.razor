@@ -3,7 +3,7 @@
 @using NickScanWebApp.New.Components.Images
 @using Microsoft.JSInterop
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject AuthenticationStateProvider AuthStateProvider
@@ -500,8 +500,7 @@
         try
         {
             Console.WriteLine($"🔍 [ImageDecisionView] Loading decisions for container: {ContainerNumber}");
-            _decisions = await ApiService.GetAsync<List<ImageAnalysisDecisionDto>>(
-                $"/api/ImageAnalysisDecision/container/{ContainerNumber}") ?? new();
+            _decisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(ContainerNumber) ?? new();
             
             Console.WriteLine($"✅ [ImageDecisionView] Loaded {_decisions.Count} decision(s)");
             
@@ -586,7 +585,7 @@
                 SplitSide = splitSide
             };
 
-                response = await ApiService.PostAsync<object, DecisionSaveResponse>("/api/ImageAnalysisDecision", request);
+                response = await DecisionClient.SaveDecisionAsync<object, DecisionSaveResponse>(request);
                 
                 // Success - break out of retry loop
                 await LogToBrowserConsole($"✅ [ImageDecisionView] Decision saved | Scanner={scannerType} | Decision={selectedDecision} (Attempt {attempt})");
@@ -1033,11 +1032,9 @@
             var urlPath = BuildPreferredImagePath(image, "full");
             if (string.IsNullOrWhiteSpace(urlPath))
             {
-                urlPath = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
-                if (image.ImageType != "ASE")
-                {
-                    urlPath += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
-                }
+                urlPath = ImageProcessingClient.BuildCompleteImagePath(
+                    ContainerNumber,
+                    imageType: image.ImageType != "ASE" ? image.ImageType : null);
             }
             var checkUrl = UrlBuilder.Build(urlPath, uid);
             

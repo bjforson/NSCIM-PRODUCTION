@@ -2,7 +2,9 @@ namespace NickScanWebApp.Shared.Services;
 
 public sealed class ImageAnalysisWorkflowClient
 {
-    private const string BasePath = "/api/image-analysis";
+    public const string BasePath = "/api/image-analysis";
+    public const string MetricsPath = BasePath + "/metrics";
+
     private readonly ApiService _apiService;
 
     public ImageAnalysisWorkflowClient(ApiService apiService)
@@ -38,6 +40,6 @@ public sealed class ImageAnalysisWorkflowClient
 
     public Task<TMetrics?> GetMetricsAsync<TMetrics>()
     {
-        return _apiService.GetAsync<TMetrics>($"{BasePath}/metrics");
+        return _apiService.GetAsync<TMetrics>(MetricsPath);
     }
 }

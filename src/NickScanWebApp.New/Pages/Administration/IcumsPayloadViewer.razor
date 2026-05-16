@@ -454,7 +454,7 @@
                         hasImage = true;
                         // HMAC-signed URL; browser <img src> can't carry JWT.
                         imageUrl = UrlBuilder.Build(
-                            $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full",
+                            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(containerNumber, size: "full"),
                             uid);
                     }
                 }

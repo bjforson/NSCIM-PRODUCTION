@@ -270,6 +270,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.GatewayService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ExportService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.RecordCompletenessClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ManualBoeClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageProcessingClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ScanAssetClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.EagleA25Client>();
