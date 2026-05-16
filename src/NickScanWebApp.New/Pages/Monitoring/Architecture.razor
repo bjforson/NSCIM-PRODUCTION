@@ -4,7 +4,7 @@
 @using MudBlazor
 @using System.Text.Json
 @implements IDisposable
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
 @inject IJSRuntime JS
 @inject ILogger<Architecture> Logger
 
@@ -102,10 +102,10 @@
 
         try
         {
-            var healthTask = ApiService.GetAsync<JsonElement>("/api/monitoring/health/overview");
-            var servicesTask = ApiService.GetAsync<Dictionary<string, JsonElement>>("/api/monitoring/health/services");
-            var databaseTask = ApiService.GetAsync<JsonElement>("/api/monitoring/database/statistics");
-            var queueTask = ApiService.GetAsync<JsonElement>("/api/QueueHealth");
+            var healthTask = MonitoringClient.GetHealthOverviewAsync<JsonElement>();
+            var servicesTask = MonitoringClient.GetServicesHealthAsync<Dictionary<string, JsonElement>>();
+            var databaseTask = MonitoringClient.GetDatabaseStatisticsAsync<JsonElement>();
+            var queueTask = MonitoringClient.GetQueueHealthAsync<JsonElement>();
 
             await Task.WhenAll(healthTask, servicesTask, databaseTask, queueTask);
 

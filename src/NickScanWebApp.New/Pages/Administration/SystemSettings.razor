@@ -6,7 +6,7 @@
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Rendering
 @inject NickScanWebApp.Shared.Services.SettingsService SettingsService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.SystemAdminClient SystemAdminClient
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthStateProvider
@@ -924,7 +924,7 @@
         isApiShuttingDown = true; isShuttingDown = true;
         try
         {
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/shutdown", new { });
+            await SystemAdminClient.ShutdownAsync<object>();
             Snackbar.Add("API shutdown initiated. Background tasks are completing.", Severity.Success);
         }
         catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); }
@@ -940,7 +940,7 @@
         isApiRestarting = true; isRestarting = true;
         try
         {
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart", new { });
+            await SystemAdminClient.RestartAsync<object>();
             Snackbar.Add("API restart initiated. It will be back in a few seconds.", Severity.Success);
             await Task.Delay(8000);
             isApiRestarting = false; isRestarting = false;
@@ -958,7 +958,7 @@
         isWebAppShuttingDown = true; isShuttingDown = true;
         try
         {
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/shutdown-webapp", new { });
+            await SystemAdminClient.ShutdownWebAppAsync<object>();
             Snackbar.Add("WebApp shutdown initiated.", Severity.Success);
         }
         catch (Exception ex) { Snackbar.Add($"Error: {ex.Message}", Severity.Error); isWebAppShuttingDown = false; isShuttingDown = false; }
@@ -973,7 +973,7 @@
         isWebAppRestarting = true; isRestarting = true;
         try
         {
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart-webapp", new { });
+            await SystemAdminClient.RestartWebAppAsync<object>();
             Snackbar.Add("WebApp restart initiated. Page will reload shortly.", Severity.Success);
             await Task.Delay(8000);
             NavigationManager.NavigateTo("/", forceLoad: true);
@@ -991,10 +991,10 @@
         try
         {
             // Restart WebApp first (it depends on API), then API
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart-webapp", new { });
+            await SystemAdminClient.RestartWebAppAsync<object>();
             Snackbar.Add("WebApp restart initiated.", Severity.Info);
             await Task.Delay(2000);
-            await ApiService.PostAsync<object, object>("/api/SystemAdmin/restart", new { });
+            await SystemAdminClient.RestartAsync<object>();
             Snackbar.Add("API restart initiated. All services restarting.", Severity.Success);
             await Task.Delay(10000);
             NavigationManager.NavigateTo("/", forceLoad: true);

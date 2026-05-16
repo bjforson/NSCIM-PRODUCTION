@@ -14,7 +14,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesDiagnostics)]
 @using MudBlazor
 @using NickScanWebApp.New.Components.Monitoring
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.DiagnosticsClient DiagnosticsClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<Diagnostics> Logger
@@ -395,7 +395,7 @@
 
         try
         {
-            _containerDiagnostics = await ApiService.GetAsync<ContainerDiagnosticsDto>($"/api/Diagnostics/container/{_containerNumber}");
+            _containerDiagnostics = await DiagnosticsClient.GetContainerDiagnosticsAsync<ContainerDiagnosticsDto>(_containerNumber);
             Snackbar.Add("Container diagnostics completed", Severity.Success);
         }
         catch (Exception ex)
@@ -409,7 +409,7 @@
     {
         try
         {
-            _systemDiagnostics = await ApiService.GetAsync<SystemDiagnosticsDto>("/api/Diagnostics/system");
+            _systemDiagnostics = await DiagnosticsClient.GetSystemDiagnosticsAsync<SystemDiagnosticsDto>();
             Snackbar.Add("System diagnostics completed", Severity.Success);
         }
         catch (Exception ex)
@@ -424,8 +424,8 @@
         _isLoadingMemory = true;
         try
         {
-            _memoryStatus = await ApiService.GetAsync<MemoryStatusDto>("/api/MemoryDiagnostics/status");
-            _gcStats = await ApiService.GetAsync<GCStatsDto>("/api/MemoryDiagnostics/gc/stats");
+            _memoryStatus = await DiagnosticsClient.GetMemoryStatusAsync<MemoryStatusDto>();
+            _gcStats = await DiagnosticsClient.GetGcStatsAsync<GCStatsDto>();
             Snackbar.Add("Memory status refreshed", Severity.Success);
         }
         catch (Exception ex)
@@ -451,7 +451,7 @@
         _isLoadingMemory = true;
         try
         {
-            var result = await ApiService.PostAsync<object, GCCollectResultDto>("/api/MemoryDiagnostics/gc/collect?generation=2", new { });
+            var result = await DiagnosticsClient.CollectGarbageAsync<GCCollectResultDto>();
             if (result != null)
             {
                 Snackbar.Add($"✅ {result.Message}", Severity.Success);

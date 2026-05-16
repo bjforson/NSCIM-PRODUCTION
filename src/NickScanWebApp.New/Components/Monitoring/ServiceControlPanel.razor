@@ -5,7 +5,7 @@
 @implements IDisposable
 @inject IConfiguration Configuration
 @inject NavigationManager NavigationManager
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.SystemAdminClient SystemAdminClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 
@@ -776,7 +776,7 @@
     {
         try
         {
-            _systemServices = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services") ?? new();
+            _systemServices = await SystemAdminClient.GetServicesAsync<List<SystemServiceInfoDto>>() ?? new();
             await InvokeAsync(StateHasChanged);
         }
         catch (Exception ex)
@@ -1070,8 +1070,8 @@
         _isLoadingSystem = true;
         try
         {
-            _systemInfo = await ApiService.GetAsync<SystemInfoDto>("/api/SystemAdmin/system-info");
-            _systemServices = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services") ?? new();
+            _systemInfo = await SystemAdminClient.GetSystemInfoAsync<SystemInfoDto>();
+            _systemServices = await SystemAdminClient.GetServicesAsync<List<SystemServiceInfoDto>>() ?? new();
             Snackbar.Add("System information refreshed", Severity.Success);
         }
         catch (Exception ex)
@@ -1089,7 +1089,7 @@
         _isLoadingSystem = true;
         try
         {
-            _performanceMetrics = await ApiService.GetAsync<PerformanceMetricsDto>("/api/SystemAdmin/performance");
+            _performanceMetrics = await SystemAdminClient.GetPerformanceAsync<PerformanceMetricsDto>();
             Snackbar.Add("Performance metrics refreshed", Severity.Success);
         }
         catch (Exception ex)
@@ -1120,9 +1120,7 @@
             if (systemService != null) systemService.Status = "Restarting";
             StateHasChanged();
             
-            var result = await ApiService.PostAsync<object, ServiceRestartResponse>(
-                $"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/restart", 
-                new { });
+            await SystemAdminClient.RestartServiceAsync<ServiceRestartResponse>(serviceName);
             
             Snackbar.Add($"✅ {serviceName} restart initiated", Severity.Info);
             
@@ -1160,7 +1158,7 @@
             if (systemService != null) systemService.Status = "Stopping";
             StateHasChanged();
             
-            await ApiService.PostAsync<object, object>($"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/stop", new { });
+            await SystemAdminClient.StopServiceAsync<object>(serviceName);
             
             Snackbar.Add($"✅ {serviceName} stop initiated", Severity.Info);
             await Task.Delay(2000); // Brief delay
@@ -1188,7 +1186,7 @@
             if (systemService != null) systemService.Status = "Starting";
             StateHasChanged();
             
-            await ApiService.PostAsync<object, object>($"/api/SystemAdmin/service/{Uri.EscapeDataString(serviceName)}/start", new { });
+            await SystemAdminClient.StartServiceAsync<object>(serviceName);
             
             Snackbar.Add($"✅ {serviceName} start initiated", Severity.Info);
             await Task.Delay(2000); // Brief delay
@@ -1212,7 +1210,7 @@
         {
             await Task.Delay(1000); // Wait 1 second between polls
             
-            var services = await ApiService.GetAsync<List<SystemServiceInfoDto>>("/api/SystemAdmin/services");
+            var services = await SystemAdminClient.GetServicesAsync<List<SystemServiceInfoDto>>();
             var service = services?.FirstOrDefault(s => s.Name == serviceName);
             
             if (service != null && service.Status == "Running")

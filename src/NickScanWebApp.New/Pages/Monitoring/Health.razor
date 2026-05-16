@@ -12,7 +12,7 @@
 @using System.Text.Json
 @using NickScanWebApp.New.Components.Monitoring
 @implements IDisposable
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MonitoringClient MonitoringClient
 @inject ISnackbar Snackbar
 @inject ILogger<Health> Logger
 @inject NavigationManager NavManager
@@ -327,13 +327,13 @@
             _isLoading = true;
             
             // Load health overview
-            _healthOverview = await ApiService.GetAsync<HealthOverviewDto>("/api/monitoring/health/overview");
+            _healthOverview = await MonitoringClient.GetHealthOverviewAsync<HealthOverviewDto>();
             
             // Load services health
-            _servicesHealth = await ApiService.GetAsync<Dictionary<string, object>>("/api/monitoring/health/services");
+            _servicesHealth = await MonitoringClient.GetServicesHealthAsync<Dictionary<string, object>>();
             
             // Load database statistics
-            _dbStats = await ApiService.GetAsync<DatabaseStatsDto>("/api/monitoring/database/statistics");
+            _dbStats = await MonitoringClient.GetDatabaseStatisticsAsync<DatabaseStatsDto>();
         }
         catch (Exception ex)
         {
