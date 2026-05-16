@@ -175,15 +175,27 @@ public static class SignedImageUrl
         // GatewayController image convenience route
         if (p.StartsWith("/api/gateway/container/") && p.EndsWith("/image")) return true;
 
+        // ScanAssetsController source-scan image bytes. Resolver-backed image
+        // views render this through browser <img src>, so signed-url auth must
+        // cover it the same way it covers the legacy ASE/complete-image routes.
+        if (p.StartsWith("/api/scan-assets/") && p.EndsWith("/image")) return true;
+
+        // Eagle A25 copied scanner assets. The WebApp renders JPEG scan
+        // documents and x-ray previews directly in <img src> tags.
+        if (p.StartsWith("/api/eaglea25/assets/") && p.EndsWith("/content")) return true;
+
         // IcumsPayloadController image byte extraction
         if (p == "/api/icumspayload/image") return true;
 
         // ImageSplitterController: /api/image-splitter/jobs/{id}/results/{rid}/image[/side]
+        // or /lossless[/side]. Lossless crops are rendered on demand from the
+        // original two-container image so the analysis UI does not depend on
+        // pre-stored JPEG preview bytes.
         //
         // Note on the search: the literal string "/image" also appears inside the
         // "/image-splitter" path segment right at the top of this URL, so IndexOf
         // would match the wrong occurrence. Use LastIndexOf to find the trailing
-        // /image (or /image/{side}) segment at the end of the path.
+        // segment at the end of the path.
         if (p.StartsWith("/api/image-splitter/jobs/") && p.Contains("/results/"))
         {
             var imageIdx = p.LastIndexOf("/image", StringComparison.Ordinal);
@@ -192,6 +204,14 @@ public static class SignedImageUrl
                 var tail = p.Substring(imageIdx);
                 // "/image", "/image/left", "/image/right", "/image/{side}" all match.
                 if (tail == "/image" || tail.StartsWith("/image/")) return true;
+            }
+
+            var losslessIdx = p.LastIndexOf("/lossless", StringComparison.Ordinal);
+            if (losslessIdx > 0)
+            {
+                var tail = p.Substring(losslessIdx);
+                // "/lossless", "/lossless/left", "/lossless/right", "/lossless/{side}" all match.
+                if (tail == "/lossless" || tail.StartsWith("/lossless/")) return true;
             }
         }
         if (p.StartsWith("/api/image-splitter/jobs/") && p.EndsWith("/original")) return true;

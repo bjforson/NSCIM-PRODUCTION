@@ -2,6 +2,7 @@
 @page "/scanners/ase"
 @page "/scanners/fs6000"
 @page "/scanners/heimann-smith"
+@page "/scanners/eagle-a25"
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesScannersView)]
 @using NickScanWebApp.New.Components.Scanners
 @inject HttpClient Http
@@ -43,7 +44,7 @@
                 <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
                     <div>
                         <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scanners</MudText>
-                        <MudText Typo="Typo.h4">3</MudText>
+                        <MudText Typo="Typo.h4">4</MudText>
                         <MudText Typo="Typo.caption" Color="@GetSystemStatusColor()">@GetSystemStatusText()</MudText>
                     </div>
                     <MudIcon Icon="@Icons.Material.Outlined.Scanner" Size="Size.Large" Color="Color.Success" />
@@ -95,7 +96,7 @@
     <!-- Scanner Status Cards -->
     <MudGrid>
         <!-- FS6000 Scanner -->
-        <MudItem xs="12" lg="4">
+        <MudItem xs="12" md="6" lg="3">
             <MudPaper Elevation="4" Class="pa-6" Style="height: 100%;">
                 <MudStack Spacing="4">
                     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
@@ -140,7 +141,7 @@
         </MudItem>
 
         <!-- ASE Scanner -->
-        <MudItem xs="12" lg="4">
+        <MudItem xs="12" md="6" lg="3">
             <MudPaper Elevation="4" Class="pa-6" Style="height: 100%;">
                 <MudStack Spacing="4">
                     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
@@ -185,7 +186,7 @@
         </MudItem>
 
         <!-- Heimann Smith Scanner -->
-        <MudItem xs="12" lg="4">
+        <MudItem xs="12" md="6" lg="3">
             <MudPaper Elevation="4" Class="pa-6" Style="height: 100%;">
                 <MudStack Spacing="4">
                     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
@@ -223,6 +224,51 @@
                                Color="Color.Warning"
                                FullWidth="true"
                                OnClick="@(() => _activeHubTab = 3)">
+                        View Details
+                    </MudButton>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <!-- Eagle A25 Scanner -->
+        <MudItem xs="12" md="6" lg="3">
+            <MudPaper Elevation="4" Class="pa-6" Style="height: 100%;">
+                <MudStack Spacing="4">
+                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.h5">Eagle A25</MudText>
+                        <MudChip T="string" Size="Size.Small" Color="@GetEagleA25StatusColor()" Icon="@GetEagleA25StatusIcon()">
+                            @GetEagleA25StatusText()
+                        </MudChip>
+                    </MudStack>
+                    
+                    <MudDivider />
+                    
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Status Information</MudText>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Today's Scans:</MudText>
+                            <MudText Typo="Typo.body1" Style="font-weight: 500;">@_eagleA25Scans</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Total Scans:</MudText>
+                            <MudText Typo="Typo.body1" Style="font-weight: 500;">@_totalEagleA25Scans.ToString("N0")</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Last Scan:</MudText>
+                            <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_eagleA25LastScan)</MudText>
+                        </MudStack>
+                        <MudStack Row="true" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.body2">Assignment:</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning">Disabled</MudChip>
+                        </MudStack>
+                    </MudStack>
+                    
+                    <MudDivider />
+                    
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Secondary"
+                               FullWidth="true"
+                               OnClick="@(() => _activeHubTab = 4)">
                         View Details
                     </MudButton>
                 </MudStack>
@@ -275,6 +321,18 @@
                         </MudButton>
                     </MudStack>
                 </MudTabPanel>
+
+                <MudTabPanel Text="Eagle A25" Icon="@Icons.Material.Outlined.Scanner">
+                    <MudStack Spacing="2" Class="mt-2">
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Search Eagle A25 air cargo records</MudText>
+                        <MudButton Variant="Variant.Filled"
+                                 Color="Color.Secondary"
+                                 StartIcon="@Icons.Material.Outlined.Search"
+                                 OnClick="@(() => _activeHubTab = 4)">
+                            View All Eagle A25 Records
+                        </MudButton>
+                    </MudStack>
+                </MudTabPanel>
             </MudTabs>
         </MudStack>
     </MudPaper>
@@ -313,6 +371,10 @@
         <MudTabPanel Text="Heimann Smith" Icon="@Icons.Material.Filled.Sensors">
             <HeimannSmithPanel />
         </MudTabPanel>
+
+        <MudTabPanel Text="Eagle A25" Icon="@Icons.Material.Filled.FlightTakeoff">
+            <EagleA25Panel />
+        </MudTabPanel>
     </MudTabs>
 </MudContainer>
 
@@ -323,15 +385,18 @@
     private int _fs6000Scans = 0;
     private int _aseScans = 0;
     private int _hsScans = 0;
+    private int _eagleA25Scans = 0;
     private int _totalFS6000Scans = 0;
     private int _totalAseScans = 0;
     private int _totalHsScans = 0;
+    private int _totalEagleA25Scans = 0;
     private string? _lastError = null;
     
     // Last scan times
     private DateTime? _fs6000LastScan = null;
     private DateTime? _aseLastScan = null;
     private DateTime? _hsLastScan = null;
+    private DateTime? _eagleA25LastScan = null;
     
     // Uptime percentages
     private double _fs6000Uptime = 0;
@@ -347,7 +412,7 @@
     // Unified search
     private int _activeScannerTab = 0;
 
-    // Top-level hub tab: 0 = Overview, 1 = ASE, 2 = FS6000, 3 = Heimann Smith
+    // Top-level hub tab: 0 = Overview, 1 = ASE, 2 = FS6000, 3 = Heimann Smith, 4 = Eagle A25
     private int _activeHubTab = 0;
 
     protected override async Task OnInitializedAsync()
@@ -365,6 +430,7 @@
             "/scanners/ase"           => 1,
             "/scanners/fs6000"        => 2,
             "/scanners/heimann-smith" => 3,
+            "/scanners/eagle-a25"     => 4,
             _                         => 0
         };
 
@@ -458,9 +524,32 @@
             {
                 Console.WriteLine($"⚠️ Could not load ASE stats: {ex.Message}");
             }
+
+            // Load Eagle A25 statistics directly. This scanner is captured but assignment intake stays disabled by config.
+            try
+            {
+                var eagleStatus = await ApiService.GetAsync<EagleA25SyncStatus>("/api/EagleA25/sync-status");
+                if (eagleStatus != null)
+                {
+                    _totalEagleA25Scans = eagleStatus.TotalScans;
+                    _eagleA25LastScan = eagleStatus.LastScan?.ScanDateUtc;
+
+                    var todayUtc = DateTime.UtcNow.Date;
+                    var tomorrowUtc = todayUtc.AddDays(1);
+                    var todayResponse = await ApiService.GetAsync<EagleA25ScanResponse>(
+                        $"/api/EagleA25/scans?pageSize=1&startDate={todayUtc:yyyy-MM-dd}&endDate={tomorrowUtc:yyyy-MM-dd}");
+                    _eagleA25Scans = todayResponse?.TotalCount ?? 0;
+
+                    Console.WriteLine($"✅ Loaded Eagle A25 stats: Total={_totalEagleA25Scans}, Today={_eagleA25Scans}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Could not load Eagle A25 stats: {ex.Message}");
+            }
             
             // Calculate totals
-            _todayScans = _fs6000Scans + _aseScans + _hsScans;
+            _todayScans = _fs6000Scans + _aseScans + _hsScans + _eagleA25Scans;
             
             // Load recent activity (last 10 scans across all scanners)
             await LoadRecentActivity();
@@ -497,7 +586,7 @@
                     aseYesterdayCount = yesterdayStat?.Count ?? 0;
                 }
                 
-                _yesterdayTotalScans = fs6000YesterdayCount + aseYesterdayCount; // HS scans typically 0
+                _yesterdayTotalScans = fs6000YesterdayCount + aseYesterdayCount; // HS and Eagle A25 are excluded until daily stats endpoints exist
                 Console.WriteLine($"✅ Calculated yesterday's total scans: {_yesterdayTotalScans}");
             }
             catch (Exception ex)
@@ -526,6 +615,47 @@
         public int RecentScans24h { get; set; }
         public int? TodayScans { get; set; } // Added: actual scans today
         public string? SyncStatus { get; set; }
+    }
+
+    public class EagleA25SyncStatus
+    {
+        public int TotalScans { get; set; }
+        public int TotalAssets { get; set; }
+        public EagleA25LastScan? LastScan { get; set; }
+        public EagleA25SyncLog? LastSync { get; set; }
+    }
+
+    public class EagleA25LastScan
+    {
+        public long Accession { get; set; }
+        public DateTime ScanDateUtc { get; set; }
+        public string? CargoIdentifier { get; set; }
+        public string? AirWaybill { get; set; }
+    }
+
+    public class EagleA25SyncLog
+    {
+        public DateTime StartedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
+        public bool Succeeded { get; set; }
+    }
+
+    public class EagleA25ScanResponse
+    {
+        public List<EagleA25ScanDto>? Data { get; set; }
+        public int TotalCount { get; set; }
+        public int Page { get; set; }
+        public int PageSize { get; set; }
+        public int TotalPages { get; set; }
+    }
+
+    public class EagleA25ScanDto
+    {
+        public Guid Id { get; set; }
+        public long Accession { get; set; }
+        public DateTime ScanDateUtc { get; set; }
+        public string? CargoIdentifier { get; set; }
+        public string? AirWaybill { get; set; }
     }
     
     // DTOs for API responses
@@ -793,10 +923,10 @@
         if (_fs6000Scans > 0 || _fs6000LastScan.HasValue) onlineCount++;
         if (_aseScans > 0 || _aseLastScan.HasValue) onlineCount++;
         if (_hsScans > 0 || _hsLastScan.HasValue) onlineCount++;
+        if (_eagleA25Scans > 0 || _eagleA25LastScan.HasValue) onlineCount++;
         
-        if (onlineCount == 3) return "All Systems Operational";
-        if (onlineCount == 2) return "2 of 3 Systems Online";
-        if (onlineCount == 1) return "1 of 3 Systems Online";
+        if (onlineCount == 4) return "All Systems Operational";
+        if (onlineCount > 0) return $"{onlineCount} of 4 Systems Online";
         return "Systems Offline";
     }
     
@@ -806,8 +936,9 @@
         if (_fs6000Scans > 0 || _fs6000LastScan.HasValue) onlineCount++;
         if (_aseScans > 0 || _aseLastScan.HasValue) onlineCount++;
         if (_hsScans > 0 || _hsLastScan.HasValue) onlineCount++;
+        if (_eagleA25Scans > 0 || _eagleA25LastScan.HasValue) onlineCount++;
         
-        if (onlineCount == 3) return Color.Success;
+        if (onlineCount == 4) return Color.Success;
         if (onlineCount >= 1) return Color.Warning;
         return Color.Error;
     }
@@ -913,6 +1044,31 @@
             return Icons.Material.Outlined.CheckCircle;
         if (_hsLastScan.HasValue && (DateTime.Now - _hsLastScan.Value).TotalDays < 7)
             return Icons.Material.Outlined.Pending;
+        return Icons.Material.Outlined.Error;
+    }
+
+    private string GetEagleA25StatusText()
+    {
+        if (_eagleA25Scans > 0 || (_eagleA25LastScan.HasValue && (DateTime.UtcNow - _eagleA25LastScan.Value).TotalHours < 24))
+            return "Capturing";
+        if (_eagleA25LastScan.HasValue)
+            return "Synced";
+        return "No Data";
+    }
+
+    private Color GetEagleA25StatusColor()
+    {
+        if (_eagleA25Scans > 0 || (_eagleA25LastScan.HasValue && (DateTime.UtcNow - _eagleA25LastScan.Value).TotalHours < 24))
+            return Color.Success;
+        if (_eagleA25LastScan.HasValue)
+            return Color.Warning;
+        return Color.Error;
+    }
+
+    private string GetEagleA25StatusIcon()
+    {
+        if (_eagleA25Scans > 0 || _eagleA25LastScan.HasValue)
+            return Icons.Material.Outlined.CheckCircle;
         return Icons.Material.Outlined.Error;
     }
 }

@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -29,17 +30,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
         // Audit 8.13 (Sprint 5G2): monotonic iteration counter for heartbeat.
         private int _cycleCount = 0;
         private readonly GoLiveOptions _goLiveOptions;
+        private readonly bool _cmrCompositeProgressionEnabled;
         private const string SERVICE_ID = "CONTAINER-COMPLETENESS";
 
         public ContainerCompletenessService(
             IServiceProvider serviceProvider,
             ILogger<ContainerCompletenessService> logger,
-            IOptions<GoLiveOptions> goLiveOptions)
+            IOptions<GoLiveOptions> goLiveOptions,
+            IConfiguration configuration)
         {
             _serviceProvider = serviceProvider;
             _logger = new EnhancedColorCodedLogger(logger, "CONTAINER-COMPLETENESS", SERVICE_ID);
             _rawLogger = logger;
             _goLiveOptions = goLiveOptions?.Value ?? new GoLiveOptions();
+            _cmrCompositeProgressionEnabled = configuration.GetValue<bool>("CmrCompositeProgression:Enabled", false);
         }
 
         /// <summary>
@@ -53,6 +57,39 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 ClearanceType.IMEX => "IMEX",
                 _ => null
             };
+        }
+
+        private bool TryBuildCmrCompositeKey(
+            string? clearanceType,
+            NickScanCentralImagingPortal.Core.Models.BOEDocument? primaryBOE,
+            string containerNumber,
+            out CmrCompositeKey compositeKey)
+        {
+            compositeKey = CmrCompositeKey.Empty;
+
+            if (!_cmrCompositeProgressionEnabled
+                || primaryBOE == null
+                || !string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return CmrCompositeKeyHelper.TryCreate(
+                primaryBOE.RotationNumber,
+                containerNumber,
+                primaryBOE.BlNumber,
+                out compositeKey);
+        }
+
+        private static bool ShouldPreserveCmrCompositeGroupIdentifier(
+            string? existingGroupIdentifier,
+            string? proposedGroupIdentifier)
+        {
+            return CmrCompositeKeyHelper.IsOperationalKey(existingGroupIdentifier)
+                && !string.Equals(
+                    existingGroupIdentifier?.Trim(),
+                    proposedGroupIdentifier?.Trim(),
+                    StringComparison.OrdinalIgnoreCase);
         }
 
         // ─── Match Correction Tool: anomaly flag helper ─────────────────────────
@@ -752,6 +789,12 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 consolidationDetails = $"{containersUnderBOE} container(s)";
                             }
 
+                            if (TryBuildCmrCompositeKey(clearanceType, primaryBOE, queueItem.ContainerNumber, out var cmrCompositeKey))
+                            {
+                                groupIdentifier = cmrCompositeKey.OperationalKey;
+                                consolidationDetails = cmrCompositeKey.DisplayLabel;
+                            }
+
                             // 1.19.0 — CMR clearance type special case.
                             // CMR = "Cargo Movement Record" in ICUMS terminology: manifest-only
                             // data, no declaration filed yet. A CMR row has NO DeclarationNumber
@@ -772,7 +815,11 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 hasICUMSData,
                                 hasImageData: hasImages,
                                 clearanceType,
-                                groupIdentifier);
+                                groupIdentifier,
+                                cmrCompositeProgressionEnabled: _cmrCompositeProgressionEnabled,
+                                cmrRotationNumber: primaryBOE?.RotationNumber,
+                                cmrContainerNumber: queueItem.ContainerNumber,
+                                cmrBlNumber: primaryBOE?.BlNumber);
 
                             // Create completeness status record
                             var newStatus = new ContainerCompletenessStatus
@@ -1210,8 +1257,20 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             consolidationDetails = $"{containersUnderBOE} container(s)";
                         }
 
+                        if (TryBuildCmrCompositeKey(clearanceType, primaryBOE, container.ContainerNumber, out var cmrCompositeKey))
+                        {
+                            groupIdentifier = cmrCompositeKey.OperationalKey;
+                            consolidationDetails = cmrCompositeKey.DisplayLabel;
+                        }
+
                         // ✅ FIX: existingStatus is already loaded above using the exact Id (guaranteed to exist, or skipped if null)
                         // This is STEP 2 (existing containers), so we should always have an existing record
+                        if (ShouldPreserveCmrCompositeGroupIdentifier(existingStatus.GroupIdentifier, groupIdentifier))
+                        {
+                            _logger.LogDebug("{ServiceId} Preserving CMR composite GroupIdentifier for {Container} (existing: {ExistingGroup}, proposed: {ProposedGroup})",
+                                SERVICE_ID, container.ContainerNumber, existingStatus.GroupIdentifier ?? "NULL", groupIdentifier ?? "NULL");
+                            groupIdentifier = existingStatus.GroupIdentifier;
+                        }
 
                         // ✅ PREVENTIVE FIX: Ensure data integrity - validate GroupIdentifier matches BOE
                         if (primaryBOEId.HasValue && !string.IsNullOrEmpty(groupIdentifier))
@@ -1274,7 +1333,11 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                                 hasICUMSData,
                                 hasImages,
                                 clearanceType,
-                                groupIdentifier);
+                                groupIdentifier,
+                                cmrCompositeProgressionEnabled: _cmrCompositeProgressionEnabled,
+                                cmrRotationNumber: primaryBOE?.RotationNumber,
+                                cmrContainerNumber: container.ContainerNumber,
+                                cmrBlNumber: primaryBOE?.BlNumber);
                             existingStatus.Status = completenessDecision.Status;
 
                             // ✅ FIX: Update WorkflowStage if null or if status changed to Complete
@@ -1799,6 +1862,13 @@ LIMIT {take} OFFSET {skip}";
 
                 foreach (var record in completenessRecords)
                 {
+                    if (CmrCompositeKeyHelper.IsOperationalKey(record.GroupIdentifier))
+                    {
+                        _logger.LogDebug("{ServiceId} Preserving CMR composite GroupIdentifier for {Container} during data-integrity repair: {GroupIdentifier}",
+                            SERVICE_ID, containerNumber, record.GroupIdentifier ?? "NULL");
+                        continue;
+                    }
+
                     // Fix 1: If BOEDocumentId exists but GroupIdentifier is NULL or wrong
                     if (record.BOEDocumentId.HasValue)
                     {

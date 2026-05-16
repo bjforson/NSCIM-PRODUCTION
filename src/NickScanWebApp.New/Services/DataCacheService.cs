@@ -46,7 +46,8 @@ public class DataCacheService
         var cacheOptions = new MemoryCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = customExpiration ?? GetDefaultExpiration(key),
-            SlidingExpiration = TimeSpan.FromMinutes(2)
+            SlidingExpiration = TimeSpan.FromMinutes(2),
+            Size = 1
         };
 
         _cache.Set(key, value, cacheOptions);
@@ -70,7 +71,8 @@ public class DataCacheService
     {
         var cacheOptions = new MemoryCacheEntryOptions
         {
-            AbsoluteExpirationRelativeToNow = expiration ?? GetDefaultExpiration(key)
+            AbsoluteExpirationRelativeToNow = expiration ?? GetDefaultExpiration(key),
+            Size = 1
         };
 
         _cache.Set(key, value, cacheOptions);
@@ -156,7 +158,6 @@ public static class DataCacheServiceExtensions
 {
     public static IServiceCollection AddDataCacheService(this IServiceCollection services)
     {
-        services.AddMemoryCache();
         services.AddSingleton<DataCacheService>();
         return services;
     }

@@ -96,6 +96,42 @@
             </MudStack>
         </MudItem>
     </MudGrid>
+    <MudDivider Class="my-3" />
+    <MudStack Row="true" AlignItems="AlignItems.Center" Style="gap: 8px; flex-wrap: wrap;">
+        <MudText Typo="Typo.subtitle2"><b>Review Focus</b></MudText>
+        @foreach (var option in ScannerFocusOptions)
+        {
+            <MudButton Variant="@GetScannerFilterVariant(option.Value)"
+                       Color="@GetScannerFilterColor(option.Value)"
+                       Size="Size.Small"
+                       Disabled="@(_loading || _queueRefreshing)"
+                       OnClick="@(() => SetScannerFilterAsync(option.Value))">
+                @GetScannerFilterButtonText(option)
+            </MudButton>
+        }
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mx-1">Scope</MudText>
+        <MudButton Variant="@GetReviewScopeVariant(ScopeBacklog)"
+                   Color="@GetReviewScopeColor(ScopeBacklog)"
+                   Size="Size.Small"
+                   Disabled="@(_loading || _queueRefreshing)"
+                   OnClick="@(() => SetReviewScopeAsync(ScopeBacklog))">
+            Backlog
+        </MudButton>
+        <MudButton Variant="@GetReviewScopeVariant(ScopeRecent)"
+                   Color="@GetReviewScopeColor(ScopeRecent)"
+                   Size="Size.Small"
+                   Disabled="@(_loading || _queueRefreshing)"
+                   OnClick="@(() => SetReviewScopeAsync(ScopeRecent))">
+            Recent 72h
+        </MudButton>
+        <MudSpacer />
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary">
+            @GetFocusSummaryText()
+        </MudChip>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@GetFocusedNegativeColor()">
+            Negative labels: @GetFocusedNegativeText()
+        </MudChip>
+    </MudStack>
 </MudPaper>
 
 @if (_loading && !_jobs.Any())
@@ -147,6 +183,9 @@ else
                                     <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(job.Status)" Variant="Variant.Outlined">
                                         @job.Status
                                     </MudChip>
+                                    <MudChip T="string" Size="Size.Small" Color="@GetScannerChipColor(job.ScannerType)" Variant="Variant.Outlined">
+                                        @NormalizeScannerLabel(job.ScannerType)
+                                    </MudChip>
                                     @if (!string.IsNullOrWhiteSpace(job.BestStrategy))
                                     {
                                         <MudText Typo="Typo.caption" Color="Color.Secondary">@job.BestStrategy</MudText>
@@ -196,6 +235,9 @@ else
                     <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-3" Style="gap: 8px; flex-wrap: wrap;">
                         <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(activeJob.Status)" Variant="Variant.Filled">
                             @activeJob.Status
+                        </MudChip>
+                        <MudChip T="string" Size="Size.Small" Color="@GetScannerChipColor(activeJob.ScannerType)" Variant="Variant.Filled">
+                            @NormalizeScannerLabel(activeJob.ScannerType)
                         </MudChip>
                         <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
                             Best: @(activeJob.BestStrategy ?? "-")
@@ -477,17 +519,32 @@ else
     private List<SplitJobDto> _jobs = new();
     private SplitReviewSummaryDto? _reviewSummary;
     private Guid? _activeJobId;
+    private string _scannerFilter = ScannerFs6000;
+    private string _reviewScope = ScopeBacklog;
     private string _currentUser = "unknown";
     private Timer? _refreshTimer;
     private const string SplitLabelRejected = "rejected";
     private const string SplitLabelSingleContainer = "single_container";
     private const string SplitLabelBadImage = "bad_image";
     private const string SplitLabelUncertain = "uncertain";
+    private const string ScannerAll = "ALL";
+    private const string ScannerFs6000 = "FS6000";
+    private const string ScannerAse = "ASE";
+    private const string ScannerUnknown = "Unknown";
+    private const string ScopeBacklog = "backlog";
+    private const string ScopeRecent = "recent";
 
     private readonly Dictionary<Guid, JobReviewState> _jobStates = new();
+    private static readonly IReadOnlyList<ScannerFocusOption> ScannerFocusOptions =
+    [
+        new(ScannerFs6000, "FS6000"),
+        new(ScannerAse, "ASE"),
+        new(ScannerUnknown, "Unknown"),
+        new(ScannerAll, "All")
+    ];
 
     private List<SplitJobDto> ReviewableJobs =>
-        _jobs.Where(IsReviewable).ToList();
+        _jobs.Where(IsReviewable).Where(MatchesScannerFilter).ToList();
 
     private SplitJobDto? ActiveJob =>
         _activeJobId.HasValue
@@ -525,6 +582,8 @@ else
         public string RejectLabel { get; set; } = SplitLabelRejected;
     }
 
+    private sealed record ScannerFocusOption(string Value, string Label);
+
     private JobReviewState GetJobState(Guid jobId)
     {
         if (!_jobStates.TryGetValue(jobId, out var state))
@@ -557,6 +616,28 @@ else
 
     private Task RefreshQueue() => LoadJobs(preserveActive: true, showLoading: true);
 
+    private async Task SetScannerFilterAsync(string scanner)
+    {
+        if (string.Equals(_scannerFilter, scanner, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _scannerFilter = scanner;
+        _activeJobId = null;
+        _jobStates.Clear();
+        await LoadJobs(preserveActive: false, showLoading: true);
+    }
+
+    private async Task SetReviewScopeAsync(string scope)
+    {
+        if (string.Equals(_reviewScope, scope, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _reviewScope = scope;
+        _activeJobId = null;
+        _jobStates.Clear();
+        await LoadJobs(preserveActive: false, showLoading: true);
+    }
+
     private async Task LoadJobs(bool preserveActive, bool showLoading)
     {
         if (showLoading)
@@ -582,8 +663,7 @@ else
                     await TryLoadReviewSummaryAsync("/api/image-splitter/jobs/review-summary?since_hours=72")
                     ?? await TryLoadReviewSummaryAsync("/api/image-splitter/jobs/review-summary");
 
-                _jobs = await ApiService.GetAsync<List<SplitJobDto>>(
-                    "/api/image-splitter/jobs/pending?mode=recent&since_hours=72&limit=50") ?? new();
+                _jobs = await ApiService.GetAsync<List<SplitJobDto>>(BuildJobsEndpoint()) ?? new();
             }
             else
             {
@@ -623,6 +703,27 @@ else
             _loading = false;
             _queueRefreshing = false;
         }
+    }
+
+    private string BuildJobsEndpoint()
+    {
+        var parts = new List<string>();
+        if (string.Equals(_reviewScope, ScopeRecent, StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add("mode=recent");
+            parts.Add("since_hours=72");
+            parts.Add("limit=100");
+        }
+        else
+        {
+            parts.Add("mode=backlog");
+            parts.Add("limit=500");
+        }
+
+        if (!IsAllScannerFilter(_scannerFilter))
+            parts.Add($"scanner_type={Uri.EscapeDataString(_scannerFilter)}");
+
+        return $"/api/image-splitter/jobs/pending?{string.Join("&", parts)}";
     }
 
     private async Task<SplitReviewSummaryDto?> TryLoadReviewSummaryAsync(string endpoint)
@@ -931,6 +1032,14 @@ else
     private static bool IsReviewable(SplitJobDto job) =>
         IsStatus(job, "completed") && string.IsNullOrWhiteSpace(job.AnalystVerdict);
 
+    private bool MatchesScannerFilter(SplitJobDto job) =>
+        IsAllScannerFilter(_scannerFilter)
+        || string.Equals(NormalizeScannerLabel(job.ScannerType), _scannerFilter, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAllScannerFilter(string? scanner) =>
+        string.IsNullOrWhiteSpace(scanner)
+        || string.Equals(scanner, ScannerAll, StringComparison.OrdinalIgnoreCase);
+
     private static bool IsStatus(SplitJobDto job, string status) =>
         string.Equals(job.Status, status, StringComparison.OrdinalIgnoreCase);
 
@@ -1043,6 +1152,89 @@ else
         return "Summary endpoint";
     }
 
+    private string GetScannerFilterButtonText(ScannerFocusOption option)
+    {
+        if (string.Equals(option.Value, ScannerAll, StringComparison.OrdinalIgnoreCase))
+            return $"All {FormatSummaryMetric(_reviewSummary?.CompletedUnreviewed, _reviewSummary?.ReviewableCount)}";
+
+        var stats = GetScannerSummary(option.Value);
+        return stats is null
+            ? option.Label
+            : $"{option.Label} {stats.LabelledTotal:N0}/{stats.TotalJobs:N0}";
+    }
+
+    private string GetFocusSummaryText()
+    {
+        var scanner = IsAllScannerFilter(_scannerFilter) ? "All scanners" : _scannerFilter;
+        var scope = string.Equals(_reviewScope, ScopeRecent, StringComparison.OrdinalIgnoreCase)
+            ? "recent"
+            : "backlog";
+        return $"{scanner} {scope}: {ReviewableJobs.Count:N0} loaded";
+    }
+
+    private string GetFocusedNegativeText()
+    {
+        var stats = GetSelectedScannerSummary();
+        if (stats is not null)
+            return stats.NegativeLabelCount.ToString("N0", CultureInfo.InvariantCulture);
+
+        return GetNegativeLabelCount()?.ToString("N0", CultureInfo.InvariantCulture) ?? "-";
+    }
+
+    private Color GetFocusedNegativeColor()
+    {
+        var stats = GetSelectedScannerSummary();
+        var count = stats?.NegativeLabelCount ?? GetNegativeLabelCount();
+        return count.GetValueOrDefault() > 0 ? Color.Info : Color.Warning;
+    }
+
+    private SplitReviewScannerBreakdownDto? GetSelectedScannerSummary() =>
+        IsAllScannerFilter(_scannerFilter) ? null : GetScannerSummary(_scannerFilter);
+
+    private SplitReviewScannerBreakdownDto? GetScannerSummary(string scanner) =>
+        _reviewSummary?.ScannerBreakdown?.FirstOrDefault(item =>
+            string.Equals(item.Scanner, scanner, StringComparison.OrdinalIgnoreCase));
+
+    private Variant GetScannerFilterVariant(string scanner) =>
+        string.Equals(_scannerFilter, scanner, StringComparison.OrdinalIgnoreCase)
+            ? Variant.Filled
+            : Variant.Outlined;
+
+    private Color GetScannerFilterColor(string scanner) => scanner.ToUpperInvariant() switch
+    {
+        ScannerFs6000 => Color.Warning,
+        ScannerAse => Color.Info,
+        ScannerUnknown => Color.Default,
+        _ => Color.Primary
+    };
+
+    private Variant GetReviewScopeVariant(string scope) =>
+        string.Equals(_reviewScope, scope, StringComparison.OrdinalIgnoreCase)
+            ? Variant.Filled
+            : Variant.Outlined;
+
+    private Color GetReviewScopeColor(string scope) =>
+        string.Equals(scope, ScopeBacklog, StringComparison.OrdinalIgnoreCase) ? Color.Primary : Color.Default;
+
+    private static string NormalizeScannerLabel(string? scanner)
+    {
+        if (string.IsNullOrWhiteSpace(scanner))
+            return ScannerUnknown;
+
+        var normalized = scanner.Trim();
+        return normalized.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+            ? ScannerUnknown
+            : normalized.ToUpperInvariant();
+    }
+
+    private static Color GetScannerChipColor(string? scanner) => NormalizeScannerLabel(scanner) switch
+    {
+        ScannerFs6000 => Color.Warning,
+        ScannerAse => Color.Info,
+        ScannerUnknown => Color.Default,
+        _ => Color.Primary
+    };
+
     private string GetResultImageUrl(Guid jobId, Guid resultId, string side) =>
         UrlBuilder.Build(
             $"/api/image-splitter/jobs/{jobId}/results/{resultId}/image/{side}",
@@ -1120,6 +1312,7 @@ else
     {
         [JsonPropertyName("id")]                public Guid Id { get; set; }
         [JsonPropertyName("container_numbers")] public string ContainerNumbers { get; set; } = "";
+        [JsonPropertyName("scanner_type")]      public string? ScannerType { get; set; }
         [JsonPropertyName("status")]            public string Status { get; set; } = "";
         [JsonPropertyName("best_strategy")]     public string? BestStrategy { get; set; }
         [JsonPropertyName("best_score")]        public double? BestScore { get; set; }
@@ -1191,5 +1384,23 @@ else
         [JsonPropertyName("training_ready")]         public bool? TrainingReady { get; set; }
         [JsonPropertyName("generated_at")]           public DateTime? GeneratedAt { get; set; }
         [JsonPropertyName("generatedAtUtc")]         public DateTime? GeneratedAtUtc { get => GeneratedAt; set => GeneratedAt ??= value; }
+        [JsonPropertyName("scannerBreakdown")]       public List<SplitReviewScannerBreakdownDto>? ScannerBreakdown { get; set; }
+    }
+
+    public class SplitReviewScannerBreakdownDto
+    {
+        [JsonPropertyName("scanner")]                   public string Scanner { get; set; } = "";
+        [JsonPropertyName("totalJobs")]                 public int TotalJobs { get; set; }
+        [JsonPropertyName("reviewableCompleted")]       public int ReviewableCompleted { get; set; }
+        [JsonPropertyName("activePendingProcessing")]   public int ActivePendingProcessing { get; set; }
+        [JsonPropertyName("unreviewedFailed")]          public int UnreviewedFailed { get; set; }
+        [JsonPropertyName("labelledTotal")]             public int LabelledTotal { get; set; }
+        [JsonPropertyName("approvedCount")]             public int ApprovedCount { get; set; }
+        [JsonPropertyName("wrongSplitCount")]           public int WrongSplitCount { get; set; }
+        [JsonPropertyName("singleContainerCount")]      public int SingleContainerCount { get; set; }
+        [JsonPropertyName("badImageCount")]             public int BadImageCount { get; set; }
+        [JsonPropertyName("uncertainCount")]            public int UncertainCount { get; set; }
+        [JsonPropertyName("positiveLabelCount")]        public int PositiveLabelCount { get; set; }
+        [JsonPropertyName("negativeLabelCount")]        public int NegativeLabelCount { get; set; }
     }
 }

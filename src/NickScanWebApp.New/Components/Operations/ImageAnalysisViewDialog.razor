@@ -193,6 +193,8 @@
                             var consolidatedContainerCtx = _imageAnalysisContext?.GetConsolidatedContainerContext();
                         }
                         <ScannerDataTab ContainerNumber="@GroupIdentifier" 
+                                       GroupIdentifier="@GroupIdentifier"
+                                       SourceScanResolution="@consolidatedContainerCtx?.ScanAssetResolution"
                                        TotalRecords="@(consolidatedContainerCtx?.BasicInfo?.ScannerRecordCount ?? 0)"
                                        PreloadedData="@consolidatedContainerCtx?.ScannerData" />
                     </div>
@@ -201,22 +203,49 @@
                 <!-- Images Tab - With Decision Buttons -->
                 <MudTabPanel Text="Images & Decisions" Icon="@Icons.Material.Outlined.Image">
                     <div @ref="_tabScrollRef1" style="height: calc(100vh - 300px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveScrollPosition(1))">
+                        @{
+                            var consolidatedImageCtx = _imageAnalysisContext?.GetConsolidatedContainerContext();
+                            var consolidatedImageResolution = GetEffectiveConsolidatedSplitResolution(consolidatedImageCtx?.ScanAssetResolution);
+                        }
                         @* Split choice step: shown for 2-container scans before the normal viewer.
                            OnSplitChosen/Skipped bumps _splitResolveVersion which is part of
                            ImageDecisionView's @key, forcing it to re-mount and re-fetch the
                            image so the analyst sees the chosen crop (vs the unsplit image
                            it loaded on first render). *@
-                        <SplitChoiceDialog ContainerNumber="@GroupIdentifier"
-                                           OnSplitChosen="@OnSplitResolved"
-                                           OnSplitSkipped="@OnSplitResolved" />
-                        <ImageDecisionView @key="@($"{GroupIdentifier}_{_splitResolveVersion}")"
-                                           ContainerNumber="@GroupIdentifier"
-                                           GroupIdentifier="@GroupIdentifier"
-                                           IsConsolidated="@IsConsolidated"
-                                           OnDecisionChanged="@RefreshOverallDecision"
-                                           OnDecisionSaved="@CloseDialogAfterSave"
-                                           OnNextContainer="@HandleNextContainer"
-                                           OnAllContainersDecided="@HandleAllContainersDecided" />
+                        @if (ShouldRenderConsolidatedImageWork())
+                        {
+                            <SplitChoiceDialog ContainerNumber="@GroupIdentifier"
+                                               GroupIdentifier="@GroupIdentifier"
+                                               SourceScanResolution="@consolidatedImageResolution"
+                                               OnSplitChosen="@OnSplitResolved"
+                                               OnSplitSkipped="@OnSplitResolved"
+                                               OnSplitResolutionChanged="@OnConsolidatedSplitResolutionChanged"
+                                               OnSplitStateChanged="@OnConsolidatedSplitStateChanged" />
+                            @if (ShouldShowImageDecisionView(_consolidatedSplitState))
+                            {
+                                <ImageDecisionView @key="@($"{GroupIdentifier}_{_splitResolveVersion}")"
+                                                   ContainerNumber="@GroupIdentifier"
+                                                   GroupIdentifier="@GroupIdentifier"
+                                                   IsConsolidated="@IsConsolidated"
+                                                   SourceScanResolution="@consolidatedImageResolution"
+                                                   OnDecisionChanged="@RefreshOverallDecision"
+                                                   OnDecisionSaved="@CloseDialogAfterSave"
+                                                   OnNextContainer="@HandleNextContainer"
+                                                   OnAllContainersDecided="@HandleAllContainersDecided"
+                                                   RenderInlinePreviews="false" />
+                            }
+                        }
+                        else
+                        {
+                            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                                <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Color="Color.Secondary" Size="Size.Large" />
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">Image tools are waiting to start.</MudText>
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Image"
+                                           OnClick="EnsureConsolidatedImagesLoadedAsync">
+                                    Load Image Tools
+                                </MudButton>
+                            </MudStack>
+                        }
                     </div>
                 </MudTabPanel>
 
@@ -463,6 +492,17 @@
                             <MudAlert Severity="Severity.Warning">No ICUMS data available</MudAlert>
                         }
                     }
+                    else
+                    {
+                        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                            <MudIcon Icon="@Icons.Material.Outlined.ListAlt" Color="Color.Secondary" Size="Size.Large" />
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">ICUMS data is waiting to load.</MudText>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.CloudDownload"
+                                       OnClick="EnsureConsolidatedIcumsLoadedAsync">
+                                Load ICUMS Data
+                            </MudButton>
+                        </MudStack>
+                    }
                     </div>
                 </MudTabPanel>
             </MudTabs>
@@ -590,6 +630,8 @@
                                                 var containerCtx = _imageAnalysisContext?.GetContainerContext(container);
                                             }
                                             <ScannerDataTab ContainerNumber="@container" 
+                                                           GroupIdentifier="@GroupIdentifier"
+                                                           SourceScanResolution="@containerCtx?.ScanAssetResolution"
                                                            TotalRecords="@(containerCtx?.BasicInfo?.ScannerRecordCount ?? 0)"
                                                            PreloadedData="@containerCtx?.ScannerData" />
                                         </div>
@@ -598,22 +640,49 @@
                                     <!-- Images Tab - With Decision Buttons -->
                                     <MudTabPanel Text="Images & Decisions" Icon="@Icons.Material.Outlined.Image">
                                         <div style="height: calc(100vh - 400px); overflow-y: auto; padding: 16px;" @onscroll="@(() => SaveNestedScrollPosition(container, 1))">
+                                            @{
+                                                var imageContainerCtx = _imageAnalysisContext?.GetContainerContext(container);
+                                                var imageContainerResolution = GetEffectiveContainerSplitResolution(container, imageContainerCtx?.ScanAssetResolution);
+                                            }
                                             @* Split choice step: shown for 2-container scans before the normal viewer.
                                                Per-container resolve counter so picking a split on container A
                                                doesn't remount container B's view. *@
-                                            <SplitChoiceDialog ContainerNumber="@container"
-                                                               OnSplitChosen="@(() => OnContainerSplitResolved(container))"
-                                                               OnSplitSkipped="@(() => OnContainerSplitResolved(container))" />
-                                            <ImageDecisionView @key="@($"{container}_{(_perContainerSplitVersion.TryGetValue(container, out var v) ? v : 0)}")"
-                                                               ContainerNumber="@container"
-                                                               GroupIdentifier="@GroupIdentifier"
-                                                               IsConsolidated="@IsConsolidated"
-                                                               OnDecisionChanged="@RefreshOverallDecision"
-                                                               OnDecisionSaved="@CloseDialogAfterSave"
-                                                               OnNextContainer="@HandleNextContainer"
-                                                               OnAllContainersDecided="@HandleAllContainersDecided"
-                                                               AutoOpenImage="@(_containerAutoOpen.TryGetValue(container, out var ao) && ao)"
-                                                               OnAutoOpenHandled="@(() => _containerAutoOpen[container] = false)" />
+                                            @if (ShouldRenderContainerImageWork(container))
+                                            {
+                                                <SplitChoiceDialog ContainerNumber="@container"
+                                                                   GroupIdentifier="@GroupIdentifier"
+                                                                   SourceScanResolution="@imageContainerResolution"
+                                                                   OnSplitChosen="@(() => OnContainerSplitResolved(container))"
+                                                                   OnSplitSkipped="@(() => OnContainerSplitResolved(container))"
+                                                                   OnSplitResolutionChanged="@((ScanAssetResolution? resolution) => OnContainerSplitResolutionChanged(container, resolution))"
+                                                                   OnSplitStateChanged="@((string? state) => OnContainerSplitStateChanged(container, state))" />
+                                                @if (ShouldShowImageDecisionView(GetContainerSplitState(container)))
+                                                {
+                                                    <ImageDecisionView @key="@($"{container}_{(_perContainerSplitVersion.TryGetValue(container, out var v) ? v : 0)}")"
+                                                                       ContainerNumber="@container"
+                                                                       GroupIdentifier="@GroupIdentifier"
+                                                                       IsConsolidated="@IsConsolidated"
+                                                                       SourceScanResolution="@imageContainerResolution"
+                                                                       OnDecisionChanged="@RefreshOverallDecision"
+                                                                       OnDecisionSaved="@CloseDialogAfterSave"
+                                                                       OnNextContainer="@HandleNextContainer"
+                                                                       OnAllContainersDecided="@HandleAllContainersDecided"
+                                                                       AutoOpenImage="@(_containerAutoOpen.TryGetValue(container, out var ao) && ao)"
+                                                                       OnAutoOpenHandled="@(() => _containerAutoOpen[container] = false)"
+                                                                       RenderInlinePreviews="false" />
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                                                    <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Color="Color.Secondary" Size="Size.Large" />
+                                                    <MudText Typo="Typo.body2" Color="Color.Secondary">Image tools are waiting to start.</MudText>
+                                                    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Image"
+                                                               OnClick="@(() => EnsureContainerImagesLoadedAsync(container))">
+                                                        Load Image Tools
+                                                    </MudButton>
+                                                </MudStack>
+                                            }
                                         </div>
                                     </MudTabPanel>
 
@@ -702,6 +771,17 @@
                                                 <MudAlert Severity="Severity.Warning">No ICUMS data available</MudAlert>
                                             }
                                         }
+                                        else
+                                        {
+                                            <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-8">
+                                                <MudIcon Icon="@Icons.Material.Outlined.Description" Color="Color.Secondary" Size="Size.Large" />
+                                                <MudText Typo="Typo.body2" Color="Color.Secondary">ICUMS data is waiting to load.</MudText>
+                                                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.CloudDownload"
+                                                           OnClick="EnsureNestedIcumsLoadedAsync">
+                                                    Load ICUMS Data
+                                                </MudButton>
+                                            </MudStack>
+                                        }
                                         </div>
                                     </MudTabPanel>
                                 </MudTabs>
@@ -735,6 +815,16 @@
     private bool _determiningView = false; // ✅ Always false - no view determination needed
 
     // ✅ FIX #2: Lazy loading flags for tabs - load only when tab is clicked
+    private const int ConsolidatedSummaryTabIndex = 0;
+    private const int ConsolidatedScannerTabIndex = 1;
+    private const int ConsolidatedImagesTabIndex = 2;
+    private const int ConsolidatedHouseBLsTabIndex = 3;
+    private const int ConsolidatedIcumsTabIndex = 4;
+    private const int NestedSummaryTabIndex = 0;
+    private const int NestedScannerTabIndex = 1;
+    private const int NestedImagesTabIndex = 2;
+    private const int NestedIcumsTabIndex = 3;
+
     private int _activeTabIndex = 0;
     private bool _imagesTabLoaded = false;
     private bool _houseBLsLoaded = false;
@@ -751,18 +841,315 @@
     // (which now resolves to the chosen crop instead of the unsplit image).
     private int _splitResolveVersion = 0;
     private Dictionary<string, int> _perContainerSplitVersion = new();
+    private string? _consolidatedSplitState;
+    private Dictionary<string, string?> _perContainerSplitState = new(StringComparer.OrdinalIgnoreCase);
+    private ScanAssetResolution? _consolidatedSplitResolutionOverride;
+    private Dictionary<string, ScanAssetResolution> _perContainerSplitResolutionOverrides = new(StringComparer.OrdinalIgnoreCase);
 
-    private void OnSplitResolved()
+    private async Task OnSplitResolved()
     {
+        _consolidatedSplitState = "Resolved";
+        await RefreshSplitResolutionAsync(GroupIdentifier);
         _splitResolveVersion++;
-        StateHasChanged();
+        await InvokeAsync(StateHasChanged);
     }
 
-    private void OnContainerSplitResolved(string container)
+    private async Task OnContainerSplitResolved(string container)
     {
         if (string.IsNullOrEmpty(container)) return;
+        _perContainerSplitState[container] = "Resolved";
+        await RefreshSplitResolutionAsync(container);
         _perContainerSplitVersion[container] = (_perContainerSplitVersion.TryGetValue(container, out var v) ? v : 0) + 1;
-        StateHasChanged();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnConsolidatedSplitResolutionChanged(ScanAssetResolution? resolution)
+    {
+        _consolidatedSplitResolutionOverride = PreferSplitResolution(resolution, _consolidatedSplitResolutionOverride);
+        _consolidatedSplitState = "Resolved";
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnContainerSplitResolutionChanged(string container, ScanAssetResolution? resolution)
+    {
+        if (!string.IsNullOrWhiteSpace(container))
+        {
+            var existing = _perContainerSplitResolutionOverrides.TryGetValue(container, out var current)
+                ? current
+                : null;
+            var effective = PreferSplitResolution(resolution, existing);
+            if (effective != null)
+            {
+                _perContainerSplitResolutionOverrides[container] = effective;
+            }
+
+            _perContainerSplitState[container] = "Resolved";
+        }
+
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnConsolidatedSplitStateChanged(string? state)
+    {
+        if (string.Equals(_consolidatedSplitState, state, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.CompletedTask;
+        }
+
+        _consolidatedSplitState = state;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task OnContainerSplitStateChanged(string container, string? state)
+    {
+        if (!string.IsNullOrWhiteSpace(container))
+        {
+            if (_perContainerSplitState.TryGetValue(container, out var currentState)
+                && string.Equals(currentState, state, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.CompletedTask;
+            }
+
+            _perContainerSplitState[container] = state;
+        }
+
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private string? GetContainerSplitState(string container)
+    {
+        return _perContainerSplitState.TryGetValue(container, out var state) ? state : null;
+    }
+
+    private static bool ShouldShowImageDecisionView(string? splitState)
+    {
+        return string.Equals(splitState, "Resolved", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private ScanAssetResolution? GetEffectiveConsolidatedSplitResolution(ScanAssetResolution? baseResolution)
+    {
+        return PreferSplitResolution(_consolidatedSplitResolutionOverride, baseResolution);
+    }
+
+    private ScanAssetResolution? GetEffectiveContainerSplitResolution(string container, ScanAssetResolution? baseResolution)
+    {
+        if (!string.IsNullOrWhiteSpace(container)
+            && _perContainerSplitResolutionOverrides.TryGetValue(container, out var overrideResolution))
+        {
+            return PreferSplitResolution(overrideResolution, baseResolution);
+        }
+
+        return baseResolution;
+    }
+
+    private static ScanAssetResolution? PreferSplitResolution(
+        ScanAssetResolution? preferred,
+        ScanAssetResolution? fallback)
+    {
+        if (HasChosenSplit(preferred))
+        {
+            return preferred;
+        }
+
+        if (HasChosenSplit(fallback))
+        {
+            return fallback;
+        }
+
+        return preferred ?? fallback;
+    }
+
+    private static bool HasChosenSplit(ScanAssetResolution? resolution)
+    {
+        return resolution?.SplitResultId.HasValue == true
+            && !string.IsNullOrWhiteSpace(resolution.EffectiveSplitSide);
+    }
+
+    private bool ShouldRenderConsolidatedImageWork()
+        => _imagesTabLoaded;
+
+    private bool ShouldRenderContainerImageWork(string container)
+    {
+        if (string.IsNullOrWhiteSpace(container))
+        {
+            return false;
+        }
+
+        var isExpanded = _containerPanelsExpanded.TryGetValue(container, out var expanded) && expanded;
+        var imageTabLoaded = _containerImagesLoaded.TryGetValue(container, out var loaded) && loaded;
+        return isExpanded && imageTabLoaded;
+    }
+
+    private async Task EnsureConsolidatedImagesLoadedAsync()
+    {
+        _activeTabIndex = ConsolidatedImagesTabIndex;
+        if (!_imagesTabLoaded)
+        {
+            Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Ensuring consolidated Images tab is loaded for {GroupIdentifier}");
+            _imagesTabLoaded = true;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task EnsureContainerImagesLoadedAsync(string container)
+    {
+        if (string.IsNullOrWhiteSpace(container))
+        {
+            return;
+        }
+
+        if (!_containerImagesLoaded.TryGetValue(container, out var loaded) || !loaded)
+        {
+            Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Ensuring Images tab is loaded for container {container}");
+            _containerImagesLoaded[container] = true;
+        }
+
+        _containerTabIndices[container] = NestedImagesTabIndex;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task EnsureConsolidatedIcumsLoadedAsync()
+    {
+        _activeTabIndex = ConsolidatedIcumsTabIndex;
+        if (_allBOEData?.Any() == true)
+        {
+            _icumsDataLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        if (_loadingBOEDetails)
+        {
+            _icumsDataLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        Console.WriteLine($"✅ [ImageAnalysisViewDialog] Ensuring consolidated ICUMS tab is loaded for {GroupIdentifier}");
+        _icumsDataLoaded = true;
+        await InvokeAsync(StateHasChanged);
+        await LoadBOEDetailsForConsolidated();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task EnsureNestedIcumsLoadedAsync()
+    {
+        var currentContainer = _currentProcessingContainer
+            ?? Containers?.FirstOrDefault(c => _containerPanelsExpanded.TryGetValue(c, out var expanded) && expanded)
+            ?? Containers?.FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(currentContainer))
+        {
+            _containerTabIndices[currentContainer] = NestedIcumsTabIndex;
+        }
+
+        if (_allBOEData?.Any() == true)
+        {
+            _icumsDataLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        if (_loadingBOEDetails)
+        {
+            _icumsDataLoaded = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        Console.WriteLine($"✅ [ImageAnalysisViewDialog] Ensuring non-consolidated ICUMS tab is loaded for {GroupIdentifier}");
+        _icumsDataLoaded = true;
+        await InvokeAsync(StateHasChanged);
+        await LoadBOEDetails();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task<ScanAssetResolution?> RefreshSplitResolutionAsync(string container)
+    {
+        if (string.IsNullOrWhiteSpace(container))
+        {
+            return null;
+        }
+
+        ContainerDetailsService.ClearContainerCache(container);
+
+        var context = IsConsolidated
+            ? _imageAnalysisContext?.GetConsolidatedContainerContext()
+            : _imageAnalysisContext?.GetContainerContext(container);
+
+        var previousResolution = context?.ScanAssetResolution;
+        var refreshedResolution = await ContainerDetailsService.ResolveScanAssetAsync(
+            container,
+            GroupIdentifier,
+            previousResolution?.AnalysisRecordId,
+            previousResolution?.SplitJobId);
+
+        var effectiveResolution = IsConsolidated
+            ? PreferSplitResolution(refreshedResolution, _consolidatedSplitResolutionOverride)
+            : PreferSplitResolution(
+                refreshedResolution,
+                _perContainerSplitResolutionOverrides.TryGetValue(container, out var existing)
+                    ? existing
+                    : null);
+
+        if (context != null && effectiveResolution != null)
+        {
+            context.ScanAssetResolution = effectiveResolution;
+            context.Images = null;
+        }
+
+        if (effectiveResolution != null)
+        {
+            if (IsConsolidated)
+            {
+                _consolidatedSplitResolutionOverride = PreferSplitResolution(effectiveResolution, _consolidatedSplitResolutionOverride);
+            }
+            else
+            {
+                _perContainerSplitResolutionOverrides[container] = effectiveResolution;
+            }
+        }
+
+        return effectiveResolution;
+    }
+
+    private void InitializeContainerShells()
+    {
+        if (Containers?.Any() != true)
+        {
+            return;
+        }
+
+        foreach (var container in Containers.Where(c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            _containerPanelsExpanded.TryAdd(container, false);
+            _containerTabIndices.TryAdd(container, NestedSummaryTabIndex);
+            _containerImagesLoaded.TryAdd(container, false);
+        }
+
+        if (!_containerPanelsExpanded.Values.Any(expanded => expanded))
+        {
+            var firstContainer = Containers.First(c => !string.IsNullOrWhiteSpace(c));
+            _containerPanelsExpanded[firstContainer] = true;
+            _containerTabIndices[firstContainer] = NestedSummaryTabIndex;
+            _containerImagesLoaded[firstContainer] = false;
+            _currentProcessingContainer = firstContainer;
+        }
+    }
+
+    private static string NormalizeDataLookupGroupIdentifier(string? groupIdentifier)
+    {
+        if (string.IsNullOrWhiteSpace(groupIdentifier))
+        {
+            return string.Empty;
+        }
+
+        var normalized = groupIdentifier.Trim();
+        var waveMatch = System.Text.RegularExpressions.Regex.Match(
+            normalized,
+            @"^(?<base>.+)_W\d+$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        return waveMatch.Success ? waveMatch.Groups["base"].Value : normalized;
     }
     // Note: ICUMS data is shared across all containers for non-consolidated cargo, so use _icumsDataLoaded
     
@@ -896,8 +1283,53 @@
         var routeCn = routeContainer
             ?? throw new InvalidOperationException(
                 "BuildContainerEndpointUrl: non-consolidated path requires a routeContainer (typically Containers.First()).");
-        var decl = declarationNumber ?? groupIdentifier;
+        var decl = NormalizeDataLookupGroupIdentifier(declarationNumber ?? groupIdentifier);
         return $"/api/containerdetails/{endpoint}/{Uri.EscapeDataString(routeCn)}?page={page}&pageSize={pageSize}&declarationNumber={Uri.EscapeDataString(decl)}";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (IsConsolidated)
+        {
+            if (_activeTabIndex == ConsolidatedImagesTabIndex && !_imagesTabLoaded)
+            {
+                await EnsureConsolidatedImagesLoadedAsync();
+            }
+            else if (_activeTabIndex == ConsolidatedIcumsTabIndex && !_icumsDataLoaded)
+            {
+                await EnsureConsolidatedIcumsLoadedAsync();
+            }
+
+            return;
+        }
+
+        if (Containers == null || !Containers.Any())
+        {
+            return;
+        }
+
+        foreach (var container in Containers)
+        {
+            var isExpanded = _containerPanelsExpanded.TryGetValue(container, out var expanded) && expanded;
+            if (!isExpanded)
+            {
+                continue;
+            }
+
+            var activeTab = _containerTabIndices.TryGetValue(container, out var index) ? index : NestedSummaryTabIndex;
+            if (activeTab == NestedImagesTabIndex
+                && (!_containerImagesLoaded.TryGetValue(container, out var imagesLoaded) || !imagesLoaded))
+            {
+                await EnsureContainerImagesLoadedAsync(container);
+                break;
+            }
+
+            if (activeTab == NestedIcumsTabIndex && !_icumsDataLoaded)
+            {
+                await EnsureNestedIcumsLoadedAsync();
+                break;
+            }
+        }
     }
 
     // ✅ FIX #2: Handle tab changes for lazy loading (CONSOLIDATED view)
@@ -914,53 +1346,27 @@
         await RestoreScrollPosition(newIndex);
         
         // Load tab content when activated
-        if (newIndex == 0 && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
+        if (newIndex == ConsolidatedSummaryTabIndex && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
         {
             // Summary tab - load cargo group if not already loaded (or retry if it failed)
             Console.WriteLine($"📊 [ImageAnalysisViewDialog] Summary tab activated (consolidated), loading cargo group for {GroupIdentifier}");
             _cargoGroupLoadFailed = false; // Reset failure flag when retrying
             _ = LoadCargoGroupForSummary();
         }
-        else if (newIndex == 1 && !_imagesTabLoaded)
+        else if (newIndex == ConsolidatedImagesTabIndex && !_imagesTabLoaded)
         {
             Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Images & Decisions tab activated, loading images for {GroupIdentifier}");
-            _imagesTabLoaded = true;
-            // Force immediate UI update to show ImageDecisionView
-            await InvokeAsync(StateHasChanged);
-            // Small delay to ensure UI is updated before component renders
-            await Task.Delay(50);
-            await InvokeAsync(StateHasChanged);
+            await EnsureConsolidatedImagesLoadedAsync();
         }
-        else if (newIndex == 2 && !_houseBLsLoaded && IsConsolidated)
+        else if (newIndex == ConsolidatedHouseBLsTabIndex && !_houseBLsLoaded && IsConsolidated)
         {
             _houseBLsLoaded = true;
             await InvokeAsync(StateHasChanged);
             _ = LoadHouseBLs();
         }
-        else if (newIndex == 3 && IsConsolidated)
+        else if (newIndex == ConsolidatedIcumsTabIndex && IsConsolidated)
         {
-            // If data is already loaded, just show it
-            if (_allBOEData != null && _allBOEData.Any())
-            {
-                Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS data already loaded ({_allBOEData.Count} records), displaying immediately");
-                _icumsDataLoaded = true;
-                await InvokeAsync(StateHasChanged);
-                return;
-            }
-            
-            // If not loaded yet, set flag and load
-            if (!_icumsDataLoaded)
-            {
-                _icumsDataLoaded = true;
-                await InvokeAsync(StateHasChanged); // Update UI immediately to show loading spinner
-                await LoadBOEDetailsForConsolidated();
-                await InvokeAsync(StateHasChanged); // Update UI after loading completes
-            }
-            else
-            {
-                // Data is loading, just wait for it
-                await InvokeAsync(StateHasChanged);
-            }
+            await EnsureConsolidatedIcumsLoadedAsync();
         }
     }
     
@@ -979,50 +1385,23 @@
         await RestoreNestedScrollPosition(containerNumber, newIndex);
         
         // Load tab content when activated
-        if (newIndex == 0 && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
+        if (newIndex == NestedSummaryTabIndex && _cargoGroupForSummary == null && !_loadingCargoGroupForSummary)
         {
             // Summary tab - load cargo group if not already loaded (or retry if it failed)
             Console.WriteLine($"📊 [ImageAnalysisViewDialog] Summary tab activated, loading cargo group for {GroupIdentifier}");
             _cargoGroupLoadFailed = false; // Reset failure flag when retrying
             _ = LoadCargoGroupForSummary();
         }
-        else if (newIndex == 1 && (!_containerImagesLoaded.ContainsKey(containerNumber) || !_containerImagesLoaded[containerNumber]))
+        else if (newIndex == NestedImagesTabIndex && (!_containerImagesLoaded.ContainsKey(containerNumber) || !_containerImagesLoaded[containerNumber]))
         {
             Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Images & Decisions tab activated (non-consolidated) for container {containerNumber}");
-            _containerImagesLoaded[containerNumber] = true;
-            // Force immediate UI update to show ImageDecisionView
-            await InvokeAsync(StateHasChanged);
-            // Small delay to ensure UI is updated before component renders
-            await Task.Delay(50);
-            await InvokeAsync(StateHasChanged);
+            await EnsureContainerImagesLoadedAsync(containerNumber);
         }
-        else if (newIndex == 2)
+        else if (newIndex == NestedIcumsTabIndex)
         {
             // ✅ FIX: ICUMS data is shared across all containers for non-consolidated, use shared flag
             Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS tab activated for non-consolidated cargo (BOE: {GroupIdentifier})");
-            
-            // If data is already loaded, just show it
-            if (_allBOEData != null && _allBOEData.Any())
-            {
-                Console.WriteLine($"✅ [ImageAnalysisViewDialog] ICUMS data already loaded ({_allBOEData.Count} records), displaying immediately");
-                _icumsDataLoaded = true;
-                await InvokeAsync(StateHasChanged);
-                return;
-            }
-            
-            // If not loaded yet, set flag and load
-            if (!_icumsDataLoaded)
-            {
-                _icumsDataLoaded = true;
-                await InvokeAsync(StateHasChanged); // Update UI immediately to show loading spinner
-                await LoadBOEDetails(); // Load BOE data (shared across all containers for this declaration)
-                await InvokeAsync(StateHasChanged); // Update UI after loading completes
-            }
-            else
-            {
-                // Data is loading, just wait for it
-                await InvokeAsync(StateHasChanged);
-            }
+            await EnsureNestedIcumsLoadedAsync();
         }
     }
     
@@ -1264,7 +1643,7 @@
             // ✅ FIX #2: Only load containers if not provided - do it in background
             if (Containers == null || !Containers.Any())
             {
-                _ = Task.Run(async () =>
+                _ = InvokeAsync(async () =>
                 {
                     try
                     {
@@ -1276,10 +1655,14 @@
                     }
                 });
             }
+            else
+            {
+                InitializeContainerShells();
+            }
         }
 
         // ✅ FIX #2: Load overall decision in background (non-blocking)
-        _ = Task.Run(async () =>
+        _ = InvokeAsync(async () =>
         {
             try
             {
@@ -1292,37 +1675,8 @@
             }
         });
         
-        // Preload image analysis context (cargo group + container contexts)
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await LoadImageAnalysisContext();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error loading image analysis context: {ex.Message}");
-            }
-        });
-        
-        // ✅ FIX: Preload ICUMS data in background for non-consolidated cargo (shared across containers)
-        if (!IsConsolidated)
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await PreloadICUMSData();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ [ImageAnalysisViewDialog] Error preloading ICUMS data: {ex.Message}");
-                }
-            });
-        }
-        
         // Load cargo group for summary (fallback if preloader disabled)
-        _ = Task.Run(async () =>
+        _ = InvokeAsync(async () =>
         {
             try
             {
@@ -1335,7 +1689,7 @@
         });
         
         // Load wave context in background (non-blocking)
-        _ = Task.Run(async () =>
+        _ = InvokeAsync(async () =>
         {
             try
             {
@@ -1350,7 +1704,7 @@
 
         Console.WriteLine($"✅✅✅ [ImageAnalysisViewDialog] OnInitializedAsync COMPLETE - UI ready immediately");
 
-        // Return completed task since all async work is done in background Task.Run calls
+        // Return completed task after scheduling small circuit-safe background loads.
         return Task.CompletedTask;
     }
 
@@ -1483,6 +1837,18 @@
     
     private async Task LoadCargoGroupForSummary()
     {
+        if (_loadingCargoGroupForSummary)
+        {
+            Console.WriteLine($"⏸️ [LoadCargoGroupForSummary] Skipping duplicate load for {GroupIdentifier}; existing load is still running");
+            return;
+        }
+
+        if (_cargoGroupForSummary != null && !_cargoGroupLoadFailed)
+        {
+            Console.WriteLine($"⏸️ [LoadCargoGroupForSummary] Skipping load for {GroupIdentifier}; summary is already loaded");
+            return;
+        }
+
         var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var identifierResolutionStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var cargoGroupLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -1494,12 +1860,34 @@
         
         try
         {
-            // ✅ FIX: For consolidated cargo, GroupIdentifier is container number, but cargo group service needs Master BL
-            // ✅ FIX: For non-consolidated cargo, GroupIdentifier is declaration number, which is correct
-            // First, try to get the correct group identifier from container number if needed
+            // First use the API's scenario-aware cargo resolver. It handles:
+            // - consolidated container numbers,
+            // - non-consolidated declarations,
+            // - wave-suffixed analysis group identifiers,
+            // - CMR composite operational keys.
             string actualGroupIdentifier = GroupIdentifier;
             CargoType? actualCargoType = IsConsolidated ? CargoType.Consolidated : CargoType.NonConsolidated;
-            
+
+            cargoGroupLoadStopwatch.Restart();
+            _cargoGroupForSummary = await CargoGroupService.GetCargoGroupAsync(
+                actualGroupIdentifier,
+                actualCargoType,
+                loadScannerData: false,
+                loadImageData: false,
+                loadICUMSData: true);
+            cargoGroupLoadStopwatch.Stop();
+
+            if (_cargoGroupForSummary != null)
+            {
+                _cargoGroupLoadFailed = false;
+                Console.WriteLine($"✅ [LoadCargoGroupForSummary] Loaded summary through scenario-aware resolver: {actualGroupIdentifier}");
+                Console.WriteLine($"   Containers: {_cargoGroupForSummary.ContainerNumbers?.Count ?? 0}");
+                Console.WriteLine($"   ICUMS Groups: {_cargoGroupForSummary.Data?.ICUMSData?.Count ?? 0}");
+                return;
+            }
+
+            Console.WriteLine($"⚠️ [LoadCargoGroupForSummary] Direct scenario-aware load returned null for {actualGroupIdentifier}; using legacy container/declaration fallback");
+
             // ✅ FIX: Use same approach as ICUMS data - query BOE documents directly by container number
             // This works even when BlNumber/DeclarationNumber fields are empty, as long as BOE document exists
             if (IsConsolidated)
@@ -1765,10 +2153,11 @@
         {
             Console.WriteLine($"🔍 [LoadContainers] Loading containers for declaration: {GroupIdentifier}");
             Console.WriteLine($"🔍 [LoadContainers] Passed Containers parameter: {(Containers?.Any() == true ? string.Join(", ", Containers) : "None")}");
+            var lookupGroupIdentifier = NormalizeDataLookupGroupIdentifier(GroupIdentifier);
             
             // API returns List<string> - just container numbers
             var containerList = await ApiService.GetAsync<List<string>>(
-                $"/api/consolidatedcargo/declaration/{GroupIdentifier}/containers") ?? new();
+                $"/api/consolidatedcargo/declaration/{Uri.EscapeDataString(lookupGroupIdentifier)}/containers") ?? new();
             
             Console.WriteLine($"🔍 [LoadContainers] API returned {containerList.Count} container(s)");
             
@@ -1783,11 +2172,11 @@
             
             Console.WriteLine($"✅ [LoadContainers] Final container list: {Containers?.Count ?? 0} container(s)");
 
-            // ✅ AUTO-PROGRESSION: Find first undecided container and expand it
-            await FindAndExpandFirstUndecidedContainer();
-
-            // Also load BOE details for this declaration number
-            await LoadBOEDetails();
+            // Keep assignment open lightweight: expand a single container shell,
+            // but do not probe image metadata or BOE/ICUMS details until the
+            // operator opens those specific tabs.
+            InitializeContainerShells();
+            await InvokeAsync(StateHasChanged);
         }
         catch (Exception ex)
         {
@@ -2179,12 +2568,12 @@
         if (!_containerPanelsExpanded.ContainsKey(nextContainerNumber))
             _containerPanelsExpanded[nextContainerNumber] = false;
         if (!_containerTabIndices.ContainsKey(nextContainerNumber))
-            _containerTabIndices[nextContainerNumber] = 0;
+            _containerTabIndices[nextContainerNumber] = NestedSummaryTabIndex;
         if (!_containerImagesLoaded.ContainsKey(nextContainerNumber))
             _containerImagesLoaded[nextContainerNumber] = false;
         
         _containerPanelsExpanded[nextContainerNumber] = true;
-        _containerTabIndices[nextContainerNumber] = 1; // Images tab
+        _containerTabIndices[nextContainerNumber] = NestedImagesTabIndex; // Images tab
         _containerImagesLoaded[nextContainerNumber] = true;
         _currentProcessingContainer = nextContainerNumber;
 
@@ -2277,6 +2666,9 @@
             var imageUrl = UrlBuilder.Build(
                 $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image",
                 uid);
+            var sourceResolution = await ContainerDetailsService.ResolveScanAssetAsync(
+                containerNumber,
+                GroupIdentifier);
 
             // Resolve scanner type from completeness data (don't hardcode)
             var scannerType = ScannerType;
@@ -2292,6 +2684,7 @@
                 ["ScanDate"] = DateTime.Now,
                 ["GroupIdentifier"] = GroupIdentifier,
                 ["IsConsolidated"] = IsConsolidated,
+                ["SourceScanResolution"] = sourceResolution,
                 ["OnClose"] = EventCallback.Factory.Create(this, () =>
                 {
                     if (dialogRef != null)
@@ -2396,7 +2789,7 @@
                 if (firstContainerWithImages != null)
                 {
                     _containerPanelsExpanded[firstContainerWithImages] = true;
-                    _containerTabIndices[firstContainerWithImages] = 1; // Switch to Images tab
+                    _containerTabIndices[firstContainerWithImages] = NestedImagesTabIndex; // Switch to Images tab
                     _containerImagesLoaded[firstContainerWithImages] = true;
                     _currentProcessingContainer = firstContainerWithImages;
                     Console.WriteLine($"✅ [ImageAnalysisViewDialog] Auto-expanded first container with images: {firstContainerWithImages}");
@@ -2447,7 +2840,7 @@
             if (firstUndecided != null)
             {
                 _containerPanelsExpanded[firstUndecided] = true;
-                _containerTabIndices[firstUndecided] = 1; // Switch to Images tab
+                _containerTabIndices[firstUndecided] = NestedImagesTabIndex; // Switch to Images tab
                 _containerImagesLoaded[firstUndecided] = true;
                 _currentProcessingContainer = firstUndecided;
                 Console.WriteLine($"✅ [ImageAnalysisViewDialog] Auto-expanded first undecided container with images: {firstUndecided}");
@@ -2472,7 +2865,7 @@
             // Fallback: expand first container
             var firstContainer = Containers.First();
             _containerPanelsExpanded[firstContainer] = true;
-            _containerTabIndices[firstContainer] = 1;
+            _containerTabIndices[firstContainer] = NestedImagesTabIndex;
             _containerImagesLoaded[firstContainer] = true;
             _currentProcessingContainer = firstContainer;
             await InvokeAsync(StateHasChanged);

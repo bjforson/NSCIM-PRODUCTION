@@ -14,14 +14,18 @@ namespace NickScanCentralImagingPortal.API.Monitoring
         /// <summary>
         /// Register comprehensive monitoring services
         /// </summary>
-        public static IServiceCollection AddComprehensiveMonitoring(this IServiceCollection services)
+        public static IServiceCollection AddComprehensiveMonitoring(this IServiceCollection services, bool registerHostedService = true)
         {
-            // Register as singleton (for injection) and hosted service (for background execution)
+            // Register as singleton for injection. Staging verification can skip
+            // the hosted loop while keeping monitoring dependencies resolvable.
             services.AddSingleton<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>();
             services.AddSingleton<NickScanCentralImagingPortal.Core.Interfaces.IComprehensiveHealthCheckService>(provider =>
                 provider.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>());
-            services.AddHostedService<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>(provider =>
-                provider.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>());
+            if (registerHostedService)
+            {
+                services.AddHostedService<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>(provider =>
+                    provider.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.ComprehensiveHealthCheckService>());
+            }
 
             return services;
         }
@@ -29,7 +33,7 @@ namespace NickScanCentralImagingPortal.API.Monitoring
         /// <summary>
         /// Register monitoring services with SignalR
         /// </summary>
-        public static IServiceCollection AddMonitoringWithSignalR(this IServiceCollection services)
+        public static IServiceCollection AddMonitoringWithSignalR(this IServiceCollection services, bool registerHostedService = true)
         {
             // Add SignalR
             services.AddSignalR(options =>
@@ -39,7 +43,7 @@ namespace NickScanCentralImagingPortal.API.Monitoring
             });
 
             // Register monitoring services
-            services.AddComprehensiveMonitoring();
+            services.AddComprehensiveMonitoring(registerHostedService);
 
             return services;
         }

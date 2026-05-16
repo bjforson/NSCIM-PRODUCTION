@@ -16,6 +16,7 @@
 @inject IConfiguration Configuration
 @inject IWebHostEnvironment HostEnv
 @inject NickScanWebApp.New.Services.ReadinessKeepaliveCoordinator KeepaliveCoordinator
+@inject NickScanWebApp.New.Services.AuditReviewViewPreloader AuditReviewPreloader
 @implements IDisposable
 
 <PageTitle>NICKSCAN ERP — NSCIS — Audit Review@(_myAssignments.Any() ? $" ({_myAssignments.Count})" : "")</PageTitle>
@@ -601,10 +602,33 @@
             {
                 var auditGroup = response.Data;
                 Logger.LogInformation("📂 [AUDIT] Opening AuditReviewDialog for group {Group}, Containers={Count}", assignment.GroupIdentifier, auditGroup.ImageAnalysisDecisions?.Count ?? 0);
+
+                AuditReviewViewContext? viewContext = null;
+                try
+                {
+                    var containerNumbers = auditGroup.ImageAnalysisDecisions?
+                        .Select(d => d.ContainerNumber)
+                        .Where(containerNumber => !string.IsNullOrWhiteSpace(containerNumber))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList() ?? new();
+
+                    viewContext = await AuditReviewPreloader.LoadAsync(
+                        assignment.GroupIdentifier,
+                        containerNumbers,
+                        forceRefresh: false);
+                }
+                catch (Exception preloadEx)
+                {
+                    Logger.LogWarning(preloadEx,
+                        "[AUDIT] Audit review context preload failed for group {Group}; dialog will use direct-load fallback",
+                        assignment.GroupIdentifier);
+                }
+
                 IDialogReference? dialogRef = null;
                 var parameters = new DialogParameters
                 {
                     ["Record"] = auditGroup,
+                    ["PreloadedContext"] = viewContext,
                     ["OnAuditComplete"] = EventCallback.Factory.Create<bool>(this, async (success) =>
                     {
                         if (success)

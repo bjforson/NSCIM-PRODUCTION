@@ -66,7 +66,7 @@
 
                     <!-- Image Display Area -->
                     <MudCardContent Class="pa-0">
-                        <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 400px;" @onclick="@(() => OpenFullImage(image))">
+                        <div style="position: relative; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 400px;">
                             @if (imageLoadError.ContainsKey(image.Id) && imageLoadError[image.Id])
                             {
                                 <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
@@ -127,16 +127,39 @@
                                     }
                                 </MudStack>
                             }
+                            else if (!ShouldRenderInlinePreview(image.Id))
+                            {
+                                <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="pa-4">
+                                    <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Color="Color.Primary" Size="Size.Large" />
+                                    <MudText Typo="Typo.body1" Style="font-weight: 600;">Preview is paused in the assignment dialog</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary" Style="max-width: 520px; text-align: center;">
+                                        Open the fullscreen review to inspect the selected image at full fidelity. Inline preview can still be loaded manually if needed.
+                                    </MudText>
+                                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Fullscreen" OnClick="@(() => OpenFullImage(image))">
+                                            Open Fullscreen Review
+                                        </MudButton>
+                                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Outlined.Visibility" OnClick="@(() => EnableInlinePreview(image.Id))">
+                                            Show Inline Preview
+                                        </MudButton>
+                                    </MudStack>
+                                </MudStack>
+                            }
                             else
                             {
-                                <img src="@GetImageSrc(image)"
+                                var previewSrc = GetPreviewImageSrc(image);
+                                <img @key="previewSrc"
+                                     src="@previewSrc"
                                      alt="@image.ImageType Image"
-                                     style="max-width: 100%; max-height: 600px; cursor: none;"
+                                     style="max-width: 100%; max-height: 600px; cursor: zoom-in;"
+                                     @onclick="@(() => OpenFullImage(image))"
                                      @ref="@(_imageRefs[image.Id])"
-                                     @onerror="@(() => HandleImageError(image.Id, GetImageSrc(image)))"
-                                     @onload="@(() => HandleImageLoadWithMagnifier(image))"
-                                     @onloadstart="@(() => HandleImageLoadStart(image))"
-                                     loading="lazy" />
+                                     @onerror="@(() => HandleImageError(image.Id, previewSrc))"
+                                     @onload="@(() => HandleImageLoad(image))"
+                                     @onloadstart="@(() => HandleImageLoadStart(image, previewSrc))"
+                                     loading="lazy"
+                                     decoding="async"
+                                     fetchpriority="low" />
                                 
                                 <!-- Rectangle overlays for suspicious areas -->
                                 @if (_imageRectangles.ContainsKey(image.ImageType) && _imageRectangles[image.ImageType].Any())
@@ -214,12 +237,14 @@
     [Parameter] public string ContainerNumber { get; set; } = string.Empty;
     [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
     [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
     [Parameter] public EventCallback OnDecisionChanged { get; set; }
     [Parameter] public EventCallback OnDecisionSaved { get; set; }
     [Parameter] public EventCallback<string?> OnNextContainer { get; set; }
     [Parameter] public EventCallback OnAllContainersDecided { get; set; }
     [Parameter] public bool AutoOpenImage { get; set; }
     [Parameter] public EventCallback OnAutoOpenHandled { get; set; }
+    [Parameter] public bool RenderInlinePreviews { get; set; } = true;
 
     // Response DTO for decision save
     private class DecisionSaveResponse
@@ -248,8 +273,10 @@
     }
     private Dictionary<int, bool> imageLoadError = new();
     private Dictionary<int, int> imageRetryCount = new(); // ✅ Track retry attempts
+    private Dictionary<string, string> _imageSrcCache = new();
     private Dictionary<int, string> imageErrorMessages = new(); // ✅ Store error messages
     private Dictionary<int, ElementReference> _imageRefs = new(); // Magnifier element refs
+    private HashSet<int> _inlinePreviewImageIds = new();
     private Dictionary<int, ImageExistsCheckResult> _imageExistsCheckResult = new(); // ✅ Store image existence check results
     private bool _checkingImageExists = false; // ✅ Track if check is in progress
     private List<ImageAnalysisDecisionDto> _decisions = new();
@@ -284,6 +311,8 @@
                 _isLoading = false; // Reset loading flag
                 images = null; // Clear previous images
                 _decisions.Clear(); // Clear previous decisions
+                _imageSrcCache.Clear();
+                _inlinePreviewImageIds.Clear();
             }
             
             // ✅ FIX: Check both flags to prevent double loading
@@ -333,7 +362,9 @@
                     if (OnAutoOpenHandled.HasDelegate)
                         await OnAutoOpenHandled.InvokeAsync();
                     if (images?.Any() == true)
-                        await OpenFullImage(images.First());
+                    {
+                        Snackbar.Add("Selected split image is ready. Open the image when you are ready to review full fidelity.", Severity.Info);
+                    }
                 }
                 catch (ObjectDisposedException) { }
                 catch (Exception ex)
@@ -372,7 +403,10 @@
         try
         {
             Console.WriteLine($"🔍 [ImageDecisionView] Loading images for container: {ContainerNumber}");
-            images = await ContainerDetailsService.GetImageMetadataAsync(ContainerNumber);
+            images = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                ContainerNumber,
+                GroupIdentifier,
+                SourceScanResolution);
             
             if (images != null && images.Any())
             {
@@ -523,26 +557,33 @@
             var selectedDecision = _selectedDecision.TryGetValue(scannerType, out var d) ? d : (string.IsNullOrWhiteSpace(decision) ? "Pending" : decision);
             var selectedComments = _imageComments.TryGetValue(scannerType, out var c) ? c : comments ?? string.Empty;
 
+                var decisionContainerNumber = GetDecisionContainerNumber();
+                var splitSide = SourceScanResolution?.EffectiveSplitSide;
+
                 if (attempt == 1)
                 {
-                    await LogToBrowserConsole($"➡️ [ImageDecisionView] Saving decision | Container={ContainerNumber} | Scanner={scannerType} | Decision={selectedDecision} | User={_currentUsername}");
+                    await LogToBrowserConsole($"➡️ [ImageDecisionView] Saving decision | Container={decisionContainerNumber} | Scanner={scannerType} | Decision={selectedDecision} | User={_currentUsername}");
                 }
                 else
                 {
-                    await LogToBrowserConsole($"🔄 [ImageDecisionView] Retry attempt {attempt}/{maxRetries} | Container={ContainerNumber} | Scanner={scannerType}");
+                    await LogToBrowserConsole($"🔄 [ImageDecisionView] Retry attempt {attempt}/{maxRetries} | Container={decisionContainerNumber} | Scanner={scannerType}");
                     Snackbar.Add($"Retrying... (Attempt {attempt}/{maxRetries})", Severity.Warning);
                     await Task.Delay(retryDelayMs * attempt); // Exponential backoff
                 }
 
             var request = new
             {
-                ContainerNumber,
+                ContainerNumber = decisionContainerNumber,
                 ScannerType = scannerType,
                 Decision = selectedDecision,
                 Comments = selectedComments,
                 ReviewedBy = _currentUsername,
                 GroupIdentifier,
-                IsConsolidated
+                IsConsolidated,
+                AnalysisRecordId = SourceScanResolution?.AnalysisRecordId,
+                SplitJobId = SourceScanResolution?.SplitJobId,
+                SplitResultId = SourceScanResolution?.SplitResultId,
+                SplitSide = splitSide
             };
 
                 response = await ApiService.PostAsync<object, DecisionSaveResponse>("/api/ImageAnalysisDecision", request);
@@ -656,32 +697,189 @@
     // save path is SaveImageDecision(...), invoked from the ImageAnalysisViewer
     // dialog after the auditor clicks Save. See 1.11.0 CHANGELOG.
 
-    /// <summary>
-    /// Get image source URL with cache buster, removing duplicate retry/t parameters
-    /// </summary>
-    private string GetImageSrc(NickScanWebApp.Shared.Models.ImageMetadata image)
+    private string? BuildPreferredImagePath(NickScanWebApp.Shared.Models.ImageMetadata image, string size)
+    {
+        var resolution = GetEffectiveImageResolution(image);
+        if (resolution?.HasUsableSourceScan != true)
+        {
+            return null;
+        }
+
+        var side = image.SplitSide ?? resolution.EffectiveSplitSide;
+        var splitJobId = image.SplitJobId ?? resolution.SplitJobId;
+        var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
+        if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
+        {
+            var cropRoute = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) ? "image" : "lossless";
+            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/{cropRoute}/{Uri.EscapeDataString(side)}";
+        }
+
+        var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
+        if (string.IsNullOrWhiteSpace(sourceScanId))
+        {
+            return null;
+        }
+
+        var parts = new List<string>
+        {
+            $"size={Uri.EscapeDataString(size)}"
+        };
+        var containerHint = StrictSingleContainerToken(ContainerNumber);
+        if (!string.IsNullOrWhiteSpace(containerHint))
+        {
+            parts.Add($"containerNumber={Uri.EscapeDataString(containerHint)}");
+        }
+
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+    }
+
+    private static string? StrictSingleContainerToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            value,
+            "[A-Z]{4}\\d{7}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (matches.Count == 1)
+        {
+            return matches[0].Value.ToUpperInvariant();
+        }
+
+        if (matches.Count > 1 || value.IndexOfAny(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private ScanAssetResolution? GetEffectiveImageResolution(NickScanWebApp.Shared.Models.ImageMetadata image)
+    {
+        var imageResolution = image.Resolution;
+
+        if (HasChosenSplit(imageResolution))
+        {
+            return imageResolution;
+        }
+
+        if (HasChosenSplit(SourceScanResolution))
+        {
+            return SourceScanResolution;
+        }
+
+        return imageResolution ?? SourceScanResolution;
+    }
+
+    private static bool HasChosenSplit(ScanAssetResolution? resolution)
+    {
+        return resolution?.SplitJobId.HasValue == true
+            && resolution.SplitResultId.HasValue
+            && !string.IsNullOrWhiteSpace(resolution.EffectiveSplitSide);
+    }
+
+    private string GetDecisionContainerNumber()
+        => GetDecisionContainerNumber(SourceScanResolution);
+
+    private string GetDecisionContainerNumber(ScanAssetResolution? resolution)
+    {
+        return StrictSingleContainerToken(resolution?.ContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.NormalizedContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.RequestedContainerNumber)
+            ?? StrictSingleContainerToken(resolution?.SplitContext?.ContainerNumber)
+            ?? StrictSingleContainerToken(ContainerNumber)
+            ?? ContainerNumber;
+    }
+
+    private string SignImagePath(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("sig=", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        if (url.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(url, _currentUsername);
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(uri.PathAndQuery, _currentUsername);
+        }
+
+        return url;
+    }
+
+    private string GetPreviewImageSrc(NickScanWebApp.Shared.Models.ImageMetadata image)
+        => GetImageSrc(image, "thumbnail", image.ThumbnailUrl, image.FullImageUrl);
+
+    private string GetFullImageSrc(NickScanWebApp.Shared.Models.ImageMetadata image)
+        => GetImageSrc(image, "full", image.FullImageUrl, image.ThumbnailUrl);
+
+    private bool ShouldRenderInlinePreview(int imageId)
+        => RenderInlinePreviews || _inlinePreviewImageIds.Contains(imageId);
+
+    private void EnableInlinePreview(int imageId)
+    {
+        _inlinePreviewImageIds.Add(imageId);
+        imageLoadError.Remove(imageId);
+        imageErrorMessages.Remove(imageId);
+        ClearImageSrcCache(imageId);
+        StateHasChanged();
+    }
+
+    private string GetImageSrc(
+        NickScanWebApp.Shared.Models.ImageMetadata image,
+        string size,
+        params string?[] fallbacks)
     {
         var currentRetry = imageRetryCount.TryGetValue(image.Id, out var count) ? count : 0;
-        var cacheBuster = $"&retry={currentRetry}&t={DateTime.Now.Ticks}";
-        
-        var baseUrl = image.FullImageUrl;
-        
+        var baseUrl = BuildPreferredImagePath(image, size)
+            ?? fallbacks.FirstOrDefault(url => !string.IsNullOrWhiteSpace(url))
+            ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            return string.Empty;
+        }
+
+        var cacheKey = string.Join("|", new[]
+        {
+            image.Id.ToString(),
+            size,
+            currentRetry.ToString(),
+            image.SourceScanId ?? string.Empty,
+            image.SplitJobId?.ToString() ?? string.Empty,
+            image.SplitResultId?.ToString() ?? string.Empty,
+            image.SplitSide ?? string.Empty,
+            baseUrl
+        });
+
+        if (_imageSrcCache.TryGetValue(cacheKey, out var cachedSrc))
+        {
+            return cachedSrc;
+        }
+
+        baseUrl = SignImagePath(baseUrl);
+
         // Use regex to remove retry and t parameters (handles both &retry=... and ?retry=...)
         baseUrl = System.Text.RegularExpressions.Regex.Replace(baseUrl, @"[&?]retry=\d+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         baseUrl = System.Text.RegularExpressions.Regex.Replace(baseUrl, @"[&?]t=\d+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        
+
         // Clean up double ampersands, ?&, and trailing/leading separators
         baseUrl = baseUrl.Replace("&&", "&").Replace("?&", "?").TrimEnd('&', '?');
-        
+
         // Append cache buster
-        if (!baseUrl.Contains("?"))
-        {
-            return $"{baseUrl}?{cacheBuster.TrimStart('&')}";
-        }
-        else
-        {
-            return $"{baseUrl}{cacheBuster}";
-        }
+        var src = !baseUrl.Contains("?")
+            ? $"{baseUrl}?retry={currentRetry}"
+            : $"{baseUrl}&retry={currentRetry}";
+
+        _imageSrcCache[cacheKey] = src;
+        return src;
     }
 
     private async Task HandleImageError(int imageId, string imageUrl)
@@ -700,6 +898,7 @@
         if (retries == 0)
         {
             imageRetryCount[imageId] = 1;
+            ClearImageSrcCache(imageId);
             Console.WriteLine($"[ImageDecisionView] Image {imageId} failed — re-minting signed URL (attempt 1)");
             try
             {
@@ -718,7 +917,7 @@
         var image = images?.FirstOrDefault(i => i.Id == imageId);
         if (image != null)
         {
-            var actualSrc = GetImageSrc(image);
+            var actualSrc = GetPreviewImageSrc(image);
             var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
 
             imageErrorMessages[imageId] = $"Image could not be loaded for container {ContainerNumber}. The scan data may be missing or corrupted in the database.";
@@ -740,32 +939,15 @@
         {
             imageLoadError[image.Id] = false; // Mark as successfully loaded
         Console.WriteLine($"✅ [ImageDecisionView] Image {image.Id} ({image.ImageType}) loaded successfully");
-        Console.WriteLine($"   URL: {GetImageSrc(image)}");
+        Console.WriteLine($"   URL: {GetPreviewImageSrc(image)}");
         StateHasChanged();
         }
         // If already loaded, skip StateHasChanged to prevent render loop
     }
 
-    private async Task HandleImageLoadWithMagnifier(NickScanWebApp.Shared.Models.ImageMetadata image)
+    private void HandleImageLoadStart(NickScanWebApp.Shared.Models.ImageMetadata image, string imageSrc)
     {
-        HandleImageLoad(image);
-        // Attach magnifying glass after image loads
-        try
-        {
-            if (_imageRefs.ContainsKey(image.Id))
-            {
-                await JSRuntime.InvokeVoidAsync("ImageMagnifier.attach", _imageRefs[image.Id], new { size = 220, zoom = 2.5 });
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Magnifier] Could not attach to image {image.Id}: {ex.Message}");
-        }
-    }
-
-    private void HandleImageLoadStart(NickScanWebApp.Shared.Models.ImageMetadata image)
-    {
-        Console.WriteLine($"🔄 [ImageDecisionView] Starting to load image {image.Id} ({image.ImageType}): {GetImageSrc(image)}");
+        Console.WriteLine($"🔄 [ImageDecisionView] Starting to load image {image.Id} ({image.ImageType}): {imageSrc}");
     }
 
     private async Task RetryImageLoad(NickScanWebApp.Shared.Models.ImageMetadata image)
@@ -774,6 +956,7 @@
         if (!imageRetryCount.ContainsKey(image.Id))
             imageRetryCount[image.Id] = 0;
         imageRetryCount[image.Id]++;
+        ClearImageSrcCache(image.Id);
 
         // ✅ Clear error state
         imageLoadError[image.Id] = false;
@@ -782,13 +965,8 @@
         // ✅ Clear cache for this container to force fresh load
         ContainerDetailsService.ClearContainerCache(ContainerNumber);
 
-        // ✅ FIX: Don't modify the original URL - GetImageSrc will handle cache busting
-        // This prevents duplicate query parameters from accumulating
-        // The retry count is tracked in imageRetryCount dictionary, and GetImageSrc
-        // will append fresh cache buster parameters each time
-
         Console.WriteLine($"🔄 [ImageDecisionView] Retrying image {image.Id} (attempt {imageRetryCount[image.Id]})");
-        Console.WriteLine($"   URL will be: {GetImageSrc(image)}");
+        Console.WriteLine($"   URL will be: {GetPreviewImageSrc(image)}");
         
         Snackbar.Add($"Retrying image load (attempt {imageRetryCount[image.Id]})...", Severity.Info);
         StateHasChanged();
@@ -802,7 +980,17 @@
         imageLoadError[imageId] = false;
         imageErrorMessages.Remove(imageId);
         imageRetryCount.Remove(imageId);
+        ClearImageSrcCache(imageId);
         StateHasChanged();
+    }
+
+    private void ClearImageSrcCache(int imageId)
+    {
+        var prefix = $"{imageId}|";
+        foreach (var key in _imageSrcCache.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+        {
+            _imageSrcCache.Remove(key);
+        }
     }
 
     /// <summary>
@@ -810,7 +998,7 @@
     /// </summary>
     private async Task TestImageUrl(NickScanWebApp.Shared.Models.ImageMetadata image)
     {
-        var testUrl = GetImageSrc(image);
+        var testUrl = GetPreviewImageSrc(image);
         Console.WriteLine($"🔍 [ImageDecisionView] Testing image URL in new tab: {testUrl}");
         
         try
@@ -842,10 +1030,14 @@
             // Build a signed URL so the raw HttpClient below is authenticated without a JWT header.
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var uid = authState.User.Identity?.Name ?? "anon";
-            var urlPath = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
-            if (image.ImageType != "ASE")
+            var urlPath = BuildPreferredImagePath(image, "full");
+            if (string.IsNullOrWhiteSpace(urlPath))
             {
-                urlPath += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
+                urlPath = $"/api/ImageProcessing/container/{Uri.EscapeDataString(ContainerNumber)}/complete/image";
+                if (image.ImageType != "ASE")
+                {
+                    urlPath += $"?imageType={Uri.EscapeDataString(image.ImageType)}";
+                }
             }
             var checkUrl = UrlBuilder.Build(urlPath, uid);
             
@@ -921,10 +1113,16 @@
         Console.WriteLine($"🖼️ Opening advanced image viewer for: {image.ImageType} - {image.FullImageUrl}");
         await LogToBrowserConsole($"🖼️ [ImageDecisionView] Opening fullscreen viewer for container: {ContainerNumber}, image: {image.ImageType}");
         
-        // ✅ Capture container info in closure (don't capture images - use component field directly in callback)
-        var currentContainerNumber = ContainerNumber;
+        var effectiveResolution = GetEffectiveImageResolution(image);
+
+        // Capture the resolved child container for the fullscreen handoff. CMR
+        // and split-parent rows can render with a parent/group identifier, but
+        // the viewer and decision save must use the actual analysis record
+        // container so the selected crop stays attached to the right child row.
+        var currentContainerNumber = GetDecisionContainerNumber(effectiveResolution);
         var currentGroupIdentifier = GroupIdentifier;
         var currentIsConsolidated = IsConsolidated;
+        var fullImageUrl = GetFullImageSrc(image);
         
         // ✅ CRITICAL: Notify parent that this container is being processed
         // This ensures _currentProcessingContainer is set correctly for auto-progression
@@ -940,12 +1138,13 @@
         IDialogReference? dialogRef = null;
         var parameters = new DialogParameters
         {
-            ["ImageUrl"] = image.FullImageUrl,
+            ["ImageUrl"] = fullImageUrl,
             ["ContainerNumber"] = currentContainerNumber,
             ["ScannerType"] = image.ImageType,
             ["ScanDate"] = DateTime.Now,
             ["GroupIdentifier"] = currentGroupIdentifier,
             ["IsConsolidated"] = currentIsConsolidated,
+            ["SourceScanResolution"] = effectiveResolution,
             ["OnClose"] = EventCallback.Factory.Create(this, () =>
             {
                 // ✅ Close the dialog when OnClose is called
@@ -1078,6 +1277,7 @@
     {
         imageLoadError?.Clear();
         imageRetryCount?.Clear();
+        _imageSrcCache?.Clear();
         imageErrorMessages?.Clear();
         _imageExistsCheckResult?.Clear();
         _decisions?.Clear();

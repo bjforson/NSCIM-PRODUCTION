@@ -383,20 +383,32 @@ namespace NickScanCentralImagingPortal.API.Hubs
             var totalContainers = await dbContext.ContainerCompletenessStatuses
                 .CountAsync(cancellationToken);
 
-            // Count containers with NULL GroupIdentifier
-            var nullGroupIdentifier = await dbContext.ContainerCompletenessStatuses
+            // Count actionable integrity issues only. Rows that are still
+            // Missing, Export-Pending, or AwaitingDeclaration are expected to
+            // lack declaration identity, so they should not drag the dashboard
+            // integrity percentage below zero.
+            var integrityScope = GetContainerIntegrityScope(dbContext);
+            var scopedContainers = await integrityScope.CountAsync(cancellationToken);
+
+            // Count containers with NULL GroupIdentifier after ICUMS data has
+            // arrived and the row is no longer in a declaration-wait state.
+            var nullGroupIdentifier = await integrityScope
                 .Where(c => string.IsNullOrEmpty(c.GroupIdentifier))
                 .CountAsync(cancellationToken);
 
-            // Count containers with missing BOEDocumentId
-            var missingBOEDocumentId = await dbContext.ContainerCompletenessStatuses
+            // Count rows that claim ICUMS data but lost the BOE document link.
+            var missingBOEDocumentId = await integrityScope
                 .Where(c => c.BOEDocumentId == null || c.BOEDocumentId == 0)
                 .CountAsync(cancellationToken);
 
-            // Count containers with wrong GroupIdentifier (GroupIdentifier doesn't match BOE DeclarationNumber)
+            // Count non-consolidated containers whose GroupIdentifier doesn't
+            // match the BOE DeclarationNumber. Consolidated cargo legitimately
+            // stores the container number in GroupIdentifier.
             // ✅ FIX: Cannot join across different DbContext instances - query separately and join in memory
-            var containersWithBOE = await dbContext.ContainerCompletenessStatuses
-                .Where(c => !string.IsNullOrEmpty(c.GroupIdentifier) && c.BOEDocumentId.HasValue)
+            var containersWithBOE = await integrityScope
+                .Where(c => !c.IsConsolidated
+                    && !string.IsNullOrEmpty(c.GroupIdentifier)
+                    && c.BOEDocumentId.HasValue)
                 .Select(c => new { c.BOEDocumentId, c.GroupIdentifier })
                 .ToListAsync(cancellationToken);
 
@@ -430,11 +442,19 @@ namespace NickScanCentralImagingPortal.API.Hubs
             var boeDict = boeDocuments.ToDictionary(b => b.Id, b => b.DeclarationNumber);
             var wrongGroupIdentifier = containersWithBOE
                 .Count(c => boeDict.TryGetValue(c.BOEDocumentId!.Value, out var declaration)
+                    && !string.IsNullOrWhiteSpace(declaration)
                     && declaration != c.GroupIdentifier);
 
+            var distinctIssueRows = await integrityScope
+                .Where(c => string.IsNullOrEmpty(c.GroupIdentifier)
+                    || c.BOEDocumentId == null
+                    || c.BOEDocumentId == 0)
+                .CountAsync(cancellationToken);
+            distinctIssueRows += wrongGroupIdentifier;
+
             // Calculate integrity percentage
-            var integrityPercentage = totalContainers > 0
-                ? ((totalContainers - nullGroupIdentifier - missingBOEDocumentId - wrongGroupIdentifier) * 100.0 / totalContainers)
+            var integrityPercentage = scopedContainers > 0
+                ? Math.Max(0, ((scopedContainers - distinctIssueRows) * 100.0 / scopedContainers))
                 : 100.0;
 
             // Determine integrity status
@@ -512,7 +532,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
             var lastPreventiveFixTimeValue = lastPreventiveFixTime ?? DateTime.UtcNow.AddHours(-1);
 
             // Get recent issues (last 10)
-            var recentIssues = await dbContext.ContainerCompletenessStatuses
+            var recentIssues = await integrityScope
                 .Where(c => (string.IsNullOrEmpty(c.GroupIdentifier) || c.BOEDocumentId == null || c.BOEDocumentId == 0)
                     && c.UpdatedAt >= last24Hours)
                 .OrderByDescending(c => c.UpdatedAt)
@@ -736,20 +756,26 @@ namespace NickScanCentralImagingPortal.API.Hubs
                     null));
             }
 
-            var nullGroupIdentifier = await dbContext.ContainerCompletenessStatuses
+            var integrityScope = GetContainerIntegrityScope(dbContext);
+
+            var nullGroupIdentifier = await integrityScope
                 .Where(c => string.IsNullOrEmpty(c.GroupIdentifier))
                 .CountAsync(cancellationToken);
 
-            var missingBOEDocumentId = await dbContext.ContainerCompletenessStatuses
+            var missingBOEDocumentId = await integrityScope
                 .Where(c => c.BOEDocumentId == null || c.BOEDocumentId == 0)
                 .CountAsync(cancellationToken);
 
-            var totalContainers = await dbContext.ContainerCompletenessStatuses
-                .CountAsync(cancellationToken);
+            var totalContainers = await integrityScope.CountAsync(cancellationToken);
 
             if (totalContainers > 0)
             {
-                var integrityPercentage = ((totalContainers - nullGroupIdentifier - missingBOEDocumentId) * 100.0 / totalContainers);
+                var issueRows = await integrityScope
+                    .Where(c => string.IsNullOrEmpty(c.GroupIdentifier)
+                        || c.BOEDocumentId == null
+                        || c.BOEDocumentId == 0)
+                    .CountAsync(cancellationToken);
+                var integrityPercentage = Math.Max(0, ((totalContainers - issueRows) * 100.0 / totalContainers));
 
                 if (integrityPercentage < 95.0)
                 {
@@ -761,15 +787,22 @@ namespace NickScanCentralImagingPortal.API.Hubs
                         {
                             { "NullGroupIdentifier", nullGroupIdentifier },
                             { "MissingBOEDocumentId", missingBOEDocumentId },
-                            { "IntegrityPercentage", integrityPercentage }
+                            { "IntegrityPercentage", integrityPercentage },
+                            { "IntegrityScope", totalContainers }
                         }));
                 }
-                else if (nullGroupIdentifier > 50 || missingBOEDocumentId > 50)
+                else if (issueRows > 0)
                 {
                     rawAlerts.Add(("DataIntegrity", "Warning", // was "Medium"
                         "Data integrity warning",
-                        $"{nullGroupIdentifier} containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId",
-                        null));
+                        $"{nullGroupIdentifier} actionable containers with NULL GroupIdentifier, {missingBOEDocumentId} with missing BOEDocumentId. Integrity: {integrityPercentage:F2}% over {totalContainers} ICUMS-linked rows",
+                        new Dictionary<string, object>
+                        {
+                            { "NullGroupIdentifier", nullGroupIdentifier },
+                            { "MissingBOEDocumentId", missingBOEDocumentId },
+                            { "IntegrityPercentage", integrityPercentage },
+                            { "IntegrityScope", totalContainers }
+                        }));
                 }
             }
 
@@ -821,6 +854,14 @@ namespace NickScanCentralImagingPortal.API.Hubs
             }
 
             return alerts;
+        }
+
+        private static IQueryable<NickScanCentralImagingPortal.Core.Entities.ContainerCompletenessStatus> GetContainerIntegrityScope(ApplicationDbContext dbContext)
+        {
+            return dbContext.ContainerCompletenessStatuses
+                .Where(c => c.HasICUMSData
+                    && c.Status != "AwaitingDeclaration"
+                    && c.Status != "Export-Pending");
         }
 
         /// <summary>

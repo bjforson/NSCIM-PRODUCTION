@@ -54,6 +54,8 @@ if (!_skipMutex)
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService();
+builder.Services.Configure<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadOptions>(
+    builder.Configuration.GetSection(NickScanCentralImagingPortal.Services.Caching.PredictivePreloadOptions.SectionName));
 
 // ✅ FIX: Remove EventLog logger added by UseWindowsService() — it requires
 // System.Threading.AccessControl.dll which is missing from the publish output,
@@ -72,6 +74,7 @@ builder.Configuration.AddEnvironmentVariables("NICKSCAN_");
 
 // Load logging configuration
 builder.Configuration.AddJsonFile("appsettings.Logging.json", optional: true, reloadOnChange: true);
+var disableHostedServicesForStaging = builder.Configuration.GetValue<bool>("StagingVerification:DisableBackgroundServices", false);
 
 // ✅ SECURITY FIX: Replace credential placeholders with environment variables
 // Note: IConfiguration is read-only, so we can't modify it directly
@@ -188,7 +191,10 @@ builder.Services.AddHttpClient<NickScanCentralImagingPortal.Services.ImageSplitt
 // 2.15.3: NSCIM_API now supervises the Python image-splitter subprocess directly
 // (see ImageSplitterSupervisorService). The old ImageSplitterHealthMonitorService
 // only logged health — the supervisor does that AND manages the process lifecycle.
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.ImageSplitterSupervisorService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageSplitter.ImageSplitterSupervisorService>();
+}
 
 // NICKSCAN ERP — Phase 1 multi-tenancy: ITenantContext + TenantOwnedEntityInterceptor.
 // The DbContexts (registered later in ServiceConfiguration) consume the
@@ -685,9 +691,9 @@ builder.Services.AddTransient<NickScanCentralImagingPortal.Services.Http.Correla
 // dashboard going forward.
 Log.Information("✅ Comprehensive health checks configured (3 databases, JSON endpoint)");
 
-// Add comprehensive monitoring with SignalR
-// This already registers ComprehensiveHealthCheckService as singleton and hosted service
-builder.Services.AddMonitoringWithSignalR();
+// Add comprehensive monitoring with SignalR. Controlled staging keeps the
+// injectable service but suppresses the hosted polling loop.
+builder.Services.AddMonitoringWithSignalR(!disableHostedServicesForStaging);
 
 // Add structured logging services
 builder.Services.AddSingleton<IStructuredLoggingService, StructuredLoggingService>();
@@ -724,7 +730,10 @@ builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.IEndpoin
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Monitoring.EndpointUsageBufferService>();
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Core.Interfaces.IEndpointUsageBufferService>(sp =>
     sp.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.EndpointUsageBufferService>());
-builder.Services.AddHostedService(sp => sp.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.EndpointUsageBufferService>());
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<NickScanCentralImagingPortal.Services.Monitoring.EndpointUsageBufferService>());
+}
 Log.Information("✅ Multi-Container Validation Service registered");
 
 // ✅ FIX: Register interface, not concrete class (ServiceConfiguration already registers it, but this ensures it's available)
@@ -734,32 +743,53 @@ Log.Information("✅ ICUMS Download Queue Service registered");
 // PostICUMSValidationService runs inside ContainerCompletenessOrchestratorService — standalone registration removed to prevent duplicate execution
 
 // ✅ Image Analysis Dashboard Broadcast Service - Real-time dashboard updates
-builder.Services.AddHostedService<NickScanCentralImagingPortal.API.Hubs.ImageAnalysisDashboardBroadcastService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.API.Hubs.ImageAnalysisDashboardBroadcastService>();
+}
 Log.Information("✅ Image Analysis Dashboard Broadcast Service registered");
 
 // ✅ Dashboard Broadcast Service - Comprehensive dashboard SignalR broadcasts (30s interval from settings)
-builder.Services.AddHostedService<NickScanCentralImagingPortal.API.Hubs.DashboardBroadcastService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.API.Hubs.DashboardBroadcastService>();
+}
 Log.Information("✅ Dashboard Broadcast Service registered");
 
 // ✅ User Readiness Sync Service - Syncs SignalR state to database
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageAnalysis.UserReadinessSyncService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.ImageAnalysis.UserReadinessSyncService>();
+}
 Log.Information("✅ User Readiness Sync Service registered");
 
 // IcumJsonIngestionService: Standalone service handles full JSON parsing and ingestion.
 // The orchestrator does NOT duplicate this — ingestion is handled entirely here.
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.IcumJsonIngestionService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.IcumJsonIngestionService>();
+}
 Log.Information("✅ ICUMS JSON Ingestion Service registered");
 
 // ✅ PHASE 2.2: Failed File Retry Service - Dead-Letter Queue with automatic retry
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.FailedFileRetryService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.FailedFileRetryService>();
+}
 Log.Information("✅ Failed File Retry Service registered (Phase 2.2)");
 
 // ✅ PHASE 3.1: ICUMS Metrics Collector Service - Updates gauges periodically
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.ICUMSMetricsCollectorService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.ICUMSMetricsCollectorService>();
+}
 Log.Information("✅ ICUMS Metrics Collector Service registered (Phase 3.1)");
 
 // ✅ ARCHIVE SOLUTION: ICUMS File Archive Service - Archives processed files with compression
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.IcumFileArchiveService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.IcumApi.IcumFileArchiveService>();
+}
 Log.Information("✅ ICUMS File Archive Service registered (Archive Solution)");
 
 // ✅ 1.14.0 — Record Completeness Reconciliation Worker
@@ -771,7 +801,10 @@ Log.Information("✅ RecordBuildingService registered (event-driven record build
 
 // Safety-net reconciliation pass — catches anything the event-driven path missed.
 // See RecordReconciliationWorker.cs for the full state machine.
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.RecordCompleteness.RecordReconciliationWorker>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.RecordCompleteness.RecordReconciliationWorker>();
+}
 Log.Information("✅ Record Reconciliation Worker registered (1.14.0 — safety-net)");
 
 // Resilience item 2 (2026-05-09) — backfill validator. Re-applies the FYCO direction
@@ -780,7 +813,10 @@ Log.Information("✅ Record Reconciliation Worker registered (1.14.0 — safety-
 // flag-only: violations land as Warning-severity dashboardalerts rows via the
 // existing IDashboardAlertService dedupe path. Catches legacy violations that
 // pre-date the rule activation 2026-05-02. Disable via Validation:BackfillEnabled=false.
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.BackfillValidationService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.BackfillValidationService>();
+}
 Log.Information("✅ Backfill Validation Service registered (resilience item 2 — 2026-05-09)");
 
 // Item 7 (2026-05-09) — drift sweep. Pure-observation periodic counter for three
@@ -789,7 +825,10 @@ Log.Information("✅ Backfill Validation Service registered (resilience item 2 �
 // dashboardalerts row when any count exceeds threshold (default 5). Cadence via
 // Validation:DriftSweepIntervalHours (default 24). Disable via
 // Validation:DriftSweepEnabled=false. Does not fix anything — surfaces growth.
-builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.DriftSweepService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Validation.DriftSweepService>();
+}
 Log.Information("✅ Drift Sweep Service registered (item 7 — 2026-05-09)");
 
 // ✅ Image Analysis Background Services are already registered in ServiceConfiguration.AddStandardizedServices()
@@ -862,6 +901,14 @@ else
     builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICacheService,
         NickScanCentralImagingPortal.Services.Caching.RedisCacheService>();
     Log.Information("⚠️ Redis disabled - using in-memory cache");
+}
+
+builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadState>();
+builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService,
+    NickScanCentralImagingPortal.Services.Caching.PredictivePreloadService>();
+if (!disableHostedServicesForStaging)
+{
+    builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadBackgroundService>();
 }
 
 // ✅ Add Response Caching (always registered so [ResponseCache] VaryByQueryKeys works)

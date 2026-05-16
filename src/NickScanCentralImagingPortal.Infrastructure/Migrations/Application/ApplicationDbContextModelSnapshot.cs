@@ -2259,6 +2259,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                         .HasColumnType("character varying(100)")
                         .HasColumnName("acknowledgedby");
 
+                    b.Property<string>("AlertKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("alertkey");
+
                     b.Property<string>("Description")
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)")
@@ -2304,6 +2310,12 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
 
                     b.HasIndex("AcknowledgedAtUtc")
                         .HasDatabaseName("ix_dashboardalerts_acknowledgedatutc");
+
+                    b.HasIndex("AlertKey")
+                        .HasDatabaseName("ix_dashboardalerts_alertkey");
+
+                    b.HasIndex("AlertKey", "AcknowledgedAtUtc", "RaisedAtUtc")
+                        .HasDatabaseName("ix_dashboardalerts_alertkey_ack_raisedatutc");
 
                     b.HasIndex("RaisedAtUtc")
                         .HasDatabaseName("ix_dashboardalerts_raisedatutc");

@@ -4,6 +4,7 @@
 @using NickScanWebApp.New.Components.ICUMS
 @using NickScanWebApp.New.Components.Operations
 @using NickScanWebApp.New.Components.CargoGroup
+@using NickScanWebApp.New.Models
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanWebApp.Shared.Models
 @inject ApiService ApiService
@@ -13,6 +14,7 @@
 @inject IDialogService DialogService
 @inject CargoGroupService CargoGroupService
 @inject ILogger<AuditReviewDialog> Logger
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 
 <MudDialog>
     <DialogContent>
@@ -36,7 +38,7 @@
                     </div>
                     <MudSpacer />
                     <MudText Typo="Typo.caption">
-                        Original Analysis by <strong>@Record?.ImageAnalysisDecisions.FirstOrDefault()?.ReviewedBy</strong>
+                        Original Analysis by <strong>@GetOriginalAnalystDisplay()</strong>
                         on @Record?.SubmittedAt.ToString("MMM dd, yyyy HH:mm")
                     </MudText>
                 </MudStack>
@@ -109,6 +111,8 @@
                                 <!-- Scanner Data Tab -->
                                 <MudTabPanel Text="Scanner Data" Icon="@Icons.Material.Outlined.Scanner">
                                     <ScannerDataTab ContainerNumber="@decision.ContainerNumber" 
+                                                   GroupIdentifier="@Record?.GroupIdentifier"
+                                                   SourceScanResolution="@GetScanAssetResolution(decision.ContainerNumber)"
                                                    TotalRecords="1" 
                                                    PreloadedData="@(_preloadedScannerData.ContainsKey(decision.ContainerNumber) ? _preloadedScannerData[decision.ContainerNumber] : null)" />
                                 </MudTabPanel>
@@ -160,7 +164,7 @@
                                                         <!-- Image display area -->
                                                         <div style="background: #111; min-height: 350px; display:flex; align-items:center; justify-content:center; cursor: zoom-in;"
                                                              @onclick="@(() => OpenFullImage(image, decision.ContainerNumber, imageIndex))">
-                                                            <img src="@image.FullImageUrl" alt="@image.ImageType"
+                                                            <img src="@GetAuditImageUrl(image, decision.ContainerNumber)" alt="@image.ImageType"
                                                                  style="max-width: 100%; max-height: 600px;" loading="lazy" />
                                                         </div>
 
@@ -175,7 +179,7 @@
                                                                         Analyst Decision: <strong>@decision.Decision</strong>
                                                                     </MudText>
                                                                     <MudText Typo="Typo.caption" Color="Color.Secondary">
-                                                                        By @decision.ReviewedBy on @decision.ReviewedAt.ToString("MMM dd, yyyy HH:mm")
+                                                                        By @GetAnalystName(decision) on @decision.ReviewedAt.ToString("MMM dd, yyyy HH:mm")
                                                                     </MudText>
                                                                     @if (!string.IsNullOrEmpty(decision.Comments))
                                                                     {
@@ -284,6 +288,7 @@
 
 @code {
     [Parameter] public AuditGroupDto? Record { get; set; }
+    [Parameter] public AuditReviewViewContext? PreloadedContext { get; set; }
     [Parameter] public EventCallback<bool> OnAuditComplete { get; set; }
     
     private const string ApprovedValue = "Approved";
@@ -296,6 +301,7 @@
     private Dictionary<string, string> _auditDecisions = new(); // ContainerNumber -> rolled-up Decision
     private Dictionary<string, string> _auditNotes = new(); // ContainerNumber -> container-level notes
     private Dictionary<string, List<NickScanWebApp.Shared.Models.ImageMetadata>> _containerImages = new();
+    private Dictionary<string, ScanAssetResolution> _scanAssetResolutions = new();
 
     // Per-image audit state (deferred plan request 1 — UI half).
     // ContainerNumber → (ImageIndex → "Approved"/"Rejected"). The container-level
@@ -341,8 +347,11 @@
 
         // ✅ OPTIMIZATION: Summary tab is lazy-loaded when user switches to it (not on dialog open)
         
+        ApplyPreloadedContext();
+
         // ✅ FIX: Preload all data for all containers (images, scanner data, ICUMS data)
-        await LoadAllContainerData();
+        // Phase 4: when the page supplied a preloaded view context, only fetch gaps.
+        await LoadMissingContainerData();
     }
     
     private void OnMainTabChanged(int newIndex)
@@ -436,35 +445,95 @@
     }
 
     /// <summary>
-    /// ✅ FIX: Preload all data for all containers (images, scanner data, ICUMS data)
-    /// This ensures tabs have data ready when clicked
+    /// Apply page-level audit review preload data before falling back to direct
+    /// container loads. This keeps old behavior for any missing context.
     /// </summary>
-    private async Task LoadAllContainerData()
+    private void ApplyPreloadedContext()
+    {
+        if (Record?.ImageAnalysisDecisions == null || PreloadedContext == null)
+        {
+            return;
+        }
+
+        var appliedContainers = 0;
+        foreach (var decision in Record.ImageAnalysisDecisions)
+        {
+            var containerNumber = decision.ContainerNumber;
+            var containerContext = PreloadedContext.GetContainerContext(containerNumber);
+            if (containerContext == null)
+            {
+                continue;
+            }
+
+            if (containerContext.Images != null)
+            {
+                _containerImages[containerNumber] = containerContext.Images;
+            }
+
+            if (containerContext.ScanAssetResolution != null)
+            {
+                _scanAssetResolutions[containerNumber] = containerContext.ScanAssetResolution;
+            }
+
+            if (containerContext.ScannerData != null)
+            {
+                _preloadedScannerData[containerNumber] = containerContext.ScannerData;
+            }
+
+            if (containerContext.ICUMSData != null)
+            {
+                _preloadedICUMSData[containerNumber] = containerContext.ICUMSData;
+            }
+
+            appliedContainers++;
+        }
+
+        Logger.LogInformation(
+            "📦 [AuditReviewDialog] Applied preloaded context for {Applied}/{Total} containers in group {Group}",
+            appliedContainers,
+            Record.ImageAnalysisDecisions.Count,
+            Record.GroupIdentifier);
+    }
+
+    /// <summary>
+    /// ✅ FIX: Preload missing data for all containers (images, scanner data, ICUMS data)
+    /// This ensures tabs have data ready when clicked without reloading data supplied by the page preloader.
+    /// </summary>
+    private async Task LoadMissingContainerData()
     {
         if (Record?.ImageAnalysisDecisions == null) return;
 
-        Console.WriteLine($"🚀 [AuditReviewDialog] Preloading data for {Record.ImageAnalysisDecisions.Count} container(s)");
+        Console.WriteLine($"🚀 [AuditReviewDialog] Preloading missing data for {Record.ImageAnalysisDecisions.Count} container(s)");
 
-        // Load all data in parallel for better performance
+        // Load missing data in parallel for better performance
         var loadTasks = new List<Task>();
 
         foreach (var decision in Record.ImageAnalysisDecisions)
         {
             var containerNumber = decision.ContainerNumber;
             
-            // Load images
-            loadTasks.Add(LoadContainerImages(containerNumber));
+            if (!_containerImages.ContainsKey(containerNumber))
+            {
+                loadTasks.Add(LoadContainerImages(containerNumber));
+            }
 
-            // Load scanner data
-            loadTasks.Add(LoadContainerScannerData(containerNumber));
+            if (!_preloadedScannerData.ContainsKey(containerNumber))
+            {
+                loadTasks.Add(LoadContainerScannerData(containerNumber));
+            }
 
-            // Load ICUMS data
-            loadTasks.Add(LoadContainerICUMSData(containerNumber));
+            if (!_preloadedICUMSData.ContainsKey(containerNumber))
+            {
+                loadTasks.Add(LoadContainerICUMSData(containerNumber));
+            }
         }
 
-        // Wait for all data to load
-        await Task.WhenAll(loadTasks);
-        Console.WriteLine($"✅ [AuditReviewDialog] Finished preloading all container data");
+        if (loadTasks.Count > 0)
+        {
+            await Task.WhenAll(loadTasks);
+        }
+
+        Console.WriteLine($"✅ [AuditReviewDialog] Finished preloading missing container data");
         StateHasChanged();
     }
 
@@ -472,7 +541,11 @@
     {
         try
         {
-            var images = await ContainerDetailsService.GetImageMetadataAsync(containerNumber);
+            var resolution = await GetOrResolveScanAssetAsync(containerNumber);
+            var images = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                containerNumber,
+                Record?.GroupIdentifier,
+                resolution);
             if (images != null)
             {
                 _containerImages[containerNumber] = images;
@@ -489,7 +562,13 @@
     {
         try
         {
-            var scannerData = await ContainerDetailsService.GetScannerDataAsync(containerNumber, 1, 1000);
+            var resolution = await GetOrResolveScanAssetAsync(containerNumber);
+            var scannerData = await ContainerDetailsService.GetScannerDataForResolvedScanAsync(
+                containerNumber,
+                Record?.GroupIdentifier,
+                page: 1,
+                pageSize: 1000,
+                resolution: resolution);
             if (scannerData != null)
             {
                 _preloadedScannerData[containerNumber] = scannerData;
@@ -517,6 +596,100 @@
         {
             Console.WriteLine($"❌ [AuditReviewDialog] Error loading ICUMS data for {containerNumber}: {ex.Message}");
         }
+    }
+
+    private ScanAssetResolution? GetScanAssetResolution(string containerNumber)
+    {
+        return _scanAssetResolutions.TryGetValue(containerNumber, out var resolution)
+            ? resolution
+            : null;
+    }
+
+    private async Task<ScanAssetResolution?> GetOrResolveScanAssetAsync(string containerNumber)
+    {
+        if (_scanAssetResolutions.TryGetValue(containerNumber, out var existing))
+        {
+            return existing;
+        }
+
+        var resolution = await ContainerDetailsService.ResolveScanAssetAsync(
+            containerNumber,
+            Record?.GroupIdentifier);
+
+        if (resolution != null)
+        {
+            _scanAssetResolutions[containerNumber] = resolution;
+        }
+
+        return resolution;
+    }
+
+    private string GetAuditImageUrl(NickScanWebApp.Shared.Models.ImageMetadata image, string containerNumber)
+    {
+        var resolution = image.Resolution ?? GetScanAssetResolution(containerNumber);
+        var preferred = BuildPreferredImagePath(image, containerNumber, resolution);
+        var url = preferred ?? image.FullImageUrl;
+
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("sig=", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        if (url.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(url, _currentUser);
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(uri.PathAndQuery, _currentUser);
+        }
+
+        return url;
+    }
+
+    private static string? BuildPreferredImagePath(
+        NickScanWebApp.Shared.Models.ImageMetadata image,
+        string containerNumber,
+        ScanAssetResolution? resolution)
+    {
+        if (resolution?.HasUsableSourceScan != true)
+        {
+            return null;
+        }
+
+        var side = image.SplitSide ?? resolution.EffectiveSplitSide;
+        var splitJobId = image.SplitJobId ?? resolution.SplitJobId;
+        var splitResultId = image.SplitResultId ?? resolution.SplitResultId;
+        if (splitJobId.HasValue && splitResultId.HasValue && !string.IsNullOrWhiteSpace(side))
+        {
+            return $"/api/image-splitter/jobs/{splitJobId.Value}/results/{splitResultId.Value}/lossless/{Uri.EscapeDataString(side)}";
+        }
+
+        var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
+        return !string.IsNullOrWhiteSpace(sourceScanId)
+            ? $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?size=full&containerNumber={Uri.EscapeDataString(containerNumber)}"
+            : null;
+    }
+
+    private string GetOriginalAnalystDisplay()
+    {
+        var analysts = Record?.ImageAnalysisDecisions?
+            .Select(decision => decision.ReviewedBy?.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return analysts is { Count: > 0 } ? string.Join(", ", analysts) : "Unknown";
+    }
+
+    private static string GetAnalystName(NickScanWebApp.New.Models.ImageAnalysisDecisionSummary? decision)
+    {
+        return string.IsNullOrWhiteSpace(decision?.ReviewedBy)
+            ? "Unknown"
+            : decision.ReviewedBy.Trim();
     }
 
     private bool AllDecisionsMade()
@@ -925,12 +1098,13 @@
             ["ScanDate"] = image.CreatedAt,
             ["GroupIdentifier"] = Record?.GroupIdentifier ?? "",
             ["IsConsolidated"] = Record?.IsConsolidated ?? false,
+            ["SourceScanResolution"] = image.Resolution ?? GetScanAssetResolution(containerNumber),
             ["AuditMode"] = true,
             ["ImageIndex"] = imageIndex,
             ["OriginalAnalystDecision"] = analystDecision?.Decision,
             ["OriginalAnalystComments"] = analystDecision?.Comments,
             ["OriginalAnalystTags"] = analystDecision?.Tags,
-            ["OriginalAnalystReviewedBy"] = analystDecision?.ReviewedBy
+            ["OriginalAnalystReviewedBy"] = GetAnalystName(analystDecision)
         };
 
         var options = new DialogOptions

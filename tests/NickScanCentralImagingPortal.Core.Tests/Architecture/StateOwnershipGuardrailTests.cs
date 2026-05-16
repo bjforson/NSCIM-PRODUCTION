@@ -44,8 +44,121 @@ public class StateOwnershipGuardrailTests
             "existingStatus.UpdatedAt = DateTime.UtcNow;");
 
         Assert.Contains("ContainerCompletenessPolicy.Evaluate", step2Update);
+        Assert.Contains("cmrCompositeProgressionEnabled: _cmrCompositeProgressionEnabled", step2Update);
+        Assert.Contains("cmrRotationNumber: primaryBOE?.RotationNumber", step2Update);
+        Assert.Contains("cmrContainerNumber: container.ContainerNumber", step2Update);
+        Assert.Contains("cmrBlNumber: primaryBOE?.BlNumber", step2Update);
         Assert.Contains("existingStatus.Status = completenessDecision.Status", step2Update);
         Assert.Contains("completenessDecision.IsComplete", step2Update);
+    }
+
+    [Fact]
+    public void ContainerCompletenessService_PreservesCmrCompositeGroupIdentifiers()
+    {
+        var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/ContainerCompletenessService.cs");
+
+        Assert.Contains("ShouldPreserveCmrCompositeGroupIdentifier", service);
+        Assert.Contains("CmrCompositeKeyHelper.IsOperationalKey(existingGroupIdentifier)", service);
+        Assert.Contains("CmrCompositeKeyHelper.IsOperationalKey(record.GroupIdentifier)", service);
+    }
+
+    [Fact]
+    public void RecordCompletenessPath_IncludesCmrCompositeRecordsBehindFeatureFlag()
+    {
+        var worker = ReadRepoFile("src/NickScanCentralImagingPortal.Services/RecordCompleteness/RecordReconciliationWorker.cs");
+        var builder = ReadRepoFile("src/NickScanCentralImagingPortal.Services/RecordCompleteness/RecordBuildingService.cs");
+        var combined = worker + "\n" + builder;
+
+        Assert.Contains("CmrCompositeProgression", combined);
+        Assert.Contains("\"CMR\"", combined);
+        Assert.Contains("CmrCompositeKeyHelper", combined);
+        Assert.Contains("BuildOrUpdateCmrRecordAsync", combined);
+        Assert.Contains("RecordExpectedContainer", combined);
+        Assert.DoesNotContain("CMR is handled by the 1.13.0 implicit", combined);
+    }
+
+    [Fact]
+    public void ContainerStatusReconciliation_IncludesCmrCompositePolicyInputs()
+    {
+        var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/ContainerStatusReconciliationService.cs");
+        var reconciliationUpdate = Slice(
+            service,
+            "var boeRecords = await icumDownloadsRepository.GetBOEDocumentsByContainerNumberAsync(container.ContainerNumber);",
+            "container.OverallCompleteness =");
+
+        Assert.Contains("CmrCompositeKeyHelper", service);
+        Assert.Contains("primaryBOE.ClearanceType", reconciliationUpdate);
+        Assert.Contains("cmrCompositeProgressionEnabled", reconciliationUpdate);
+        Assert.Contains("cmrRotationNumber: primaryBOE.RotationNumber", reconciliationUpdate);
+        Assert.Contains("cmrContainerNumber: container.ContainerNumber", reconciliationUpdate);
+        Assert.Contains("cmrBlNumber: primaryBOE.BlNumber", reconciliationUpdate);
+        Assert.Contains("cmrCompositeKey.OperationalKey", reconciliationUpdate);
+    }
+
+    [Fact]
+    public void RecordAnchoredImageIntake_UsesCmrGroupTypeAndRealContainers()
+    {
+        var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisOrchestratorService.cs");
+        var recordAnchoredIntake = Slice(
+            service,
+            "private async Task RunRecordAnchoredIntakeAsync(",
+            "private async Task TryLinkGroupToRecordAsync(");
+
+        Assert.Contains("record.ClearanceType", recordAnchoredIntake);
+        Assert.Contains("\"CMR\"", recordAnchoredIntake);
+        Assert.Contains("GetRecordBackedGroupType(record.ClearanceType)", recordAnchoredIntake);
+        Assert.Contains("RecordCompletenessStatusId = record.Id", recordAnchoredIntake);
+        Assert.Contains("ContainerNumber = child.ContainerNumber", recordAnchoredIntake);
+    }
+
+    [Fact]
+    public void TwoContainerSplitIntake_DoesNotPromoteScanPairToCargoGroupIdentifier()
+    {
+        var splitIntake = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageSplitter/TwoContainerSplitIntakeService.cs");
+        var refreshSplitCompleteness = Slice(
+            splitIntake,
+            "private async Task RefreshSplitCompletenessRowsAsync(",
+            "private static IReadOnlyList<string> ParseTwoContainerNumbers");
+        var orchestrator = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisOrchestratorService.cs");
+        var readyGroupsCache = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ReadyGroupsCacheService.cs");
+        var imageAnalysisController = ReadRepoFile("src/NickScanCentralImagingPortal.API/Controllers/ImageAnalysisController.cs");
+        var statusValidator = ReadRepoFile("src/NickScanCentralImagingPortal.Core/Helpers/AnalysisStatusValidator.cs");
+
+        Assert.DoesNotContain("status.GroupIdentifier = groupIdentifier", refreshSplitCompleteness);
+        Assert.Contains("status.GroupIdentifier = null", refreshSplitCompleteness);
+        Assert.Contains("Clearing composite scan-pair GroupIdentifier", refreshSplitCompleteness);
+        Assert.Contains("IsCompositeContainerPairIdentifier(g.GroupIdentifier)", orchestrator);
+        Assert.Contains("QuarantineCompositeContainerPairGroupsAsync", orchestrator);
+        Assert.Contains("[COMPOSITE-SCAN-GUARD]", orchestrator);
+        Assert.Contains("ExpireStaleActiveAssignmentsAsync", orchestrator);
+        Assert.Contains("[ASSIGNMENT-JANITOR]", orchestrator);
+        Assert.Contains("a.LeaseUntilUtc <= now", orchestrator);
+        Assert.Contains("AnalysisStatuses.Cancelled", Slice(
+            orchestrator,
+            "private async Task QuarantineCompositeContainerPairGroupsAsync(",
+            "private async Task CloseStaleDecidedGroupsAsync"));
+        Assert.Contains("composite scan-pair quarantine", statusValidator);
+        Assert.Contains("IsCompositeContainerPairIdentifier(g.GroupIdentifier)", readyGroupsCache);
+        Assert.Contains("IsCompositeContainerPairIdentifier(row.Entry.GroupIdentifier)", imageAnalysisController);
+    }
+
+    [Fact]
+    public void CmrCompositePath_HasDuplicateProtectionGuardrails()
+    {
+        var worker = ReadRepoFile("src/NickScanCentralImagingPortal.Services/RecordCompleteness/RecordReconciliationWorker.cs");
+        var builder = ReadRepoFile("src/NickScanCentralImagingPortal.Services/RecordCompleteness/RecordBuildingService.cs");
+        var intake = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisOrchestratorService.cs");
+        var combined = worker + "\n" + builder + "\n" + intake;
+
+        Assert.Contains("RecordCompletenessStatusId == r.Id", intake);
+        Assert.Contains("RecordCompletenessStatusId = record.Id", intake);
+        Assert.Contains("CmrCompositeKeyHelper.TryCreate", combined);
+        Assert.Contains("cmrKey.OperationalKey", combined);
+        Assert.Contains("FindExistingCmrCompositeGroupForRealRecordAsync", intake);
+        Assert.DoesNotContain("GroupType = \"BL\"", Slice(
+            intake,
+            "private async Task RunRecordAnchoredIntakeAsync(",
+            "private async Task TryLinkGroupToRecordAsync("));
     }
 
     [Fact]

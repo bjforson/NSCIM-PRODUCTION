@@ -118,21 +118,23 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 InvalidateMyAssignmentsCache(username, role);
 
                 var assignmentsCreated = 0;
+                var assignmentsRenewed = 0;
                 if (request.IsReady)
                 {
                     try
                     {
+                        assignmentsRenewed = await RenewActiveAssignmentsForReadyUserAsync(username, role, now, HttpContext.RequestAborted);
                         assignmentsCreated = await TryCreateAssignmentsForReadyUserAsync(username, role, now, HttpContext.RequestAborted);
                     }
                     catch (Exception assignmentEx)
                     {
                         _logger.LogWarning(assignmentEx,
-                            "[READINESS-ASSIGNMENT] Readiness saved for {Username}/{Role}, but immediate assignment kick failed; orchestrator will retry",
+                            "[READINESS-ASSIGNMENT] Readiness saved for {Username}/{Role}, but immediate assignment renew/kick failed; orchestrator will retry",
                             username,
                             role);
                     }
                 }
-                if (assignmentsCreated > 0)
+                if (assignmentsCreated > 0 || assignmentsRenewed > 0)
                 {
                     InvalidateMyAssignmentsCache(username, role);
                 }
@@ -146,6 +148,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     Role = role,
                     IsReady = readiness.IsReady,
                     LastHeartbeat = readiness.LastHeartbeat,
+                    AssignmentsRenewed = assignmentsRenewed,
                     AssignmentsCreated = assignmentsCreated
                 });
             }
@@ -182,14 +185,39 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .AsTracking()
                     .FirstOrDefaultAsync(r => r.Username == username && r.Role == role);
 
+                var assignmentsCreated = 0;
+                var assignmentsRenewed = 0;
+
                 if (readiness != null)
                 {
                     var oldHeartbeat = readiness.LastHeartbeat;
-                    readiness.LastHeartbeat = DateTime.UtcNow;
+                    var now = DateTime.UtcNow;
+                    readiness.LastHeartbeat = now;
                     await _dbContext.SaveChangesAsync();
                     UserReadinessStateProvider.UpdateHeartbeat(username, role);
                     _logger.LogDebug("💓 [HEARTBEAT] Updated heartbeat for {Username} role {Role}: {OldHeartbeat} → {NewHeartbeat}",
                         username, role, oldHeartbeat, readiness.LastHeartbeat);
+
+                    if (readiness.IsReady)
+                    {
+                        try
+                        {
+                            assignmentsRenewed = await RenewActiveAssignmentsForReadyUserAsync(username, role, now, HttpContext.RequestAborted);
+                            assignmentsCreated = await TryCreateAssignmentsForReadyUserAsync(username, role, now, HttpContext.RequestAborted);
+
+                            if (assignmentsRenewed > 0 || assignmentsCreated > 0)
+                            {
+                                InvalidateMyAssignmentsCache(username, role);
+                            }
+                        }
+                        catch (Exception assignmentEx)
+                        {
+                            _logger.LogWarning(assignmentEx,
+                                "[HEARTBEAT-ASSIGNMENT] Heartbeat saved for {Username}/{Role}, but lease renew/assignment top-up failed; orchestrator will retry",
+                                username,
+                                role);
+                        }
+                    }
                 }
                 else
                 {
@@ -198,7 +226,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
                 // If record doesn't exist, that's OK - sync service or SignalR will create it
 
-                return Ok(new { Success = true, Timestamp = DateTime.UtcNow });
+                return Ok(new
+                {
+                    Success = true,
+                    Timestamp = DateTime.UtcNow,
+                    AssignmentsRenewed = assignmentsRenewed,
+                    AssignmentsCreated = assignmentsCreated
+                });
             }
             catch (Exception ex)
             {
@@ -636,6 +670,83 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             return assignmentsCreated;
+        }
+
+        private async Task<int> RenewActiveAssignmentsForReadyUserAsync(
+            string username,
+            string role,
+            DateTime now,
+            CancellationToken cancellationToken)
+        {
+            var settings = await _dbContext.AnalysisSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(cancellationToken) ?? new AnalysisSettings();
+
+            if (!settings.Enabled)
+            {
+                return 0;
+            }
+
+            var leaseMinutes = settings.LeaseMinutes > 0 ? settings.LeaseMinutes : 15;
+            var renewedLeaseUntil = now.AddMinutes(leaseMinutes);
+            var renewWindowMinutes = Math.Max(1, Math.Min(5, leaseMinutes));
+            var renewThreshold = now.AddMinutes(renewWindowMinutes);
+
+            var renewableStatuses = role == "Audit"
+                ? new[] { AnalysisStatuses.AnalystCompleted, AnalysisStatuses.AuditAssigned }
+                : new[] { AnalysisStatuses.Ready, AnalysisStatuses.AnalystAssigned };
+
+            var activeAssignments = await _dbContext.AnalysisAssignments
+                .AsTracking()
+                .Where(a => a.AssignedTo == username
+                    && a.Role == role
+                    && a.State == "Active"
+                    && _dbContext.AnalysisGroups.Any(g => g.Id == a.GroupId && renewableStatuses.Contains(g.Status)))
+                .ToListAsync(cancellationToken);
+
+            if (activeAssignments.Count == 0)
+            {
+                return 0;
+            }
+
+            var renewedAssignmentIds = new List<int>();
+            foreach (var assignment in activeAssignments)
+            {
+                assignment.LastAccessedAtUtc = now;
+
+                if (assignment.LeaseUntilUtc == null || assignment.LeaseUntilUtc <= renewThreshold)
+                {
+                    assignment.LeaseUntilUtc = renewedLeaseUntil;
+                    assignment.UpdatedAtUtc = now;
+                    renewedAssignmentIds.Add(assignment.Id);
+                }
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            foreach (var assignmentId in renewedAssignmentIds)
+            {
+                try
+                {
+                    await UpsertQueueEntryAsync(assignmentId, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[READINESS-LEASE] Queue upsert failed after renewing assignment {AssignmentId}; reconciler will repair it", assignmentId);
+                }
+            }
+
+            if (renewedAssignmentIds.Count > 0)
+            {
+                _logger.LogInformation(
+                    "[READINESS-LEASE] Renewed {Count} active {Role} assignment lease(s) for {Username} through {LeaseUntil:O}",
+                    renewedAssignmentIds.Count,
+                    role,
+                    username,
+                    renewedLeaseUntil);
+            }
+
+            return renewedAssignmentIds.Count;
         }
 
         private async Task<AnalysisAssignment?> TryAssignGroupToReadyUserAsync(

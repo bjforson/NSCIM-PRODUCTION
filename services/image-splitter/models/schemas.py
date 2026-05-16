@@ -17,6 +17,7 @@ class SplitJobResponse(BaseModel):
 
     id: UUID
     container_numbers: str
+    scanner_type: Optional[str] = None
     status: str
     best_strategy: Optional[str] = None
     best_score: Optional[float] = None
@@ -68,6 +69,8 @@ class RejectRequest(BaseModel):
     correct_split_x: Optional[int] = None   # analyst's correct split point (feedback)
     rejected_by: str
     reason: Optional[str] = None
+    review_label: Optional[str] = None
+    split_outcome: Optional[str] = None
 
 
 class RemoteVisionRunBase(BaseModel):

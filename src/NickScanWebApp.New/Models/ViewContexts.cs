@@ -19,6 +19,12 @@ namespace NickScanWebApp.New.Models
         public NickScanWebApp.Shared.Models.ContainerBasicInfo? BasicInfo { get; set; }
 
         /// <summary>
+        /// Optional Phase 2A source-scan resolution for scanner/image/split flows.
+        /// Null means the resolver endpoint was not available or did not resolve.
+        /// </summary>
+        public ScanAssetResolution? ScanAssetResolution { get; set; }
+
+        /// <summary>
         /// Flattened scanner fields for display (already grouped by category in the UI).
         /// Typically fetched as a single "all records" page.
         /// </summary>

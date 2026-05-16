@@ -2,7 +2,8 @@
 @implements IDisposable
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
+@inject NickScanWebApp.Shared.Services.IcumsBatchClient BatchClient
 @inject IJSRuntime JSRuntime
 @inject NavigationManager Navigation
 
@@ -667,7 +668,7 @@
     {
         try
         {
-            var items = await ApiService.GetAsync<List<DownloadQueueItem>>("/api/ICUMSDownloadQueue?limit=500");
+            var items = await DownloadQueueClient.GetItemsAsync<DownloadQueueItem>(limit: 500);
             _queueItems = items ?? new List<DownloadQueueItem>();
         }
         catch (Exception ex)
@@ -681,7 +682,7 @@
     {
         try
         {
-            _queueStats = await ApiService.GetAsync<QueueStatsDto>("/api/ICUMSDownloadQueue/stats") ?? new QueueStatsDto();
+            _queueStats = await DownloadQueueClient.GetStatsAsync<QueueStatsDto>() ?? new QueueStatsDto();
         }
         catch (Exception ex)
         {
@@ -693,7 +694,7 @@
     {
         try
         {
-            _archiveStats = await ApiService.GetAsync<ArchiveStatsDto>("/api/ICUMSDownloadQueue/archive/stats") ?? new ArchiveStatsDto();
+            _archiveStats = await DownloadQueueClient.GetArchiveStatsAsync<ArchiveStatsDto>() ?? new ArchiveStatsDto();
         }
         catch (Exception ex)
         {
@@ -726,7 +727,7 @@
                 requestedBy = "Manual"
             };
             
-            var response = await ApiService.PostAsync<object, EnqueueResponseDto>("/api/ICUMSDownloadQueue/enqueue", request);
+            var response = await DownloadQueueClient.EnqueueAsync<EnqueueResponseDto>(request);
             
             if (response != null)
             {
@@ -777,7 +778,7 @@
                         priority = _enqueuePriority,
                         requestedBy = "Manual-Bulk"
                     };
-                    await ApiService.PostAsync<object, EnqueueResponseDto>("/api/ICUMSDownloadQueue/enqueue", request);
+                    await DownloadQueueClient.EnqueueAsync<EnqueueResponseDto>(request);
                     successCount++;
                 }
                 catch
@@ -799,7 +800,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{id}", new { });
+            await DownloadQueueClient.RetryAsync(id);
             await LoadQueueData();
             Snackbar.Add("Retry initiated", Severity.Success);
         }
@@ -813,7 +814,7 @@
     {
         try
         {
-            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+            await DownloadQueueClient.DeleteAsync(id);
             await LoadQueueData();
             Snackbar.Add("Item removed from queue", Severity.Success);
         }
@@ -838,7 +839,7 @@
         {
             try
             {
-                await ApiService.PostAsync<object, object>($"/api/ICUMSDownloadQueue/retry/{item.Id}", new { });
+                await DownloadQueueClient.RetryAsync(item.Id);
                 successCount++;
             }
             catch
@@ -873,7 +874,7 @@
             int deletedCount = 0;
             foreach (var id in ids)
             {
-                await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{id}");
+                await DownloadQueueClient.DeleteAsync(id);
                 deletedCount++;
             }
             
@@ -912,7 +913,7 @@
                 var item = _queueItems.FirstOrDefault(x => x.Id == id);
                 if (item != null)
                 {
-                    await ApiService.PutAsync<object, object>("/api/ICUMSDownloadQueue/priority", new 
+                    await DownloadQueueClient.UpdatePriorityAsync(new
                     { 
                         ContainerNumber = item.ContainerNumber, 
                         Priority = newPriority 
@@ -959,7 +960,7 @@
                 ResetTimestamps = result.ResetTimestamps
             };
             
-            var response = await ApiService.PostAsync<object, RequeuePendingResponseDto>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            var response = await DownloadQueueClient.RequeuePendingAsync<RequeuePendingResponseDto>(requeueRequest);
             
             if (response != null)
             {
@@ -986,7 +987,7 @@
                 ResetTimestamps = true
             };
             
-            var response = await ApiService.PostAsync<object, RequeuePendingResponseDto>("/api/ICUMSDownloadQueue/requeue-pending", requeueRequest);
+            var response = await DownloadQueueClient.RequeuePendingAsync<RequeuePendingResponseDto>(requeueRequest);
             
             if (response != null)
             {
@@ -1025,7 +1026,7 @@
                 RequestedBy = "Admin"
             };
             
-            var response = await ApiService.PostAsync<object, RequeueResponseDto>("/api/ICUMSDownloadQueue/requeue", requeueRequest);
+            var response = await DownloadQueueClient.RequeueFromArchiveAsync<RequeueResponseDto>(requeueRequest);
             
             if (response != null)
             {
@@ -1046,7 +1047,7 @@
     {
         try
         {
-            _transferStatus = await ApiService.GetAsync<TransferServiceStatusDto>("/api/icums/transfer/status") ?? new TransferServiceStatusDto();
+            _transferStatus = await BatchClient.GetTransferStatusAsync<TransferServiceStatusDto>() ?? new TransferServiceStatusDto();
         }
         catch (Exception ex)
         {
@@ -1058,7 +1059,7 @@
     {
         try
         {
-            _transferStats = await ApiService.GetAsync<TransferStatisticsDto>("/api/icums/transfer/statistics") ?? new TransferStatisticsDto();
+            _transferStats = await BatchClient.GetTransferStatisticsAsync<TransferStatisticsDto>() ?? new TransferStatisticsDto();
         }
         catch (Exception ex)
         {
@@ -1070,12 +1071,9 @@
     {
         try
         {
-            var queryParams = new List<string> { "page=1", "pageSize=100" };
-            if (_transferDateFrom.HasValue) queryParams.Add($"fromDate={_transferDateFrom.Value:yyyy-MM-dd}");
-            if (_transferDateTo.HasValue) queryParams.Add($"toDate={_transferDateTo.Value:yyyy-MM-dd}");
-            
-            var query = "?" + string.Join("&", queryParams);
-            _transferHistory = await ApiService.GetAsync<List<TransferHistoryDto>>($"/api/icums/transfer/history{query}") ?? new();
+            _transferHistory = await BatchClient.GetTransferHistoryAsync<TransferHistoryDto>(
+                fromDate: _transferDateFrom,
+                toDate: _transferDateTo) ?? new();
         }
         catch (Exception ex)
         {
@@ -1094,7 +1092,7 @@
         
         try
         {
-            var result = await ApiService.PostAsync<object, TransferTriggerResultDto>("/api/icums/transfer/trigger", new { });
+            var result = await BatchClient.TriggerTransferAsync<TransferTriggerResultDto>();
             if (result != null)
             {
                 Snackbar.Add(result.Message, Severity.Success);
@@ -1114,13 +1112,10 @@
     {
         try
         {
-            var queryParams = new List<string>();
-            if (_logLevelFilter != null) queryParams.Add($"level={_logLevelFilter}");
-            if (_logDateFrom.HasValue) queryParams.Add($"fromDate={_logDateFrom.Value:yyyy-MM-dd}");
-            if (_logDateTo.HasValue) queryParams.Add($"toDate={_logDateTo.Value:yyyy-MM-dd}");
-            
-            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-            _activityLogs = await ApiService.GetAsync<List<ActivityLogDto>>($"/api/icums/batch/logs{query}") ?? new();
+            _activityLogs = await BatchClient.GetLogsAsync<ActivityLogDto>(
+                level: _logLevelFilter,
+                fromDate: _logDateFrom,
+                toDate: _logDateTo) ?? new();
         }
         catch (Exception ex)
         {

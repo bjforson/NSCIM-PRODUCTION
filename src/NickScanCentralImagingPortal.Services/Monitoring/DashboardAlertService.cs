@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -31,6 +32,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
     public class DashboardAlertService : IDashboardAlertService
     {
         private static readonly TimeSpan DedupeWindow = TimeSpan.FromMinutes(30);
+        private const int DefaultCriticalEmailCooldownMinutes = 120;
 
         private readonly ApplicationDbContext _db;
         private readonly INickCommsClient _comms;
@@ -62,26 +64,43 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             if (string.IsNullOrWhiteSpace(title)) throw new ArgumentException("title required", nameof(title));
 
             var now = DateTime.UtcNow;
+            var alertKey = BuildAlertKey(type, title);
             var dedupeFloor = now - DedupeWindow;
 
-            // Dedupe by (Type, Title) within the dedupe window — newest first.
+            // First, dedupe by open incident. Acknowledgement is the explicit
+            // close signal; until then, repeated detection cycles update one
+            // row instead of creating a fresh alert and email.
             var existing = await _db.DashboardAlerts
+                .Where(a => a.AlertKey == alertKey && a.AcknowledgedAtUtc == null)
+                .OrderByDescending(a => a.RaisedAtUtc)
+                .FirstOrDefaultAsync(ct);
+
+            // Backward-compatible short-window fallback for rows created before
+            // AlertKey existed or during mixed-version deploys.
+            existing ??= await _db.DashboardAlerts
                 .Where(a => a.Type == type && a.Title == title && a.RaisedAtUtc >= dedupeFloor)
                 .OrderByDescending(a => a.RaisedAtUtc)
                 .FirstOrDefaultAsync(ct);
 
             if (existing != null)
             {
-                // Touch the existing row — keeps "active" alerts from rolling off
-                // dashboards too quickly while a Critical-on-Critical incident
-                // is ongoing. Severity / description / source intentionally NOT
-                // overwritten on the dedupe path — first-write-wins for those.
+                // Touch the existing row and keep its visible details current.
                 existing.RaisedAtUtc = now;
+                existing.AlertKey = string.IsNullOrWhiteSpace(existing.AlertKey) ? alertKey : existing.AlertKey;
+                existing.Title = Truncate(title, 200);
+                existing.Description = Truncate(description, 2000);
+                existing.Source = Truncate(source, 200);
+                existing.Severity = severity;
                 await _db.SaveChangesAsync(ct);
 
                 _logger.LogDebug(
-                    "[DASHBOARD-ALERTS] dedupe hit (id={Id}, type={Type}, title={Title}) — touched RaisedAtUtc",
-                    existing.Id, existing.Type, existing.Title);
+                    "[DASHBOARD-ALERTS] open-incident dedupe hit (id={Id}, key={AlertKey}, type={Type}, title={Title}) — touched RaisedAtUtc",
+                    existing.Id, existing.AlertKey, existing.Type, existing.Title);
+
+                if (IsCritical(existing.Severity) && await CanSendCriticalEmailAsync(existing, ct))
+                {
+                    await TrySendOpsEmailAsync(existing, ct);
+                }
 
                 return existing;
             }
@@ -89,10 +108,11 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             var alert = new DashboardAlertEntity
             {
                 Type = type,
+                AlertKey = alertKey,
                 Severity = severity,
-                Title = title,
-                Description = description,
-                Source = source,
+                Title = Truncate(title, 200) ?? string.Empty,
+                Description = Truncate(description, 2000),
+                Source = Truncate(source, 200),
                 RaisedAtUtc = now
                 // TenantId left as 0 in the entity — DB default
                 // (current_setting('app.tenant_id')::bigint via the migration)
@@ -109,7 +129,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                 alert.Id, alert.Type, alert.Severity, alert.Title);
 
             // Email-on-Critical. Non-Critical alerts persist + broadcast only.
-            if (string.Equals(severity, "Critical", StringComparison.OrdinalIgnoreCase))
+            if (IsCritical(severity) && await CanSendCriticalEmailAsync(alert, ct))
             {
                 await TrySendOpsEmailAsync(alert, ct);
             }
@@ -203,6 +223,96 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             {
                 _logger.LogError(ex, "[DASHBOARD-ALERTS] error sending email for alert id={Id}", alert.Id);
             }
+        }
+
+        private async Task<bool> CanSendCriticalEmailAsync(DashboardAlertEntity alert, CancellationToken ct)
+        {
+            if (!IsCritical(alert.Severity))
+            {
+                return false;
+            }
+
+            if (alert.EmailSentAtUtc.HasValue)
+            {
+                return false;
+            }
+
+            var cooldownMinutes = _configuration.GetValue<int?>("Alerting:CriticalEmailCooldownMinutes")
+                ?? DefaultCriticalEmailCooldownMinutes;
+            if (cooldownMinutes < 0) cooldownMinutes = 0;
+
+            if (cooldownMinutes == 0)
+            {
+                return true;
+            }
+
+            var cutoff = DateTime.UtcNow.AddMinutes(-cooldownMinutes);
+            var recentlySent = await _db.DashboardAlerts
+                .AsNoTracking()
+                .AnyAsync(a => a.AlertKey == alert.AlertKey
+                    && a.Id != alert.Id
+                    && a.EmailSentAtUtc != null
+                    && a.EmailSentAtUtc >= cutoff, ct);
+
+            if (recentlySent)
+            {
+                _logger.LogInformation(
+                    "[DASHBOARD-ALERTS] suppressing Critical email for id={Id}, key={AlertKey}; cooldown={CooldownMinutes}m",
+                    alert.Id, alert.AlertKey, cooldownMinutes);
+            }
+
+            return !recentlySent;
+        }
+
+        private static bool IsCritical(string? severity)
+            => string.Equals(severity, "Critical", StringComparison.OrdinalIgnoreCase);
+
+        private static string BuildAlertKey(string type, string title)
+        {
+            var cleanType = type.Trim();
+            var cleanTitle = Regex.Replace(title.Trim(), @"\s+", " ");
+
+            if (cleanType.Equals("DataIntegrity", StringComparison.OrdinalIgnoreCase))
+            {
+                return "DataIntegrity:Dashboard";
+            }
+
+            if (cleanType.Equals("AuditPoolEmpty", StringComparison.OrdinalIgnoreCase))
+            {
+                return "AuditPoolEmpty";
+            }
+
+            if (cleanType.Equals("Bottleneck", StringComparison.OrdinalIgnoreCase))
+            {
+                if (cleanTitle.Contains("Ready stage", StringComparison.OrdinalIgnoreCase))
+                    return "Bottleneck:Ready";
+                if (cleanTitle.Contains("Audit stage", StringComparison.OrdinalIgnoreCase))
+                    return "Bottleneck:Audit";
+            }
+
+            if (cleanType.Equals("Performance", StringComparison.OrdinalIgnoreCase)
+                && cleanTitle.Contains("Stale assignments", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Performance:StaleAssignments";
+            }
+
+            if (cleanType.Equals("DriftSweepHighCounts", StringComparison.OrdinalIgnoreCase))
+            {
+                return "DriftSweepHighCounts";
+            }
+
+            cleanTitle = Regex.Replace(cleanTitle, @"\s*\(hash=[^)]+\)", "", RegexOptions.IgnoreCase);
+            return Truncate($"{cleanType}:{cleanTitle}", 256) ?? cleanType;
+        }
+
+        private static string? Truncate(string? value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+            {
+                return value;
+            }
+
+            return value[..maxLength];
         }
 
         private static string BuildEmailBody(DashboardAlertEntity alert)

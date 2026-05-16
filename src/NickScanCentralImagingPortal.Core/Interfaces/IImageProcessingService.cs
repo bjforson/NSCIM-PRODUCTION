@@ -301,6 +301,7 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         Unknown = 0,
         FS6000 = 1,
         ASE = 2,
-        HeimannSmith = 3
+        HeimannSmith = 3,
+        EagleA25 = 4
     }
 }

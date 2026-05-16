@@ -68,11 +68,44 @@ def crop_image(image_array: np.ndarray, split_x: int) -> Tuple[np.ndarray, np.nd
     return left, right
 
 
-def crop_and_encode(image_data: bytes, split_x: int, quality: int = 90) -> Tuple[bytes, bytes]:
+def crop_and_encode(
+    image_data: bytes,
+    split_x: int,
+    quality: int = 90,
+    format: str = "jpeg"
+) -> Tuple[bytes, bytes]:
     """Decode, split, and re-encode an image. Returns (left_bytes, right_bytes)."""
     img = decode_image(image_data)
     left, right = crop_image(img, split_x)
-    return encode_image(left, quality=quality), encode_image(right, quality=quality)
+    return encode_image(left, format=format, quality=quality), encode_image(right, format=format, quality=quality)
+
+
+def crop_side_and_encode(
+    image_data: bytes,
+    split_x: int,
+    side: str,
+    quality: int = 90,
+    format: str = "png"
+) -> bytes:
+    """Decode, split, and encode a single crop side from the original image bytes."""
+    if side not in ("left", "right"):
+        raise ValueError("Side must be 'left' or 'right'")
+
+    img = decode_image(image_data)
+    left, right = crop_image(img, split_x)
+    crop = left if side == "left" else right
+    return encode_image(crop, format=format, quality=quality)
+
+
+def detect_image_media_type(image_data: bytes) -> str:
+    """Best-effort media type detection for stored image bytes."""
+    if image_data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def get_image_dimensions(image_data: bytes) -> Tuple[int, int]:

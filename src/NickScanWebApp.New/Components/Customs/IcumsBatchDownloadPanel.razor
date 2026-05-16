@@ -2,7 +2,7 @@
 @implements IDisposable
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsBatchClient BatchClient
 @inject IJSRuntime JSRuntime
 @inject NavigationManager Navigation
 
@@ -724,7 +724,7 @@
     {
         try
         {
-            var status = await ApiService.GetAsync<BatchServiceStatusDto>("/api/icums/batch/status");
+            var status = await BatchClient.GetStatusAsync<BatchServiceStatusDto>();
             if (status != null)
             {
                 _serviceEnabled = status.IsEnabled;
@@ -743,7 +743,7 @@
     {
         try
         {
-            _stats = await ApiService.GetAsync<BatchDownloadStatsDto>("/api/icums/batch/stats") ?? new BatchDownloadStatsDto();
+            _stats = await BatchClient.GetStatsAsync<BatchDownloadStatsDto>() ?? new BatchDownloadStatsDto();
         }
         catch (Exception ex)
         {
@@ -755,13 +755,10 @@
     {
         try
         {
-            var queryParams = new List<string>();
-            if (_fileStatusFilter != null) queryParams.Add($"status={_fileStatusFilter}");
-            if (_fileDateFrom.HasValue) queryParams.Add($"fromDate={_fileDateFrom.Value:yyyy-MM-dd}");
-            if (_fileDateTo.HasValue) queryParams.Add($"toDate={_fileDateTo.Value:yyyy-MM-dd}");
-            
-            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-            _downloadedFiles = await ApiService.GetAsync<List<DownloadedFileDto>>($"/api/icums/batch/files{query}") ?? new();
+            _downloadedFiles = await BatchClient.GetFilesAsync<DownloadedFileDto>(
+                status: _fileStatusFilter,
+                fromDate: _fileDateFrom,
+                toDate: _fileDateTo) ?? new();
             ApplyFileFilters();
         }
         catch (Exception ex)
@@ -774,13 +771,10 @@
     {
         try
         {
-            var queryParams = new List<string>();
-            if (_containerDateFrom.HasValue) queryParams.Add($"fromDate={_containerDateFrom.Value:yyyy-MM-dd}");
-            if (_containerDateTo.HasValue) queryParams.Add($"toDate={_containerDateTo.Value:yyyy-MM-dd}");
-            if (!string.IsNullOrEmpty(_containerSearchText)) queryParams.Add($"search={_containerSearchText}");
-            
-            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-            _downloadedContainers = await ApiService.GetAsync<List<DownloadedContainerDto>>($"/api/icums/batch/containers{query}") ?? new();
+            _downloadedContainers = await BatchClient.GetContainersAsync<DownloadedContainerDto>(
+                search: _containerSearchText,
+                fromDate: _containerDateFrom,
+                toDate: _containerDateTo) ?? new();
             ApplyContainerFilters();
         }
         catch (Exception ex)
@@ -793,13 +787,10 @@
     {
         try
         {
-            var queryParams = new List<string>();
-            if (_logLevelFilter != null) queryParams.Add($"level={_logLevelFilter}");
-            if (_logDateFrom.HasValue) queryParams.Add($"fromDate={_logDateFrom.Value:yyyy-MM-dd}");
-            if (_logDateTo.HasValue) queryParams.Add($"toDate={_logDateTo.Value:yyyy-MM-dd}");
-            
-            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-            _activityLogs = await ApiService.GetAsync<List<ActivityLogDto>>($"/api/icums/batch/logs{query}") ?? new();
+            _activityLogs = await BatchClient.GetLogsAsync<ActivityLogDto>(
+                level: _logLevelFilter,
+                fromDate: _logDateFrom,
+                toDate: _logDateTo) ?? new();
         }
         catch (Exception ex)
         {
@@ -811,7 +802,7 @@
     {
         try
         {
-            _transferStatus = await ApiService.GetAsync<TransferServiceStatusDto>("/api/icums/transfer/status") ?? new TransferServiceStatusDto();
+            _transferStatus = await BatchClient.GetTransferStatusAsync<TransferServiceStatusDto>() ?? new TransferServiceStatusDto();
         }
         catch (Exception ex)
         {
@@ -823,7 +814,7 @@
     {
         try
         {
-            _transferStats = await ApiService.GetAsync<TransferStatisticsDto>("/api/icums/transfer/statistics") ?? new TransferStatisticsDto();
+            _transferStats = await BatchClient.GetTransferStatisticsAsync<TransferStatisticsDto>() ?? new TransferStatisticsDto();
         }
         catch (Exception ex)
         {
@@ -835,12 +826,9 @@
     {
         try
         {
-            var queryParams = new List<string> { "page=1", "pageSize=100" };
-            if (_transferDateFrom.HasValue) queryParams.Add($"fromDate={_transferDateFrom.Value:yyyy-MM-dd}");
-            if (_transferDateTo.HasValue) queryParams.Add($"toDate={_transferDateTo.Value:yyyy-MM-dd}");
-            
-            var query = "?" + string.Join("&", queryParams);
-            _transferHistory = await ApiService.GetAsync<List<TransferHistoryDto>>($"/api/icums/transfer/history{query}") ?? new();
+            _transferHistory = await BatchClient.GetTransferHistoryAsync<TransferHistoryDto>(
+                fromDate: _transferDateFrom,
+                toDate: _transferDateTo) ?? new();
         }
         catch (Exception ex)
         {
@@ -859,7 +847,7 @@
         
         try
         {
-            var result = await ApiService.PostAsync<object, TransferTriggerResultDto>("/api/icums/transfer/trigger", new { });
+            var result = await BatchClient.TriggerTransferAsync<TransferTriggerResultDto>();
             if (result != null)
             {
                 Snackbar.Add($"✅ {result.Message}", Severity.Success);
@@ -909,7 +897,7 @@
         try
         {
             var request = new { enabled = !_serviceEnabled };
-            await ApiService.PostAsync<object, object>("/api/icums/batch/toggle", request);
+            await BatchClient.ToggleAsync(request);
             _serviceEnabled = !_serviceEnabled;
             Snackbar.Add($"✅ Service {(_serviceEnabled ? "started" : "stopped")}", Severity.Success);
             await LoadServiceStatus();
@@ -925,7 +913,7 @@
         try
         {
             var request = new { batchIntervalMinutes = _batchIntervalMinutes };
-            await ApiService.PostAsync<object, object>("/api/icums/batch/config", request);
+            await BatchClient.SaveConfigAsync(request);
             Snackbar.Add("✅ Configuration saved", Severity.Success);
             await LoadServiceStatus();
         }
@@ -946,7 +934,7 @@
         
         try
         {
-            await ApiService.PostAsync<object, object>("/api/icums/batch/trigger", new { });
+            await BatchClient.TriggerAsync();
             Snackbar.Add("✅ Manual batch download triggered", Severity.Success);
             await LoadServiceStatus();
         }
@@ -971,7 +959,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/icums/batch/files/{file.Id}/retry", new { });
+            await BatchClient.RetryFileAsync(file.Id);
             // Optimistically update UI to reflect backend change to Pending
             file.ProcessingStatus = "Pending";
             file.RecordCount = 0;
@@ -996,7 +984,7 @@
         
         try
         {
-            await ApiService.DeleteAsync($"/api/icums/batch/files/{file.Id}");
+            await BatchClient.DeleteFileAsync(file.Id);
             Snackbar.Add($"✅ File deleted: {file.FileName}", Severity.Success);
             await LoadDownloadedFiles();
             await LoadStatistics();

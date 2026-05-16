@@ -1,9 +1,13 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ContainerValidation;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
@@ -16,14 +20,17 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<ContainerStatusReconciliationService> _logger;
+        private readonly bool _cmrCompositeProgressionEnabled;
         private const string SERVICE_ID = "[STATUS-RECONCILIATION]";
 
         public ContainerStatusReconciliationService(
             IServiceProvider serviceProvider,
-            ILogger<ContainerStatusReconciliationService> logger)
+            ILogger<ContainerStatusReconciliationService> logger,
+            IConfiguration configuration)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
+            _cmrCompositeProgressionEnabled = configuration.GetValue<bool>("CmrCompositeProgression:Enabled", false);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -88,20 +95,67 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 
                         try
                         {
-                            // Check if BOE data actually exists for this container
-                            var hasData = await icumDownloadsRepository.ContainerHasICUMSDataAsync(container.ContainerNumber);
+                            // Check if BOE data actually exists for this container and
+                            // carry the canonical BOE identity back into CCS. Marking a
+                            // row Complete without BOEDocumentId/GroupIdentifier creates
+                            // dashboard integrity noise and breaks downstream grouping.
+                            var boeRecords = await icumDownloadsRepository.GetBOEDocumentsByContainerNumberAsync(container.ContainerNumber);
+                            var primaryBOE = boeRecords.CanonicalBoeQuery().FirstOrDefault();
 
-                            if (hasData && (!container.HasICUMSData || container.Status == "Missing"))
+                            if (primaryBOE != null && !ScannerLocationMap.IsLocationMatch(container.ScannerType ?? "", primaryBOE.DeliveryPlace))
                             {
-                                // Update the status
+                                var expectedPort = ScannerLocationMap.GetExpectedPortCode(container.ScannerType ?? "");
+                                var actualPort = ScannerLocationMap.ExtractPortCode(primaryBOE.DeliveryPlace) ?? "UNKNOWN";
+                                _logger.LogWarning(
+                                    "{ServiceId} Skipping reconciliation for {ContainerNumber}: scanner={ScannerType} expected port {ExpectedPort}, BOE delivery place '{DeliveryPlace}' has port {ActualPort}",
+                                    SERVICE_ID, container.ContainerNumber, container.ScannerType, expectedPort, primaryBOE.DeliveryPlace, actualPort);
+                                continue;
+                            }
+
+                            if (primaryBOE != null && (!container.HasICUMSData || container.Status == "Missing"))
+                            {
+                                var groupIdentifier = primaryBOE.IsConsolidated
+                                    ? container.ContainerNumber
+                                    : primaryBOE.DeclarationNumber;
+
+                                if (_cmrCompositeProgressionEnabled
+                                    && string.Equals(primaryBOE.ClearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+                                    && CmrCompositeKeyHelper.TryCreate(
+                                        primaryBOE.RotationNumber,
+                                        container.ContainerNumber,
+                                        primaryBOE.BlNumber,
+                                        out var cmrCompositeKey))
+                                {
+                                    groupIdentifier = cmrCompositeKey.OperationalKey;
+                                }
+
+                                var decision = ContainerCompletenessPolicy.Evaluate(
+                                    hasScannerData: true,
+                                    hasICUMSData: true,
+                                    hasImageData: container.HasImageData,
+                                    clearanceType: primaryBOE.ClearanceType,
+                                    groupIdentifier: groupIdentifier,
+                                    cmrCompositeProgressionEnabled: _cmrCompositeProgressionEnabled,
+                                    cmrRotationNumber: primaryBOE.RotationNumber,
+                                    cmrContainerNumber: container.ContainerNumber,
+                                    cmrBlNumber: primaryBOE.BlNumber);
+
                                 container.HasICUMSData = true;
-                                container.Status = "Complete";
+                                container.ICUMSDataDate = DateTime.UtcNow;
+                                container.BOEDocumentId = primaryBOE.Id;
+                                container.ClearanceType = primaryBOE.ClearanceType;
+                                container.IsConsolidated = primaryBOE.IsConsolidated;
+                                container.GroupIdentifier = groupIdentifier;
+                                container.Status = decision.Status;
+                                container.WorkflowStage = decision.WorkflowStage;
+                                container.ICUMSDataCompleteness = 100;
+                                container.OverallCompleteness = (container.ScannerDataCompleteness + 100 + container.ImageDataCompleteness) / 3;
                                 container.ErrorMessage = null;
                                 container.UpdatedAt = DateTime.UtcNow;
                                 updatedCount++;
 
-                                _logger.LogDebug("{ServiceId} ✓ Reconciled {ContainerNumber}: Missing → Complete",
-                                    SERVICE_ID, container.ContainerNumber);
+                                _logger.LogDebug("{ServiceId} ✓ Reconciled {ContainerNumber}: Missing → {Status} (BOE={BOEId}, Group={GroupIdentifier})",
+                                    SERVICE_ID, container.ContainerNumber, container.Status, primaryBOE.Id, groupIdentifier ?? "NULL");
                             }
                         }
                         catch (Exception ex)

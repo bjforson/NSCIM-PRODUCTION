@@ -257,7 +257,8 @@ split results and feeding training data.
 - [in_progress] Keep approve actions close to the candidate being reviewed.
 - [in_progress] Keep container side confirmation above or adjacent to the split
       crops before approval.
-- [ ] Show the actual left and right split crops at full useful size.
+- [in_progress] Show the actual left and right split crops at full useful size.
+  - 2026-05-14: Added/deployed on-demand lossless crop rendering from original split job bytes via `/lossless/{side}` and routed analyst/audit full split-crop URLs through it. Split Review console sizing/zoom UX remains open.
 - [ ] Avoid relying only on a tiny original image with a line overlay.
 - [ ] Provide a quick way to zoom or open a full-size crop without losing queue
       position.

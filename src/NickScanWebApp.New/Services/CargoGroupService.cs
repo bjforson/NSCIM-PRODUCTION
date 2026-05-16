@@ -105,7 +105,7 @@ namespace NickScanWebApp.New.Services
                 if (group != null)
                 {
                     // Cache for 5 minutes
-                    _cache.Set(cacheKey, group, TimeSpan.FromMinutes(5));
+                    _cache.Set(cacheKey, group, BuildCacheOptions(TimeSpan.FromMinutes(5), EstimateCargoGroupSize(group)));
                     _logger.LogInformation("Cached cargo group {Identifier}", groupIdentifier);
                 }
 
@@ -141,7 +141,7 @@ namespace NickScanWebApp.New.Services
                 if (data != null)
                 {
                     // Cache for 2 minutes (data may update more frequently)
-                    _cache.Set(cacheKey, data, TimeSpan.FromMinutes(2));
+                    _cache.Set(cacheKey, data, BuildCacheOptions(TimeSpan.FromMinutes(2), EstimateCargoGroupDataSize(data)));
                     _logger.LogInformation("Cached cargo group data {Identifier}", groupIdentifier);
                 }
 
@@ -238,6 +238,40 @@ namespace NickScanWebApp.New.Services
                 _logger.LogError(ex, "Error getting cargo groups list");
                 return null;
             }
+        }
+
+        private static MemoryCacheEntryOptions BuildCacheOptions(TimeSpan expiration, long size)
+        {
+            return new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = expiration,
+                Size = Math.Max(1, size)
+            };
+        }
+
+        private static long EstimateCargoGroupSize(CargoGroupDto group)
+        {
+            var houseBills = group.HouseBLGroups?.Count ?? 0;
+            var houseBillBoeDetails = group.HouseBLGroups?.Sum(h => h.BOEDetails?.Count ?? 0) ?? 0;
+            return 1
+                + Math.Max(group.TotalContainers, group.ContainerNumbers?.Count ?? 0)
+                + group.TotalBOEs
+                + houseBills
+                + houseBillBoeDetails
+                + EstimateCargoGroupDataSize(group.Data);
+        }
+
+        private static long EstimateCargoGroupDataSize(CargoGroupDataDto? data)
+        {
+            if (data == null)
+            {
+                return 1;
+            }
+
+            var icumsRecords = data.ICUMSData?.Sum(g => (g.Records?.Count ?? 0) + (g.BOEDetails?.Count ?? 0)) ?? 0;
+            var scannerRecords = data.ScannerData?.Sum(g => g.Records?.Count ?? 0) ?? 0;
+            var images = data.ImageData?.Sum(g => g.Images?.Count ?? 0) ?? 0;
+            return 1 + icumsRecords + scannerRecords + (images * 2);
         }
     }
 }

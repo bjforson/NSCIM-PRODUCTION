@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageSplitter;
 using System.Globalization;
@@ -169,6 +170,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         bucket.UnreviewedFailed++;
                     if (isLabelled)
                         bucket.LabelledTotal++;
+                    if (isApproved)
+                        bucket.ApprovedCount++;
+                    if (isWrongSplit)
+                        bucket.WrongSplitCount++;
+                    if (isSingleContainer)
+                        bucket.SingleContainerCount++;
+                    if (isBadImage)
+                        bucket.BadImageCount++;
+                    if (isUncertain)
+                        bucket.UncertainCount++;
+                    if ((job.CorrectSplitX.HasValue && job.CorrectSplitX.Value >= 0) || isApproved)
+                        bucket.PositiveLabelCount++;
+                    if (isSingleContainer || isBadImage || isUncertain)
+                        bucket.NegativeLabelCount++;
                 }
 
                 var aseLabelCount = scannerBreakdown.TryGetValue("ASE", out var aseBucket) ? aseBucket.LabelledTotal : 0;
@@ -224,7 +239,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             reviewableCompleted = bucket.ReviewableCompleted,
                             activePendingProcessing = bucket.ActivePendingProcessing,
                             unreviewedFailed = bucket.UnreviewedFailed,
-                            labelledTotal = bucket.LabelledTotal
+                            labelledTotal = bucket.LabelledTotal,
+                            approvedCount = bucket.ApprovedCount,
+                            wrongSplitCount = bucket.WrongSplitCount,
+                            singleContainerCount = bucket.SingleContainerCount,
+                            badImageCount = bucket.BadImageCount,
+                            uncertainCount = bucket.UncertainCount,
+                            positiveLabelCount = bucket.PositiveLabelCount,
+                            negativeLabelCount = bucket.NegativeLabelCount
                         }),
                     portalRecordLinks = new
                     {
@@ -246,22 +268,114 @@ namespace NickScanCentralImagingPortal.API.Controllers
         [HttpGet("jobs/{jobId}/results")]
         public async Task<IActionResult> GetJobResults(string jobId) => await ForwardGetAsync($"/api/split/{jobId}/results");
 
+        [HttpGet("jobs/{jobId:guid}/split-options")]
+        public async Task<IActionResult> GetSplitOptionsByJob(Guid jobId, [FromQuery] string? containerNumber = null)
+        {
+            var query = _db.AnalysisRecords
+                .AsNoTracking()
+                .Where(record => record.SplitJobId == jobId);
+
+            if (!string.IsNullOrWhiteSpace(containerNumber))
+            {
+                var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+                query = query
+                    .OrderByDescending(record => record.ContainerNumber == normalizedContainer)
+                    .ThenByDescending(record => record.CreatedAtUtc);
+            }
+            else
+            {
+                query = query.OrderByDescending(record => record.CreatedAtUtc);
+            }
+
+            var record = await query.FirstOrDefaultAsync();
+            var options = record != null
+                ? await BuildSplitOptionsAsync(record)
+                : new List<object>();
+
+            return Ok(new
+            {
+                containerNumber = record?.ContainerNumber ?? containerNumber,
+                isMultiContainer = true,
+                splitStatus = record?.SplitStatus,
+                position = record?.SplitPosition,
+                jobId,
+                splitJobId = jobId,
+                analysisRecordId = record?.Id,
+                chosenResultId = record?.SplitResultId,
+                options,
+                originalImageUrl = _urlSigner.SignRelative($"/api/image-splitter/jobs/{jobId}/original"),
+                resolver = new
+                {
+                    resolvedBy = record != null ? "split_job_analysis_record" : "split_job",
+                    source = "split_job"
+                }
+            });
+        }
+
         [HttpGet("jobs/{jobId}/results/{resultId}/image/{side}")]
+        [HttpGet("/api/split/{jobId}/results/{resultId}/image/{side}")]
         public async Task<IActionResult> GetResultImage(string jobId, string resultId, string side)
         {
             try
             {
-                var client = _httpClientFactory.CreateClient("RawImageEngine");
-                var response = await client.GetAsync($"/api/split/{jobId}/results/{resultId}/image/{side}");
-                if (!response.IsSuccessStatusCode) return StatusCode((int)response.StatusCode);
-                var bytes = await response.Content.ReadAsByteArrayAsync();
-                return File(bytes, "image/jpeg");
+                return await StreamRawImageEngineImageAsync(
+                    $"/api/split/{jobId}/results/{resultId}/image/{side}",
+                    "image/jpeg");
+            }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                return new EmptyResult();
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to get split image");
                 return StatusCode(503, new { error = "Splitter service unavailable" });
             }
+        }
+
+        [HttpGet("jobs/{jobId}/results/{resultId}/lossless/{side}")]
+        [HttpGet("/api/split/{jobId}/results/{resultId}/lossless/{side}")]
+        public async Task<IActionResult> GetResultLosslessImage(string jobId, string resultId, string side)
+        {
+            try
+            {
+                return await StreamRawImageEngineImageAsync(
+                    $"/api/split/{jobId}/results/{resultId}/lossless/{side}",
+                    "image/png");
+            }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                return new EmptyResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get split image");
+                return StatusCode(503, new { error = "Splitter service unavailable" });
+            }
+        }
+
+        private async Task<IActionResult> StreamRawImageEngineImageAsync(string upstreamPath, string fallbackContentType)
+        {
+            var client = _httpClientFactory.CreateClient("RawImageEngine");
+            using var response = await client.GetAsync(
+                upstreamPath,
+                HttpCompletionOption.ResponseHeadersRead,
+                HttpContext.RequestAborted);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode((int)response.StatusCode);
+            }
+
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? fallbackContentType;
+            if (response.Content.Headers.ContentLength.HasValue)
+            {
+                Response.ContentLength = response.Content.Headers.ContentLength.Value;
+            }
+
+            await response.Content.CopyToAsync(Response.Body, HttpContext.RequestAborted);
+            return new EmptyResult();
         }
 
         [HttpPost("jobs/{jobId}/approve")]
@@ -277,15 +391,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
             => await ForwardPostAsync($"/api/split/{jobId}/manual", body);
 
         [HttpGet("jobs/{jobId}/original")]
+        [HttpGet("/api/split/{jobId}/original")]
         public async Task<IActionResult> GetOriginalImage(string jobId)
         {
             try
             {
-                var client = _httpClientFactory.CreateClient("RawImageEngine");
-                var response = await client.GetAsync($"/api/split/{jobId}/original");
-                if (!response.IsSuccessStatusCode) return StatusCode((int)response.StatusCode);
-                var bytes = await response.Content.ReadAsByteArrayAsync();
-                return File(bytes, "image/jpeg");
+                return await StreamRawImageEngineImageAsync(
+                    $"/api/split/{jobId}/original",
+                    "image/jpeg");
+            }
+            catch (OperationCanceledException) when (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                return new EmptyResult();
             }
             catch (Exception ex)
             {
@@ -429,11 +546,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // check OriginalScanRecords to see if this is a multi-container scan
                 if (record != null && !record.IsMultiContainerScan && record.SplitStatus == null)
                 {
-                    var originalScan = await _db.Set<NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord>()
-                        .Where(o => o.DerivedRecordCount == 2 &&
-                                    o.OriginalContainerNumbers.Contains(containerNumber))
-                        .OrderByDescending(o => o.ScanTime)
-                        .FirstOrDefaultAsync();
+                    var originalScan = await FindLatestOriginalScanForContainerAsync(containerNumber);
 
                     if (originalScan != null)
                     {
@@ -443,7 +556,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             .Select(c => c.Trim())
                             .ToList();
 
-                        var position = containers.Count >= 2 && containers[0] == containerNumber ? "left" : "right";
+                        var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+                        var position = containers.Count >= 2
+                            && string.Equals(
+                                ContainerNumberListMatcher.Normalize(containers[0]),
+                                normalizedContainer,
+                                StringComparison.Ordinal)
+                            ? "left"
+                            : "right";
                         record.IsMultiContainerScan = true;
                         record.SplitPosition = position;
 
@@ -466,7 +586,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         }
 
                         // Also update the sibling container's record
-                        var siblingNumber = containers.FirstOrDefault(c => c != containerNumber);
+                        var siblingNumber = containers.FirstOrDefault(c =>
+                            !string.Equals(
+                                ContainerNumberListMatcher.Normalize(c),
+                                normalizedContainer,
+                                StringComparison.Ordinal));
                         if (!string.IsNullOrEmpty(siblingNumber))
                         {
                             var sibling = await _db.AnalysisRecords
@@ -499,46 +623,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     });
                 }
 
-                // Build options from the splitter API if we have candidates
-                var options = new List<object>();
-                if (record.SplitJobId.HasValue &&
-                    (string.Equals(record.SplitStatus, SplitAnalysisStatus.Ready, StringComparison.OrdinalIgnoreCase)
-                     || string.Equals(record.SplitStatus, SplitAnalysisStatus.Chosen, StringComparison.OrdinalIgnoreCase)))
-                {
-                    var client = _httpClientFactory.CreateClient("RawImageEngine");
-                    var resultsResponse = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
-                    if (resultsResponse.IsSuccessStatusCode)
-                    {
-                        var resultsJson = await resultsResponse.Content.ReadAsStringAsync();
-                        var results = JsonSerializer.Deserialize<JsonElement>(resultsJson);
-
-                        if (results.ValueKind == JsonValueKind.Array)
-                        {
-                            // Get top 2 results by confidence, matching the stored option IDs
-                            foreach (var result in results.EnumerateArray())
-                            {
-                                var resultId = result.GetProperty("id").GetString();
-                                var isOptionA = record.SplitOptionA_ResultId?.ToString() == resultId;
-                                var isOptionB = record.SplitOptionB_ResultId?.ToString() == resultId;
-
-                                if (isOptionA || isOptionB)
-                                {
-                                    var side = record.SplitPosition ?? "left";
-                                    options.Add(new
-                                    {
-                                        resultId,
-                                        strategy = result.TryGetProperty("strategy_name", out var sn) ? sn.GetString() : null,
-                                        splitX = result.TryGetProperty("split_x", out var sx) ? sx.GetInt32() : 0,
-                                        confidence = result.TryGetProperty("confidence", out var conf) ? conf.GetDouble() : 0.0,
-                                        // Signed URL — browser <img src> consumer, no JWT header possible.
-                                    cropImageUrl = _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/results/{resultId}/image/{side}"),
-                                        reasoning = result.TryGetProperty("reasoning", out var rs) ? rs.GetString() : null
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+                var options = await BuildSplitOptionsAsync(record);
 
                 return Ok(new
                 {
@@ -549,7 +634,14 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     jobId = record.SplitJobId,
                     chosenResultId = record.SplitResultId,
                     options,
-                    originalImageUrl = _urlSigner.SignRelative($"/api/ImageProcessing/container/{containerNumber}/complete/image")
+                    originalImageUrl = record.SplitJobId.HasValue
+                        ? _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/original")
+                        : _urlSigner.SignRelative($"/api/ImageProcessing/container/{containerNumber}/complete/image"),
+                    resolver = new
+                    {
+                        resolvedBy = record.SplitJobId.HasValue ? "split_job_original" : "legacy_container_image",
+                        source = record.SplitJobId.HasValue ? "split_job" : "container"
+                    }
                 });
             }
             catch (Exception ex)
@@ -567,6 +659,215 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
         }
 
+        [HttpGet("records/{analysisRecordId:int}/split-options")]
+        public async Task<IActionResult> GetSplitOptionsByAnalysisRecord(int analysisRecordId)
+        {
+            var record = await _db.AnalysisRecords
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == analysisRecordId);
+
+            if (record == null)
+                return NotFound(new { error = "Analysis record not found", analysisRecordId });
+
+            var options = await BuildSplitOptionsAsync(record);
+            return Ok(new
+            {
+                containerNumber = record.ContainerNumber,
+                isMultiContainer = record.IsMultiContainerScan,
+                splitStatus = record.SplitStatus,
+                position = record.SplitPosition,
+                jobId = record.SplitJobId,
+                splitJobId = record.SplitJobId,
+                analysisRecordId = record.Id,
+                chosenResultId = record.SplitResultId,
+                options,
+                originalImageUrl = record.SplitJobId.HasValue
+                    ? _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/original")
+                    : _urlSigner.SignRelative($"/api/ImageProcessing/container/{record.ContainerNumber}/complete/image"),
+                resolver = new
+                {
+                    resolvedBy = record.SplitJobId.HasValue ? "analysis_record_split_job" : "legacy_container_image",
+                    source = record.SplitJobId.HasValue ? "split_job" : "container"
+                }
+            });
+        }
+
+        private async Task<List<object>> BuildSplitOptionsAsync(AnalysisRecord record)
+        {
+            if (!record.SplitJobId.HasValue)
+                return new List<object>();
+
+            try
+            {
+                var client = _httpClientFactory.CreateClient("RawImageEngine");
+                var resultsResponse = await client.GetAsync($"/api/split/{record.SplitJobId}/results");
+                if (!resultsResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "Split result listing returned {StatusCode} for job {JobId}; falling back to stored split result IDs",
+                        resultsResponse.StatusCode,
+                        record.SplitJobId);
+                    return BuildStoredSplitOptions(record);
+                }
+
+                var resultsJson = await resultsResponse.Content.ReadAsStringAsync();
+                var results = JsonSerializer.Deserialize<JsonElement>(resultsJson);
+                if (results.ValueKind != JsonValueKind.Array)
+                {
+                    _logger.LogWarning(
+                        "Split result listing returned {ValueKind} instead of an array for job {JobId}; falling back to stored split result IDs",
+                        results.ValueKind,
+                        record.SplitJobId);
+                    return BuildStoredSplitOptions(record);
+                }
+
+                var parsed = results
+                    .EnumerateArray()
+                    .Select(ReadSplitResultOption)
+                    .Where(option => !string.IsNullOrWhiteSpace(option.ResultId))
+                    .ToList();
+
+                var storedIds = new HashSet<string>(
+                    new[]
+                    {
+                        record.SplitOptionA_ResultId?.ToString(),
+                        record.SplitOptionB_ResultId?.ToString()
+                    }.Where(id => !string.IsNullOrWhiteSpace(id)).Select(id => id!),
+                    StringComparer.OrdinalIgnoreCase);
+
+                var selected = storedIds.Count > 0
+                    ? parsed.Where(option => storedIds.Contains(option.ResultId)).ToList()
+                    : parsed
+                        .OrderByDescending(option => option.Confidence)
+                        .ThenBy(option => option.SplitX)
+                        .Take(2)
+                        .ToList();
+
+                if (selected.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "Split result listing for job {JobId} did not include the stored result IDs; falling back to stored split result IDs",
+                        record.SplitJobId);
+                    return BuildStoredSplitOptions(record);
+                }
+
+                return BuildSplitOptionPayloads(record, selected);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to build split result options for job {JobId}; falling back to stored split result IDs", record.SplitJobId);
+                return BuildStoredSplitOptions(record);
+            }
+        }
+
+        private List<object> BuildStoredSplitOptions(AnalysisRecord record)
+        {
+            if (!record.SplitJobId.HasValue)
+                return new List<object>();
+
+            var stored = new[]
+            {
+                new SplitResultOptionDto(
+                    record.SplitOptionA_ResultId?.ToString() ?? string.Empty,
+                    "Stored option A",
+                    0,
+                    0.0,
+                    "Recovered from the persisted split result ID."),
+                new SplitResultOptionDto(
+                    record.SplitOptionB_ResultId?.ToString() ?? string.Empty,
+                    "Stored option B",
+                    0,
+                    0.0,
+                    "Recovered from the persisted split result ID.")
+            };
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var selected = stored
+                .Where(option => !string.IsNullOrWhiteSpace(option.ResultId) && seen.Add(option.ResultId))
+                .ToList();
+
+            return selected.Count == 0
+                ? new List<object>()
+                : BuildSplitOptionPayloads(record, selected);
+        }
+
+        private List<object> BuildSplitOptionPayloads(
+            AnalysisRecord record,
+            IReadOnlyCollection<SplitResultOptionDto> selected)
+        {
+            if (!record.SplitJobId.HasValue || selected.Count == 0)
+                return new List<object>();
+
+                var side = string.IsNullOrWhiteSpace(record.SplitPosition)
+                    ? "left"
+                    : record.SplitPosition;
+
+                return selected
+                    .Select(option => (object)new
+                    {
+                        resultId = option.ResultId,
+                        strategy = option.Strategy ?? "Stored split candidate",
+                        splitX = option.SplitX,
+                        confidence = option.Confidence,
+                        side,
+                        cropImageUrl = _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/results/{option.ResultId}/lossless/{side}"),
+                        previewImageUrl = _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/results/{option.ResultId}/image/{side}"),
+                        reasoning = option.Reasoning
+                    })
+                    .ToList();
+        }
+
+        private static SplitResultOptionDto ReadSplitResultOption(JsonElement result)
+        {
+            var id = GetString(result, "id") ?? GetString(result, "result_id") ?? string.Empty;
+            return new SplitResultOptionDto(
+                id,
+                GetString(result, "strategy_name") ?? GetString(result, "strategy"),
+                GetInt32(result, "split_x"),
+                GetDouble(result, "confidence"),
+                GetString(result, "reasoning"));
+        }
+
+        private static string? GetString(JsonElement element, string propertyName)
+        {
+            return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+                ? property.GetString()
+                : null;
+        }
+
+        private static int GetInt32(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+                return 0;
+
+            if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var value))
+                return value;
+
+            return property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)
+                ? value
+                : 0;
+        }
+
+        private static double GetDouble(JsonElement element, string propertyName)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+                return 0.0;
+
+            if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var value))
+                return value;
+
+            return property.ValueKind == JsonValueKind.String && double.TryParse(property.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                ? value
+                : 0.0;
+        }
+
+        private sealed record SplitResultOptionDto(
+            string ResultId,
+            string? Strategy,
+            int SplitX,
+            double Confidence,
+            string? Reasoning);
+
         /// <summary>
         /// Analyst chooses a split crop for their container. Updates both this container's
         /// AnalysisRecord and the sibling container's record (same split job, opposite position).
@@ -577,17 +878,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
-                if (!body.TryGetProperty("resultId", out var resultIdProp) ||
-                    !body.TryGetProperty("approvedBy", out var approvedByProp))
+                var parsed = TryParseChooseSplitRequest(body);
+                if (parsed == null)
                 {
                     return BadRequest(new { error = "resultId and approvedBy are required" });
                 }
-
-                var resultId = resultIdProp.GetString();
-                var approvedBy = approvedByProp.GetString();
-
-                if (string.IsNullOrEmpty(resultId) || !Guid.TryParse(resultId, out var resultGuid))
-                    return BadRequest(new { error = "Invalid resultId" });
 
                 // Find the AnalysisRecord
                 var record = await _db.AnalysisRecords
@@ -598,58 +893,75 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (record == null)
                     return NotFound(new { error = $"No multi-container AnalysisRecord found for {containerNumber}" });
 
-                // Update this container's record
-                record.SplitResultId = resultGuid;
-                record.SplitStatus = SplitAnalysisStatus.Chosen;
-
-                // Update the sibling container (same SplitJobId, opposite position)
-                if (record.SplitJobId.HasValue)
-                {
-                    var siblingPosition = record.SplitPosition == "left" ? "right" : "left";
-                    var sibling = await _db.AnalysisRecords
-                        .Where(r => r.SplitJobId == record.SplitJobId &&
-                                    r.SplitPosition == siblingPosition &&
-                                    r.Id != record.Id)
-                        .FirstOrDefaultAsync();
-
-                    if (sibling != null)
-                    {
-                        sibling.SplitResultId = resultGuid;
-                        sibling.SplitStatus = SplitAnalysisStatus.Chosen;
-                    }
-
-                    // Forward approval to the splitter for consensus corpus recording
-                    try
-                    {
-                        var client = _httpClientFactory.CreateClient("RawImageEngine");
-                        var approveBody = JsonSerializer.Serialize(new
-                        {
-                            result_id = resultId,
-                            container_left = record.SplitPosition == "left" ? containerNumber : sibling?.ContainerNumber ?? "",
-                            container_right = record.SplitPosition == "right" ? containerNumber : sibling?.ContainerNumber ?? "",
-                            approved_by = approvedBy
-                        });
-                        var content = new StringContent(approveBody, Encoding.UTF8, "application/json");
-                        await client.PostAsync($"/api/split/{record.SplitJobId}/approve", content);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Non-blocking — consensus recording failure shouldn't block the analyst
-                        _logger.LogWarning(ex, "Failed to record split approval in splitter for job {JobId}", record.SplitJobId);
-                    }
-                }
-
-                await _db.SaveChangesAsync();
-
-                _logger.LogInformation(
-                    "Split chosen for container {Container}: result {ResultId} by {Analyst}",
-                    containerNumber, resultId, approvedBy);
-
-                return Ok(new { success = true, containerNumber, resultId, splitStatus = SplitAnalysisStatus.Chosen });
+                return await PersistSplitChoiceAsync(record, parsed.Value.ResultGuid, parsed.Value.ResultId, parsed.Value.ApprovedBy);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to choose split for container {Container}", containerNumber);
+                return StatusCode(500, new { error = "Failed to save split choice" });
+            }
+        }
+
+        [HttpPost("/api/image-analysis/records/{analysisRecordId:int}/choose-split")]
+        public async Task<IActionResult> ChooseSplitByAnalysisRecord(int analysisRecordId, [FromBody] JsonElement body)
+        {
+            try
+            {
+                var parsed = TryParseChooseSplitRequest(body);
+                if (parsed == null)
+                {
+                    return BadRequest(new { error = "resultId and approvedBy are required" });
+                }
+
+                var record = await _db.AnalysisRecords
+                    .Where(r => r.Id == analysisRecordId && r.IsMultiContainerScan)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for id {analysisRecordId}" });
+
+                return await PersistSplitChoiceAsync(record, parsed.Value.ResultGuid, parsed.Value.ResultId, parsed.Value.ApprovedBy);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to choose split for analysis record {AnalysisRecordId}", analysisRecordId);
+                return StatusCode(500, new { error = "Failed to save split choice" });
+            }
+        }
+
+        [HttpPost("jobs/{jobId:guid}/choose-split")]
+        public async Task<IActionResult> ChooseSplitByJob(Guid jobId, [FromBody] JsonElement body)
+        {
+            try
+            {
+                var parsed = TryParseChooseSplitRequest(body);
+                if (parsed == null)
+                {
+                    return BadRequest(new { error = "resultId and approvedBy are required" });
+                }
+
+                var requestedContainer = TryGetString(body, "containerNumber");
+                var normalizedContainer = ContainerNumberListMatcher.Normalize(requestedContainer);
+                var query = _db.AnalysisRecords
+                    .Where(r => r.SplitJobId == jobId && r.IsMultiContainerScan);
+
+                if (!string.IsNullOrWhiteSpace(normalizedContainer))
+                {
+                    query = query.Where(r => r.ContainerNumber == normalizedContainer);
+                }
+
+                var record = await query
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for split job {jobId}" });
+
+                return await PersistSplitChoiceAsync(record, parsed.Value.ResultGuid, parsed.Value.ResultId, parsed.Value.ApprovedBy);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to choose split for job {JobId}", jobId);
                 return StatusCode(500, new { error = "Failed to save split choice" });
             }
         }
@@ -683,6 +995,153 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogError(ex, "Failed to skip split for container {Container}", containerNumber);
                 return StatusCode(500, new { error = "Failed to save skip" });
             }
+        }
+
+        [HttpPost("/api/image-analysis/records/{analysisRecordId:int}/skip-split")]
+        public async Task<IActionResult> SkipSplitByAnalysisRecord(int analysisRecordId, [FromBody] JsonElement body)
+        {
+            try
+            {
+                var skippedBy = body.TryGetProperty("skippedBy", out var sb) ? sb.GetString() : "unknown";
+
+                var record = await _db.AnalysisRecords
+                    .Where(r => r.Id == analysisRecordId && r.IsMultiContainerScan)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for id {analysisRecordId}" });
+
+                record.SplitStatus = SplitAnalysisStatus.Skipped;
+                await _db.SaveChangesAsync();
+
+                _logger.LogInformation("Split skipped for analysis record {AnalysisRecordId} ({Container}) by {Analyst}",
+                    analysisRecordId, record.ContainerNumber, skippedBy);
+                return Ok(new { success = true, containerNumber = record.ContainerNumber, splitStatus = SplitAnalysisStatus.Skipped });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to skip split for analysis record {AnalysisRecordId}", analysisRecordId);
+                return StatusCode(500, new { error = "Failed to save skip" });
+            }
+        }
+
+        [HttpPost("jobs/{jobId:guid}/skip-split")]
+        public async Task<IActionResult> SkipSplitByJob(Guid jobId, [FromBody] JsonElement body)
+        {
+            try
+            {
+                var skippedBy = body.TryGetProperty("skippedBy", out var sb) ? sb.GetString() : "unknown";
+                var requestedContainer = TryGetString(body, "containerNumber");
+                var normalizedContainer = ContainerNumberListMatcher.Normalize(requestedContainer);
+                var query = _db.AnalysisRecords
+                    .Where(r => r.SplitJobId == jobId && r.IsMultiContainerScan);
+
+                if (!string.IsNullOrWhiteSpace(normalizedContainer))
+                {
+                    query = query.Where(r => r.ContainerNumber == normalizedContainer);
+                }
+
+                var record = await query
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefaultAsync();
+
+                if (record == null)
+                    return NotFound(new { error = $"No multi-container AnalysisRecord found for split job {jobId}" });
+
+                record.SplitStatus = SplitAnalysisStatus.Skipped;
+                await _db.SaveChangesAsync();
+
+                _logger.LogInformation("Split skipped for job {JobId} ({Container}) by {Analyst}",
+                    jobId, record.ContainerNumber, skippedBy);
+                return Ok(new { success = true, containerNumber = record.ContainerNumber, splitStatus = SplitAnalysisStatus.Skipped });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to skip split for job {JobId}", jobId);
+                return StatusCode(500, new { error = "Failed to save skip" });
+            }
+        }
+
+        private readonly record struct ChooseSplitRequest(string ResultId, Guid ResultGuid, string ApprovedBy);
+
+        private static ChooseSplitRequest? TryParseChooseSplitRequest(JsonElement body)
+        {
+            var resultId = TryGetString(body, "resultId");
+            var approvedBy = TryGetString(body, "approvedBy");
+
+            if (string.IsNullOrWhiteSpace(resultId)
+                || string.IsNullOrWhiteSpace(approvedBy)
+                || !Guid.TryParse(resultId, out var resultGuid))
+            {
+                return null;
+            }
+
+            return new ChooseSplitRequest(resultId, resultGuid, approvedBy);
+        }
+
+        private async Task<IActionResult> PersistSplitChoiceAsync(
+            AnalysisRecord record,
+            Guid resultGuid,
+            string resultId,
+            string approvedBy)
+        {
+            // Update this container's record
+            record.SplitResultId = resultGuid;
+            record.SplitStatus = SplitAnalysisStatus.Chosen;
+
+            AnalysisRecord? sibling = null;
+
+            // Update the sibling container (same SplitJobId, opposite position)
+            if (record.SplitJobId.HasValue)
+            {
+                var siblingPosition = record.SplitPosition == "left" ? "right" : "left";
+                sibling = await _db.AnalysisRecords
+                    .Where(r => r.SplitJobId == record.SplitJobId &&
+                                r.SplitPosition == siblingPosition &&
+                                r.Id != record.Id)
+                    .FirstOrDefaultAsync();
+
+                if (sibling != null)
+                {
+                    sibling.SplitResultId = resultGuid;
+                    sibling.SplitStatus = SplitAnalysisStatus.Chosen;
+                }
+
+                // Forward approval to the splitter for consensus corpus recording
+                try
+                {
+                    var client = _httpClientFactory.CreateClient("RawImageEngine");
+                    var approveBody = JsonSerializer.Serialize(new
+                    {
+                        result_id = resultId,
+                        container_left = record.SplitPosition == "left" ? record.ContainerNumber : sibling?.ContainerNumber ?? "",
+                        container_right = record.SplitPosition == "right" ? record.ContainerNumber : sibling?.ContainerNumber ?? "",
+                        approved_by = approvedBy
+                    });
+                    var content = new StringContent(approveBody, Encoding.UTF8, "application/json");
+                    await client.PostAsync($"/api/split/{record.SplitJobId}/approve", content);
+                }
+                catch (Exception ex)
+                {
+                    // Non-blocking — consensus recording failure shouldn't block the analyst
+                    _logger.LogWarning(ex, "Failed to record split approval in splitter for job {JobId}", record.SplitJobId);
+                }
+            }
+
+            await _db.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "Split chosen for container {Container}: result {ResultId} by {Analyst}",
+                record.ContainerNumber, resultId, approvedBy);
+
+            return Ok(new
+            {
+                success = true,
+                containerNumber = record.ContainerNumber,
+                resultId,
+                splitJobId = record.SplitJobId,
+                splitStatus = SplitAnalysisStatus.Chosen
+            });
         }
 
         // ── Split job lookup helpers ──
@@ -1048,6 +1507,26 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, localZone));
         }
 
+        private async Task<NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord?> FindLatestOriginalScanForContainerAsync(string containerNumber)
+        {
+            var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+            if (string.IsNullOrWhiteSpace(normalizedContainer))
+                return null;
+
+            var candidates = await _db.Set<NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord>()
+                .AsNoTracking()
+                .Where(original => original.DerivedRecordCount == 2
+                    && original.OriginalContainerNumbers.ToUpper().Contains(normalizedContainer))
+                .OrderByDescending(original => original.ScanTime)
+                .Take(25)
+                .ToListAsync();
+
+            return candidates.FirstOrDefault(original =>
+                ContainerNumberListMatcher.ContainsContainer(
+                    original.OriginalContainerNumbers,
+                    normalizedContainer));
+        }
+
         private static IReadOnlyList<string> ParseTwoContainerNumbers(string? raw)
         {
             return (raw ?? string.Empty)
@@ -1364,6 +1843,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public int ActivePendingProcessing { get; set; }
             public int UnreviewedFailed { get; set; }
             public int LabelledTotal { get; set; }
+            public int ApprovedCount { get; set; }
+            public int WrongSplitCount { get; set; }
+            public int SingleContainerCount { get; set; }
+            public int BadImageCount { get; set; }
+            public int UncertainCount { get; set; }
+            public int PositiveLabelCount { get; set; }
+            public int NegativeLabelCount { get; set; }
         }
     }
 }

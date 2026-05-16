@@ -11,6 +11,7 @@ using NickScanCentralImagingPortal.Services.ImageProcessing.ASE;
 using NickScanCentralImagingPortal.Services.ImageProcessing.Kernel;
 using NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Abstractions;
 using NickScanCentralImagingPortal.Services.ImageProcessing.Kernel.Adapters;
+using System.Text.Json;
 
 namespace NickScanCentralImagingPortal.Services.ImageSplitter
 {
@@ -199,18 +200,34 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
         {
             var containerA = containers[0];
             var containerB = containers[1];
+            var compactPair = string.Join(",", containers);
+            var spacedPair = string.Join(", ", containers);
+            var originalPair = original.OriginalContainerNumbers?.Trim();
             var records = await _db.AnalysisRecords
                 .AsNoTracking()
                 .Where(record =>
-                    (record.ContainerNumber == containerA || record.ContainerNumber == containerB)
+                    (record.ContainerNumber == containerA
+                        || record.ContainerNumber == containerB
+                        || record.ContainerNumber == compactPair
+                        || record.ContainerNumber == spacedPair
+                        || (!string.IsNullOrWhiteSpace(originalPair) && record.ContainerNumber == originalPair))
                     && (record.ScannerType == original.ScannerType || record.ScannerType == null || record.ScannerType == string.Empty))
                 .OrderByDescending(record => record.CreatedAtUtc)
                 .ToListAsync(cancellationToken);
 
             var latestRecords = records
+                .Where(record =>
+                    string.Equals(record.ContainerNumber, containerA, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(record.ContainerNumber, containerB, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(record => record.ContainerNumber, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(record => record.CreatedAtUtc).First())
                 .ToList();
+
+            if (records.Any(record => IsCompositeContainerNumber(record.ContainerNumber, containers))
+                && latestRecords.Count < 2)
+            {
+                return true;
+            }
 
             if (latestRecords.Count == 0)
             {
@@ -352,18 +369,35 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
         {
             var containerA = containers[0];
             var containerB = containers[1];
+            var compactPair = string.Join(",", containers);
+            var spacedPair = string.Join(", ", containers);
+            var originalPair = original.OriginalContainerNumbers?.Trim();
             var records = await _db.AnalysisRecords
                 .AsTracking()
                 .Where(record =>
-                    (record.ContainerNumber == containerA || record.ContainerNumber == containerB)
+                    (record.ContainerNumber == containerA
+                        || record.ContainerNumber == containerB
+                        || record.ContainerNumber == compactPair
+                        || record.ContainerNumber == spacedPair
+                        || (!string.IsNullOrWhiteSpace(originalPair) && record.ContainerNumber == originalPair))
                     && (record.ScannerType == original.ScannerType || record.ScannerType == null || record.ScannerType == string.Empty))
                 .OrderByDescending(record => record.CreatedAtUtc)
                 .ToListAsync(cancellationToken);
 
             var latestRecords = records
+                .Where(record =>
+                    string.Equals(record.ContainerNumber, containerA, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(record.ContainerNumber, containerB, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(record => record.ContainerNumber, StringComparer.OrdinalIgnoreCase)
                 .Select(group => group.OrderByDescending(record => record.CreatedAtUtc).First())
                 .ToList();
+
+            var structuralChanges = await PromoteCompositeAnalysisRecordAsync(
+                original,
+                containers,
+                records,
+                latestRecords,
+                cancellationToken);
 
             if (latestRecords.Count == 0)
                 return 0;
@@ -398,7 +432,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 candidateFetchAttempted: shouldFetchCandidates,
                 candidateOutcomes: topResults.Select(result => result.SplitOutcome));
 
-            var linked = 0;
+            var linked = structuralChanges;
             foreach (var record in latestRecords)
             {
                 var changed = false;
@@ -433,9 +467,195 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             }
 
             if (linked > 0)
+            {
                 await _db.SaveChangesAsync(cancellationToken);
+                await RefreshMaterializedAssignmentRowsAsync(latestRecords, cancellationToken);
+                await _db.SaveChangesAsync(cancellationToken);
+            }
 
             return linked;
+        }
+
+        private async Task<int> PromoteCompositeAnalysisRecordAsync(
+            OriginalScanRecord original,
+            IReadOnlyList<string> containers,
+            List<AnalysisRecord> records,
+            List<AnalysisRecord> latestRecords,
+            CancellationToken cancellationToken)
+        {
+            var composite = records
+                .Where(record => IsCompositeContainerNumber(record.ContainerNumber, containers))
+                .OrderByDescending(record => record.CreatedAtUtc)
+                .FirstOrDefault();
+
+            if (composite == null)
+                return 0;
+
+            if (latestRecords.Count >= 2)
+            {
+                _db.AnalysisRecords.Remove(composite);
+                return 1;
+            }
+
+            var changed = 0;
+            var containerA = containers[0];
+            var containerB = containers[1];
+            var hasA = latestRecords.Any(record => string.Equals(record.ContainerNumber, containerA, StringComparison.OrdinalIgnoreCase));
+            var hasB = latestRecords.Any(record => string.Equals(record.ContainerNumber, containerB, StringComparison.OrdinalIgnoreCase));
+
+            if (!hasA)
+            {
+                composite.ContainerNumber = containerA;
+                latestRecords.Add(composite);
+                hasA = true;
+                changed++;
+            }
+            else if (!hasB)
+            {
+                composite.ContainerNumber = containerB;
+                latestRecords.Add(composite);
+                hasB = true;
+                changed++;
+            }
+
+            if (!hasA || !hasB)
+            {
+                var missingContainer = hasA ? containerB : containerA;
+                var alreadyExists = await _db.AnalysisRecords
+                    .AsNoTracking()
+                    .AnyAsync(record =>
+                        record.GroupId == composite.GroupId
+                        && record.ContainerNumber == missingContainer,
+                        cancellationToken);
+
+                if (!alreadyExists)
+                {
+                    var sibling = new AnalysisRecord
+                    {
+                        GroupId = composite.GroupId,
+                        ContainerNumber = missingContainer,
+                        ScannerType = composite.ScannerType ?? original.ScannerType,
+                        ImageUrl = composite.ImageUrl,
+                        MetadataRef = composite.MetadataRef,
+                        CompletenessRef = composite.CompletenessRef,
+                        Status = composite.Status,
+                        CreatedAtUtc = DateTime.UtcNow
+                    };
+
+                    _db.AnalysisRecords.Add(sibling);
+                    latestRecords.Add(sibling);
+                    changed++;
+                }
+            }
+
+            return changed;
+        }
+
+        private async Task RefreshMaterializedAssignmentRowsAsync(
+            IReadOnlyCollection<AnalysisRecord> linkedRecords,
+            CancellationToken cancellationToken)
+        {
+            var groupIds = linkedRecords
+                .Select(record => record.GroupId)
+                .Distinct()
+                .ToList();
+
+            foreach (var groupId in groupIds)
+            {
+                var containers = await _db.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(record => record.GroupId == groupId)
+                    .Select(record => record.ContainerNumber)
+                    .Distinct()
+                    .OrderBy(container => container)
+                    .ToListAsync(cancellationToken);
+
+                var group = await _db.AnalysisGroups
+                    .AsTracking()
+                    .FirstOrDefaultAsync(g => g.Id == groupId, cancellationToken);
+
+                if (group != null && containers.Count > 0)
+                {
+                    group.TotalContainerCount = containers.Count;
+                    group.PendingContainerCount = containers.Count;
+                    group.UpdatedAtUtc = DateTime.UtcNow;
+
+                    if (IsCompositeContainerNumber(group.GroupIdentifier, containers))
+                    {
+                        await RefreshSplitCompletenessRowsAsync(
+                            group.GroupIdentifier,
+                            containers,
+                            cancellationToken);
+                    }
+                }
+
+                var queueEntry = await _db.AnalysisQueueEntries
+                    .AsTracking()
+                    .FirstOrDefaultAsync(entry => entry.GroupId == groupId, cancellationToken);
+
+                if (queueEntry != null && containers.Count > 0)
+                {
+                    queueEntry.ContainerCount = containers.Count;
+                    queueEntry.ContainersJson = JsonSerializer.Serialize(containers);
+                    queueEntry.ContainersWithImages = containers.Count;
+                    queueEntry.ContainersWithoutImages = 0;
+                    queueEntry.TotalContainerCount = containers.Count;
+                    queueEntry.PendingContainerCount = containers.Count;
+                    queueEntry.GroupUpdatedAtUtc = DateTime.UtcNow;
+                    queueEntry.LastRefreshedAtUtc = DateTime.UtcNow;
+                }
+            }
+        }
+
+        private async Task RefreshSplitCompletenessRowsAsync(
+            string groupIdentifier,
+            IReadOnlyCollection<string> containers,
+            CancellationToken cancellationToken)
+        {
+            var containerStatuses = await _db.ContainerCompletenessStatuses
+                .AsTracking()
+                .Where(status => containers.Contains(status.ContainerNumber))
+                .ToListAsync(cancellationToken);
+
+            foreach (var status in containerStatuses)
+            {
+                status.HasImageData = true;
+
+                if (IsCompositeContainerIdentifier(status.GroupIdentifier))
+                {
+                    _logger.LogWarning(
+                        "{ServiceId} Clearing composite scan-pair GroupIdentifier {GroupIdentifier} from container completeness row {Container}. Cargo grouping must remain container/declaration/CMR keyed.",
+                        ServiceId,
+                        status.GroupIdentifier,
+                        status.ContainerNumber);
+                    status.GroupIdentifier = null;
+                }
+
+                if (string.IsNullOrWhiteSpace(status.WorkflowStage)
+                    || string.Equals(status.WorkflowStage, "Pending", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status.WorkflowStage, "AwaitingScan", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status.WorkflowStage, "SplitPending", StringComparison.OrdinalIgnoreCase))
+                {
+                    status.WorkflowStage = "ImageAnalysis";
+                }
+
+                status.UpdatedAt = DateTime.UtcNow;
+            }
+
+            var compactGroupIdentifier = groupIdentifier.Replace(" ", string.Empty);
+            var compositeStatuses = await _db.ContainerCompletenessStatuses
+                .AsTracking()
+                .Where(status =>
+                    status.ContainerNumber == groupIdentifier
+                    || status.ContainerNumber.Replace(" ", string.Empty) == compactGroupIdentifier)
+                .ToListAsync(cancellationToken);
+
+            foreach (var status in compositeStatuses)
+            {
+                status.GroupIdentifier = string.Empty;
+                status.WorkflowStage = "SplitSuperseded";
+                status.UpdatedAt = DateTime.UtcNow;
+            }
         }
 
         private static IReadOnlyList<string> ParseTwoContainerNumbers(string? raw)
@@ -447,6 +667,32 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(3)
                 .ToList();
+        }
+
+        private static bool IsCompositeContainerNumber(
+            string? containerNumber,
+            IReadOnlyList<string> expectedContainers)
+        {
+            var parsed = ParseTwoContainerNumbers(containerNumber);
+            if (parsed.Count != expectedContainers.Count)
+                return false;
+
+            return expectedContainers.All(expected =>
+                parsed.Contains(expected, StringComparer.OrdinalIgnoreCase));
+        }
+
+        private static bool IsCompositeContainerIdentifier(string? identifier)
+        {
+            var parsed = ParseTwoContainerNumbers(identifier);
+            return parsed.Count >= 2 && parsed.All(IsLikelyIsoContainerNumber);
+        }
+
+        private static bool IsLikelyIsoContainerNumber(string value)
+        {
+            var token = value.Trim();
+            return token.Length == 11
+                && token.Take(4).All(char.IsLetter)
+                && token.Skip(4).All(char.IsDigit);
         }
 
         private static bool IsCompleted(string? status) =>

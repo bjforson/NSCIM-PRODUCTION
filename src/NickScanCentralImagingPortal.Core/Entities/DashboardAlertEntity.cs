@@ -14,8 +14,8 @@ namespace NickScanCentralImagingPortal.Core.Entities
     /// no email was sent, and no historical record was kept.
     ///
     /// This entity is the persistence target. <c>IDashboardAlertService.RaiseAsync</c>
-    /// dedupes (by Type+Title within a 30-minute window), persists, and (for
-    /// <c>Severity == "Critical"</c>) emails on-call via NickComms.Gateway.
+    /// dedupes by a stable AlertKey while an incident is open, persists, and
+    /// escalates Critical alerts to NickComms.Gateway subject to cooldown.
     ///
     /// Tenancy: <c>TenantId</c> follows the phase-1 pattern — DB-side default
     /// <c>current_setting('app.tenant_id')::bigint</c> + a
@@ -39,6 +39,16 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(64)]
         [Column("type")]
         public string Type { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Stable incident fingerprint used for dedupe and email cooldown.
+        /// Unlike Title, this must not include changing counts, hashes, or
+        /// other volatile detail.
+        /// </summary>
+        [Required]
+        [StringLength(256)]
+        [Column("alertkey")]
+        public string AlertKey { get; set; } = string.Empty;
 
         /// <summary>
         /// "Info" / "Warning" / "Critical". Critical alerts trigger an

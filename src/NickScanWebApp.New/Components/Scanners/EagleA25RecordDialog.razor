@@ -1,0 +1,288 @@
+@using MudBlazor
+@using Microsoft.AspNetCore.Components.Authorization
+@using NickScanWebApp.Shared.Services
+@inject EagleA25Client EagleA25Client
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
+@inject ISnackbar Snackbar
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IDialogService DialogService
+
+<MudDialog>
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Outlined.Visibility" Color="Color.Secondary" />
+            <MudText Typo="Typo.h6">Eagle A25 Record</MudText>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <div style="max-height: 80vh; overflow-y: auto;">
+            @if (_isLoading)
+            {
+                <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Spacing="2" Class="pa-8">
+                    <MudProgressCircular Indeterminate="true" Size="Size.Large" Color="Color.Primary" />
+                    <MudText Typo="Typo.body1">Loading record...</MudText>
+                </MudStack>
+            }
+            else if (_scan == null)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Filled">Unable to load this Eagle A25 record.</MudAlert>
+            }
+            else
+            {
+                <MudStack Spacing="4">
+                    <MudPaper Elevation="0" Outlined="true" Class="pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                            <MudStack Spacing="1">
+                                <MudText Typo="Typo.h5" Style="font-family: monospace;">@_scan.Accession</MudText>
+                                <MudText Typo="Typo.body2" Color="Color.Secondary">@Display(_scan.CargoIdentifier)</MudText>
+                            </MudStack>
+                            <MudStack Row="true" Spacing="1">
+                                <MudChip T="string" Size="Size.Small" Color="@(_scan.InspectDone ? Color.Success : Color.Default)">Inspect @(_scan.InspectDone ? "Done" : "Pending")</MudChip>
+                                <MudChip T="string" Size="Size.Small" Color="@(_scan.InspectSuspicious ? Color.Warning : Color.Default)">Suspicious @(_scan.InspectSuspicious ? "Yes" : "No")</MudChip>
+                                <MudChip T="string" Size="Size.Small" Color="@(_scan.XRayDone ? Color.Success : Color.Default)">X-Ray @(_scan.XRayDone ? "Done" : "Pending")</MudChip>
+                            </MudStack>
+                        </MudStack>
+                    </MudPaper>
+
+                    <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pt-4">
+                        <MudTabPanel Text="Native X-Ray" Icon="@Icons.Material.Outlined.ImageSearch">
+                            <MudPaper Elevation="0" Outlined="true" Class="pa-3">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                        <MudStack Spacing="0">
+                                            <MudText Typo="Typo.subtitle1">Native .cargoimage render</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                Rendered through the same analysis pipeline as ASE and FS6000 using lookup @_scan.Accession
+                                            </MudText>
+                                        </MudStack>
+                                        <MudButton Variant="Variant.Filled"
+                                                   Color="Color.Primary"
+                                                   StartIcon="@Icons.Material.Outlined.OpenInFull"
+                                                   OnClick="OpenNativeAnalysisViewer">
+                                            Analyse
+                                        </MudButton>
+                                    </MudStack>
+                                    <img src="@BuildNativeImageUrl()"
+                                         alt="Eagle A25 native X-Ray"
+                                         style="width: 100%; max-height: 620px; object-fit: contain; background: #080808; border-radius: 4px;" />
+                                </MudStack>
+                            </MudPaper>
+                        </MudTabPanel>
+
+                        <MudTabPanel Text="Manifest" Icon="@Icons.Material.Outlined.Article">
+                            <MudGrid Spacing="2">
+                                <MudItem xs="12" sm="4"><MudTextField Label="Accession" Value="@_scan.Accession.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Scan Accession" Value="@Display(_scan.ScanAccession?.ToString())" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Scan Date UTC" Value="@FormatDate(_scan.ScanDateUtc)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Container / Cargo" Value="@Display(_scan.CargoIdentifier)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Air Waybill" Value="@Display(_scan.AirWaybill)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Flight Number" Value="@Display(_scan.FlightNumber)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Transit Type" Value="@Display(_scan.TransitType)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Company" Value="@Display(_scan.Company)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Weight" Value="@Display(_scan.Weight)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Quantity" Value="@Display(_scan.Quantity)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Quantity Type" Value="@Display(_scan.QuantityType)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Route" Value="@FormatRoute(_scan.OriginFrom, _scan.OriginTo)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12"><MudTextField Label="Comments" Value="@Display(_scan.Comments)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="2" /></MudItem>
+                                <MudItem xs="12"><MudTextField Label="Source Data Path" Value="@Display(_scan.DataPath)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12"><MudTextField Label="Source Data URL" Value="@Display(_scan.DataUrl)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                            </MudGrid>
+                        </MudTabPanel>
+
+                        <MudTabPanel Text="Assets" Icon="@Icons.Material.Outlined.Image" BadgeData="@_scan.Assets.Count">
+                            @{
+                                var displayImages = _scan.Assets
+                                    .Where(a => IsDisplayableImage(a))
+                                    .ToList();
+                            }
+                            @if (displayImages.Count > 0)
+                            {
+                                <MudGrid Spacing="2" Class="mb-4">
+                                    @foreach (var image in displayImages)
+                                    {
+                                        <MudItem xs="12" md="6">
+                                            <MudPaper Elevation="0" Outlined="true" Class="pa-2">
+                                                <MudStack Spacing="1">
+                                                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                        <MudText Typo="Typo.subtitle2">@image.FileType</MudText>
+                                                        <MudText Typo="Typo.caption">@FormatFileSize(image.FileSizeBytes)</MudText>
+                                                    </MudStack>
+                                                    <img src="@BuildAssetUrl(image.Id)"
+                                                         alt="@image.FileType"
+                                                         style="width: 100%; max-height: 360px; object-fit: contain; background: #111; border-radius: 4px;" />
+                                                </MudStack>
+                                            </MudPaper>
+                                        </MudItem>
+                                    }
+                                </MudGrid>
+                            }
+
+                            <MudTable Items="_scan.Assets" Dense="true" Hover="true" Striped="true" FixedHeader="true" Height="420px">
+                                <HeaderContent>
+                                    <MudTh>Type</MudTh>
+                                    <MudTh>Description</MudTh>
+                                    <MudTh>Mime</MudTh>
+                                    <MudTh>Size</MudTh>
+                                    <MudTh>Local Copy</MudTh>
+                                    <MudTh>Source</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd DataLabel="Type">
+                                        <MudChip T="string" Size="Size.Small" Color="@(context.IsXray ? Color.Secondary : Color.Default)">
+                                            @context.FileType
+                                        </MudChip>
+                                    </MudTd>
+                                    <MudTd DataLabel="Description">@Display(context.Description)</MudTd>
+                                    <MudTd DataLabel="Mime">@Display(context.MimeType)</MudTd>
+                                    <MudTd DataLabel="Size">@FormatFileSize(context.FileSizeBytes)</MudTd>
+                                    <MudTd DataLabel="Local Copy">
+                                        <MudText Typo="Typo.caption" Style="font-family: monospace; white-space: normal;">@Display(context.LocalPath)</MudText>
+                                    </MudTd>
+                                    <MudTd DataLabel="Source">
+                                        <MudText Typo="Typo.caption" Style="font-family: monospace; white-space: normal;">@Display(context.SourcePath)</MudText>
+                                    </MudTd>
+                                </RowTemplate>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Color="Color.Secondary">No assets are attached to this Eagle A25 record.</MudText>
+                                </NoRecordsContent>
+                            </MudTable>
+                        </MudTabPanel>
+
+                        <MudTabPanel Text="Source IDs" Icon="@Icons.Material.Outlined.Numbers">
+                            <MudGrid Spacing="2">
+                                <MudItem xs="12" sm="4"><MudTextField Label="Source Scan ID" Value="@_scan.SourceScanId.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Source Scan Entry ID" Value="@_scan.SourceScanEntryId.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Source Manifest ID" Value="@_scan.SourceManifestId.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="6"><MudTextField Label="Source Scan GUID" Value="@_scan.SourceScanGuid.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="6"><MudTextField Label="Source Manifest GUID" Value="@_scan.SourceManifestGuid.ToString()" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Cargo System ID" Value="@Display(_scan.CargoSystemId?.ToString())" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Location ID" Value="@Display(_scan.LocationId?.ToString())" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                                <MudItem xs="12" sm="4"><MudTextField Label="Sync Status" Value="@Display(_scan.SyncStatus)" ReadOnly="true" Variant="Variant.Outlined" Margin="Margin.Dense" /></MudItem>
+                            </MudGrid>
+                        </MudTabPanel>
+                    </MudTabs>
+                </MudStack>
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public Guid ScanId { get; set; }
+
+    private bool _isLoading;
+    private EagleA25ScanDetail? _scan;
+    private string _signedUrlUserId = "anon";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            _signedUrlUserId = authState.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                ?? authState.User.Identity?.Name
+                ?? "anon";
+            _scan = await EagleA25Client.GetScanAsync(ScanId);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading Eagle A25 record {ScanId}: {ex.Message}");
+            Snackbar.Add($"Error loading Eagle A25 record: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void Close() => MudDialog.Close();
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "N/A" : value;
+    }
+
+    private static string FormatDate(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToString("yyyy-MM-dd HH:mm:ss") : "N/A";
+    }
+
+    private static string FormatRoute(string? originFrom, string? originTo)
+    {
+        if (string.IsNullOrWhiteSpace(originFrom) && string.IsNullOrWhiteSpace(originTo))
+            return "N/A";
+
+        return $"{Display(originFrom)} -> {Display(originTo)}";
+    }
+
+    private string BuildAssetUrl(Guid assetId)
+    {
+        return EagleA25Client.BuildImageProxyUrl(
+            UrlBuilder.Build(EagleA25Client.BuildAssetContentPath(assetId), _signedUrlUserId));
+    }
+
+    private string BuildNativeImageUrl()
+    {
+        if (_scan == null)
+            return string.Empty;
+
+        return EagleA25Client.BuildImageProxyUrl(
+            UrlBuilder.Build(EagleA25Client.BuildNativeCompleteImagePath(_scan.Accession), _signedUrlUserId));
+    }
+
+    private async Task OpenNativeAnalysisViewer()
+    {
+        if (_scan == null)
+            return;
+
+        var lookup = _scan.Accession.ToString();
+        var parameters = new DialogParameters
+        {
+            ["ContainerNumber"] = lookup,
+            ["ScannerType"] = "EAGLE_A25",
+            ["ImageUrl"] = BuildNativeImageUrl(),
+            ["ScanDate"] = _scan.ScanDateUtc,
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"Eagle A25 Native Analysis - {lookup}",
+            parameters,
+            options);
+    }
+
+    private static bool IsDisplayableImage(EagleA25AssetDetail asset)
+    {
+        return !string.IsNullOrWhiteSpace(asset.LocalPath)
+            && !string.IsNullOrWhiteSpace(asset.MimeType)
+            && asset.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatFileSize(long? bytes)
+    {
+        if (!bytes.HasValue)
+            return "N/A";
+
+        if (bytes.Value < 1024)
+            return $"{bytes.Value} B";
+
+        if (bytes.Value < 1024 * 1024)
+            return $"{bytes.Value / 1024.0:F1} KB";
+
+        return $"{bytes.Value / 1024.0 / 1024.0:F1} MB";
+    }
+
+}

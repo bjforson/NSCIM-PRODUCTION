@@ -21,10 +21,15 @@ services/image-splitter/tools/ase_format_research/decompiled/
 publish/
 NickHR/deploy/
 NickComms/deploy/
+deploy-backups/
+deploy-staging/
 
 # Local backups (manual database dumps, file snapshots) — never source
 backups/
 tools/backfill/backups/
+
+# Disposable local verification databases
+.cmr-staging-pg/
 
 # Claude Code session-local files (worktrees, settings, scratch skills)
 .claude/worktrees/
@@ -54,6 +59,9 @@ Data/FS6000/Staging/
 # FS6000 ingest workspace — FS6000RawChannelIngester copies .img files here
 # just long enough to read them, then deletes. Transient scratch space.
 Data/FS6000/IngestWorkspace/
+
+# Eagle A25 mirrored scan assets — runtime cache copied from scanner storage
+Data/EagleA25/
 
 # Visual Studio
 .vs/

@@ -801,7 +801,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 {
                     _logger.LogInformation("Serving split crop image for container {ContainerNumber}", containerNumber);
                     Response.Headers.CacheControl = "private, max-age=300";
-                    return File(splitImage, "image/jpeg");
+                    return File(splitImage.Bytes, splitImage.MimeType);
                 }
 
                 // ── v2.10.0 Mode Catalog: if ?mode= is set, route through the mode
@@ -929,6 +929,34 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         _logger.LogWarning(
                             "[MODE-AUTO-ASE] {Container} claimed composite support but renderer returned null; falling back to legacy path",
                             containerNumber);
+                    }
+                }
+
+                // Eagle A25 has no legacy ContainerImageRepository path. Its native
+                // .cargoimage is decoded by the unified kernel, so default image
+                // requests must render through a mode even when the viewer has not
+                // selected one yet.
+                var eagleCaps = await _imageProcessingService.GetScanModeCapabilitiesAsync(containerNumber);
+                if (string.Equals(eagleCaps?.Scanner, "EAGLE_A25", StringComparison.OrdinalIgnoreCase)
+                    && (eagleCaps.SupportedModes ?? Array.Empty<string>()).Any(m => string.Equals(m, "bw", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var autoBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
+                        containerNumber,
+                        "bw",
+                        loPct ?? 1.0f,
+                        hiPct ?? 99.5f,
+                        gamma ?? 1.0f);
+                    if (autoBytes != null)
+                    {
+                        if (string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase))
+                        {
+                            autoBytes = await ResizeToThumbnailAsync(autoBytes) ?? autoBytes;
+                        }
+                        Response.Headers.CacheControl = "private, max-age=3600";
+                        _logger.LogInformation(
+                            "[MODE-AUTO-EAGLE-A25] {Container} default-rendered from native cargoimage size={Bytes} bytes",
+                            containerNumber, autoBytes.Length);
+                        return File(autoBytes, "image/jpeg");
                     }
                 }
 
@@ -1233,7 +1261,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Checks if this container has a chosen split crop and returns the cropped image bytes.
         /// Returns null if no split applies (single-container scan, pending, skipped, etc.)
         /// </summary>
-        private async Task<byte[]?> TryGetSplitCropImageAsync(string containerNumber, string size)
+        private sealed record SplitCropImage(byte[] Bytes, string MimeType);
+
+        private async Task<SplitCropImage?> TryGetSplitCropImageAsync(string containerNumber, string size)
         {
             try
             {
@@ -1255,7 +1285,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 var client = HttpContext.RequestServices.GetRequiredService<IHttpClientFactory>()
                     .CreateClient("RawImageEngine");
                 var response = await client.GetAsync(
-                    $"/api/split/{record.SplitJobId}/results/{record.SplitResultId}/image/{side}");
+                    $"/api/split/{record.SplitJobId}/results/{record.SplitResultId}/lossless/{side}");
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -1266,6 +1296,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 }
 
                 var imageBytes = await response.Content.ReadAsByteArrayAsync();
+                var mimeType = response.Content.Headers.ContentType?.MediaType ?? "image/png";
 
                 // Apply thumbnail resize if requested
                 if (string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase) && imageBytes.Length > 0)
@@ -1280,13 +1311,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             image.Mutate(x => x.Resize(newW, newH, KnownResamplers.Lanczos3));
                             using var outputStream = new MemoryStream();
                             await image.SaveAsJpegAsync(outputStream, new JpegEncoder { Quality = 85 });
-                            return outputStream.ToArray();
+                            return new SplitCropImage(outputStream.ToArray(), "image/jpeg");
                         }
                     }
                     catch { /* fall through to full-size crop */ }
                 }
 
-                return imageBytes;
+                return new SplitCropImage(imageBytes, mimeType);
             }
             catch (Exception ex)
             {

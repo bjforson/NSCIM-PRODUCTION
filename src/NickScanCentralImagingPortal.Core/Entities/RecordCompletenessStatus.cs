@@ -8,16 +8,15 @@ namespace NickScanCentralImagingPortal.Core.Entities
     /// <summary>
     /// 1.14.0 — The canonical record-level operational state.
     ///
-    /// A "record" in NSCIM is a customs declaration (BOE) from ICUMS and its full
-    /// expected container set. This entity is proactively ingested from the ICUMS
-    /// downloads database by RecordReconciliationWorker, so that the operator view
-    /// of a shipment reflects what ICUMS actually says exists — not just what has
-    /// happened to be scanned so far.
+    /// A "record" in NSCIM is normally a customs declaration (BOE) from ICUMS and
+    /// its full expected container set. CMR pre-declaration manifests can also
+    /// become records when CMR composite progression is enabled; those records use
+    /// a stable operational key until a BOE number exists.
     ///
     /// Keyed by (DeclarationNumber, ScannerType). DeclarationNumber is the
-    /// globally-unique customs filing identifier and is always used as the primary
-    /// operational identifier — master BL is NOT used because multiple unrelated
-    /// customers can share a shipping contract.
+    /// globally-unique customs filing identifier for IM/EX records. For CMR
+    /// records, this column stores a route-safe operational key derived from
+    /// rotation number, container number, and BL number.
     ///
     /// For the "used cars in one container" case (Pattern A), multiple declarations
     /// may share a single physical container. Those records carry the same
@@ -39,7 +38,7 @@ namespace NickScanCentralImagingPortal.Core.Entities
         [StringLength(100)]
         public string DeclarationNumber { get; set; } = string.Empty;
 
-        /// <summary>IM | EX. (CMR pre-declaration manifests are not records yet — they're upgraded when the declaration arrives.)</summary>
+        /// <summary>IM | EX | CMR.</summary>
         [StringLength(20)]
         public string? ClearanceType { get; set; }
 

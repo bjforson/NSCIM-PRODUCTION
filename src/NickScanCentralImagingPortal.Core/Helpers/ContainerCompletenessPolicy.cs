@@ -7,10 +7,17 @@ public static class ContainerCompletenessPolicy
         bool hasICUMSData,
         bool hasImageData,
         string? clearanceType,
-        string? groupIdentifier)
+        string? groupIdentifier,
+        bool cmrCompositeProgressionEnabled = false,
+        string? cmrRotationNumber = null,
+        string? cmrContainerNumber = null,
+        string? cmrBlNumber = null)
     {
-        var isCmrPending = string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
-                           && string.IsNullOrWhiteSpace(groupIdentifier);
+        var isCmr = string.Equals(clearanceType, "CMR", StringComparison.OrdinalIgnoreCase);
+        var hasCmrOperationalKey = !string.IsNullOrWhiteSpace(groupIdentifier)
+            || (cmrCompositeProgressionEnabled
+                && CmrCompositeKeyHelper.HasRequiredParts(cmrRotationNumber, cmrContainerNumber, cmrBlNumber));
+        var isCmrPending = isCmr && !hasCmrOperationalKey;
         var isComplete = hasScannerData && hasICUMSData && hasImageData && !isCmrPending;
 
         if (isComplete)

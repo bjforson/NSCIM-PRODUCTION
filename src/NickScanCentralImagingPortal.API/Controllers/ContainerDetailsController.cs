@@ -6,8 +6,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using NickScanCentralImagingPortal.API.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.CargoGroup;
+using NickScanCentralImagingPortal.Core.Entities.ASE;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NLog;
 
@@ -205,6 +208,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private readonly IcumDownloadsDbContext _icumDownloadsDbContext;
         private readonly ApplicationDbContext _context;
         private readonly IImageProcessingService _imageProcessingService;
+        private readonly IScanAssetResolver _scanAssetResolver;
         private readonly NickScanCentralImagingPortal.Services.ImageProcessing.ASE.IASEImageConverterService _aseConverter;
         private const string SERVICE_ID = "CONTAINER-DETAILS-API";
 
@@ -217,6 +221,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             IcumDownloadsDbContext icumDownloadsDbContext,
             ApplicationDbContext context,
             IImageProcessingService imageProcessingService,
+            IScanAssetResolver scanAssetResolver,
             NickScanCentralImagingPortal.Services.ImageProcessing.ASE.IASEImageConverterService aseConverter,
             IConfiguration configuration,
             NickScanCentralImagingPortal.Core.Security.ISignedImageUrlSigner urlSigner)
@@ -226,6 +231,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             _icumDownloadsDbContext = icumDownloadsDbContext;
             _context = context;
             _imageProcessingService = imageProcessingService;
+            _scanAssetResolver = scanAssetResolver;
             _aseConverter = aseConverter;
             _configuration = configuration;
             _urlSigner = urlSigner;
@@ -269,8 +275,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                     else if (scannerType == Core.Interfaces.ScannerType.ASE)
                     {
-                        var aseScan = await _context.AseScans
-                            .FirstOrDefaultAsync(s => s.ContainerNumber == containerNumber);
+                        var aseScan = await FindLatestAseScanForContainerAsync(containerNumber, requireImage: false);
 
                         if (aseScan != null)
                         {
@@ -278,6 +283,18 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             imageCount = (aseScan.ScanImage != null && aseScan.ScanImage.Length > 0) ? 1 : 0;
                             scanDate = aseScan.ScanTime;
                         }
+                    }
+                }
+
+                if (scannerRecordCount == 0)
+                {
+                    var tokenizedAseScan = await FindLatestAseScanForContainerAsync(containerNumber, requireImage: false);
+                    if (tokenizedAseScan != null)
+                    {
+                        scannerTypeStr = "ASE";
+                        scannerRecordCount = 1;
+                        imageCount = (tokenizedAseScan.ScanImage != null && tokenizedAseScan.ScanImage.Length > 0) ? 1 : 0;
+                        scanDate = tokenizedAseScan.ScanTime;
                     }
                 }
 
@@ -329,6 +346,47 @@ namespace NickScanCentralImagingPortal.API.Controllers
             if (icumsRecords > 0) score += 34;
             if (images > 0) score += 33;
             return score;
+        }
+
+        private async Task<AseScan?> FindLatestAseScanForContainerAsync(
+            string containerNumber,
+            bool requireImage,
+            CancellationToken cancellationToken = default)
+        {
+            var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+            if (string.IsNullOrWhiteSpace(normalizedContainer))
+                return null;
+
+            var exactQuery = _context.AseScans
+                .AsNoTracking()
+                .Where(scan => scan.ContainerNumber != null
+                    && scan.ContainerNumber.ToUpper() == normalizedContainer);
+
+            if (requireImage)
+                exactQuery = exactQuery.Where(scan => scan.ScanImage != null);
+
+            var exact = await exactQuery
+                .OrderByDescending(scan => scan.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (exact != null)
+                return exact;
+
+            var tokenizedQuery = _context.AseScans
+                .AsNoTracking()
+                .Where(scan => scan.ContainerNumber != null
+                    && scan.ContainerNumber.ToUpper().Contains(normalizedContainer));
+
+            if (requireImage)
+                tokenizedQuery = tokenizedQuery.Where(scan => scan.ScanImage != null);
+
+            var candidates = await tokenizedQuery
+                .OrderByDescending(scan => scan.ScanTime)
+                .Take(25)
+                .ToListAsync(cancellationToken);
+
+            return candidates.FirstOrDefault(scan =>
+                ContainerNumberListMatcher.ContainsContainer(scan.ContainerNumber, normalizedContainer));
         }
 
         /// <summary>
@@ -522,12 +580,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
                 var scannerRecords = new List<ScannerDataRecord>();
+                var scanResolution = await _scanAssetResolver.ResolveAsync(containerNumber, cancellationToken: cts.Token);
 
                 // Check ASE scanner data
-                var aseScan = await _context.AseScans
-                    .Where(a => a.ContainerNumber == containerNumber)
-                    .OrderByDescending(a => a.ScanTime)
-                    .FirstOrDefaultAsync(cts.Token);
+                var aseScan = await FindLatestAseScanForContainerAsync(
+                    containerNumber,
+                    requireImage: false,
+                    cts.Token);
 
                 if (aseScan != null)
                 {
@@ -536,8 +595,29 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         new ScannerDataRecord
                         {
                             Field = "Container Number",
-                            Value = aseScan.ContainerNumber ?? "N/A",
+                            Value = containerNumber,
                             Category = "Container Info",
+                            Timestamp = aseScan.ScanTime
+                        },
+                        new ScannerDataRecord
+                        {
+                            Field = "Source Container Number(s)",
+                            Value = aseScan.ContainerNumber ?? "N/A",
+                            Category = "Source Scan",
+                            Timestamp = aseScan.ScanTime
+                        },
+                        new ScannerDataRecord
+                        {
+                            Field = "Source Scan Id",
+                            Value = scanResolution.SourceScanId ?? aseScan.OriginalScanRecordId?.ToString() ?? aseScan.Id.ToString(),
+                            Category = "Source Scan",
+                            Timestamp = aseScan.ScanTime
+                        },
+                        new ScannerDataRecord
+                        {
+                            Field = "Resolution",
+                            Value = scanResolution.ResolvedBy ?? "AseContainerLookup",
+                            Category = "Source Scan",
                             Timestamp = aseScan.ScanTime
                         },
                         new ScannerDataRecord
@@ -838,6 +918,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
         {
             try
             {
+                var normalizedDeclarationNumber = GroupIdentifierHelper.GetNormalizedGroupIdentifier(declarationNumber);
+                if (!string.IsNullOrWhiteSpace(normalizedDeclarationNumber)
+                    && !string.Equals(normalizedDeclarationNumber, declarationNumber, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInfo("GetICUMSData", "Normalized declaration/group identifier {Original} -> {Normalized}",
+                        new { Original = declarationNumber, Normalized = normalizedDeclarationNumber });
+                    declarationNumber = normalizedDeclarationNumber;
+                }
+
                 _logger.LogInfo("GetICUMSData", "Getting ICUMS data for container {ContainerNumber}, declaration {DeclarationNumber}, page {Page}, size {PageSize}, BOEDocumentId {BOEDocumentId}",
                     new { ContainerNumber = containerNumber, DeclarationNumber = declarationNumber, Page = page, PageSize = pageSize, BOEDocumentId = boeDocumentId });
 
@@ -2171,19 +2260,25 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // Require > 1000 bytes: real ASE proprietary images are 100KB+; tiny blobs are corrupted/empty
                 try
                 {
-                    var aseScans = await _context.AseScans
-                        .Where(a => a.ContainerNumber == containerNumber
+                    var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+                    var aseScanCandidates = await _context.AseScans
+                        .Where(a => a.ContainerNumber != null
+                            && a.ContainerNumber.ToUpper().Contains(normalizedContainer)
                             && !string.IsNullOrEmpty(a.ImageDisplayName)
                             && a.ScanImage != null && a.ScanImage.Length > 1000)
                         .OrderByDescending(a => a.ScanTime)
                         .Select(a => new
                         {
+                            a.ContainerNumber,
                             a.ImageDisplayName,
-                            // ✅ Don't access ScanImage - it forces BLOB loading and causes timeout
-                            // ImageSize will be set to 0 (we don't need exact size for metadata)
+                            FileSizeBytes = a.ScanImage != null ? a.ScanImage.Length : 0,
                             a.ScanTime
                         })
                         .ToListAsync(cts.Token);
+
+                    var aseScans = aseScanCandidates
+                        .Where(a => ContainerNumberListMatcher.ContainsContainer(a.ContainerNumber, normalizedContainer))
+                        .ToList();
 
                     if (aseScans.Any())
                     {
@@ -2207,11 +2302,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     Id = imageId++,
                                     ImageType = "ASE",
                                     FileName = scan.ImageDisplayName ?? $"ASE_Scan_{containerNumber}.jpg",
-                                    FileSizeBytes = 0, // ✅ Size not available without loading BLOB - not needed for metadata
+                                    FileSizeBytes = scan.FileSizeBytes,
                                     CreatedAt = scan.ScanTime,
-                                    // Signed URL (see earlier comment).
-                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}"),
-                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}")
+                                    // Signed URL (see earlier comment). Route through ContainerDetails
+                                    // so legacy ASE rows stored as comma-separated source labels still resolve.
+                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ContainerDetails/image/ase/thumbnail?container={Uri.EscapeDataString(containerNumber)}{cacheBuster}"),
+                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ContainerDetails/image/ase/full?container={Uri.EscapeDataString(containerNumber)}{cacheBuster}")
                                 });
                             }
                         }
@@ -2256,10 +2352,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInfo("GetAseImageThumbnail", "🔍 Getting ASE thumbnail for container {Container}", new { Container = container });
 
-                var aseScan = await _context.AseScans
-                    .Where(a => a.ContainerNumber.Contains(container) && a.ScanImage != null)
-                    .OrderByDescending(a => a.ScanTime)
-                    .FirstOrDefaultAsync();
+                var aseScan = await FindLatestAseScanForContainerAsync(container, requireImage: true);
 
                 if (aseScan?.ScanImage == null)
                 {
@@ -2307,10 +2400,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogInfo("GetAseImageFull", "🔍 Getting ASE full image for container {Container}", new { Container = container });
 
-                var aseScan = await _context.AseScans
-                    .Where(a => a.ContainerNumber.Contains(container) && a.ScanImage != null)
-                    .OrderByDescending(a => a.ScanTime)
-                    .FirstOrDefaultAsync();
+                var aseScan = await FindLatestAseScanForContainerAsync(container, requireImage: true);
 
                 if (aseScan?.ScanImage == null)
                 {

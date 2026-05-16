@@ -3,7 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsBoeRequest)]
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
 
 <PageTitle>BOE Manual Request - ICUMS</PageTitle>
 
@@ -227,7 +227,7 @@
             isLoading = true;
             StateHasChanged();
 
-            var items = await ApiService.GetAsync<List<QueueItemDto>>("/api/ICUMSDownloadQueue?limit=50");
+            var items = await DownloadQueueClient.GetItemsAsync<QueueItemDto>(limit: 50);
 
             if (items != null)
             {
@@ -293,7 +293,7 @@
                 RequestedBy = "Manual UI Request"
             };
 
-            var response = await ApiService.PostAsync<object, EnqueueResponse>("/api/ICUMSDownloadQueue/enqueue", request);
+            var response = await DownloadQueueClient.EnqueueAsync<EnqueueResponse>(request);
 
             if (response != null)
             {
@@ -331,8 +331,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, ApiMessageResponse>(
-                $"/api/ICUMSDownloadQueue/retry/{request.Id}", new { });
+            await DownloadQueueClient.RetryAsync(request.Id);
             Snackbar.Add($"Retry initiated for {request.SearchValue}", Severity.Success);
             await LoadRecentRequestsAsync();
         }
@@ -346,7 +345,7 @@
     {
         try
         {
-            await ApiService.DeleteAsync($"/api/ICUMSDownloadQueue/{request.Id}");
+            await DownloadQueueClient.DeleteAsync(request.Id);
             Snackbar.Add($"Request cancelled for {request.SearchValue}", Severity.Success);
             await LoadRecentRequestsAsync();
         }

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NickScanCentralImagingPortal.Core.Configuration;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Core.Utilities;
@@ -590,6 +591,7 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
 
                 var processedContainersInThisFile = new HashSet<string>();
                 var processedDeclarationsInThisFile = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var processedCmrCompositesInThisFile = new Dictionary<string, CmrCompositeKey>(StringComparer.OrdinalIgnoreCase);
                 var verificationResults = new List<(string Container, int SourceFields, int MatchedFields)>();
 
                 // Process each BOE document
@@ -856,6 +858,9 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                                     SERVICE_ID, boeDocument.ContainerNumber, cascadeEx.Message);
                             }
 
+                            if (!string.IsNullOrWhiteSpace(boeDocument.DeclarationNumber))
+                                processedDeclarationsInThisFile.Add(boeDocument.DeclarationNumber.Trim());
+
                             continue; // Skip the normal insert/update path below
                         }
 
@@ -1019,6 +1024,16 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                         if (!string.IsNullOrWhiteSpace(boeDocument.DeclarationNumber))
                             processedDeclarationsInThisFile.Add(boeDocument.DeclarationNumber.Trim());
 
+                        if (string.Equals(boeDocument.ClearanceType, "CMR", StringComparison.OrdinalIgnoreCase)
+                            && CmrCompositeKeyHelper.TryCreate(
+                                boeDocument.RotationNumber,
+                                boeDocument.ContainerNumber,
+                                boeDocument.BlNumber,
+                                out var cmrCompositeKey))
+                        {
+                            processedCmrCompositesInThisFile[cmrCompositeKey.OperationalKey] = cmrCompositeKey;
+                        }
+
                         processedDocuments++;
                     }
                     catch (InvalidOperationException ex) when (ex.Message.Contains("VIN number") || ex.Message.Contains("Invalid container number"))
@@ -1089,6 +1104,32 @@ namespace NickScanCentralImagingPortal.Services.IcumApi
                         catch (Exception rbEx)
                         {
                             _logger.LogError(rbEx, "{ServiceId} Failed to build record for declaration {Decl}", SERVICE_ID, decl);
+                        }
+                    }
+                }
+
+                var cmrCompositeProgressionEnabled = _configuration.GetValue<bool>("CmrCompositeProgression:Enabled", false);
+                if (_recordBuildingService != null && cmrCompositeProgressionEnabled && processedCmrCompositesInThisFile.Count > 0)
+                {
+                    _logger.LogInformation("{ServiceId} Building CMR composite records for {Count} CMR keys from file {FileName}",
+                        SERVICE_ID, processedCmrCompositesInThisFile.Count, file.FileName);
+
+                    foreach (var cmrComposite in processedCmrCompositesInThisFile.Values)
+                    {
+                        try
+                        {
+                            await _recordBuildingService.BuildOrUpdateCmrRecordAsync(
+                                cmrComposite.RotationNumber,
+                                cmrComposite.ContainerNumber,
+                                cmrComposite.BlNumber,
+                                includeCmrCompositeRecords: true);
+                        }
+                        catch (Exception rbEx)
+                        {
+                            _logger.LogError(rbEx,
+                                "{ServiceId} Failed to build CMR composite record for {DisplayLabel}",
+                                SERVICE_ID,
+                                cmrComposite.DisplayLabel);
                         }
                     }
                 }

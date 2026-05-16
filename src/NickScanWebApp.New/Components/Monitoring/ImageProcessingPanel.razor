@@ -1,5 +1,6 @@
 @using MudBlazor
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@using NickScanWebApp.Shared.Services
+@inject ImageProcessingClient ImageProcessingClient
 @inject ISnackbar Snackbar
 @inject ILogger<ImageProcessingPanel> Logger
 
@@ -115,14 +116,7 @@
     {
         try
         {
-            var queryParams = new List<string>();
-            if (!string.IsNullOrWhiteSpace(_searchContainerNumber))
-                queryParams.Add($"containerNumber={Uri.EscapeDataString(_searchContainerNumber)}");
-            if (!string.IsNullOrWhiteSpace(_searchScannerType))
-                queryParams.Add($"scannerType={Uri.EscapeDataString(_searchScannerType)}");
-            
-            var query = queryParams.Any() ? "?" + string.Join("&", queryParams) : "";
-            var response = await ApiService.GetAsync<ImageSearchResultDto>($"api/imageprocessing{query}");
+            var response = await ImageProcessingClient.SearchImagesAsync(_searchContainerNumber, _searchScannerType);
             _imageResults = response?.Images;
             Snackbar.Add($"Found {_imageResults?.Count ?? 0} images", Severity.Success);
         }
@@ -137,7 +131,7 @@
     {
         try
         {
-            _statistics = await ApiService.GetAsync<ImageProcessingStatsDto>("api/imageprocessing/statistics");
+            _statistics = await ImageProcessingClient.GetStatisticsAsync();
         }
         catch (Exception ex)
         {
@@ -156,37 +150,6 @@
     {
         if (dateTime == null) return "N/A";
         return dateTime.Value.ToString("yyyy-MM-dd HH:mm:ss");
-    }
-
-    // DTOs matching API response models
-    public class ImageSearchResultDto
-    {
-        public List<ImageDetailDto>? Images { get; set; }
-        public int? TotalCount { get; set; }
-        public int? Page { get; set; }
-        public int? PageSize { get; set; }
-    }
-
-    public class ImageDetailDto
-    {
-        public int Id { get; set; }
-        public string? FileName { get; set; }
-        public string? ContainerNumber { get; set; }
-        public string? ScannerType { get; set; }
-        public string? ImageType { get; set; }
-        public DateTime? CreatedAt { get; set; }
-        public string? ProcessingStatus { get; set; }
-    }
-
-    public class ImageProcessingStatsDto
-    {
-        public int? TotalImages { get; set; }
-        public int? ProcessedImages { get; set; }
-        public int? PendingImages { get; set; }
-        public int? FailedImages { get; set; }
-        public int? ImagesToday { get; set; }
-        public double? AverageProcessingTime { get; set; }
-        public double? ProcessingSuccessRate { get; set; }
     }
 }
 
