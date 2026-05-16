@@ -268,6 +268,12 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.ContainerProcessingSer
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.SettingsService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.GatewayService>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ExportService>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.RecordCompletenessClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ManualBoeClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageProcessingClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.ScanAssetClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.EagleA25Client>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.SplitSelectionClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();
