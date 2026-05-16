@@ -12,6 +12,7 @@
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
+@inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -3041,16 +3042,22 @@
     private async Task<CargoGroupResponse?> TryLoadCargoGroupForGoodsPanel(string lookup)
     {
         var typeHint = IsConsolidated ? "Consolidated" : "NonConsolidated";
-        var endpoint = $"/api/cargogroup/{Uri.EscapeDataString(lookup)}?type={typeHint}&loadScannerData=false&loadImageData=false&loadICUMSData=true";
-
-        var cargoGroup = await ApiService.TryGetAsync<CargoGroupResponse>(endpoint);
+        var cargoGroup = await CargoGroupClient.TryGetCargoGroupAsync<CargoGroupResponse>(
+            lookup,
+            typeHint,
+            loadScannerData: false,
+            loadImageData: false,
+            loadICUMSData: true);
         if (cargoGroup?.Data?.ICUMSData?.Any() == true)
         {
             return cargoGroup;
         }
 
-        var fallbackEndpoint = $"/api/cargogroup/{Uri.EscapeDataString(lookup)}?loadScannerData=false&loadImageData=false&loadICUMSData=true";
-        return await ApiService.TryGetAsync<CargoGroupResponse>(fallbackEndpoint);
+        return await CargoGroupClient.TryGetCargoGroupAsync<CargoGroupResponse>(
+            lookup,
+            loadScannerData: false,
+            loadImageData: false,
+            loadICUMSData: true);
     }
 
     // Lightweight DTOs for the goods panel (avoids pulling in full CargoGroupDto)
