@@ -15,20 +15,24 @@ namespace NickScanWebApp.Shared.Services
         public const string BasePath = "/api/Gateway";
         public const string SearchPath = BasePath + "/search";
         public const string HealthPath = BasePath + "/health";
+        public const string DashboardStatsPath = BasePath + "/dashboard/stats";
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<GatewayService> _logger;
+        private readonly ApiService _apiService;
         private const string API_CLIENT_NAME = "NickScanAPI";
 
         public GatewayService(
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ILogger<GatewayService> logger)
+            ILogger<GatewayService> logger,
+            ApiService apiService)
         {
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _logger = logger;
+            _apiService = apiService;
         }
 
         private HttpClient GetHttpClient()
@@ -126,6 +130,31 @@ namespace NickScanWebApp.Shared.Services
             }
         }
 
+        public Task<TResponse?> GetContainerCompleteAsync<TResponse>(
+            string containerNumber,
+            bool includeImage,
+            bool includeScanner,
+            bool includeICUMS,
+            bool includeValidation)
+        {
+            return _apiService.GetAsync<TResponse>(BuildContainerLookupPath(
+                containerNumber,
+                includeImage,
+                includeScanner,
+                includeICUMS,
+                includeValidation));
+        }
+
+        public Task<TResponse?> SearchAsync<TResponse>(string query, string type)
+        {
+            return _apiService.GetAsync<TResponse>(BuildSearchPath(query, type));
+        }
+
+        public Task<TStats?> GetDashboardStatsAsync<TStats>()
+        {
+            return _apiService.GetAsync<TStats>(DashboardStatsPath);
+        }
+
         /// <summary>
         /// Check gateway health
         /// </summary>
@@ -165,9 +194,25 @@ namespace NickScanWebApp.Shared.Services
             return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}{queryString}";
         }
 
+        public static string BuildContainerLookupPath(
+            string containerNumber,
+            bool includeImage,
+            bool includeScanner,
+            bool includeICUMS,
+            bool includeValidation)
+        {
+            var queryParams = $"?includeImage={includeImage}&includeScanner={includeScanner}&includeICUMS={includeICUMS}&includeValidation={includeValidation}";
+            return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}{queryParams}";
+        }
+
         public static string BuildContainerImagePath(string containerNumber)
         {
             return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/image";
+        }
+
+        public static string BuildSearchPath(string query, string type)
+        {
+            return $"{SearchPath}?query={Uri.EscapeDataString(query)}&type={type}";
         }
 
         private string BuildApiUrl(string path)

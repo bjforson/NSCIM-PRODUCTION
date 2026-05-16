@@ -8,7 +8,7 @@
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanWebApp.Shared.Models
 @using NickScanWebApp.Shared.Services
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject AuditReviewClient AuditReviewClient
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject AuthenticationStateProvider AuthenticationStateProvider
@@ -968,7 +968,7 @@
                 }
             };
 
-            var response = await ApiService.PostAsync<object, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+            var response = await AuditReviewClient.SubmitAsync<object, AuditSubmissionResponse>(request);
 
             Logger.LogInformation("📥 [AuditReviewDialog] SubmitSaveAndNext API response: Success={Success}, AuditedCount={Count}, AllDone={AllDone}, Message={Message}", 
                 response?.Success, response?.AuditedCount ?? 0, response?.AllContainersAudited ?? false, response?.Message ?? "(null)");
@@ -1054,7 +1054,7 @@
                 ContainerDecisions = containerDecisions
             };
 
-            var response = await ApiService.PostAsync<object, AuditSubmissionResponse>("/api/AuditReview/submit", request);
+            var response = await AuditReviewClient.SubmitAsync<object, AuditSubmissionResponse>(request);
 
             Logger.LogInformation("📥 [AuditReviewDialog] SubmitAuditAll API response: Success={Success}, AuditedCount={Count}, Message={Message}", 
                 response?.Success, response?.AuditedCount ?? 0, response?.Message ?? "(null)");

@@ -311,6 +311,11 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.MatchCorrectionAdminCl
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.LooseCargoClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ErrorInvestigationClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsPayloadClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditReviewClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.DatabaseAdminClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditLogClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.VehicleImportClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsMetricsClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

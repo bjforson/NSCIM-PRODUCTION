@@ -7,7 +7,7 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.SignalR.Client
 @using NickScanCentralImagingPortal.Core.Models
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.AuditReviewClient AuditReviewClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisReadinessClient ReadinessClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisManagementClient ManagementClient
@@ -598,7 +598,9 @@
 
             // ✅ FIX: Fetch specific group by GroupIdentifier instead of searching in ready queue
             // This allows opening assigned groups even if WorkflowStage is not 'Audit'
-            var response = await ApiService.GetAsync<ApiResponse<AuditGroupDto>>($"/api/AuditReview/group/{Uri.EscapeDataString(assignment.GroupIdentifier)}?scannerType={Uri.EscapeDataString(assignment.ScannerType ?? "")}");
+            var response = await AuditReviewClient.GetGroupAsync<ApiResponse<AuditGroupDto>>(
+                assignment.GroupIdentifier,
+                assignment.ScannerType ?? "");
             
             if (response?.Success == true && response.Data != null)
             {

@@ -7,7 +7,7 @@
 @implements IDisposable
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsMetricsClient MetricsClient
 @inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
 @inject NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient SubmissionQueueClient
 @inject IConfiguration Configuration
@@ -492,7 +492,7 @@
         _metricsLoading = true;
         try
         {
-            _metricsSnapshot = await ApiService.GetAsync<ICUMSMetricsSnapshot>("/api/ICUMSMetrics/snapshot");
+            _metricsSnapshot = await MetricsClient.GetSnapshotAsync<ICUMSMetricsSnapshot>();
         }
         catch (Exception ex)
         {

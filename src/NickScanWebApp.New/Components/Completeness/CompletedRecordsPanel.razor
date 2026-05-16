@@ -1,5 +1,5 @@
 @using NickScanWebApp.Shared.Services
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject AuditReviewClient AuditReviewClient
 @inject ISnackbar Snackbar
 @inject NavigationManager NavigationManager
 @inject IConfiguration Configuration
@@ -303,12 +303,9 @@
         _loading = true;
         try
         {
-            var scannerParam = _selectedScanner != "All" ? $"scannerType={_selectedScanner}" : "";
-            var decisionParam = _selectedDecision != "All" ? $"decision={_selectedDecision}" : "";
-            var queryString = string.Join("&", new[] { scannerParam, decisionParam }.Where(s => !string.IsNullOrEmpty(s)));
-            var url = $"/api/AuditReview/completed{(string.IsNullOrEmpty(queryString) ? "" : "?" + queryString)}";
-            
-            var response = await ApiService.GetAsync<ApiResponse<List<CompletedRecordDto>>>(url);
+            var response = await AuditReviewClient.GetCompletedAsync<ApiResponse<List<CompletedRecordDto>>>(
+                _selectedScanner,
+                _selectedDecision);
             
             if (response?.Success == true && response.Data != null)
             {
