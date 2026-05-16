@@ -874,34 +874,10 @@ namespace NickScanCentralImagingPortal.Services.FS6000
                     _logger.LogInformation("Successfully stored {Count} images in database. Processed: {ProcessedCount}, Failed: {FailedCount}",
                         imagesToAdd.Count, processedCount, failedCount);
 
-                    // Update scan image completeness flags
-                    var scanImageCounts = imagesToAdd.GroupBy(i => i.ScanId)
-                        .ToDictionary(g => g.Key, g => g.Count());
-
-                    foreach (var (scan, _, _) in containerData)
-                    {
-                        if (scanImageCounts.TryGetValue(scan.Id, out var imageCount))
-                        {
-                            scan.HasImage = true;
-                            scan.ImageCount = imageCount;
-                            scan.ImageIngestedAt = DateTime.UtcNow;
-                            scan.ImageValidationError = null;
-
-                            _logger.LogDebug("[FS6000-IMAGE-VALIDATION] Updated scan {ContainerNumber}: HasImage=true, ImageCount={ImageCount}",
-                                scan.ContainerNumber, imageCount);
-                        }
-                        else
-                        {
-                            scan.HasImage = false;
-                            scan.ImageCount = 0;
-                            scan.ImageValidationError = "Image processing failed";
-
-                            _logger.LogWarning("[FS6000-IMAGE-VALIDATION] Scan {ContainerNumber} has no images after processing",
-                                scan.ContainerNumber);
-                        }
-                    }
-
-                    await dbContext.SaveChangesAsync();
+                    await RefreshScanImageSummariesAsync(
+                        dbContext,
+                        containerData.Select(item => item.Scan.Id),
+                        "Image processing failed");
 
                     // Log sample of stored image data
                     var sampleImage = imagesToAdd.First();
@@ -926,6 +902,58 @@ namespace NickScanCentralImagingPortal.Services.FS6000
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in ProcessAndStoreImagesAsync");
+            }
+        }
+
+        private async Task RefreshScanImageSummariesAsync(
+            ApplicationDbContext dbContext,
+            IEnumerable<Guid> scanIds,
+            string missingImageError)
+        {
+            var ids = scanIds.Distinct().ToList();
+            if (!ids.Any())
+                return;
+
+            var summaries = await dbContext.FS6000Images
+                .AsNoTracking()
+                .Where(image => ids.Contains(image.ScanId))
+                .GroupBy(image => image.ScanId)
+                .Select(group => new
+                {
+                    ScanId = group.Key,
+                    Count = group.Count(),
+                    LatestCreatedAt = group.Max(image => image.CreatedAt)
+                })
+                .ToListAsync();
+
+            var summaryByScanId = summaries.ToDictionary(summary => summary.ScanId);
+
+            foreach (var scanId in ids)
+            {
+                if (summaryByScanId.TryGetValue(scanId, out var summary) && summary.Count > 0)
+                {
+                    await dbContext.FS6000Scans
+                        .Where(scan => scan.Id == scanId)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(scan => scan.HasImage, true)
+                            .SetProperty(scan => scan.ImageCount, summary.Count)
+                            .SetProperty(scan => scan.ImageIngestedAt, summary.LatestCreatedAt)
+                            .SetProperty(scan => scan.ImageValidationError, (string?)null));
+
+                    _logger.LogDebug("[FS6000-IMAGE-VALIDATION] Updated scan {ScanId}: HasImage=true, ImageCount={ImageCount}",
+                        scanId, summary.Count);
+                }
+                else
+                {
+                    await dbContext.FS6000Scans
+                        .Where(scan => scan.Id == scanId)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(scan => scan.HasImage, false)
+                            .SetProperty(scan => scan.ImageCount, 0)
+                            .SetProperty(scan => scan.ImageValidationError, missingImageError));
+
+                    _logger.LogWarning("[FS6000-IMAGE-VALIDATION] Scan {ScanId} has no images after processing", scanId);
+                }
             }
         }
 

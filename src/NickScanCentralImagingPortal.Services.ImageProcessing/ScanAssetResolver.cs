@@ -203,6 +203,26 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             .AsNoTracking()
             .Where(scan => scan.ContainerNumber == normalizedContainer)
             .OrderByDescending(scan => scan.ScanTime)
+            .Select(scan => new
+            {
+                scan.Id,
+                scan.OriginalScanRecordId,
+                scan.ContainerNumber,
+                scan.ScanTime,
+                ImageCount = _db.FS6000Images.Count(image => image.ScanId == scan.Id),
+                ImageSizeBytes = _db.FS6000Images
+                    .Where(image => image.ScanId == scan.Id)
+                    .OrderBy(image => image.ImageType == "Main" ? 0 : 1)
+                    .ThenByDescending(image => image.CreatedAt)
+                    .Select(image => image.FileSizeBytes)
+                    .FirstOrDefault(),
+                ImageDisplayName = _db.FS6000Images
+                    .Where(image => image.ScanId == scan.Id)
+                    .OrderBy(image => image.ImageType == "Main" ? 0 : 1)
+                    .ThenByDescending(image => image.CreatedAt)
+                    .Select(image => image.FileName)
+                    .FirstOrDefault()
+            })
             .Select(scan => new ScanAssetResolution
             {
                 Status = ScanAssetResolutionStatuses.Resolved,
@@ -221,7 +241,9 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 MatchKind = ScanAssetMatchKinds.Exact,
                 ResolutionReason = "ExactContainerMatch",
                 ScanTime = scan.ScanTime,
-                HasImage = scan.HasImage
+                ImageSizeBytes = scan.ImageSizeBytes,
+                ImageDisplayName = scan.ImageDisplayName,
+                HasImage = scan.ImageCount > 0
             })
             .FirstOrDefaultAsync(cancellationToken);
     }
@@ -406,7 +428,20 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                     {
                         scan.Id,
                         scan.ContainerNumber,
-                        scan.ScanTime
+                        scan.ScanTime,
+                        ImageCount = _db.FS6000Images.Count(image => image.ScanId == scan.Id),
+                        ImageSizeBytes = _db.FS6000Images
+                            .Where(image => image.ScanId == scan.Id)
+                            .OrderBy(image => image.ImageType == "Main" ? 0 : 1)
+                            .ThenByDescending(image => image.CreatedAt)
+                            .Select(image => image.FileSizeBytes)
+                            .FirstOrDefault(),
+                        ImageDisplayName = _db.FS6000Images
+                            .Where(image => image.ScanId == scan.Id)
+                            .OrderBy(image => image.ImageType == "Main" ? 0 : 1)
+                            .ThenByDescending(image => image.CreatedAt)
+                            .Select(image => image.FileName)
+                            .FirstOrDefault()
                     })
                     .FirstOrDefaultAsync(cancellationToken);
 
@@ -419,8 +454,8 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                         fs.ContainerNumber,
                         "TokenizedOriginalScan",
                         fs.ScanTime,
-                        imageSizeBytes: null,
-                        imageDisplayName: null));
+                        fs.ImageCount > 0 ? fs.ImageSizeBytes : null,
+                        fs.ImageDisplayName));
                 }
             }
         }
