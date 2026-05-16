@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -34,6 +35,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
     {
         private readonly ApplicationDbContext _db;
         private readonly ILogger<FS6000RawChannelIngester> _logger;
+        private static readonly ConcurrentDictionary<string, string> InvalidChannelSignatures = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly (string Suffix, string ImageType)[] KnownChannels = new[]
         {
@@ -97,6 +99,18 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     continue;
                 }
 
+                var fileInfo = new FileInfo(file);
+                var invalidSignature = BuildInvalidChannelSignature(scanId, imageType, fileInfo);
+                if (InvalidChannelSignatures.TryGetValue(invalidSignature, out var cachedReason))
+                {
+                    result.InvalidChannels++;
+                    result.LastError = cachedReason;
+                    _logger.LogDebug(
+                        "[FS6000-RAW] Skipping known invalid {ImageType} for scan {ScanId}: {Reason} — file {File} is unchanged since first rejection",
+                        imageType, scanId, cachedReason, Path.GetFileName(file));
+                    continue;
+                }
+
                 try
                 {
                     // 2026-04-19 (v2.9.5): two-stage read to defeat file-lock
@@ -130,6 +144,7 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
                     {
                         result.InvalidChannels++;
                         result.LastError = $"header-inconsistent: {reason}";
+                        InvalidChannelSignatures[invalidSignature] = result.LastError;
                         _logger.LogWarning(
                             "[FS6000-RAW] Rejecting truncated/inconsistent {ImageType} for scan {ScanId}: {Reason} — file {File} is structurally incomplete and will remain pending until a complete replacement is available",
                             imageType, scanId, reason, Path.GetFileName(file));
@@ -181,6 +196,17 @@ namespace NickScanCentralImagingPortal.Services.ImageProcessing.FS6000
             }
 
             return result;
+        }
+
+        private static string BuildInvalidChannelSignature(Guid scanId, string imageType, FileInfo file)
+        {
+            file.Refresh();
+            return string.Join("|",
+                scanId.ToString("N"),
+                imageType,
+                file.FullName,
+                file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                file.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         /// <summary>
