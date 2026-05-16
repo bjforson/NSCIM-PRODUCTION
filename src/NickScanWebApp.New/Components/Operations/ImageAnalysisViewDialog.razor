@@ -12,6 +12,7 @@
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject CargoGroupService CargoGroupService
@@ -2941,11 +2942,11 @@
         try
         {
             // First, look up the group ID from the GroupIdentifier
-            var groupResponse = await ApiService.GetAsync<GroupLookupDto>($"/api/image-analysis/group-by-identifier?identifier={Uri.EscapeDataString(GroupIdentifier)}&scannerType={Uri.EscapeDataString(ScannerType)}");
+            var groupResponse = await WorkflowClient.GetGroupByIdentifierAsync<GroupLookupDto>(GroupIdentifier, ScannerType);
             if (groupResponse?.GroupId == null)
                 return;
 
-            _waveContext = await ApiService.GetAsync<WaveContextDto>($"/api/image-analysis/wave-context/{groupResponse.GroupId}");
+            _waveContext = await WorkflowClient.GetWaveContextAsync<WaveContextDto>(groupResponse.GroupId.Value);
         }
         catch (Exception ex)
         {

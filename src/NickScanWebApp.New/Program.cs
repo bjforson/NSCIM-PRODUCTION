@@ -293,6 +293,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.MonitoringClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.LogManagementClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.FS6000Client>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AseClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.InspectionFindingCategoryClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

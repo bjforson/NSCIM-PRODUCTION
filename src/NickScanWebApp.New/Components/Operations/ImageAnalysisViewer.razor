@@ -10,6 +10,8 @@
 @inject NavigationManager Navigation
 @inject NickScanWebApp.New.Services.ApiService ApiService
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
+@inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
+@inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -1576,7 +1578,7 @@
     private string _currentUsername = "System";
 
     // AI training flywheel — controlled-vocabulary finding categories.
-    // Loaded once from /api/inspection-finding-categories on init. Both ids
+    // Loaded once from the finding-category API on init. Both ids
     // are independently nullable: an analyst may pick a security finding,
     // a revenue finding, both, or neither. Defaults preserve any value
     // already saved against the decision row.
@@ -1796,7 +1798,7 @@
         {
             // Use enhanced image endpoint (Phase 1). Signed URL — browser <img src>.
             baseUrl = UrlBuilder.Build(
-                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/enhanced",
+                NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient.BuildEnhancedImagePath(ContainerNumber),
                 _currentUsername);
         }
         else
@@ -2056,12 +2058,10 @@
     {
         try
         {
-            var threat = await ApiService.GetAsync<List<FindingCategoryDto>>(
-                "/api/inspection-finding-categories/threat");
+            var threat = await FindingCategoryClient.GetThreatCategoriesAsync<FindingCategoryDto>();
             _threatCategories = threat ?? new List<FindingCategoryDto>();
 
-            var revenue = await ApiService.GetAsync<List<FindingCategoryDto>>(
-                "/api/inspection-finding-categories/revenue-anomaly");
+            var revenue = await FindingCategoryClient.GetRevenueAnomalyCategoriesAsync<FindingCategoryDto>();
             _revenueAnomalyCategories = revenue ?? new List<FindingCategoryDto>();
         }
         catch (Exception ex)
@@ -3241,8 +3241,7 @@
             if (string.IsNullOrEmpty(ContainerNumber))
                 return;
 
-            _detectionResult = await ApiService.GetAsync<ObjectDetectionResultDto>(
-                $"/api/image-analysis/{ContainerNumber}/detect");
+            _detectionResult = await WorkflowClient.GetDetectionAsync<ObjectDetectionResultDto>(ContainerNumber);
 
             if (_detectionResult != null && _detectionResult.Success)
             {
@@ -3267,8 +3266,7 @@
             if (string.IsNullOrEmpty(ContainerNumber))
                 return;
 
-            _qualityAssessment = await ApiService.GetAsync<QualityAssessmentDto>(
-                $"/api/image-analysis/{ContainerNumber}/quality");
+            _qualityAssessment = await WorkflowClient.GetQualityAsync<QualityAssessmentDto>(ContainerNumber);
 
             if (_qualityAssessment != null && _qualityAssessment.Success)
             {
@@ -3300,7 +3298,12 @@
 
             // Build signed API URL for enhanced region (browser <img src> consumer).
             var enhancedImageUrl = UrlBuilder.Build(
-                $"/api/image-analysis/{Uri.EscapeDataString(ContainerNumber)}/annotations/enhance?x={(int)rect.X}&y={(int)rect.Y}&width={(int)rect.Width}&height={(int)rect.Height}",
+                NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient.BuildAnnotationEnhancePath(
+                    ContainerNumber,
+                    (int)rect.X,
+                    (int)rect.Y,
+                    (int)rect.Width,
+                    (int)rect.Height),
                 _currentUsername);
             
             // Store enhanced region URL and rectangle for dialog display
@@ -4574,8 +4577,7 @@
 
     /// <summary>
     /// Wire-format projection of a finding category, mirroring the API's
-    /// CategoryDto returned by /api/inspection-finding-categories/threat and
-    /// /api/inspection-finding-categories/revenue-anomaly. Used to populate the
+    /// CategoryDto returned by the threat and revenue-anomaly finding-category routes. Used to populate the
     /// analyst dropdowns.
     /// </summary>
     public class FindingCategoryDto

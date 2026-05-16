@@ -42,4 +42,80 @@ public sealed class ImageAnalysisWorkflowClient
     {
         return _apiService.GetAsync<TMetrics>(MetricsPath);
     }
+
+    public Task<TOcr?> GetOcrAsync<TOcr>(string containerNumber)
+    {
+        return _apiService.GetAsync<TOcr>(BuildOcrPath(containerNumber));
+    }
+
+    public Task<TDetection?> GetDetectionAsync<TDetection>(string containerNumber)
+    {
+        return _apiService.GetAsync<TDetection>(BuildDetectionPath(containerNumber));
+    }
+
+    public Task<TQuality?> GetQualityAsync<TQuality>(string containerNumber)
+    {
+        return _apiService.GetAsync<TQuality>(BuildQualityPath(containerNumber));
+    }
+
+    public Task<TGroup?> GetGroupByIdentifierAsync<TGroup>(string groupIdentifier, string? scannerType)
+    {
+        return _apiService.GetAsync<TGroup>(BuildGroupByIdentifierPath(groupIdentifier, scannerType));
+    }
+
+    public Task<TContext?> GetWaveContextAsync<TContext>(Guid groupId)
+    {
+        return _apiService.GetAsync<TContext>(BuildWaveContextPath(groupId));
+    }
+
+    public static string BuildOcrPath(string containerNumber)
+    {
+        return $"{BasePath}/{Uri.EscapeDataString(containerNumber)}/ocr";
+    }
+
+    public static string BuildDetectionPath(string containerNumber)
+    {
+        return $"{BasePath}/{Uri.EscapeDataString(containerNumber)}/detect";
+    }
+
+    public static string BuildQualityPath(string containerNumber)
+    {
+        return $"{BasePath}/{Uri.EscapeDataString(containerNumber)}/quality";
+    }
+
+    public static string BuildEnhancedImagePath(string containerNumber)
+    {
+        return $"{BasePath}/{Uri.EscapeDataString(containerNumber)}/enhanced";
+    }
+
+    public static string BuildAnnotationEnhancePath(
+        string containerNumber,
+        int x,
+        int y,
+        int width,
+        int height)
+    {
+        return $"{BasePath}/{Uri.EscapeDataString(containerNumber)}/annotations/enhance" +
+            $"?x={x}&y={y}&width={width}&height={height}";
+    }
+
+    public static string BuildGroupByIdentifierPath(string groupIdentifier, string? scannerType)
+    {
+        var parts = new List<string>
+        {
+            $"identifier={Uri.EscapeDataString(groupIdentifier)}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(scannerType))
+        {
+            parts.Add($"scannerType={Uri.EscapeDataString(scannerType)}");
+        }
+
+        return $"{BasePath}/group-by-identifier?{string.Join("&", parts)}";
+    }
+
+    public static string BuildWaveContextPath(Guid groupId)
+    {
+        return $"{BasePath}/wave-context/{groupId}";
+    }
 }
