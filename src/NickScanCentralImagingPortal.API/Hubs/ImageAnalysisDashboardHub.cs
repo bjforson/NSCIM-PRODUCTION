@@ -392,33 +392,21 @@ namespace NickScanCentralImagingPortal.API.Hubs
 
             // Count containers with NULL GroupIdentifier after ICUMS data has
             // arrived and the row is no longer in a declaration-wait state.
-            var nullGroupIdentifier = await dbContext.ContainerCompletenessStatuses
-                .Where(c => c.HasICUMSData
-                    && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold"
-                    && string.IsNullOrEmpty(c.GroupIdentifier))
+            var nullGroupIdentifier = await integrityScope
+                .Where(c => string.IsNullOrEmpty(c.GroupIdentifier))
                 .CountAsync(cancellationToken);
 
             // Count rows that claim ICUMS data but lost the BOE document link.
-            var missingBOEDocumentId = await dbContext.ContainerCompletenessStatuses
-                .Where(c => c.HasICUMSData
-                    && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold"
-                    && (c.BOEDocumentId == null || c.BOEDocumentId == 0))
+            var missingBOEDocumentId = await integrityScope
+                .Where(c => c.BOEDocumentId == null || c.BOEDocumentId == 0)
                 .CountAsync(cancellationToken);
 
             // Count non-consolidated containers whose GroupIdentifier doesn't
             // match the BOE DeclarationNumber. Consolidated cargo legitimately
             // stores the container number in GroupIdentifier.
             // ✅ FIX: Cannot join across different DbContext instances - query separately and join in memory
-            var containersWithBOE = await dbContext.ContainerCompletenessStatuses
-                .Where(c => c.HasICUMSData
-                    && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold"
-                    && !c.IsConsolidated
+            var containersWithBOE = await integrityScope
+                .Where(c => !c.IsConsolidated
                     && !string.IsNullOrEmpty(c.GroupIdentifier)
                     && c.BOEDocumentId.HasValue)
                 .Select(c => new { c.BOEDocumentId, c.GroupIdentifier })
@@ -768,28 +756,21 @@ namespace NickScanCentralImagingPortal.API.Hubs
                     null));
             }
 
-            var nullGroupIdentifier = await dbContext.ContainerCompletenessStatuses
-                .Where(c => c.HasICUMSData
-                    && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold"
-                    && string.IsNullOrEmpty(c.GroupIdentifier))
+            var integrityScope = GetContainerIntegrityScope(dbContext);
+
+            var nullGroupIdentifier = await integrityScope
+                .Where(c => string.IsNullOrEmpty(c.GroupIdentifier))
                 .CountAsync(cancellationToken);
 
-            var missingBOEDocumentId = await dbContext.ContainerCompletenessStatuses
-                .Where(c => c.HasICUMSData
-                    && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold"
-                    && (c.BOEDocumentId == null || c.BOEDocumentId == 0))
+            var missingBOEDocumentId = await integrityScope
+                .Where(c => c.BOEDocumentId == null || c.BOEDocumentId == 0)
                 .CountAsync(cancellationToken);
 
-            var totalContainers = await GetContainerIntegrityScope(dbContext)
-                .CountAsync(cancellationToken);
+            var totalContainers = await integrityScope.CountAsync(cancellationToken);
 
             if (totalContainers > 0)
             {
-                var issueRows = await GetContainerIntegrityScope(dbContext)
+                var issueRows = await integrityScope
                     .Where(c => string.IsNullOrEmpty(c.GroupIdentifier)
                         || c.BOEDocumentId == null
                         || c.BOEDocumentId == 0)
@@ -880,8 +861,7 @@ namespace NickScanCentralImagingPortal.API.Hubs
             return dbContext.ContainerCompletenessStatuses
                 .Where(c => c.HasICUMSData
                     && c.Status != "AwaitingDeclaration"
-                    && c.Status != "Export-Pending"
-                    && c.WorkflowStage != "Export-Hold");
+                    && c.Status != "Export-Pending");
         }
 
         /// <summary>
