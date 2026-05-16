@@ -38,6 +38,18 @@ public class CmrCompositeRecordIntakeGuardrailTests
     }
 
     [Fact]
+    public void ApiConfig_EnablesCmrCompositeProgressionForImageReview()
+    {
+        var appSettings = ReadRepoFile("src/NickScanCentralImagingPortal.API/appsettings.json");
+        var productionTemplate = ReadRepoFile("src/NickScanCentralImagingPortal.API/appsettings.Production.template.json");
+
+        Assert.Contains("\"CmrCompositeProgression\"", appSettings);
+        Assert.Contains("\"Enabled\": true", appSettings);
+        Assert.Contains("\"CmrCompositeProgression\"", productionTemplate);
+        Assert.Contains("\"Enabled\": true", productionTemplate);
+    }
+
+    [Fact]
     public void CargoGroupSummaryPath_SupportsCmrCompositeOperationalKeys()
     {
         var cargoGroupService = ReadRepoFile("src/NickScanCentralImagingPortal.Services/CargoGrouping/CargoGroupService.cs");
