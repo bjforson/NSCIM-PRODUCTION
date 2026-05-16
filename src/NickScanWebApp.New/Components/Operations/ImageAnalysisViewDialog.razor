@@ -11,6 +11,7 @@
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
 @inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.ConsolidatedCargoClient ConsolidatedCargoClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject CargoGroupService CargoGroupService
 @inject CargoSummaryService CargoSummaryService
@@ -2120,8 +2121,7 @@
             Console.WriteLine($"🔍 [LoadHouseBLs] Loading House BLs for container: {GroupIdentifier}");
             
             // Load all House BLs for this container from ConsolidatedCargo endpoint
-            _houseBLDetails = await ApiService.GetAsync<List<HouseBLDetailDto>>(
-                $"/api/consolidatedcargo/container/{GroupIdentifier}/housebls") ?? new();
+            _houseBLDetails = await ConsolidatedCargoClient.GetHouseBlsByContainerAsync<HouseBLDetailDto>(GroupIdentifier) ?? new();
             
             Console.WriteLine($"✅ [LoadHouseBLs] Loaded {_houseBLDetails.Count} House BL(s)");
             
@@ -2156,8 +2156,7 @@
             var lookupGroupIdentifier = NormalizeDataLookupGroupIdentifier(GroupIdentifier);
             
             // API returns List<string> - just container numbers
-            var containerList = await ApiService.GetAsync<List<string>>(
-                $"/api/consolidatedcargo/declaration/{Uri.EscapeDataString(lookupGroupIdentifier)}/containers") ?? new();
+            var containerList = await ConsolidatedCargoClient.GetContainersByDeclarationAsync(lookupGroupIdentifier) ?? new();
             
             Console.WriteLine($"🔍 [LoadContainers] API returned {containerList.Count} container(s)");
             

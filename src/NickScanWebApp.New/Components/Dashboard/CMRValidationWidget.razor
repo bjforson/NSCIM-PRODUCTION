@@ -1,5 +1,5 @@
 @using NickScanWebApp.New.Services
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.CmrValidationClient CmrValidationClient
 @inject ILogger<CMRValidationWidget> Logger
 @implements IDisposable
 
@@ -159,7 +159,7 @@ else
 
         try
         {
-            _statistics = await ApiService.GetAsync<CMRValidationStatistics>("/api/CMRValidation/statistics");
+            _statistics = await CmrValidationClient.GetStatisticsAsync<CMRValidationStatistics>();
             if (_statistics != null)
             {
                 Logger.LogInformation("CMR validation statistics loaded successfully");
