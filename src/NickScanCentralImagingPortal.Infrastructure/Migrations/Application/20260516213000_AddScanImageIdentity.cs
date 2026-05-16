@@ -34,12 +34,6 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_scanimageassets", x => x.id);
-                    table.ForeignKey(
-                        name: "fk_scanimageassets_originalscanrecords_originalscanrecordid",
-                        column: x => x.originalscanrecordid,
-                        principalTable: "originalscanrecords",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
                 });
 
             migrationBuilder.CreateTable(
@@ -67,12 +61,6 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_sourcescancontainerlinks", x => x.id);
-                    table.ForeignKey(
-                        name: "fk_sscl_originalscanrecord",
-                        column: x => x.originalscanrecordid,
-                        principalTable: "originalscanrecords",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
                     table.ForeignKey(
                         name: "fk_sscl_scanimageasset",
                         column: x => x.scanimageassetid,

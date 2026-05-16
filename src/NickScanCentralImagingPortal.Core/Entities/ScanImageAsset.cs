@@ -56,8 +56,6 @@ namespace NickScanCentralImagingPortal.Core.Entities
 
         public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
-        public virtual OriginalScanRecord? OriginalScanRecord { get; set; }
-
         public virtual ICollection<SourceScanContainerLink> ContainerLinks { get; set; } = new List<SourceScanContainerLink>();
     }
 

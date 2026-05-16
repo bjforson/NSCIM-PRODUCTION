@@ -1023,10 +1023,6 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                     .HasFilter("\"ScannerNativeId\" IS NOT NULL");
                 entity.HasIndex(e => e.ScanTimeUtc);
 
-                entity.HasOne(e => e.OriginalScanRecord)
-                      .WithMany()
-                      .HasForeignKey(e => e.OriginalScanRecordId)
-                      .OnDelete(DeleteBehavior.SetNull);
             });
 
             modelBuilder.Entity<SourceScanContainerLink>(entity =>
@@ -1055,11 +1051,6 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Cascade)
                       .HasConstraintName("fk_sscl_scanimageasset");
 
-                entity.HasOne(e => e.OriginalScanRecord)
-                      .WithMany()
-                      .HasForeignKey(e => e.OriginalScanRecordId)
-                      .OnDelete(DeleteBehavior.SetNull)
-                      .HasConstraintName("fk_sscl_originalscanrecord");
             });
 
             // FS6000Scan -> OriginalScanRecord FK

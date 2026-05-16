@@ -7087,33 +7087,14 @@ namespace NickScanCentralImagingPortal.Infrastructure.Migrations.Application
                     b.Navigation("Container");
                 });
 
-            modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", b =>
-                {
-                    b.HasOne("NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord", "OriginalScanRecord")
-                        .WithMany()
-                        .HasForeignKey("OriginalScanRecordId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_scanimageassets_originalscanrecords_originalscanrecordid");
-
-                    b.Navigation("OriginalScanRecord");
-                });
-
             modelBuilder.Entity("NickScanCentralImagingPortal.Core.Entities.SourceScanContainerLink", b =>
                 {
-                    b.HasOne("NickScanCentralImagingPortal.Core.Entities.OriginalScanRecord", "OriginalScanRecord")
-                        .WithMany()
-                        .HasForeignKey("OriginalScanRecordId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_sscl_originalscanrecord");
-
                     b.HasOne("NickScanCentralImagingPortal.Core.Entities.ScanImageAsset", "ScanImageAsset")
                         .WithMany("ContainerLinks")
                         .HasForeignKey("ScanImageAssetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_sscl_scanimageasset");
-
-                    b.Navigation("OriginalScanRecord");
 
                     b.Navigation("ScanImageAsset");
                 });

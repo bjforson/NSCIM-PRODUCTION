@@ -57,7 +57,6 @@ namespace NickScanCentralImagingPortal.Core.Entities
 
         public virtual ScanImageAsset? ScanImageAsset { get; set; }
 
-        public virtual OriginalScanRecord? OriginalScanRecord { get; set; }
     }
 
     public static class SourceScanContainerLinkPositions
