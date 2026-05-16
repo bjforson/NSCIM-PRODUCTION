@@ -621,6 +621,7 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                 try
                 {
                     await RunRecordAnchoredIntakeAsync(db, settings, stoppingToken);
+                    await RepairAnalysisRecordScanIdentityAsync(db, stoppingToken);
                 }
                 catch (Exception recEx)
                 {
@@ -3688,6 +3689,131 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             => identity.ScanImageAssetId.HasValue
                 || identity.OriginalScanRecordId.HasValue
                 || !string.IsNullOrWhiteSpace(identity.SourceContainerLabel);
+
+        private static async Task<int> RepairAnalysisRecordScanIdentityAsync(
+            ApplicationDbContext db,
+            CancellationToken ct)
+        {
+            var candidates = await db.AnalysisRecords
+                .AsNoTracking()
+                .Join(
+                    db.AnalysisGroups.AsNoTracking(),
+                    record => record.GroupId,
+                    group => group.Id,
+                    (record, group) => new
+                    {
+                        record.Id,
+                        record.ContainerNumber,
+                        record.ScanImageAssetId,
+                        record.OriginalScanRecordId,
+                        record.SourceContainerLabel,
+                        group.RecordCompletenessStatusId,
+                        group.GroupIdentifier,
+                        group.NormalizedGroupIdentifier
+                    })
+                .Where(row => row.ScanImageAssetId == null
+                           || row.OriginalScanRecordId == null
+                           || string.IsNullOrWhiteSpace(row.SourceContainerLabel))
+                .OrderBy(row => row.Id)
+                .Take(500)
+                .ToListAsync(ct);
+
+            if (candidates.Count == 0)
+                return 0;
+
+            var candidateIds = candidates.Select(c => c.Id).ToList();
+            var recordIds = candidates
+                .Select(c => c.RecordCompletenessStatusId)
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToList();
+            var groupKeys = candidates
+                .SelectMany(c => new[] { c.GroupIdentifier, c.NormalizedGroupIdentifier })
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var containerNumbers = candidates
+                .Select(c => c.ContainerNumber)
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var expectedRows = await db.RecordExpectedContainers
+                .AsNoTracking()
+                .Join(
+                    db.RecordCompletenessStatuses.AsNoTracking(),
+                    child => child.RecordId,
+                    record => record.Id,
+                    (child, record) => new
+                    {
+                        child.RecordId,
+                        record.DeclarationNumber,
+                        child.ContainerNumber,
+                        child.ScanImageAssetId,
+                        child.OriginalScanRecordId,
+                        child.SourceContainerLabel
+                    })
+                .Where(row => containerNumbers.Contains(row.ContainerNumber)
+                           && (recordIds.Contains(row.RecordId) || groupKeys.Contains(row.DeclarationNumber))
+                           && (row.ScanImageAssetId != null
+                            || row.OriginalScanRecordId != null
+                            || !string.IsNullOrWhiteSpace(row.SourceContainerLabel)))
+                .ToListAsync(ct);
+
+            if (expectedRows.Count == 0)
+                return 0;
+
+            var analysisRecords = await db.AnalysisRecords
+                .AsTracking()
+                .Where(record => candidateIds.Contains(record.Id))
+                .ToListAsync(ct);
+            var analysisById = analysisRecords.ToDictionary(record => record.Id);
+
+            var repaired = 0;
+            foreach (var candidate in candidates)
+            {
+                var expected = expectedRows
+                    .Where(row => string.Equals(row.ContainerNumber, candidate.ContainerNumber, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(row => candidate.RecordCompletenessStatusId.HasValue
+                                           && row.RecordId == candidate.RecordCompletenessStatusId.Value)
+                    .ThenByDescending(row => string.Equals(row.DeclarationNumber, candidate.GroupIdentifier, StringComparison.OrdinalIgnoreCase)
+                                          || string.Equals(row.DeclarationNumber, candidate.NormalizedGroupIdentifier, StringComparison.OrdinalIgnoreCase))
+                    .FirstOrDefault();
+
+                if (expected == null || !analysisById.TryGetValue(candidate.Id, out var analysisRecord))
+                    continue;
+
+                var changed = false;
+                if (analysisRecord.ScanImageAssetId == null && expected.ScanImageAssetId.HasValue)
+                {
+                    analysisRecord.ScanImageAssetId = expected.ScanImageAssetId;
+                    changed = true;
+                }
+
+                if (analysisRecord.OriginalScanRecordId == null && expected.OriginalScanRecordId.HasValue)
+                {
+                    analysisRecord.OriginalScanRecordId = expected.OriginalScanRecordId;
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(analysisRecord.SourceContainerLabel)
+                    && !string.IsNullOrWhiteSpace(expected.SourceContainerLabel))
+                {
+                    analysisRecord.SourceContainerLabel = expected.SourceContainerLabel;
+                    changed = true;
+                }
+
+                if (changed)
+                    repaired++;
+            }
+
+            if (repaired > 0)
+                await db.SaveChangesAsync(ct);
+
+            return repaired;
+        }
 
         /// <summary>
         /// Auto-closes parent groups that have been active for longer than WaveAutoCloseDays.

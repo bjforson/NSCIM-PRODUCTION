@@ -117,6 +117,71 @@ namespace NickScanCentralImagingPortal.Tests.Services
             Assert.Equal("ASE", identity.GetType().GetProperty("ScannerType")!.GetValue(identity));
         }
 
+        [Fact]
+        public async Task RepairAnalysisRecordScanIdentityAsync_BackfillsExistingAnalysisRowsFromRecordCompleteness()
+        {
+            await using var db = CreateAppDb();
+            var scanImageAssetId = Guid.NewGuid();
+            var record = new RecordCompletenessStatus
+            {
+                DeclarationNumber = "CMR-IDENTITY-REPAIR",
+                ClearanceType = "CMR",
+                ScannerType = "ASE",
+                TotalExpectedContainers = 1,
+                ContainersReady = 1,
+                Status = "Ready",
+                WorkflowStage = "ImageAnalysis"
+            };
+            db.RecordCompletenessStatuses.Add(record);
+            await db.SaveChangesAsync();
+
+            db.RecordExpectedContainers.Add(new RecordExpectedContainer
+            {
+                RecordId = record.Id,
+                ContainerNumber = "TIIU2732427",
+                ScannerType = "ASE",
+                Status = "Ready",
+                ScanImageAssetId = scanImageAssetId,
+                OriginalScanRecordId = 5786,
+                SourceContainerLabel = "TEMU2527526, TIIU2732427"
+            });
+
+            var group = new AnalysisGroup
+            {
+                Id = Guid.NewGuid(),
+                GroupIdentifier = record.DeclarationNumber,
+                NormalizedGroupIdentifier = record.DeclarationNumber,
+                GroupType = "CMR",
+                ScannerType = "ASE",
+                RecordCompletenessStatusId = record.Id
+            };
+            db.AnalysisGroups.Add(group);
+            db.AnalysisRecords.Add(new AnalysisRecord
+            {
+                GroupId = group.Id,
+                ContainerNumber = "TIIU2732427",
+                ScannerType = "ASE",
+                Status = "Ready"
+            });
+            await db.SaveChangesAsync();
+
+            var method = typeof(ImageAnalysisOrchestratorService).GetMethod(
+                "RepairAnalysisRecordScanIdentityAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+            var task = Assert.IsAssignableFrom<Task<int>>(method!.Invoke(
+                null,
+                new object?[] { db, CancellationToken.None }));
+            var repaired = await task;
+
+            var analysisRecord = await db.AnalysisRecords.AsNoTracking().SingleAsync();
+            Assert.Equal(1, repaired);
+            Assert.Equal(scanImageAssetId, analysisRecord.ScanImageAssetId);
+            Assert.Equal(5786, analysisRecord.OriginalScanRecordId);
+            Assert.Equal("TEMU2527526, TIIU2732427", analysisRecord.SourceContainerLabel);
+        }
+
         private static ApplicationDbContext CreateAppDb()
         {
             var options = new DbContextOptionsBuilder<ApplicationDbContext>()
