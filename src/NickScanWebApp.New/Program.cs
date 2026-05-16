@@ -305,6 +305,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.AccessReviewClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.NotificationClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.CommsGatewayClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.CargoGroupClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.QueueHealthClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

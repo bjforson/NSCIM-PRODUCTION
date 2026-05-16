@@ -2,7 +2,7 @@
 @using Microsoft.AspNetCore.SignalR.Client
 @using NickScanWebApp.New.Components.Validation
 @using NickScanWebApp.New.Models
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.QueueHealthClient QueueHealthClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<CompletenessQueuePanel> Logger
@@ -437,18 +437,14 @@
         _isLoading = true;
         try
         {
-            var queryParams = $"page={_currentPage}&pageSize={_pageSize}&sortBy={_sortBy}&sortDescending={_sortDescending}";
-            
-            if (!string.IsNullOrEmpty(_filterScannerType) && _filterScannerType != "All")
-                queryParams += $"&scannerType={Uri.EscapeDataString(_filterScannerType)}";
-            
-            if (!string.IsNullOrEmpty(_filterStatus) && _filterStatus != "All")
-                queryParams += $"&status={Uri.EscapeDataString(_filterStatus)}";
-            
-            if (!string.IsNullOrEmpty(_searchText))
-                queryParams += $"&search={Uri.EscapeDataString(_searchText)}";
-
-            _pagedResponse = await ApiService.GetAsync<PagedQueueItemsResponse>($"/api/QueueHealth/items?{queryParams}");
+            _pagedResponse = await QueueHealthClient.GetItemsAsync<PagedQueueItemsResponse>(
+                _currentPage,
+                _pageSize,
+                _sortBy,
+                _sortDescending,
+                _filterScannerType,
+                _filterStatus,
+                _searchText);
             
             if (_pagedResponse != null)
             {
@@ -471,7 +467,7 @@
     {
         try
         {
-            var response = await ApiService.GetAsync<QueueStatisticsResponse>("/api/QueueHealth/statistics");
+            var response = await QueueHealthClient.GetStatisticsAsync<QueueStatisticsResponse>();
             if (response != null)
             {
                 _queueStats = response.Statistics;

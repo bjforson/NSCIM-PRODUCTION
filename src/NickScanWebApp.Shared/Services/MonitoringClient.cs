@@ -13,7 +13,7 @@ public sealed class MonitoringClient
     public const string DeprecatedEndpointsSummaryPath = BasePath + "/deprecated-endpoints/summary";
     public const string Phase3RoutesSummaryPath = BasePath + "/phase3-routes/summary";
     public const string AllEndpointsSummaryPath = BasePath + "/all-endpoints/summary";
-    public const string QueueHealthPath = "/api/QueueHealth";
+    public const string QueueHealthPath = QueueHealthClient.BasePath;
 
     private readonly ApiService _apiService;
 
