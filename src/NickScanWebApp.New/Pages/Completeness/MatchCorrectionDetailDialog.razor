@@ -1,5 +1,5 @@
 @using MudBlazor
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MatchCorrectionAdminClient MatchCorrectionAdminClient
 @inject ISnackbar Snackbar
 @inject ILogger<MatchCorrectionDetailDialog> Logger
 
@@ -10,7 +10,7 @@
     - All MatchQualityFlags for the container (open + resolved)
     - The matched BOE's manifest summary
 
-    Action buttons mutate via /api/admin/match-corrections endpoints. Each
+    Action buttons mutate via the admin match-correction API. Each
     successful action closes the dialog with Result.OK so the parent list
     can refresh.
 *@
@@ -184,8 +184,7 @@
         _loading = true;
         try
         {
-            var url = $"/api/admin/match-corrections/{Uri.EscapeDataString(ContainerNumber)}/detail";
-            _detail = await ApiService.GetAsync<ContainerMatchDetailDto>(url);
+            _detail = await MatchCorrectionAdminClient.GetDetailAsync<ContainerMatchDetailDto>(ContainerNumber);
         }
         catch (Exception ex)
         {
@@ -203,7 +202,7 @@
         try
         {
             var body = new { Resolution = "Confirmed", Notes = "Confirmed via match-corrections detail dialog" };
-            await ApiService.PostAsync<object, object>($"/api/admin/match-corrections/{flagId}/resolve", body);
+            await MatchCorrectionAdminClient.ResolveFlagAsync<object, object>(flagId, body);
             Snackbar.Add("Flag confirmed", Severity.Success);
             await ReloadAsync();
             MudDialog.Close(DialogResult.Ok(true));

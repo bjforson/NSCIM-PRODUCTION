@@ -3,7 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesValidationMatchCorrections)]
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.MatchCorrectionAdminClient MatchCorrectionAdminClient
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject ILogger<MatchCorrections> Logger
@@ -20,8 +20,8 @@
                       with action buttons (Unmatch / Rematch / Confirm).
       3. Manual flag — small form to flag a container that the pipeline didn't catch.
 
-    Backed entirely by /api/admin/match-corrections endpoints — see
-    AdminMatchCorrectionController.cs for the contract.
+    Backed entirely by the admin match-correction API — see
+    AdminMatchCorrectionController.cs for the route contract.
 *@
 
 <PageTitle>NICKSCAN ERP — Match Corrections</PageTitle>
@@ -215,18 +215,13 @@
         {
             var page = state.Page + 1;
             var pageSize = state.PageSize;
-            var qs = new List<string>
-            {
-                $"page={page}",
-                $"pageSize={pageSize}",
-                $"includeResolved={_includeResolved.ToString().ToLower()}",
-            };
-            if (!string.IsNullOrWhiteSpace(_flagTypeFilter)) qs.Add($"flagType={Uri.EscapeDataString(_flagTypeFilter)}");
-            if (!string.IsNullOrWhiteSpace(_severityFilter)) qs.Add($"severity={Uri.EscapeDataString(_severityFilter)}");
-            if (!string.IsNullOrWhiteSpace(_containerSearch)) qs.Add($"containerSearch={Uri.EscapeDataString(_containerSearch.Trim())}");
-
-            var url = "/api/admin/match-corrections?" + string.Join("&", qs);
-            var response = await ApiService.GetAsync<MatchFlagListResponse>(url);
+            var response = await MatchCorrectionAdminClient.GetFlagsAsync<MatchFlagListResponse>(
+                page,
+                pageSize,
+                _includeResolved,
+                _flagTypeFilter,
+                _severityFilter,
+                _containerSearch);
 
             return new TableData<MatchFlagDto>
             {
