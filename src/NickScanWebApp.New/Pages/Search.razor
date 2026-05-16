@@ -1,7 +1,7 @@
 @page "/search"
 @attribute [Authorize(Policy = Permissions.PagesSearch)]
 @using NickScanWebApp.Shared.Services
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.GatewayService GatewayService
 @inject NavigationManager NavigationManager
 @inject ISnackbar Snackbar
 
@@ -210,8 +210,7 @@
                 IncludeMetadata = true
             };
 
-            _searchResponse = await ApiService.PostAsync<GlobalSearchRequest, GlobalSearchResponse>(
-                "/api/Gateway/search", 
+            _searchResponse = await GatewayService.SearchAsync<GlobalSearchRequest, GlobalSearchResponse>(
                 searchRequest);
 
             if (_searchResponse != null)
