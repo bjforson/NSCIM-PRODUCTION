@@ -274,6 +274,9 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.ImageProcessingClient>
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ScanAssetClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.EagleA25Client>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.SplitSelectionClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsDownloadQueueClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsBatchClient>();
 // App-specific services
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoGroupService>();
 builder.Services.AddScoped<NickScanWebApp.New.Services.CargoSummaryService>();

@@ -8,6 +8,8 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsDownloadQueueClient DownloadQueueClient
+@inject NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient SubmissionQueueClient
 @inject IConfiguration Configuration
 @inject NavigationManager NavManager
 
@@ -550,7 +552,7 @@
         {
             // Measure actual API response time with Stopwatch
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var downloadStats = await ApiService.GetAsync<DownloadQueueStats>("/api/ICUMSDownloadQueue/stats");
+            var downloadStats = await DownloadQueueClient.GetStatsAsync<DownloadQueueStats>();
             sw.Stop();
             apiResponseTime = (int)sw.ElapsedMilliseconds;
             _apiResponseTimeProgress = Math.Min(100, (apiResponseTime / 500.0) * 100);
@@ -571,7 +573,9 @@
             }
             
             // Get recent downloads (last 10)
-            var downloads = await ApiService.GetAsync<List<DownloadQueueItemDto>>("/api/ICUMSDownloadQueue?limit=10&status=Completed");
+            var downloads = await DownloadQueueClient.GetItemsAsync<DownloadQueueItemDto>(
+                limit: 10,
+                status: "Completed");
             
             if (downloads != null)
             {
@@ -597,7 +601,7 @@
         try
         {
             // Get submission queue statistics
-            var submissionStats = await ApiService.GetAsync<SubmissionQueueStats>("/api/ICUMSSubmissionQueue/stats");
+            var submissionStats = await SubmissionQueueClient.GetStatsAsync<SubmissionQueueStats>();
             
             if (submissionStats != null)
             {
@@ -609,7 +613,7 @@
             }
             
             // Get recent submissions (last 10)
-            var submissions = await ApiService.GetAsync<List<SubmissionQueueItemDto>>("/api/ICUMSSubmissionQueue?limit=10");
+            var submissions = await SubmissionQueueClient.GetItemsAsync<SubmissionQueueItemDto>(limit: 10);
             
             if (submissions != null)
             {

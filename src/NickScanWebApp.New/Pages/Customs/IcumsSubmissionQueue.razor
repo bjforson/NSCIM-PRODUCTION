@@ -4,7 +4,7 @@
 @using NickScanWebApp.New.Components.ICUMS
 @using NickScanWebApp.New.Models.ICUMS
 @inject ISnackbar Snackbar
-@inject NickScanWebApp.New.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsSubmissionQueueClient SubmissionQueueClient
 
 <PageTitle>Submission Queue - ICUMS Integration</PageTitle>
 
@@ -152,7 +152,7 @@
     {
         try
         {
-            var items = await ApiService.GetAsync<List<SubmissionQueueItem>>("/api/ICUMSSubmissionQueue?limit=100");
+            var items = await SubmissionQueueClient.GetItemsAsync<SubmissionQueueItem>(limit: 100);
             submissions = items ?? new List<SubmissionQueueItem>();
         }
         catch (Exception ex)
@@ -166,7 +166,7 @@
     {
         try
         {
-            var stats = await ApiService.GetAsync<SubmissionStats>("/api/ICUMSSubmissionQueue/stats");
+            var stats = await SubmissionQueueClient.GetStatsAsync<SubmissionStats>();
             if (stats != null)
             {
                 pendingCount = stats.Pending;
@@ -183,7 +183,10 @@
             try
             {
                 // Get successful items from yesterday
-                var yesterdayItems = await ApiService.GetAsync<List<SubmissionQueueItem>>($"/api/ICUMSSubmissionQueue?startDate={yesterdayStart:yyyy-MM-dd}&endDate={yesterdayEnd:yyyy-MM-dd}&status=Submitted");
+                var yesterdayItems = await SubmissionQueueClient.GetItemsAsync<SubmissionQueueItem>(
+                    status: "Submitted",
+                    startDate: yesterdayStart,
+                    endDate: yesterdayEnd);
                 successfulYesterday = yesterdayItems?.Count ?? 0;
             }
             catch (Exception ex)
@@ -227,7 +230,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/ICUMSSubmissionQueue/retry/{id}", new { });
+            await SubmissionQueueClient.RetryAsync(id);
             await LoadQueueData();
             Snackbar.Add("Retry initiated", Severity.Success);
             StateHasChanged();
@@ -242,7 +245,7 @@
     {
         try
         {
-            await ApiService.PostAsync<object, object>($"/api/ICUMSSubmissionQueue/cancel/{id}", new { });
+            await SubmissionQueueClient.CancelAsync(id);
             await LoadQueueData();
             Snackbar.Add("Submission cancelled", Severity.Success);
             StateHasChanged();
@@ -268,7 +271,7 @@
         {
             try
             {
-                await ApiService.PostAsync<object, object>($"/api/ICUMSSubmissionQueue/retry/{item.Id}", new { });
+                await SubmissionQueueClient.RetryAsync(item.Id);
                 successCount++;
             }
             catch

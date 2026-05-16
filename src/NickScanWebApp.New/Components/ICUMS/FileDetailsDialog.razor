@@ -1,6 +1,6 @@
 @using MudBlazor
 @using System.Text.Json
-@inject NickScanWebApp.Shared.Services.ApiService ApiService
+@inject NickScanWebApp.Shared.Services.IcumsBatchClient BatchClient
 @inject ISnackbar Snackbar
 
 <MudDialog>
@@ -379,7 +379,7 @@
         _isLoadingRecords = true;
         try
         {
-            var response = await ApiService.GetAsync<List<BOERecordDto>>($"/api/icums/batch/files/{fileId}/records");
+            var response = await BatchClient.GetFileRecordsAsync<BOERecordDto>(fileId);
             _records = response ?? new List<BOERecordDto>();
         }
         catch (Exception ex)
@@ -409,7 +409,7 @@
         _isLoadingVerification = true;
         try
         {
-            _verification = await ApiService.GetAsync<FileVerificationDto>($"/api/icums/batch/files/{fileId}/verification");
+            _verification = await BatchClient.GetFileVerificationAsync<FileVerificationDto>(fileId);
             if (_verification != null && _verification.VerifiedDocumentCount == 0)
                 _verification = null;
         }
