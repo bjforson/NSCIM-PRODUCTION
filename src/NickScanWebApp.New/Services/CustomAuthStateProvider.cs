@@ -622,11 +622,17 @@ namespace NickScanWebApp.New.Services
         {
             try
             {
-                // Create a scope to avoid circular dependency (ApiService depends on AuthenticationStateProvider)
-                using var scope = _serviceProvider.CreateScope();
-                var apiService = scope.ServiceProvider.GetRequiredService<ApiService>();
+                var token = await _simpleAuthProvider.GetTokenAsync();
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    _logger.LogDebug("[AuthStateProvider:{Instance}] API fallback skipped - no token available", _instanceId);
+                    return;
+                }
 
-                var permissions = await apiService.GetAsync<List<string>>(AuthenticationRoutes.MyPermissionsPath);
+                using var scope = _serviceProvider.CreateScope();
+                var authenticationClient = scope.ServiceProvider.GetRequiredService<AuthenticationClient>();
+
+                var permissions = await authenticationClient.GetMyPermissionsAsync(token);
                 if (permissions != null && permissions.Count > 0)
                 {
                     lock (_permissionLock)

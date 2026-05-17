@@ -252,10 +252,6 @@ builder.Services.AddMemoryCache(options =>
 // Note: IHttpClientFactory is automatically registered by AddHttpClient("NickScanAPI", ...) above
 // ✅ Register shared ApiService - DI will automatically resolve constructor dependencies
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ApiService>();
-// ✅ Register New namespace ApiService (wrapper that inherits from shared service)
-// DI will automatically resolve: IHttpClientFactory, ILogger<Shared.Services.ApiService>, AuthenticationStateProvider
-builder.Services.AddScoped<NickScanWebApp.New.Services.ApiService>();
-// ✅ MIGRATION COMPLETE: New.ApiService now wraps Shared.ApiService for backward compatibility
 
 // ✅ Now register services that depend on ApiService
 builder.Services.AddScoped<NickScanWebApp.New.Services.RoleLookupService>();
