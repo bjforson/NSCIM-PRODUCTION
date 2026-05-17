@@ -29,10 +29,10 @@ Dual-container ASE scans are still leaking comma-joined identifiers into workflo
   - [x] Use the helper from queue recovery.
   - [x] Preserve raw source container string only in queue metadata.
   - [x] Ensure recovered multi-container queue items get suffixed inspection IDs.
-- [ ] Phase 2: Add guardrails.
+- [x] Phase 2: Add guardrails.
   - [x] Unit/architecture guard that queue recovery cannot publish raw comma-joined ASE identifiers.
   - [x] Guard that ingestion and recovery share the same ASE queue split helper.
-  - [ ] Optional publisher-level single-container guard after recovery is patched.
+  - [x] Publisher-level single-container guard after recovery is patched.
 - [ ] Phase 3: Fix completeness image evidence.
   - [x] Make ASE image existence token/source aware.
   - [x] Keep child completeness rows as single-container rows for new/recovered ASE queue work.
@@ -46,10 +46,10 @@ Dual-container ASE scans are still leaking comma-joined identifiers into workflo
   - [x] Split or supersede existing combined completeness rows.
   - [x] Repair combined analysis records and decisions.
   - [x] Verify child records have assignment/image/submission progression.
-- [ ] Phase 6: Cache and UI/API hardening.
-  - [ ] Prevent predictive preload from caching comma-joined single-container keys.
-  - [ ] Return clear errors from single-container endpoints when passed multi-container identifiers.
-  - [ ] Add explicit source/aggregate route usage where the original combined image is required.
+- [x] Phase 6: Cache and UI/API hardening.
+  - [x] Prevent predictive preload from caching comma-joined single-container keys.
+  - [x] Return clear errors from single-container endpoints when passed multi-container identifiers.
+  - [x] Keep source/aggregate usage on existing source-scan and split-context routes; single-container predictive routes now reject composite labels.
 - [ ] Phase 7: Verification and closeout.
   - [x] Run focused tests.
   - [x] Build affected projects.
@@ -114,4 +114,15 @@ Audited production data-heal:
   - Windows service event log shows `NSCIM_API` stopped and restarted successfully.
   - `Data/Logs/nickhr-20260517.log` had no new matching `Error`, `Exception`, `Unhandled`, `42P01`, or cancellation lines in the checked tail after restart.
 
-Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` and currently has an unrelated dirty modification in `src/NickScanWebApp.Shared/Services/ContainerDetailsService.cs`; merge is intentionally deferred until that worktree is clean or the owner confirms how to handle it.
+Final guard/cache hardening:
+
+- `ContainerNumberListMatcher` now exposes a shared composite-container detector.
+- `ContainerScanQueuePublisherService` refuses direct single-item or batch queue publishes where `ContainerNumber` is a comma/semicolon composite source label.
+- `PredictivePreloadService` excludes composite `AnalysisRecord.ContainerNumber` values from assignment container lists.
+- Predictive container preload/invalidate/get flows reject composite identifiers and do not create comma-valued cache keys.
+- `PredictivePreloadController` returns clear `400 BadRequest` messages for composite container labels on single-container cache routes.
+- Focused validation:
+  - `dotnet test tests/NickScanCentralImagingPortal.Integration.Tests/NickScanCentralImagingPortal.Integration.Tests.csproj --filter "FullyQualifiedName~PredictivePreloadServiceTests"` passed: 13/13.
+  - `dotnet test tests/NickScanCentralImagingPortal.Core.Tests/NickScanCentralImagingPortal.Core.Tests.csproj --filter "FullyQualifiedName~StateOwnershipGuardrailTests"` passed: 15/15.
+
+Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` and was clean during the final hardening pass. Per workflow rule, merge still requires explicit user approval after the branch commits are complete.

@@ -222,6 +222,17 @@ public class StateOwnershipGuardrailTests
     }
 
     [Fact]
+    public void ContainerScanQueuePublisher_RejectsCompositeContainerIdentifiers()
+    {
+        var publisher = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/ContainerScanQueuePublisherService.cs");
+
+        Assert.Contains("ContainerNumberListMatcher.IsCompositeContainerIdentifier(containerNumber)", publisher);
+        Assert.Contains("ContainerNumberListMatcher.IsCompositeContainerIdentifier(s.ContainerNumber)", publisher);
+        Assert.Contains("ContainerNumber must be one physical container", publisher);
+        Assert.Contains("composite source label", publisher);
+    }
+
+    [Fact]
     public void ContainerCompleteness_AseImageEvidenceIsTokenAware()
     {
         var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/ContainerCompletenessService.cs");

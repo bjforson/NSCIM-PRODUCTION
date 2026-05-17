@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageAnalysis;
 
@@ -137,6 +138,7 @@ public sealed class PredictivePreloadService : IPredictivePreloadService
             var containerNumbers = await _dbContext.AnalysisRecords
                 .AsNoTracking()
                 .Where(r => r.GroupId == groupId)
+                .Where(r => !r.ContainerNumber.Contains(",") && !r.ContainerNumber.Contains(";"))
                 .OrderBy(r => r.ContainerNumber)
                 .Select(r => r.ContainerNumber)
                 .Distinct()
@@ -216,6 +218,17 @@ public sealed class PredictivePreloadService : IPredictivePreloadService
                 ContainerNumber = containerNumber,
                 Success = false,
                 Error = "Container number is required",
+                CompletedAtUtc = DateTime.UtcNow
+            };
+        }
+
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(normalized))
+        {
+            return new PredictivePreloadContainerResult
+            {
+                ContainerNumber = normalized,
+                Success = false,
+                Error = "Predictive container preload requires one physical container number. Use a source-scan or split context route for composite scan labels.",
                 CompletedAtUtc = DateTime.UtcNow
             };
         }
@@ -331,6 +344,8 @@ public sealed class PredictivePreloadService : IPredictivePreloadService
         var normalized = NormalizeContainerNumber(containerNumber);
         if (string.IsNullOrWhiteSpace(normalized))
             return;
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(normalized))
+            return;
 
         var pageSize = Math.Max(1, _options.FirstPageSize);
         await _cache.RemoveAsync(PredictivePreloadKeys.ContainerContext(normalized), cancellationToken);
@@ -359,8 +374,12 @@ public sealed class PredictivePreloadService : IPredictivePreloadService
         string containerNumber,
         CancellationToken cancellationToken = default)
     {
+        var normalized = NormalizeContainerNumber(containerNumber);
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(normalized))
+            return Task.FromResult<PredictiveContainerContext?>(null);
+
         return _cache.GetAsync<PredictiveContainerContext>(
-            PredictivePreloadKeys.ContainerContext(NormalizeContainerNumber(containerNumber)),
+            PredictivePreloadKeys.ContainerContext(normalized),
             cancellationToken);
     }
 

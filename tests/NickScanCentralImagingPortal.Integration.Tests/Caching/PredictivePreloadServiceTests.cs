@@ -54,7 +54,8 @@ public sealed class PredictivePreloadServiceTests
         db.AnalysisRecords.AddRange(
             new AnalysisRecord { GroupId = groupId, ContainerNumber = "MSCU1234567", ScannerType = "FS6000" },
             new AnalysisRecord { GroupId = groupId, ContainerNumber = "TGHU7654321", ScannerType = "FS6000" },
-            new AnalysisRecord { GroupId = groupId, ContainerNumber = "TGHU7654321", ScannerType = "FS6000" });
+            new AnalysisRecord { GroupId = groupId, ContainerNumber = "TGHU7654321", ScannerType = "FS6000" },
+            new AnalysisRecord { GroupId = groupId, ContainerNumber = "MSCU1234567, TGHU7654321", ScannerType = "FS6000" });
         await db.SaveChangesAsync();
 
         var cache = new InMemoryCacheService();
@@ -81,6 +82,21 @@ public sealed class PredictivePreloadServiceTests
         var containers = await cache.GetAsync<List<string>>(PredictivePreloadKeys.AssignmentContainers(groupId));
         Assert.NotNull(containers);
         Assert.Equal(["MSCU1234567", "TGHU7654321"], containers);
+    }
+
+    [Fact]
+    public async Task PreloadContainerContextAsync_RejectsCompositeContainerIdentifiers()
+    {
+        await using var db = NewInMemoryDb();
+        await using var icumDb = NewInMemoryIcumDb();
+        var cache = new InMemoryCacheService();
+        var service = NewService(db, icumDb, cache, new PredictivePreloadState(), new PredictivePreloadOptions());
+
+        var result = await service.PreloadContainerContextAsync("MSCU1234567, TGHU7654321");
+
+        Assert.False(result.Success);
+        Assert.Contains("one physical container", result.Error);
+        Assert.False(await cache.ExistsAsync(PredictivePreloadKeys.ContainerContext("MSCU1234567, TGHU7654321")));
     }
 
     [Fact]
@@ -203,6 +219,20 @@ public sealed class PredictivePreloadServiceTests
         Assert.False(await cache.ExistsAsync(PredictivePreloadKeys.Assignment(groupId)));
         Assert.False(await cache.ExistsAsync(PredictivePreloadKeys.AssignmentContainers(groupId)));
         Assert.False(await cache.ExistsAsync(PredictivePreloadKeys.ContainerContext("MSCU1234567")));
+    }
+
+    [Fact]
+    public async Task ControllerContainerRoutes_ReturnBadRequestForCompositeContainerIdentifiers()
+    {
+        var controller = NewController(new StubPredictivePreloadService(), new PredictivePreloadState());
+
+        var preload = await controller.PreloadContainer("MSCU1234567, TGHU7654321", CancellationToken.None);
+        var get = await controller.GetContainerContext("MSCU1234567, TGHU7654321", CancellationToken.None);
+        var invalidate = await controller.InvalidateContainer("MSCU1234567, TGHU7654321", CancellationToken.None);
+
+        Assert.IsType<BadRequestObjectResult>(preload.Result);
+        Assert.IsType<BadRequestObjectResult>(get.Result);
+        Assert.IsType<BadRequestObjectResult>(invalidate);
     }
 
     [Fact]

@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Interfaces;
+using NickScanCentralImagingPortal.Core.Utilities;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
 {
@@ -52,6 +53,17 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 if (string.IsNullOrWhiteSpace(containerNumber))
                 {
                     _logger.LogWarning("[QUEUE-PUBLISHER] Skipping queue publish - ContainerNumber is null or empty");
+                    _metricsService?.RecordPublishAttempt(false, 0, scannerType ?? "Unknown", stopwatch.Elapsed, skipped: true);
+                    return 0;
+                }
+
+                if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(containerNumber))
+                {
+                    _logger.LogWarning(
+                        "[QUEUE-PUBLISHER] Skipping queue publish - ContainerNumber must be one physical container, got composite source label {ContainerNumber} ({ScannerType}, {InspectionId})",
+                        containerNumber,
+                        scannerType,
+                        inspectionId);
                     _metricsService?.RecordPublishAttempt(false, 0, scannerType ?? "Unknown", stopwatch.Elapsed, skipped: true);
                     return 0;
                 }
@@ -132,6 +144,15 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 var validScans = scans
                     .Where(s => !string.IsNullOrWhiteSpace(s.ContainerNumber) && !string.IsNullOrWhiteSpace(s.ScannerType))
                     .ToList();
+                var compositeCount = validScans.Count(s => ContainerNumberListMatcher.IsCompositeContainerIdentifier(s.ContainerNumber));
+                if (compositeCount > 0)
+                {
+                    validScans = validScans
+                        .Where(s => !ContainerNumberListMatcher.IsCompositeContainerIdentifier(s.ContainerNumber))
+                        .ToList();
+                    _logger.LogWarning("[QUEUE-PUBLISHER] Skipped {Count} scans because ContainerNumber was a composite source label", compositeCount);
+                }
+
                 var disabledCount = validScans.Count(s => _scannerWorkflowGate?.IsAssignmentIntakeEnabled(s.ScannerType) == false);
                 if (disabledCount > 0)
                 {

@@ -34,6 +34,22 @@ public static class ContainerNumberListMatcher
             .Any(token => string.Equals(token, target, StringComparison.Ordinal));
     }
 
+    public static bool IsCompositeContainerIdentifier(string? containerNumber)
+    {
+        if (string.IsNullOrWhiteSpace(containerNumber))
+            return false;
+
+        var source = containerNumber.Trim();
+        if (source.Contains(',', StringComparison.Ordinal) || source.Contains(';', StringComparison.Ordinal))
+            return true;
+
+        return ContainerTokenRegex.Matches(source)
+            .Select(match => Normalize(match.Value))
+            .Distinct(StringComparer.Ordinal)
+            .Skip(1)
+            .Any();
+    }
+
     public static string Normalize(string? containerNumber) =>
         string.IsNullOrWhiteSpace(containerNumber)
             ? string.Empty
