@@ -33,11 +33,11 @@ Dual-container ASE scans are still leaking comma-joined identifiers into workflo
   - [x] Unit/architecture guard that queue recovery cannot publish raw comma-joined ASE identifiers.
   - [x] Guard that ingestion and recovery share the same ASE queue split helper.
   - [x] Publisher-level single-container guard after recovery is patched.
-- [ ] Phase 3: Fix completeness image evidence.
+- [x] Phase 3: Fix completeness image evidence.
   - [x] Make ASE image existence token/source aware.
   - [x] Keep child completeness rows as single-container rows for new/recovered ASE queue work.
   - [x] Remove historical combined completeness rows during audited healing after child rows exist.
-- [ ] Phase 4: Fix analysis and ICUMS image lookup.
+- [x] Phase 4: Fix analysis and ICUMS image lookup.
   - [x] Resolve suffixed ASE inspection IDs back to the base inspection/source scan.
   - [x] Prefer source scan identity when building ICUMS payload image data.
   - [x] Preserve selected split lineage through repaired manifest-backed decisions.
@@ -50,7 +50,7 @@ Dual-container ASE scans are still leaking comma-joined identifiers into workflo
   - [x] Prevent predictive preload from caching comma-joined single-container keys.
   - [x] Return clear errors from single-container endpoints when passed multi-container identifiers.
   - [x] Keep source/aggregate usage on existing source-scan and split-context routes; single-container predictive routes now reject composite labels.
-- [ ] Phase 7: Verification and closeout.
+- [x] Phase 7: Verification and closeout.
   - [x] Run focused tests.
   - [x] Build affected projects.
   - [x] Re-run read-only production pollution audit.
