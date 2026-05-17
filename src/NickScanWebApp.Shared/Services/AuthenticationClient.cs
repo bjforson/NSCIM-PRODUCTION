@@ -22,9 +22,10 @@ public sealed class AuthenticationClient
 
     public async Task<AuthenticationLoginResult<TResponse>> LoginAsync<TRequest, TResponse>(
         TRequest request,
+        TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
-        var httpClient = CreateClient();
+        var httpClient = CreateClient(timeout);
         using var response = await httpClient.PostAsJsonAsync(
             AuthenticationRoutes.LoginPath,
             request,
