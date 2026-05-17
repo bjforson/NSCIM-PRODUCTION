@@ -8,10 +8,10 @@
 @using System.Linq
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
-@inject NickScanWebApp.New.Services.ApiService ApiService
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.AiWorkflowClient AiWorkflowClient
+@inject NickScanWebApp.Shared.Services.ImageProcessingClient ImageProcessingClient
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
@@ -2138,8 +2138,8 @@
         }
         try
         {
-            var caps = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
-                NickScanWebApp.Shared.Services.ImageProcessingClient.BuildModeCapabilitiesPath(ContainerNumber));
+            var caps = await ImageProcessingClient.GetModeCapabilitiesAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
+                ContainerNumber);
             if (caps != null)
             {
                 _scanVariant    = caps.Variant ?? "";
@@ -2300,8 +2300,10 @@
                 if (!_pixelProbeEnabled) return;
                 try
                 {
-                    var probe = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
-                        NickScanWebApp.Shared.Services.ImageProcessingClient.BuildPixelPath(ContainerNumber, _probeLastX, _probeLastY));
+                    var probe = await ImageProcessingClient.GetPixelAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
+                        ContainerNumber,
+                        _probeLastX,
+                        _probeLastY);
                     if (probe != null && _pixelProbeEnabled)
                     {
                         _probeData = probe;
@@ -2492,8 +2494,12 @@
                 return;
             }
 
-            var url = NickScanWebApp.Shared.Services.ImageProcessingClient.BuildRoiPath(ContainerNumber, x, y, w, h);
-            var roi = await ApiService.GetAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(url);
+            var roi = await ImageProcessingClient.GetRoiAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(
+                ContainerNumber,
+                x,
+                y,
+                w,
+                h);
             _roiData = roi;
             if (roi == null)
             {

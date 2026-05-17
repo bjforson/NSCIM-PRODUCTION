@@ -39,6 +39,21 @@ public class ImageProcessingClient
         return _apiService.GetAsync<TComplete>(BuildCompleteContainerDataPath(containerNumber));
     }
 
+    public Task<TCapabilities?> GetModeCapabilitiesAsync<TCapabilities>(string containerNumber)
+    {
+        return _apiService.GetAsync<TCapabilities>(BuildModeCapabilitiesPath(containerNumber));
+    }
+
+    public Task<TPixel?> GetPixelAsync<TPixel>(string containerNumber, int x, int y)
+    {
+        return _apiService.GetAsync<TPixel>(BuildPixelPath(containerNumber, x, y));
+    }
+
+    public Task<TRoi?> GetRoiAsync<TRoi>(string containerNumber, int x, int y, int width, int height)
+    {
+        return _apiService.GetAsync<TRoi>(BuildRoiPath(containerNumber, x, y, width, height));
+    }
+
     public static string BuildCompleteContainerDataPath(string containerNumber)
     {
         return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}/complete";
