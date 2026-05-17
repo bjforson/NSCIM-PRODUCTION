@@ -714,20 +714,11 @@
             return SplitSelectionClient.BuildResultImagePath(splitJobId.Value, splitResultId.Value.ToString(), side, lossless);
         }
 
-        var sourceScanId = image.SourceScanId ?? image.OriginalScanRecordId?.ToString() ?? resolution.EffectiveSourceScanId;
-        if (string.IsNullOrWhiteSpace(sourceScanId))
-        {
-            return null;
-        }
-
-        var containerHint = StrictSingleContainerToken(ContainerNumber);
-        return ScanAssetClient.BuildImagePath(
-            sourceScanId,
-            new ScanAssetImageQuery
-            {
-                Size = size,
-                ContainerNumber = containerHint
-            });
+        return ScanAssetClient.TryBuildImagePath(
+            resolution,
+            ContainerNumber,
+            size,
+            image.ImageType);
     }
 
     private static string? StrictSingleContainerToken(string? value)

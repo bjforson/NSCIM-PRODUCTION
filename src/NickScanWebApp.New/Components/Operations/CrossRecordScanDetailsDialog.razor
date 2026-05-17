@@ -388,7 +388,11 @@
         _loadingImages = true;
         try
         {
-            _containerImages = await ContainerDetailsService.GetImageMetadataAsync(_scan.Container1);
+            var resolution = await ContainerDetailsService.ResolveScanAssetAsync(_scan.Container1, _scan.Container1_BOE);
+            _containerImages = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                _scan.Container1,
+                _scan.Container1_BOE,
+                resolution);
             
             if (_containerImages != null && _containerImages.Any())
             {
@@ -447,7 +451,8 @@
             ["ContainerNumber"] = _scan.Container1,
             ["ScannerType"] = image.ImageType ?? _scan.ScannerType,
             ["ScanDate"] = image.CreatedAt != default ? image.CreatedAt : _scan.ScanDateTime,
-            ["IsConsolidated"] = false
+            ["IsConsolidated"] = false,
+            ["SourceScanResolution"] = image.Resolution
         };
 
         var options = new DialogOptions
@@ -485,9 +490,10 @@
 
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var uid = authState.User.Identity?.Name ?? "anon";
-        var imageUrl = UrlBuilder.Build(
-            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(_scan.Container1, size: "full"),
-            uid);
+        var sourceResolution = await ContainerDetailsService.ResolveScanAssetAsync(_scan.Container1, _scan.Container1_BOE);
+        var imagePath = NickScanWebApp.Shared.Services.ScanAssetClient.TryBuildImagePath(sourceResolution, _scan.Container1, "full")
+            ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(_scan.Container1, size: "full");
+        var imageUrl = UrlBuilder.Build(imagePath, uid);
 
         var parameters = new DialogParameters
         {
@@ -495,7 +501,8 @@
             ["ContainerNumber"] = _scan.Container1,
             ["ScannerType"] = _scan.ScannerType,
             ["ScanDate"] = _scan.ScanDateTime,
-            ["IsConsolidated"] = false
+            ["IsConsolidated"] = false,
+            ["SourceScanResolution"] = sourceResolution
         };
 
         var options = new DialogOptions

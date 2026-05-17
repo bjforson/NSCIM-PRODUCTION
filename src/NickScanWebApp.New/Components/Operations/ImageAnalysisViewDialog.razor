@@ -2678,12 +2678,12 @@
         {
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var uid = authState.User.Identity?.Name ?? "anon";
-            var imageUrl = UrlBuilder.Build(
-                ImageProcessingClient.BuildCompleteImagePath(containerNumber),
-                uid);
             var sourceResolution = await ContainerDetailsService.ResolveScanAssetAsync(
                 containerNumber,
                 GroupIdentifier);
+            var imagePath = ScanAssetClient.TryBuildImagePath(sourceResolution, containerNumber, "full")
+                ?? ImageProcessingClient.BuildCompleteImagePath(containerNumber);
+            var imageUrl = UrlBuilder.Build(imagePath, uid);
 
             // Resolve scanner type from completeness data (don't hardcode)
             var scannerType = ScannerType;
@@ -2794,7 +2794,11 @@
                 string? firstContainerWithImages = null;
                 foreach (var container in Containers)
                 {
-                    var containerImages = await ContainerDetailsService.GetImageMetadataAsync(container);
+                    var resolution = await ContainerDetailsService.ResolveScanAssetAsync(container, GroupIdentifier);
+                    var containerImages = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                        container,
+                        GroupIdentifier,
+                        resolution);
                     if (containerImages != null && containerImages.Any())
                     {
                         firstContainerWithImages = container;
@@ -2825,7 +2829,11 @@
             foreach (var container in Containers)
             {
                 // Check if container has images (skip containers without images)
-                var containerImages = await ContainerDetailsService.GetImageMetadataAsync(container);
+                var resolution = await ContainerDetailsService.ResolveScanAssetAsync(container, GroupIdentifier);
+                var containerImages = await ContainerDetailsService.GetImageMetadataForResolvedScanAsync(
+                    container,
+                    GroupIdentifier,
+                    resolution);
                 if (containerImages != null && containerImages.Any())
                 {
                     containersWithImages.Add(container);

@@ -2279,6 +2279,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         s.Id,
                         s.ContainerNumber,
                         s.ScanTime,
+                        s.OriginalScanRecordId,
                         Images = s.Images.Select(i => new
                         {
                             i.Id,
@@ -2321,9 +2322,12 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             foreach (var image in userFacing)
                             {
                                 // ✅ Use unified pipeline endpoint with imageType parameter
-                                // Pipeline handles all processing, conversion, and serving correctly
+                                // Pipeline handles all processing, conversion, and serving correctly.
+                                // Prefer source-scan identity so first-party image cards stop minting
+                                // compatibility container-image URLs.
                                 var imageCacheBuster = $"&v={scan.ScanTime.Ticks}"; // ✅ FIX: Use & since we already have imageType param
                                 var imageTypeParam = image.ImageType; // Main, Icon, CCR, LPR, etc.
+                                var sourceScanId = GetSourceScanId(scan.OriginalScanRecordId, scan.Id);
                                 images.Add(new ImageMetadataDto
                                 {
                                     Id = imageId++,
@@ -2334,8 +2338,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                     CreatedAt = scan.ScanTime,
                                     // ✅ Signed URL — the WebApp renders this via <img src> directly, so it
                                     // can't carry a JWT header. See SignedImageUrlMiddleware + signer.
-                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=thumbnail{imageCacheBuster}"),
-                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageTypeParam)}&size=full{imageCacheBuster}")
+                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative(BuildSourceScanImagePath(sourceScanId, containerNumber, "thumbnail", imageTypeParam, imageCacheBuster)),
+                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative(BuildSourceScanImagePath(sourceScanId, containerNumber, "full", imageTypeParam, imageCacheBuster))
                                 });
                             }
                         }
@@ -2351,6 +2355,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 if (imageMetadata != null && imageMetadata.FileSizeBytes > 0)
                                 {
                                     var cacheBuster = $"&v={scan.ScanTime.Ticks}";
+                                    var sourceScanId = GetSourceScanId(scan.OriginalScanRecordId, scan.Id);
                                     images.Add(new ImageMetadataDto
                                     {
                                         Id = imageId++,
@@ -2359,8 +2364,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                         FileSizeBytes = imageMetadata.FileSizeBytes,
                                         CreatedAt = scan.ScanTime,
                                         // Signed URL (see earlier comment).
-                                        ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}"),
-                                        FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}")
+                                        ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative(BuildSourceScanImagePath(sourceScanId, containerNumber, "thumbnail", null, cacheBuster)),
+                                        FullImageUrl = publicBaseUrl + _urlSigner.SignRelative(BuildSourceScanImagePath(sourceScanId, containerNumber, "full", null, cacheBuster))
                                     });
                                 }
                             }
@@ -2456,6 +2461,35 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 _logger.LogError("GetImageMetadata", "❌ Error getting image metadata for container {ContainerNumber}", ex, new { ContainerNumber = containerNumber });
                 return StatusCode(500, "Internal server error");
             }
+        }
+
+        private static string GetSourceScanId(int? originalScanRecordId, Guid scannerScanId)
+            => originalScanRecordId?.ToString() ?? scannerScanId.ToString();
+
+        private static string BuildSourceScanImagePath(
+            string sourceScanId,
+            string containerNumber,
+            string size,
+            string? imageType = null,
+            string? cacheBuster = null)
+        {
+            var parts = new List<string>
+            {
+                $"containerNumber={Uri.EscapeDataString(containerNumber)}",
+                $"size={Uri.EscapeDataString(size)}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(imageType))
+            {
+                parts.Add($"imageType={Uri.EscapeDataString(imageType)}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(cacheBuster))
+            {
+                parts.Add(cacheBuster.TrimStart('&', '?'));
+            }
+
+            return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
         }
 
         /// <summary>

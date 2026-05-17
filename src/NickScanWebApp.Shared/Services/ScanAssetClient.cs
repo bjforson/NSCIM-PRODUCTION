@@ -103,6 +103,37 @@ public sealed class ScanAssetClient
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image{ToQueryString(parts)}";
     }
 
+    public static string? TryBuildImagePath(
+        ScanAssetResolution? resolution,
+        string? containerNumber = null,
+        string? size = "full",
+        string? imageType = null)
+    {
+        if (resolution?.HasUsableSourceScan != true || string.IsNullOrWhiteSpace(resolution.EffectiveSourceScanId))
+        {
+            return null;
+        }
+
+        return BuildImagePath(
+            resolution.EffectiveSourceScanId!,
+            new ScanAssetImageQuery
+            {
+                ContainerNumber = StrictSingleContainerToken(containerNumber)
+                    ?? StrictSingleContainerToken(resolution.ContainerNumber)
+                    ?? StrictSingleContainerToken(resolution.NormalizedContainerNumber)
+                    ?? StrictSingleContainerToken(resolution.RequestedContainerNumber)
+                    ?? StrictSingleContainerToken(resolution.SplitContext?.ContainerNumber),
+                GroupIdentifier = resolution.GroupIdentifier,
+                AnalysisRecordId = resolution.AnalysisRecordId,
+                ImageType = NormalizeImageType(imageType),
+                Size = string.IsNullOrWhiteSpace(size) ? "full" : size,
+                SplitJobId = resolution.SplitJobId,
+                SplitResultId = resolution.SplitResultId,
+                ScanImageAssetId = resolution.ScanImageAssetId,
+                Side = resolution.EffectiveSplitSide
+            });
+    }
+
     public static string BuildImagesPath(
         string sourceScanId,
         ScanAssetImageQuery? query = null)
@@ -173,6 +204,43 @@ public sealed class ScanAssetClient
     private static string ToQueryString(List<string> parts)
     {
         return parts.Count == 0 ? string.Empty : $"?{string.Join("&", parts)}";
+    }
+
+    private static string? StrictSingleContainerToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            value,
+            "[A-Z]{4}\\d{7}",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (matches.Count == 1)
+        {
+            return matches[0].Value.ToUpperInvariant();
+        }
+
+        if (matches.Count > 1 || value.IndexOfAny(new[] { ',', ';', '|', '/', '\\', '\t', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeImageType(string? imageType)
+    {
+        if (string.IsNullOrWhiteSpace(imageType))
+        {
+            return null;
+        }
+
+        var trimmed = imageType.Trim();
+        return trimmed.StartsWith("FS6000-", StringComparison.OrdinalIgnoreCase)
+            ? trimmed["FS6000-".Length..]
+            : trimmed;
     }
 }
 

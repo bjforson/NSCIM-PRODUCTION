@@ -1778,22 +1778,10 @@
                 lossless);
         }
 
-        var sourceScanId = resolution.EffectiveSourceScanId;
-        if (string.IsNullOrWhiteSpace(sourceScanId))
-        {
-            return null;
-        }
-
-        var containerHint = GetImageRequestContainerHint();
-        return ScanAssetClient.BuildImagePath(
-            sourceScanId,
-            new ScanAssetImageQuery
-            {
-                Size = size,
-                ContainerNumber = containerHint,
-                SplitJobId = resolution.SplitJobId,
-                SplitResultId = resolution.SplitResultId
-            });
+        return ScanAssetClient.TryBuildImagePath(
+            resolution,
+            GetImageRequestContainerHint(),
+            size);
     }
 
     private static string? StrictSingleContainerToken(string? value)
@@ -2037,6 +2025,7 @@
             _roiError = "";
             _lastRoiIdx = -1;
 
+            await EnsureSourceScanResolutionAsync();
             await LoadExistingTags();
             await LoadExistingRectangles();
             await LoadModeCapabilitiesAsync();
@@ -2048,6 +2037,7 @@
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         _currentUsername = authState.User.Identity?.Name ?? "System";
         _lastContainerNumber = ContainerNumber;
+        await EnsureSourceScanResolutionAsync();
         
         var apiBaseUrl = Configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
         
@@ -2098,6 +2088,23 @@
             // mode buttons to render for this scan's variant (FS6000 vs ASE
             // tri-panel vs ASE single-view). Soft-fails if the endpoint is down.
             await LoadModeCapabilitiesAsync();
+        }
+    }
+
+    private async Task EnsureSourceScanResolutionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ContainerNumber) || SourceScanResolution?.HasUsableSourceScan == true)
+        {
+            return;
+        }
+
+        try
+        {
+            SourceScanResolution = await ContainerDetailsService.ResolveScanAssetAsync(ContainerNumber, GroupIdentifier);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ImageAnalysisViewer] Source scan resolution unavailable for {ContainerNumber}: {ex.Message}");
         }
     }
 

@@ -72,6 +72,43 @@ The inventory now suppresses the intentional endpoint tester placeholder:
 - Deprecated route classification now lives in `EndpointRouteUsageCatalog` with owner, reason, canonical replacement, and removal-window metadata.
 - The endpoint usage monitoring UI can show canonical replacement and owner data for deprecated routes.
 - The remaining signed image existence probe is now a named service that uses the configured `NickScanAPI` HTTP pipeline and redacts signed query strings from logs.
+- Image viewer entrypoints now prefer source-scan image URLs through `/api/scan-assets/{sourceScanId}/image` when resolution data is available, leaving `/api/ImageProcessing/container/{container}/complete/image` as compatibility fallback.
+- FS6000 image metadata emitted by `ContainerDetailsController` now mints signed scan-asset image URLs instead of first-party signed legacy container-image URLs.
+
+## Caller-Drain Batch: Legacy Container Image URLs
+
+The first caller-drain batch targets the high-volume `/api/imageprocessing/container/*` traffic without removing routes.
+
+Live telemetry before this batch showed `/complete/image` as the dominant shape:
+
+| Shape | Method | 30-day calls | Errors | Approx callers | Last call |
+| --- | --- | ---: | ---: | ---: | --- |
+| `/complete/image` | `GET` | 417,096 | 131 | 11 | 2026-05-17 17:42 UTC |
+| `/mode-capabilities` | `GET` | 926 | 11 | 2 | 2026-05-17 18:11 UTC |
+| `/pixel` | `GET` | 148 | 1 | 2 | 2026-05-17 18:11 UTC |
+| `/raw` | `GET` | 49 | 12 | 6 | 2026-05-17 10:12 UTC |
+| `/roi` | `GET` | 36 | 1 | 2 | 2026-05-17 18:11 UTC |
+
+Implemented drain points:
+
+| Surface | Change |
+| --- | --- |
+| `ScanAssetClient` | Added `TryBuildImagePath(...)` so callers can consistently build canonical source-scan image URLs from `ScanAssetResolution`. |
+| `ImageAnalysisViewer` | Resolves source-scan identity when missing and uses scan-asset image URLs for the primary image path. |
+| `ImageDecisionView` | Uses the shared source-scan image URL builder for image cards and probes before legacy fallback. |
+| `ImageAnalysisViewDialog` | Uses resolver-aware image metadata in auto-progression checks and opens fullscreen viewer with a scan-asset image URL when available. |
+| `CrossRecordScanDetailsDialog` | Uses resolver-aware image metadata and passes source-scan resolution into the viewer. |
+| `ImageViewer` page | Resolves source-scan identity before constructing the full-image URL. |
+| `ContainerDetailsController` | Emits FS6000 signed image metadata URLs through `/api/scan-assets/{sourceScanId}/image`. |
+
+Validation for this batch:
+
+| Check | Result |
+| --- | --- |
+| `dotnet build src\NickScanWebApp.New\NickScanWebApp.New.csproj --no-restore /p:UseSharedCompilation=false` | Passed, existing warnings, 0 errors. |
+| `dotnet build src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj --no-restore /p:UseSharedCompilation=false` | Passed, existing warnings, 0 errors. |
+| `tools\diagnostics\Invoke-RouteCallsiteInventory.ps1` | Passed with zero unmatched local consumer segments. |
+| `tools\diagnostics\Invoke-EndpointRetirementReadiness.ps1 -AsJson` | Deprecated families remain blocked: ready `0`, blocked `2`. |
 
 ## Remaining Work
 

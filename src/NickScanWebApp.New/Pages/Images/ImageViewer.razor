@@ -3,6 +3,8 @@
 @using MudBlazor
 @using NickScanCentralImagingPortal.Core.Constants
 @using NickScanCentralImagingPortal.Core.Models
+@using NickScanWebApp.Shared.Models
+@using NickScanWebApp.Shared.Services
 @using NickScanWebApp.New.Services
 @using NickScanWebApp.New.Services.Permissions
 @using System
@@ -13,6 +15,7 @@
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
 @inject NickScanWebApp.Shared.Services.ImageProcessingClient ImageProcessingClient
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
@@ -501,6 +504,7 @@
     // Image metadata
     private string _scannerType = "";
     private DateTime _scanDate = default;
+    private ScanAssetResolution? _sourceScanResolution;
     
     // OCR, Detection, Quality Assessment state
     private OcrResultDto? _ocrResult = null;
@@ -548,6 +552,7 @@
         // row was never loading at all.
         try
         {
+            _sourceScanResolution = await ContainerDetailsService.ResolveScanAssetAsync(ContainerNumber);
             var data = await ImageProcessingClient.GetCompleteContainerDataAsync<ContainerImageDataResponse>(ContainerNumber);
             if (data != null)
             {
@@ -746,8 +751,9 @@
                 _currentUsername);
         }
 
+        var sourcePath = ScanAssetClient.TryBuildImagePath(_sourceScanResolution, ContainerNumber, "full");
         return UrlBuilder.Build(
-            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
+            sourcePath ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(ContainerNumber, size: "full"),
             _currentUsername);
     }
     
