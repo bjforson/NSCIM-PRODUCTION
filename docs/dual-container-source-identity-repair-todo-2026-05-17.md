@@ -135,4 +135,9 @@ Final guard/cache hardening:
   - Windows service event log shows `NSCIM_API` stopped and restarted successfully at 18:23.
   - `Data/Logs/nickhr-20260517.log` had no matching `Error`, `Exception`, `Unhandled`, `42P01`, cancellation, connection-refused, or composite-source-label lines in the checked post-deploy search.
 
-Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` and was clean during the final hardening pass. Per workflow rule, merge still requires explicit user approval after the branch commits are complete.
+Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` but currently has unrelated dirty Web/auth files:
+`src/NickScanWebApp.New/Components/Monitoring/AuditLogsPanel.razor`,
+`src/NickScanWebApp.New/Pages/Authentication/Login.razor`,
+`src/NickScanWebApp.New/Program.cs`, and
+`src/NickScanWebApp.Shared/Services/AuthenticationClient.cs`.
+Per workflow rule, merge is deferred until the user approves and the target worktree is clean or those unrelated changes are explicitly handled.
