@@ -75,6 +75,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public string Status { get; set; } = string.Empty;
             public int ContainerCount { get; set; }
             public List<string> Containers { get; set; } = new();
+            public int? RecordCompletenessStatusId { get; set; }
+            public string? ClearanceType { get; set; }
             public DateTime? LeaseUntilUtc { get; set; }
             public DateTime CreatedAtUtc { get; set; }
             public bool IsConsolidated { get; set; }
@@ -88,6 +90,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
             public int? PendingContainerCount { get; set; } // For PartiallyCompleted records
             public DateTime? PartiallyCompletedDate { get; set; } // For PartiallyCompleted records
             public DateTime? UpdatedAtUtc { get; set; }
+        }
+
+        private sealed class AssignmentRecordMetadata
+        {
+            public int? RecordCompletenessStatusId { get; init; }
+            public string? ClearanceType { get; init; }
+            public List<string> Containers { get; init; } = new();
         }
 
         public sealed class GroupResponse
@@ -311,25 +320,46 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                     else
                     {
-                        var fastResult = validQueueRows.Select(row => new MyAssignmentResponse
+                        var fastGroupIds = validQueueRows
+                            .Select(row => row.Entry.GroupId)
+                            .Distinct()
+                            .ToList();
+
+                        var fastGroups = await _db.AnalysisGroups
+                            .AsNoTracking()
+                            .Where(g => fastGroupIds.Contains(g.Id))
+                            .ToListAsync(requestAborted);
+
+                        var fastRecordMetadata = await LoadRecordMetadataByGroupAsync(fastGroups, requestAborted);
+
+                        var fastResult = validQueueRows.Select(row =>
                         {
-                            GroupId = row.Entry.GroupId,
-                            GroupIdentifier = row.Entry.GroupIdentifier,
-                            ScannerType = row.Entry.ScannerType ?? string.Empty,
-                            Status = row.Entry.GroupStatus,
-                            ContainerCount = row.Entry.ContainerCount,
-                            Containers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(row.Entry.ContainersJson ?? "[]") ?? new(),
-                            LeaseUntilUtc = row.Assignment.LeaseUntilUtc,
-                            CreatedAtUtc = row.Assignment.CreatedAtUtc,
-                            IsConsolidated = row.Entry.IsConsolidated,
-                            ContainersWithImages = row.Entry.ContainersWithImages > 0 ? row.Entry.ContainersWithImages : null,
-                            ContainersWithoutImages = row.Entry.ContainersWithoutImages > 0 ? row.Entry.ContainersWithoutImages : null,
-                            DecidedCount = row.Entry.DecidedCount,
-                            TotalContainerCount = row.Entry.TotalContainerCount,
-                            SubmittedContainerCount = row.Entry.SubmittedContainerCount,
-                            PendingContainerCount = row.Entry.PendingContainerCount,
-                            PartiallyCompletedDate = row.Entry.PartiallyCompletedDate,
-                            UpdatedAtUtc = row.Entry.GroupUpdatedAtUtc
+                            var metadata = fastRecordMetadata.GetValueOrDefault(row.Entry.GroupId);
+                            var queueContainers = System.Text.Json.JsonSerializer.Deserialize<List<string>>(row.Entry.ContainersJson ?? "[]") ?? new();
+                            var containers = metadata?.Containers.Count > 0 ? metadata.Containers : queueContainers;
+
+                            return new MyAssignmentResponse
+                            {
+                                GroupId = row.Entry.GroupId,
+                                GroupIdentifier = row.Entry.GroupIdentifier,
+                                ScannerType = row.Entry.ScannerType ?? string.Empty,
+                                Status = row.Entry.GroupStatus,
+                                ContainerCount = containers.Count > 0 ? containers.Count : row.Entry.ContainerCount,
+                                Containers = containers,
+                                RecordCompletenessStatusId = metadata?.RecordCompletenessStatusId,
+                                ClearanceType = metadata?.ClearanceType,
+                                LeaseUntilUtc = row.Assignment.LeaseUntilUtc,
+                                CreatedAtUtc = row.Assignment.CreatedAtUtc,
+                                IsConsolidated = row.Entry.IsConsolidated,
+                                ContainersWithImages = row.Entry.ContainersWithImages > 0 ? row.Entry.ContainersWithImages : null,
+                                ContainersWithoutImages = row.Entry.ContainersWithoutImages > 0 ? row.Entry.ContainersWithoutImages : null,
+                                DecidedCount = row.Entry.DecidedCount,
+                                TotalContainerCount = row.Entry.TotalContainerCount,
+                                SubmittedContainerCount = row.Entry.SubmittedContainerCount,
+                                PendingContainerCount = row.Entry.PendingContainerCount,
+                                PartiallyCompletedDate = row.Entry.PartiallyCompletedDate,
+                                UpdatedAtUtc = row.Entry.GroupUpdatedAtUtc
+                            };
                         }).ToList();
 
                         // Fire-and-forget LastAccessedAtUtc update
@@ -729,10 +759,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
             }
 
             // ✅ NEW: Build enhanced response with container breakdown and decision counts
+            var recordMetadataByGroupId = await LoadRecordMetadataByGroupAsync(groups, requestAborted);
+
             var enhancedResult = result.Select(x =>
             {
                 var completeness = containerCompletenessData.GetValueOrDefault(x.GroupIdentifier, (0, 0));
                 var decidedCount = decisionCounts.GetValueOrDefault(x.GroupIdentifier, 0);
+                var metadata = x.Group != null ? recordMetadataByGroupId.GetValueOrDefault(x.Group.Id) : null;
+                var fallbackContainers = x.GroupRecords
+                    .Select(r => r.ContainerNumber)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var containers = metadata?.Containers.Count > 0 ? metadata.Containers : fallbackContainers;
 
                 return new MyAssignmentResponse
                 {
@@ -740,8 +779,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     GroupIdentifier = x.GroupIdentifier,
                     ScannerType = x.Group?.ScannerType ?? string.Empty,
                     Status = x.Group?.Status ?? "Unknown",
-                    ContainerCount = x.GroupRecords.Count(),
-                    Containers = x.GroupRecords.Select(r => r.ContainerNumber).Distinct().ToList(),
+                    ContainerCount = containers.Count,
+                    Containers = containers,
+                    RecordCompletenessStatusId = metadata?.RecordCompletenessStatusId ?? x.Group?.RecordCompletenessStatusId,
+                    ClearanceType = metadata?.ClearanceType,
                     LeaseUntilUtc = x.Assignment.LeaseUntilUtc,
                     CreatedAtUtc = x.Group?.CreatedAtUtc ?? x.Assignment.CreatedAtUtc,
                     IsConsolidated = x.IsConsolidated,
@@ -896,6 +937,63 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         private static string GetMyAssignmentsCacheKey(string username, string role) => $"my-assignments:{username}:{role}";
+
+        private async Task<Dictionary<Guid, AssignmentRecordMetadata>> LoadRecordMetadataByGroupAsync(
+            IEnumerable<AnalysisGroup> groups,
+            CancellationToken ct = default)
+        {
+            var groupsWithRecordIds = groups
+                .Where(g => g.RecordCompletenessStatusId.HasValue)
+                .ToList();
+
+            if (groupsWithRecordIds.Count == 0)
+            {
+                return new Dictionary<Guid, AssignmentRecordMetadata>();
+            }
+
+            var recordIds = groupsWithRecordIds
+                .Select(g => g.RecordCompletenessStatusId!.Value)
+                .Distinct()
+                .ToList();
+
+            var records = await _db.RecordCompletenessStatuses
+                .Include(r => r.ExpectedContainers)
+                .AsNoTracking()
+                .Where(r => recordIds.Contains(r.Id))
+                .ToListAsync(ct);
+
+            var recordsById = records.ToDictionary(r => r.Id);
+            var metadataByGroup = new Dictionary<Guid, AssignmentRecordMetadata>();
+
+            foreach (var group in groupsWithRecordIds)
+            {
+                var recordId = group.RecordCompletenessStatusId!.Value;
+                if (!recordsById.TryGetValue(recordId, out var record))
+                {
+                    metadataByGroup[group.Id] = new AssignmentRecordMetadata
+                    {
+                        RecordCompletenessStatusId = recordId
+                    };
+                    continue;
+                }
+
+                var containers = record.ExpectedContainers
+                    .Select(c => c.ContainerNumber?.Trim())
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(c => c!)
+                    .ToList();
+
+                metadataByGroup[group.Id] = new AssignmentRecordMetadata
+                {
+                    RecordCompletenessStatusId = record.Id,
+                    ClearanceType = record.ClearanceType,
+                    Containers = containers
+                };
+            }
+
+            return metadataByGroup;
+        }
 
         private static bool IsCompositeContainerPairIdentifier(string? identifier)
         {
@@ -1165,9 +1263,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
             nonConsolidatedDeclarations = nonConsolidatedDeclarations.Distinct().ToList();
             allContainerNumbers = allContainerNumbers.Distinct().ToList();
 
+            var availableRecordMetadata = await LoadRecordMetadataByGroupAsync(
+                availableGroups,
+                HttpContext?.RequestAborted ?? CancellationToken.None);
+
             var result = availableGroups.Select(g =>
             {
                 var groupRecords = records.Where(r => r.GroupId == g.Id).ToList();
+                var metadata = availableRecordMetadata.GetValueOrDefault(g.Id);
+                var fallbackContainers = groupRecords
+                    .Select(r => r.ContainerNumber)
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var containers = metadata?.Containers.Count > 0 ? metadata.Containers : fallbackContainers;
 
                 // ✅ FIX: Use actual BOE data to determine consolidation status
                 var groupIdentifier = g.GroupIdentifier ?? string.Empty;
@@ -1187,8 +1296,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     GroupIdentifier = groupIdentifier,
                     ScannerType = g.ScannerType ?? string.Empty,
                     Status = g.Status,
-                    ContainerCount = groupRecords.Count(),
-                    Containers = groupRecords.Select(r => r.ContainerNumber).Distinct().ToList(),
+                    ContainerCount = containers.Count,
+                    Containers = containers,
+                    RecordCompletenessStatusId = metadata?.RecordCompletenessStatusId ?? g.RecordCompletenessStatusId,
+                    ClearanceType = metadata?.ClearanceType,
                     LeaseUntilUtc = null, // Not assigned yet
                     CreatedAtUtc = g.CreatedAtUtc,
                     IsConsolidated = isConsolidated

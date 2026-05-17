@@ -808,6 +808,8 @@
     [Parameter] public bool IsConsolidated { get; set; }
     [Parameter] public string ScannerType { get; set; } = string.Empty;
     [Parameter] public List<string>? Containers { get; set; }
+    [Parameter] public int? RecordCompletenessStatusId { get; set; }
+    [Parameter] public string? ClearanceType { get; set; }
     [Parameter] public EventCallback? OnDecisionSaved { get; set; } // ✅ Callback to close dialog after save
     [Parameter] public EventCallback? OnAllContainersDecided { get; set; } // ✅ Callback when all containers in group are decided
     
@@ -1154,6 +1156,30 @@
             System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         return waveMatch.Success ? waveMatch.Groups["base"].Value : normalized;
     }
+
+    private bool IsCmrRecord()
+    {
+        var normalizedGroupIdentifier = NormalizeDataLookupGroupIdentifier(GroupIdentifier);
+        return string.Equals(ClearanceType?.Trim(), "CMR", StringComparison.OrdinalIgnoreCase)
+            || IsCmrOperationalKey(normalizedGroupIdentifier);
+    }
+
+    private static bool IsCmrOperationalKey(string? value)
+    {
+        var key = value?.Trim();
+        if (string.IsNullOrWhiteSpace(key)
+            || key.Length != 24
+            || !key.StartsWith("CMR-", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return key[4..].All(c =>
+            c is >= '0' and <= '9'
+            || c is >= 'A' and <= 'F'
+            || c is >= 'a' and <= 'f');
+    }
+
     // Note: ICUMS data is shared across all containers for non-consolidated cargo, so use _icumsDataLoaded
     
     // ✅ AUTO-PROGRESSION: Track current container being processed
@@ -1286,6 +1312,17 @@
         var routeCn = routeContainer
             ?? throw new InvalidOperationException(
                 "BuildContainerEndpointUrl: non-consolidated path requires a routeContainer (typically Containers.First()).");
+
+        if (string.Equals(endpoint, "icums", StringComparison.OrdinalIgnoreCase) && IsCmrRecord())
+        {
+            return ContainerDetailsRoutes.BuildImageAnalysisRecordIcumsPath(
+                routeCn,
+                RecordCompletenessStatusId,
+                NormalizeDataLookupGroupIdentifier(groupIdentifier),
+                page,
+                pageSize);
+        }
+
         var decl = NormalizeDataLookupGroupIdentifier(declarationNumber ?? groupIdentifier);
         return ContainerDetailsRoutes.BuildImageAnalysisContainerEndpointPath(endpoint, routeCn, decl, page, pageSize);
     }
