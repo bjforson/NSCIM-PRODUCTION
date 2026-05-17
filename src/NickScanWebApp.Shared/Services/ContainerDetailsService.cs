@@ -225,20 +225,12 @@ namespace NickScanWebApp.Shared.Services
                     return cachedResolution;
                 }
 
-                var query = ContainerDetailsRoutes.BuildSourceScanQuery(
-                    normalizedContainerNumber,
-                    groupIdentifier,
-                    analysisRecordId,
-                    splitJobId,
-                    includeContainerWhenEmpty: false);
-
-                if (string.IsNullOrWhiteSpace(query))
-                {
-                    return null;
-                }
-
                 var resolution = await _apiService.TryGetAsync<ScanAssetResolution>(
-                    $"/api/scan-assets/resolve?{query}");
+                    ScanAssetClient.BuildResolvePath(
+                        normalizedContainerNumber,
+                        groupIdentifier,
+                        analysisRecordId,
+                        splitJobId));
 
                 if (resolution == null)
                 {
