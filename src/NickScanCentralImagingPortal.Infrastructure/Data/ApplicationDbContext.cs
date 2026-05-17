@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
+using NickScanCentralImagingPortal.Core.Entities.CameraEvidence;
 using NickScanCentralImagingPortal.Core.Entities.EagleA25;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Entities.HR;
@@ -53,6 +54,20 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
         public DbSet<EagleA25Scan> EagleA25Scans { get; set; }
         public DbSet<EagleA25ScanAsset> EagleA25ScanAssets { get; set; }
         public DbSet<EagleA25SyncLog> EagleA25SyncLogs { get; set; }
+
+        // Quarantined camera evidence module. These tables are intentionally
+        // separate from scanner, completeness, audit, ICUMS, and image-analysis
+        // workflow tables.
+        public DbSet<CameraEvidenceSite> CameraEvidenceSites { get; set; }
+        public DbSet<CameraEvidenceSource> CameraEvidenceSources { get; set; }
+        public DbSet<CameraEvidenceEvent> CameraEvidenceEvents { get; set; }
+        public DbSet<CameraEvidenceFrame> CameraEvidenceFrames { get; set; }
+        public DbSet<CameraEvidenceOcrResult> CameraEvidenceOcrResults { get; set; }
+        public DbSet<CameraEvidenceReviewDecision> CameraEvidenceReviewDecisions { get; set; }
+        public DbSet<CameraEvidenceCoreLinkCandidate> CameraEvidenceCoreLinkCandidates { get; set; }
+        public DbSet<CameraEvidencePromotionRequest> CameraEvidencePromotionRequests { get; set; }
+        public DbSet<CameraEvidenceAuditLog> CameraEvidenceAuditLogs { get; set; }
+        public DbSet<CameraEvidenceQueueItem> CameraEvidenceQueueItems { get; set; }
 
         // User Management tables
         public DbSet<User> Users { get; set; }
@@ -1035,6 +1050,206 @@ namespace NickScanCentralImagingPortal.Infrastructure.Data
                 entity.HasIndex(e => e.StartedAtUtc);
                 entity.HasIndex(e => e.Status);
                 entity.Property(e => e.Status).IsRequired().HasMaxLength(32);
+            });
+
+            modelBuilder.Entity<CameraEvidenceSite>(entity =>
+            {
+                entity.ToTable("cameraevidencesites");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.SiteKey).IsRequired().HasMaxLength(80);
+                entity.Property(e => e.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.LocationName).HasMaxLength(200);
+                entity.Property(e => e.BaseUrl).IsRequired().HasMaxLength(1000);
+                entity.Property(e => e.ApiKeySecretName).HasMaxLength(200);
+                entity.Property(e => e.WebhookSecretName).HasMaxLength(200);
+                entity.Property(e => e.AllowedWebhookSourceCidrsJson).HasColumnType("jsonb");
+                entity.HasIndex(e => e.SiteKey).IsUnique();
+                entity.HasIndex(e => e.IsEnabled);
+            });
+
+            modelBuilder.Entity<CameraEvidenceSource>(entity =>
+            {
+                entity.ToTable("cameraevidencesources");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.ProtectCameraId).HasMaxLength(200);
+                entity.Property(e => e.ProtectDeviceKey).HasMaxLength(200);
+                entity.Property(e => e.MacAddress).HasMaxLength(100);
+                entity.Property(e => e.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.LocationName).HasMaxLength(200);
+                entity.Property(e => e.OperationalZone).HasMaxLength(200);
+                entity.Property(e => e.ExpectedTextType).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.CaptureMode).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.OcrProfile).IsRequired().HasMaxLength(80);
+                entity.HasIndex(e => e.SiteId);
+                entity.HasIndex(e => new { e.SiteId, e.ProtectCameraId });
+                entity.HasIndex(e => new { e.SiteId, e.ProtectDeviceKey });
+                entity.HasIndex(e => e.IsEnabled);
+                entity.HasOne(e => e.Site)
+                      .WithMany(e => e.Sources)
+                      .HasForeignKey(e => e.SiteId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CameraEvidenceEvent>(entity =>
+            {
+                entity.ToTable("cameraevidenceevents");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ProviderEventId).HasMaxLength(200);
+                entity.Property(e => e.IdempotencyKey).IsRequired().HasMaxLength(256);
+                entity.Property(e => e.AlarmName).HasMaxLength(200);
+                entity.Property(e => e.TriggerKey).HasMaxLength(200);
+                entity.Property(e => e.TriggerType).HasMaxLength(100);
+                entity.Property(e => e.ProtectDeviceKey).HasMaxLength(200);
+                entity.Property(e => e.RawPayloadJson).IsRequired().HasColumnType("jsonb");
+                entity.Property(e => e.ProcessingStatus).IsRequired().HasMaxLength(40);
+                entity.Property(e => e.ProcessingError).HasMaxLength(2000);
+                entity.HasIndex(e => new { e.SiteId, e.IdempotencyKey }).IsUnique();
+                entity.HasIndex(e => new { e.SiteId, e.EventTimestampUtc });
+                entity.HasIndex(e => e.SourceId);
+                entity.HasIndex(e => e.ReceivedAtUtc);
+                entity.HasIndex(e => e.ProcessingStatus);
+                entity.HasOne(e => e.Site)
+                      .WithMany()
+                      .HasForeignKey(e => e.SiteId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Source)
+                      .WithMany()
+                      .HasForeignKey(e => e.SourceId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CameraEvidenceFrame>(entity =>
+            {
+                entity.ToTable("cameraevidenceframes");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.CaptureMode).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.StoragePath).IsRequired().HasMaxLength(1200);
+                entity.Property(e => e.ContentType).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Sha256).IsRequired().HasMaxLength(128);
+                entity.Property(e => e.ProtectSnapshotParametersJson).HasColumnType("jsonb");
+                entity.HasIndex(e => e.EventId);
+                entity.HasIndex(e => e.SiteId);
+                entity.HasIndex(e => e.SourceId);
+                entity.HasIndex(e => e.FrameTimestampUtc);
+                entity.HasIndex(e => e.Sha256);
+                entity.HasOne(e => e.Event)
+                      .WithMany(e => e.Frames)
+                      .HasForeignKey(e => e.EventId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Site)
+                      .WithMany()
+                      .HasForeignKey(e => e.SiteId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.Source)
+                      .WithMany()
+                      .HasForeignKey(e => e.SourceId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CameraEvidenceOcrResult>(entity =>
+            {
+                entity.ToTable("cameraevidenceocrresults");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Engine).IsRequired().HasMaxLength(80);
+                entity.Property(e => e.EngineVersion).HasMaxLength(80);
+                entity.Property(e => e.RawText).IsRequired().HasColumnType("text");
+                entity.Property(e => e.NormalizedText).HasMaxLength(500);
+                entity.Property(e => e.CandidateType).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.ValidationStatus).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.ValidationReasonsJson).HasColumnType("jsonb");
+                entity.Property(e => e.BoundingBoxesJson).HasColumnType("jsonb");
+                entity.Property(e => e.ReviewStatus).IsRequired().HasMaxLength(40);
+                entity.HasIndex(e => e.FrameId);
+                entity.HasIndex(e => e.SiteId);
+                entity.HasIndex(e => e.SourceId);
+                entity.HasIndex(e => e.NormalizedText);
+                entity.HasIndex(e => e.CandidateType);
+                entity.HasIndex(e => e.ReviewStatus);
+                entity.HasOne(e => e.Frame)
+                      .WithMany(e => e.OcrResults)
+                      .HasForeignKey(e => e.FrameId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CameraEvidenceReviewDecision>(entity =>
+            {
+                entity.ToTable("cameraevidencereviewdecisions");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.ReviewerUserId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Decision).IsRequired().HasMaxLength(40);
+                entity.Property(e => e.CorrectedText).HasMaxLength(500);
+                entity.Property(e => e.CorrectedCandidateType).HasMaxLength(50);
+                entity.Property(e => e.Notes).HasMaxLength(2000);
+                entity.HasIndex(e => e.OcrResultId);
+                entity.HasIndex(e => e.Decision);
+                entity.HasIndex(e => e.CreatedAtUtc);
+                entity.HasOne(e => e.OcrResult)
+                      .WithMany(e => e.ReviewDecisions)
+                      .HasForeignKey(e => e.OcrResultId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CameraEvidenceCoreLinkCandidate>(entity =>
+            {
+                entity.ToTable("cameraevidencecorelinkcandidates");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.CandidateValue).IsRequired().HasMaxLength(500);
+                entity.Property(e => e.CandidateType).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.CoreEntityType).HasMaxLength(80);
+                entity.Property(e => e.CoreEntityKey).HasMaxLength(200);
+                entity.Property(e => e.MatchReason).HasMaxLength(1000);
+                entity.Property(e => e.PromotionState).IsRequired().HasMaxLength(60);
+                entity.HasIndex(e => e.EventId);
+                entity.HasIndex(e => e.OcrResultId);
+                entity.HasIndex(e => e.CandidateValue);
+                entity.HasIndex(e => e.PromotionState);
+            });
+
+            modelBuilder.Entity<CameraEvidencePromotionRequest>(entity =>
+            {
+                entity.ToTable("cameraevidencepromotionrequests");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.RequestedByUserId).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.DataField).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.CoreConsumer).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.ProposedUse).IsRequired().HasColumnType("text");
+                entity.Property(e => e.RiskAssessment).IsRequired().HasColumnType("text");
+                entity.Property(e => e.AccuracyEvidence).IsRequired().HasColumnType("text");
+                entity.Property(e => e.RollbackPlan).IsRequired().HasColumnType("text");
+                entity.Property(e => e.FeatureFlag).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.Status).IsRequired().HasMaxLength(40);
+                entity.Property(e => e.ApprovedByUserId).HasMaxLength(100);
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.RequestedAtUtc);
+            });
+
+            modelBuilder.Entity<CameraEvidenceAuditLog>(entity =>
+            {
+                entity.ToTable("cameraevidenceauditlogs");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.EntityType).IsRequired().HasMaxLength(80);
+                entity.Property(e => e.Action).IsRequired().HasMaxLength(80);
+                entity.Property(e => e.ActorUserId).HasMaxLength(100);
+                entity.Property(e => e.DetailsJson).HasColumnType("jsonb");
+                entity.HasIndex(e => e.SiteId);
+                entity.HasIndex(e => e.EventId);
+                entity.HasIndex(e => e.EntityId);
+                entity.HasIndex(e => e.CreatedAtUtc);
+            });
+
+            modelBuilder.Entity<CameraEvidenceQueueItem>(entity =>
+            {
+                entity.ToTable("cameraevidencequeueitems");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.WorkType).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.Status).IsRequired().HasMaxLength(40);
+                entity.Property(e => e.LastError).HasMaxLength(2000);
+                entity.HasIndex(e => e.SiteId);
+                entity.HasIndex(e => e.EventId);
+                entity.HasIndex(e => e.FrameId);
+                entity.HasIndex(e => new { e.Status, e.NextAttemptAtUtc, e.CreatedAtUtc });
+                entity.HasIndex(e => new { e.WorkType, e.Status });
             });
 
             modelBuilder.Entity<AiImageAnalysisSuggestion>(entity =>

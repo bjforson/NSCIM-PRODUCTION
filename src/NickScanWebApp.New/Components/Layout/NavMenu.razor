@@ -284,6 +284,13 @@
             </MudNavLink>
         }
 
+        @if (Can(PermissionIds.Pages.ServicesMonitoring))
+        {
+            <MudNavLink Href="/camera-evidence" Icon="@Icons.Material.Filled.Videocam">
+                Camera Evidence
+            </MudNavLink>
+        }
+
         @if (CanAny(
                 PermissionIds.Pages.ServicesMonitoring,
                 PermissionIds.Pages.ServicesPerformanceMetrics,

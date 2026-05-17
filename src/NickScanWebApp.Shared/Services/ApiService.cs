@@ -478,6 +478,30 @@ namespace NickScanWebApp.Shared.Services
         }
 
         /// <summary>
+        /// PATCH request with authentication
+        /// </summary>
+        public async Task<TResponse?> PatchAsync<TRequest, TResponse>(string endpoint, TRequest data)
+        {
+            try
+            {
+                var client = await GetAuthenticatedClientAsync();
+                var response = await client.PatchAsJsonAsync(endpoint, data);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "HTTP error calling PATCH {Endpoint}", endpoint);
+                throw new ApiException($"Failed to PATCH {endpoint}: {ex.Message}", ex);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error calling PATCH {Endpoint}", endpoint);
+                throw new ApiException($"Unexpected error calling {endpoint}", ex);
+            }
+        }
+
+        /// <summary>
         /// DELETE request with authentication
         /// </summary>
         public async Task DeleteAsync(string endpoint)

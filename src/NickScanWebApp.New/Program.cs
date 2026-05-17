@@ -321,6 +321,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsPayloadClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditReviewClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.DatabaseAdminClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AuditLogClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.CameraEvidenceClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.ReportsClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.VehicleImportClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IcumsMetricsClient>();

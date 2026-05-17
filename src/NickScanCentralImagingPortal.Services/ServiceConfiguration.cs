@@ -25,6 +25,7 @@ using NickScanCentralImagingPortal.Services.ServiceLifecycle; // Added for servi
 using NickScanCentralImagingPortal.Services.Validation; // Added for CMR validation services
 using NickScanCentralImagingPortal.Services.AiWorkflow;
 using NickScanCentralImagingPortal.Services.AiWorkflow.Providers;
+using NickScanCentralImagingPortal.Services.CameraEvidence;
 
 namespace NickScanCentralImagingPortal.Services
 {
@@ -48,8 +49,18 @@ namespace NickScanCentralImagingPortal.Services
             // Data retention: purge cutoff - skip ingesting records before this date (prevents re-ingestion after purge)
             services.Configure<NickScanCentralImagingPortal.Core.Configuration.DataRetentionOptions>(configuration.GetSection("DataRetention"));
             services.Configure<AiWorkflowOptions>(configuration.GetSection(AiWorkflowOptions.SectionName));
+            services.Configure<CameraEvidenceOptions>(configuration.GetSection(CameraEvidenceOptions.SectionName));
+            services.Configure<UniFiProtectOptions>(configuration.GetSection(UniFiProtectOptions.SectionName));
 
             services.AddScoped<IAiWorkflowLineageService, AiWorkflowLineageService>();
+            services.AddSingleton<ICameraEvidenceSecretResolver, CameraEvidenceSecretResolver>();
+            services.AddScoped<IUniFiProtectClient, UniFiProtectClient>();
+            services.AddScoped<ICameraEvidenceOcrService, TesseractCameraEvidenceOcrService>();
+            services.AddScoped<ICameraEvidenceService, CameraEvidenceService>();
+            if (!disableHostedServices)
+            {
+                services.AddHostedService<CameraEvidenceWorker>();
+            }
 
             // AI model provider — resolves based on config
             services.AddScoped<IAiModelProvider>(sp =>
@@ -80,6 +91,12 @@ namespace NickScanCentralImagingPortal.Services
             services.AddHttpClient("AiVision", client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(90);
+            });
+
+            services.AddHttpClient("UniFiProtect", client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(10);
+                client.DefaultRequestHeaders.Add("User-Agent", "NSCIM-CameraEvidence/1.0");
             });
 
             services.AddScoped<IAiImageAssistService, AiImageAssistService>(sp =>
