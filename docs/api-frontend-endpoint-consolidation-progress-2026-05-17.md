@@ -85,6 +85,58 @@ These are intentionally not done overnight because they require live telemetry o
 | Debug panel `/api/` placeholder | It is an intentional operator tool and not a stale route. | Leave it, or exclude it explicitly in future inventory output. |
 | External/service-only `/api` paths | `/api/BOEScanData`, `/api/rm/scan`, `/api/tags`, and `/api/generate` are not local NSCIM frontend routes. | Validate through their owning service/client configuration, not local route removal. |
 
+## Telemetry Retirement Gate
+
+Route retirement is now gated by live endpoint usage telemetry instead of static route ownership alone.
+
+Run this before every compatibility-route retirement batch:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnostics\Invoke-EndpointRetirementReadiness.ps1
+```
+
+Use structured output for archival evidence or CI-style parsing:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnostics\Invoke-EndpointRetirementReadiness.ps1 -AsJson
+```
+
+Current live snapshot from 2026-05-17 21:44 UTC:
+
+| Telemetry field | Value |
+| --- | ---: |
+| Endpoint usage rows | 938,863 |
+| First telemetry row | 2026-04-13 07:10:27 UTC |
+| Last telemetry row | 2026-05-17 21:43:48 UTC |
+| Safe-removal window | 30 days of zero usage |
+| Observation window | 30 days |
+
+Deprecated route families are not ready for removal yet:
+
+| Family | Status | Endpoint count | Total calls | Recent calls | Errors | Approx callers |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `/api/imageprocessing/container/*` | `BLOCKED_RECENT_USAGE` | 1,523 | 459,001 | 418,289 | 183 | 1,668 |
+| `/api/image/*` | `BLOCKED_RECENT_USAGE` | 2 | 2 | 2 | 2 | 2 |
+
+Phase-route telemetry remains observe-only:
+
+| Family | Endpoint count | Total calls | Recent calls | Errors | Approx callers |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `/api/image-analysis-management/*` | 11 | 12,628 | 10,750 | 143 | 32 |
+
+Retirement rule: remove only one route family per batch, and only when the entire family is `READY_FOR_BATCH_REVIEW`. A single active route inside the family blocks removal of the whole family.
+
+Batch sequence for each future retirement:
+
+1. Run `tools\diagnostics\Invoke-RouteCallsiteInventory.ps1` and confirm zero unmatched local consumers.
+2. Run `tools\diagnostics\Invoke-EndpointRetirementReadiness.ps1` and archive the output.
+3. Remove one compatibility route family only.
+4. Build the affected API/WebApp surfaces.
+5. Create a deploy rollback backup.
+6. Deploy the narrow batch.
+7. Smoke API health, WebApp health, and the affected operator workflow.
+8. Re-run telemetry readiness and check service events after deployment.
+
 ## Next Safe Iteration
 
 1. Keep collecting endpoint usage telemetry for deprecated and compatibility routes.
