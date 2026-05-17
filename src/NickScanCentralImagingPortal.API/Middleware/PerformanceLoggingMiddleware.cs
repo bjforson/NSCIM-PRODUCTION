@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
@@ -37,8 +36,8 @@ namespace NickScanCentralImagingPortal.API.Middleware
             var stopwatch = Stopwatch.StartNew();
 
             // Determine if endpoint is deprecated or Phase 3 route
-            var isDeprecated = IsDeprecatedEndpoint(path);
-            var isPhase3Route = IsPhase3Route(path);
+            var isDeprecated = EndpointRouteUsageCatalog.IsDeprecatedEndpoint(path);
+            var isPhase3Route = EndpointRouteUsageCatalog.IsPhase3Route(path);
 
             try
             {
@@ -116,25 +115,6 @@ namespace NickScanCentralImagingPortal.API.Middleware
             }
         }
 
-        private bool IsDeprecatedEndpoint(string path)
-        {
-            if (string.IsNullOrEmpty(path)) return false;
-
-            var deprecatedPatterns = new[]
-            {
-                "/api/ImageProcessing/image/",
-                "/api/ImageProcessing/container/",
-                "/api/image/"
-            };
-
-            return deprecatedPatterns.Any(pattern => path.Contains(pattern, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private bool IsPhase3Route(string path)
-        {
-            if (string.IsNullOrEmpty(path)) return false;
-            return path.Contains("/api/image-analysis-management/", StringComparison.OrdinalIgnoreCase);
-        }
     }
 
     /// <summary>

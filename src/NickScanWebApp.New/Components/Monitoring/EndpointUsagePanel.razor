@@ -49,6 +49,8 @@
                     <MudTable Items="@_deprecatedEndpoints" Hover="true" Dense="true" Striped="true">
                         <HeaderContent>
                             <MudTh>Endpoint</MudTh>
+                            <MudTh>Owner</MudTh>
+                            <MudTh>Canonical Replacement</MudTh>
                             <MudTh>Total Calls</MudTh>
                             <MudTh>Unique Callers</MudTh>
                             <MudTh>Last Call</MudTh>
@@ -58,6 +60,12 @@
                         </HeaderContent>
                         <RowTemplate>
                             <MudTd>@context.Endpoint</MudTd>
+                            <MudTd>@(context.Owner ?? "Unassigned")</MudTd>
+                            <MudTd>
+                                <MudText Typo="Typo.caption">
+                                    @(context.CanonicalReplacement ?? "Not specified")
+                                </MudText>
+                            </MudTd>
                             <MudTd>@context.TotalCalls.ToString("N0")</MudTd>
                             <MudTd>@context.UniqueCallers</MudTd>
                             <MudTd>@(context.LastCall?.ToString("yyyy-MM-dd HH:mm") ?? "Never")</MudTd>
@@ -533,6 +541,11 @@
         public int DaysSinceLastCall { get; set; }
         public bool IsSafeToRemove { get; set; }
         public List<string> CallerIps { get; set; } = new();
+        public string? CanonicalReplacement { get; set; }
+        public string? Owner { get; set; }
+        public string? Reason { get; set; }
+        public DateTime? DeprecatedOnUtc { get; set; }
+        public int SafeRemovalAfterDays { get; set; } = 30;
     }
 
     public class Phase3RouteSummary
@@ -563,6 +576,9 @@
         public bool IsDeprecated { get; set; }
         public bool IsPhase3Route { get; set; }
         public string Status { get; set; } = "Active";
+        public string? CanonicalReplacement { get; set; }
+        public string? Owner { get; set; }
+        public string? Reason { get; set; }
     }
 }
 

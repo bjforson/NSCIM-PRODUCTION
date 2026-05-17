@@ -185,6 +185,11 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                 .OrderByDescending(s => s.TotalCalls)
                 .ToListAsync();
 
+            foreach (var summary in summaries)
+            {
+                ApplyDeprecatedMetadata(summary);
+            }
+
             return summaries;
         }
 
@@ -345,6 +350,19 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                     : s.IsPhase3Route ? "Phase3"
                     : s.DaysSinceLastCall > 30 ? "Unused"
                     : "Active";
+
+                if (s.IsDeprecated && EndpointRouteUsageCatalog.TryGetDeprecatedDefinition(s.Endpoint, out var deprecatedDefinition))
+                {
+                    s.CanonicalReplacement = deprecatedDefinition?.CanonicalReplacement;
+                    s.Owner = deprecatedDefinition?.Owner;
+                    s.Reason = deprecatedDefinition?.Reason;
+                }
+                else if (s.IsPhase3Route && EndpointRouteUsageCatalog.TryGetPhase3Definition(s.Endpoint, out var phase3Definition))
+                {
+                    s.CanonicalReplacement = phase3Definition?.CanonicalReplacement;
+                    s.Owner = phase3Definition?.Owner;
+                    s.Reason = phase3Definition?.Reason;
+                }
             }
 
             return summaries;
@@ -391,6 +409,22 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                    ipAddress.StartsWith("172.29.") ||
                    ipAddress.StartsWith("172.30.") ||
                    ipAddress.StartsWith("172.31.");
+        }
+
+        private static void ApplyDeprecatedMetadata(DeprecatedEndpointSummary summary)
+        {
+            if (!EndpointRouteUsageCatalog.TryGetDeprecatedDefinition(summary.Endpoint, out var definition)
+                || definition is null)
+            {
+                return;
+            }
+
+            summary.CanonicalReplacement = definition.CanonicalReplacement;
+            summary.Owner = definition.Owner;
+            summary.Reason = definition.Reason;
+            summary.DeprecatedOnUtc = definition.DeprecatedOnUtc;
+            summary.SafeRemovalAfterDays = definition.SafeRemovalAfterDays;
+            summary.IsSafeToRemove = summary.DaysSinceLastCall >= definition.SafeRemovalAfterDays;
         }
     }
 }

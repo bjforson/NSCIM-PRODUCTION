@@ -75,6 +75,11 @@ namespace NickScanCentralImagingPortal.Core.Models
         public int DaysSinceLastCall { get; set; }
         public bool IsSafeToRemove { get; set; }
         public List<string> CallerIps { get; set; } = new();
+        public string? CanonicalReplacement { get; set; }
+        public string? Owner { get; set; }
+        public string? Reason { get; set; }
+        public DateTime? DeprecatedOnUtc { get; set; }
+        public int SafeRemovalAfterDays { get; set; } = 30;
     }
 
     /// <summary>
@@ -111,6 +116,23 @@ namespace NickScanCentralImagingPortal.Core.Models
         public bool IsDeprecated { get; set; }
         public bool IsPhase3Route { get; set; }
         public string Status { get; set; } = "Active"; // Active, Deprecated, Phase3, Unused
+        public string? CanonicalReplacement { get; set; }
+        public string? Owner { get; set; }
+        public string? Reason { get; set; }
+    }
+
+    /// <summary>
+    /// Source-of-truth metadata used to classify route usage during endpoint consolidation.
+    /// </summary>
+    public class EndpointRouteUsageDefinition
+    {
+        public string Pattern { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string? CanonicalReplacement { get; set; }
+        public string Owner { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+        public DateTime? DeprecatedOnUtc { get; set; }
+        public int SafeRemovalAfterDays { get; set; } = 30;
     }
 }
 
