@@ -992,6 +992,8 @@
             ["GroupIdentifier"] = assignment.GroupIdentifier,
             ["IsConsolidated"] = assignment.IsConsolidated,
             ["Containers"] = assignment.Containers,
+            ["RecordCompletenessStatusId"] = assignment.RecordCompletenessStatusId,
+            ["ClearanceType"] = assignment.ClearanceType,
             ["OnDecisionSaved"] = EventCallback.Factory.Create(this, async () =>
             {
                 // 2026-05-09 (Phase B / B7 UX): close dialog instantly, refresh in
@@ -1104,6 +1106,8 @@
         public string Status { get; set; } = string.Empty;
         public int ContainerCount { get; set; }
         public List<string> Containers { get; set; } = new();
+        public int? RecordCompletenessStatusId { get; set; }
+        public string? ClearanceType { get; set; }
         public DateTime? LeaseUntilUtc { get; set; }
         public DateTime CreatedAtUtc { get; set; }
         public bool IsConsolidated { get; set; }

@@ -930,6 +930,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// <param name="full">If `true`, returns full record with AllFields dictionary. If `false` (default), returns paginated list</param>
         /// <param name="boeDocumentId">Optional BOE document ID to retrieve data for a specific BOE document (useful for consolidated cargo with multiple House BLs)</param>
         /// <param name="declarationNumber">Optional declaration number to query by declaration (useful for non-consolidated cargo)</param>
+        /// <param name="recordCompletenessStatusId">Optional record completeness ID for record-backed lookup, including CMR operational records</param>
+        /// <param name="recordKey">Optional record key for record-backed lookup, including CMR operational keys</param>
         /// <returns>
         /// - If `full=false`: `PagedResult&lt;ICUMSDataRecord&gt;` with pagination metadata
         /// - If `full=true`: `FullBOEDataRecordDto` with AllFields dictionary, AvailableFields, and MissingFields
@@ -948,7 +950,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
             [FromQuery] int pageSize = 50,
             [FromQuery] bool full = false,
             [FromQuery] int? boeDocumentId = null,
-            [FromQuery] string? declarationNumber = null)
+            [FromQuery] string? declarationNumber = null,
+            [FromQuery] int? recordCompletenessStatusId = null,
+            [FromQuery] string? recordKey = null)
         {
             try
             {
@@ -961,15 +965,91 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     declarationNumber = normalizedDeclarationNumber;
                 }
 
-                _logger.LogInfo("GetICUMSData", "Getting ICUMS data for container {ContainerNumber}, declaration {DeclarationNumber}, page {Page}, size {PageSize}, BOEDocumentId {BOEDocumentId}",
-                    new { ContainerNumber = containerNumber, DeclarationNumber = declarationNumber, Page = page, PageSize = pageSize, BOEDocumentId = boeDocumentId });
+                _logger.LogInfo("GetICUMSData", "Getting ICUMS data for container {ContainerNumber}, declaration {DeclarationNumber}, record {RecordId}/{RecordKey}, page {Page}, size {PageSize}, BOEDocumentId {BOEDocumentId}",
+                    new
+                    {
+                        ContainerNumber = containerNumber,
+                        DeclarationNumber = declarationNumber,
+                        RecordId = recordCompletenessStatusId,
+                        RecordKey = recordKey,
+                        Page = page,
+                        PageSize = pageSize,
+                        BOEDocumentId = boeDocumentId
+                    });
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
                 List<BOEDocument> boeDocuments;
 
+                var effectiveRecordKey = !string.IsNullOrWhiteSpace(recordKey)
+                    ? recordKey.Trim()
+                    : CmrCompositeKeyHelper.IsOperationalKey(declarationNumber)
+                        ? declarationNumber?.Trim()
+                        : null;
+
+                if (recordCompletenessStatusId.HasValue || !string.IsNullOrWhiteSpace(effectiveRecordKey))
+                {
+                    var recordQuery = _context.RecordCompletenessStatuses
+                        .Include(r => r.ExpectedContainers)
+                        .AsNoTracking()
+                        .AsQueryable();
+
+                    var record = recordCompletenessStatusId.HasValue
+                        ? await recordQuery.FirstOrDefaultAsync(r => r.Id == recordCompletenessStatusId.Value, cts.Token)
+                        : await recordQuery.FirstOrDefaultAsync(r => r.DeclarationNumber == effectiveRecordKey, cts.Token);
+
+                    if (record != null)
+                    {
+                        var boeIds = record.ExpectedContainers
+                            .Select(c => c.BoeDocumentId)
+                            .Where(id => id.HasValue && id.Value > 0)
+                            .Select(id => id!.Value)
+                            .ToList();
+
+                        if (record.PrimaryBoeDocumentId.HasValue && record.PrimaryBoeDocumentId.Value > 0)
+                        {
+                            boeIds.Add(record.PrimaryBoeDocumentId.Value);
+                        }
+
+                        boeIds = boeIds.Distinct().ToList();
+                        if (boeIds.Any())
+                        {
+                            boeDocuments = await _icumDownloadsDbContext.BOEDocuments
+                                .Where(b => boeIds.Contains(b.Id))
+                                .OrderByDescending(b => b.CreatedAt)
+                                .ToListAsync(cts.Token);
+
+                            _logger.LogInfo("GetICUMSData", "Record-backed lookup {RecordId}/{RecordKey} returned {Count} BOE document(s)",
+                                new
+                                {
+                                    RecordId = record.Id,
+                                    RecordKey = record.DeclarationNumber,
+                                    Count = boeDocuments.Count
+                                });
+                        }
+                        else if (!string.Equals(record.ClearanceType, "CMR", StringComparison.OrdinalIgnoreCase))
+                        {
+                            boeDocuments = await _icumDownloadsDbContext.BOEDocuments
+                                .Where(b => b.DeclarationNumber == record.DeclarationNumber)
+                                .OrderByDescending(b => b.CreatedAt)
+                                .ToListAsync(cts.Token);
+                        }
+                        else
+                        {
+                            boeDocuments = new List<BOEDocument>();
+                            _logger.LogWarning("GetICUMSData", "CMR record {RecordId}/{RecordKey} has no linked BOE document id(s)",
+                                new { RecordId = record.Id, RecordKey = record.DeclarationNumber });
+                        }
+                    }
+                    else
+                    {
+                        boeDocuments = new List<BOEDocument>();
+                        _logger.LogWarning("GetICUMSData", "Record-backed lookup failed: no RecordCompletenessStatus for {RecordId}/{RecordKey}",
+                            new { RecordId = recordCompletenessStatusId, RecordKey = effectiveRecordKey });
+                    }
+                }
                 // ✅ FIX: Use unified lookup logic - prefer BOEDocumentId from ContainerCompletenessStatus
-                if (boeDocumentId.HasValue)
+                else if (boeDocumentId.HasValue)
                 {
                     // Use the specific BOEDocument that was used for clearance type determination
                     var specificBOE = await _icumDownloadsDbContext.BOEDocuments

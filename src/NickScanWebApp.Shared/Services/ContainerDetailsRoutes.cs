@@ -93,6 +93,32 @@ public static class ContainerDetailsRoutes
         int pageSize = 1000)
         => BuildImageAnalysisContainerEndpointPath("icums", routeContainer, declarationNumber, page, pageSize);
 
+    public static string BuildImageAnalysisRecordIcumsPath(
+        string routeContainer,
+        int? recordCompletenessStatusId,
+        string? recordKey,
+        int page = 1,
+        int pageSize = 1000)
+    {
+        var parts = new List<string>
+        {
+            $"page={page}",
+            $"pageSize={pageSize}"
+        };
+
+        if (recordCompletenessStatusId.HasValue)
+        {
+            parts.Add($"recordCompletenessStatusId={recordCompletenessStatusId.Value}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(recordKey))
+        {
+            parts.Add($"recordKey={Escape(recordKey.Trim())}");
+        }
+
+        return $"{BasePath}/icums/{Escape(routeContainer)}?{string.Join("&", parts)}";
+    }
+
     public static string BuildImageAnalysisGroupEndpointPath(
         string endpoint,
         string groupIdentifier,
