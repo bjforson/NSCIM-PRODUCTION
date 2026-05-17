@@ -1,7 +1,3 @@
-using System.Security.Claims;
-using System.Text.Json;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using NickScanWebApp.Shared.Services;
@@ -59,38 +55,10 @@ namespace NickScanWebApp.New.Controllers
                     return Unauthorized(new { error = "Invalid response from authentication service" });
                 }
 
-                // Parse JWT token to extract claims
-                var handler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
-                var jwtToken = handler.ReadJwtToken(apiResponse.Token);
-
-                // Create claims from JWT
-                var claims = new List<Claim>();
-                foreach (var claim in jwtToken.Claims)
-                {
-                    claims.Add(new Claim(claim.Type, claim.Value));
-                }
-
-                // Ensure username claim is present
-                if (!claims.Any(c => c.Type == ClaimTypes.Name))
-                {
-                    claims.Add(new Claim(ClaimTypes.Name, request.Username));
-                }
-
-                // Create authentication cookie
-                var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
-                var claimsPrincipal = new ClaimsPrincipal(claimsIdentity);
-
-                await HttpContext.SignInAsync(
-                    CookieAuthenticationDefaults.AuthenticationScheme,
-                    claimsPrincipal,
-                    new AuthenticationProperties
-                    {
-                        IsPersistent = request.RememberMe, // Persist across browser sessions if "Remember Me"
-                        ExpiresUtc = DateTimeOffset.UtcNow.AddHours(8),
-                        AllowRefresh = true
-                    });
-
-                _logger.LogInformation("✅ Server-side login successful for user: {Username} - Cookie set", request.Username);
+                // The WebApp auth model is JWT session storage, not server cookies.
+                // Keep this local endpoint as a compatibility/BFF login proxy without
+                // introducing a second authentication scheme.
+                _logger.LogInformation("✅ Server-side login proxy successful for user: {Username} - JWT returned", request.Username);
 
                 return Ok(new
                 {
@@ -107,16 +75,14 @@ namespace NickScanWebApp.New.Controllers
         }
 
         /// <summary>
-        /// Server-side logout endpoint that clears authentication cookie
+        /// Server-side logout compatibility endpoint for JWT-only auth.
         /// </summary>
         [HttpPost("logout")]
-        [Authorize]
-        public async Task<ActionResult> Logout()
+        [AllowAnonymous]
+        public ActionResult Logout()
         {
             var username = User.Identity?.Name;
-            _logger.LogInformation("👋 Server-side logout for user: {Username}", username);
-
-            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            _logger.LogInformation("👋 Server-side logout compatibility endpoint called for user: {Username}", username ?? "anonymous");
 
             return Ok(new { success = true, message = "Logged out successfully" });
         }
