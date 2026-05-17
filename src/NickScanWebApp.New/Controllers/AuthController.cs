@@ -17,16 +17,13 @@ namespace NickScanWebApp.New.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IConfiguration _configuration;
         private readonly ILogger<AuthController> _logger;
 
         public AuthController(
             IHttpClientFactory httpClientFactory,
-            IConfiguration configuration,
             ILogger<AuthController> logger)
         {
             _httpClientFactory = httpClientFactory;
-            _configuration = configuration;
             _logger = logger;
         }
 
@@ -41,9 +38,9 @@ namespace NickScanWebApp.New.Controllers
             {
                 _logger.LogInformation("🔐 Server-side login attempt for user: {Username}", request.Username);
 
-                // Create HTTP client to call backend API
-                var client = _httpClientFactory.CreateClient();
-                client.BaseAddress = new Uri(_configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205");
+                // Use the same configured API client as the rest of the WebApp so
+                // login honors the production certificate validation policy.
+                var client = _httpClientFactory.CreateClient("NickScanAPI");
 
                 // Call backend API to validate credentials
                 var loginData = new { Username = request.Username, Password = request.Password };
