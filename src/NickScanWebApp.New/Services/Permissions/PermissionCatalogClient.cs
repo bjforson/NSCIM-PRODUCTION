@@ -6,7 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Models.Permissions;
-using NickScanWebApp.New.Services;
 using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services.Permissions
@@ -16,7 +15,7 @@ namespace NickScanWebApp.New.Services.Permissions
     /// </summary>
     public class PermissionCatalogClient
     {
-        private readonly ApiService _apiService;
+        private readonly AuthenticationClient _authenticationClient;
         private readonly IPermissionProvider _permissionProvider;
         private readonly ILogger<PermissionCatalogClient> _logger;
         private readonly SemaphoreSlim _syncLock = new(1, 1);
@@ -25,11 +24,11 @@ namespace NickScanWebApp.New.Services.Permissions
         private ConcurrentDictionary<string, PermissionSummaryDto>? _lookup;
 
         public PermissionCatalogClient(
-            ApiService apiService,
+            AuthenticationClient authenticationClient,
             IPermissionProvider permissionProvider,
             ILogger<PermissionCatalogClient> logger)
         {
-            _apiService = apiService;
+            _authenticationClient = authenticationClient;
             _permissionProvider = permissionProvider;
             _logger = logger;
         }
@@ -66,7 +65,7 @@ namespace NickScanWebApp.New.Services.Permissions
                     return _catalog;
                 }
 
-                var catalog = await _apiService.GetAsync<PermissionCatalogDto>(AuthenticationRoutes.PermissionCatalogPath);
+                var catalog = await _authenticationClient.GetPermissionCatalogAsync<PermissionCatalogDto>(cancellationToken);
                 if (catalog == null)
                 {
                     _logger.LogWarning("Permission catalog returned null response from API.");
@@ -97,6 +96,16 @@ namespace NickScanWebApp.New.Services.Permissions
                 {
                     _logger.LogWarning(ex, "Failed to load permission catalog from API.");
                 }
+                return _catalog;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                _logger.LogDebug("Permission catalog load skipped - user not authenticated (401 response).");
+                return _catalog;
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Failed to load permission catalog from API.");
                 return _catalog;
             }
             finally

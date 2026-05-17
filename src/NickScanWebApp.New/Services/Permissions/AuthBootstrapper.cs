@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.Models;
-using NickScanWebApp.New.Services;
 using NickScanWebApp.Shared.Services;
 
 namespace NickScanWebApp.New.Services.Permissions
@@ -14,7 +13,7 @@ namespace NickScanWebApp.New.Services.Permissions
     /// </summary>
     public class AuthBootstrapper : IDisposable
     {
-        private readonly ApiService _apiService;
+        private readonly AuthenticationClient _authenticationClient;
         private readonly PermissionCatalogClient _catalogClient;
         private readonly CustomAuthStateProvider _authStateProvider;
         private readonly ILogger<AuthBootstrapper> _logger;
@@ -24,12 +23,12 @@ namespace NickScanWebApp.New.Services.Permissions
         private bool _initialized;
 
         public AuthBootstrapper(
-            ApiService apiService,
+            AuthenticationClient authenticationClient,
             PermissionCatalogClient catalogClient,
             CustomAuthStateProvider authStateProvider,
             ILogger<AuthBootstrapper> logger)
         {
-            _apiService = apiService;
+            _authenticationClient = authenticationClient;
             _catalogClient = catalogClient;
             _authStateProvider = authStateProvider;
             _logger = logger;
@@ -115,7 +114,7 @@ namespace NickScanWebApp.New.Services.Permissions
                     return;
                 }
 
-                var profile = await _apiService.GetAsync<UserProfileDto>(AuthenticationRoutes.AuthProfilePath);
+                var profile = await _authenticationClient.GetAuthProfileAsync<UserProfileDto>(cancellationToken);
                 if (profile == null)
                 {
                     if (!silent)
@@ -157,6 +156,12 @@ namespace NickScanWebApp.New.Services.Permissions
                     _logger.LogDebug(ex, "Silent profile refresh failed. Keeping existing permissions.");
                 }
                 // IMPORTANT: Don't clear permissions on failure - keep existing cached permissions
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                _logger.LogDebug("Profile request returned 401 - user not authenticated yet.");
+                // Don't clear permissions on 401 - might be temporary network issue
+                return;
             }
             catch (Exception ex)
             {

@@ -20,6 +20,18 @@ public sealed class AuthenticationClient
         return httpClient.GetFromJsonAsync<TStats>(AuthenticationRoutes.PublicSystemStatsPath, cancellationToken);
     }
 
+    public Task<TProfile?> GetAuthProfileAsync<TProfile>(CancellationToken cancellationToken = default)
+    {
+        var httpClient = CreateClient();
+        return httpClient.GetFromJsonAsync<TProfile>(AuthenticationRoutes.AuthProfilePath, cancellationToken);
+    }
+
+    public Task<TCatalog?> GetPermissionCatalogAsync<TCatalog>(CancellationToken cancellationToken = default)
+    {
+        var httpClient = CreateClient();
+        return httpClient.GetFromJsonAsync<TCatalog>(AuthenticationRoutes.PermissionCatalogPath, cancellationToken);
+    }
+
     public async Task<AuthenticationLoginResult<TResponse>> LoginAsync<TRequest, TResponse>(
         TRequest request,
         TimeSpan? timeout = null,
