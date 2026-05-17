@@ -14,6 +14,7 @@ using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ASE;
 using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
@@ -342,39 +343,46 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
             {
                 try
                 {
-                    var containerNumber = scan.ContainerNumber?.Trim();
-                    var inspectionId = scan.InspectionId.ToString(); // ASE uses int InspectionId
-                    var scanDate = scan.ScanTime;
+                    var queueItems = AseScanQueueItemFactory.Create(
+                        scan.InspectionId,
+                        scan.ContainerNumber,
+                        scan.ScanTime,
+                        priority: 1,
+                        recovered: true,
+                        recoveryDateUtc: DateTime.UtcNow);
 
-                    if (string.IsNullOrWhiteSpace(containerNumber))
+                    if (queueItems.Count == 0)
                     {
                         stats.TotalSkipped++;
                         continue;
                     }
 
-                    // Check if already in queue
-                    var isQueued = await queueRepository.IsInQueueAsync(
-                        containerNumber,
-                        CommonScannerTypes.ASE,
-                        inspectionId);
-
-                    if (!isQueued)
+                    if (queueItems.Count > 1)
                     {
-                        // Scan not in queue - add to recovery list
-                        scansToQueue.Add(new ContainerScanInfo
-                        {
-                            ContainerNumber = containerNumber,
-                            ScannerType = CommonScannerTypes.ASE,
-                            InspectionId = inspectionId,
-                            ScanDate = scanDate,
-                            Priority = 1, // Higher priority for recovered scans
-                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\"}}"
-                        });
-                        stats.TotalFound++;
+                        _logger.LogInformation(
+                            "{ServiceId} Splitting recovered ASE inspection {InspectionId} from source container label {SourceContainer} into {Count} queue item(s)",
+                            SERVICE_ID,
+                            scan.InspectionId,
+                            scan.ContainerNumber,
+                            queueItems.Count);
                     }
-                    else
+
+                    foreach (var queueItem in queueItems)
                     {
-                        stats.TotalSkipped++;
+                        var isQueued = await queueRepository.IsInQueueAsync(
+                            queueItem.ContainerNumber,
+                            queueItem.ScannerType,
+                            queueItem.InspectionId);
+
+                        if (!isQueued)
+                        {
+                            scansToQueue.Add(queueItem);
+                            stats.TotalFound++;
+                        }
+                        else
+                        {
+                            stats.TotalSkipped++;
+                        }
                     }
                 }
                 catch (Exception ex)

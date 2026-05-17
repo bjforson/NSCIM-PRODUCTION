@@ -13,6 +13,7 @@ using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ImageSplitter;
 using NickScanCentralImagingPortal.Services.Logging;
@@ -2285,15 +2286,21 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     {
                         Core.Entities.ASE.AseScan? aseScan = null;
 
-                        // Primary: match by InspectionId (exact scan that was processed)
-                        if (!string.IsNullOrEmpty(inspectionId) && int.TryParse(inspectionId, out var aseInspId))
+                        // Primary: match by InspectionId. Split ASE queue rows use
+                        // suffixed IDs such as "84830-a"; trim to the source
+                        // inspection id so payload generation can find the original
+                        // scan image.
+                        if (TryParseBaseAseInspectionId(inspectionId, out var aseInspId))
                             aseScan = await db.AseScans.FirstOrDefaultAsync(s => s.InspectionId == aseInspId, ct);
 
-                        // Fallback: latest scan for this container (should rarely be needed)
-                        aseScan ??= await db.AseScans
-                            .Where(s => s.ContainerNumber == containerNumber)
-                            .OrderByDescending(s => s.ScanTime)
-                            .FirstOrDefaultAsync(ct);
+                        // Fallback: latest scan for this container. This must be
+                        // token-aware because ASE preserves dual-container source
+                        // labels like "C1, C2" in AseScans.ContainerNumber.
+                        aseScan ??= await ResolveLatestAseScanForContainerAsync(
+                            db,
+                            containerNumber,
+                            requireImage: false,
+                            ct);
 
                         if (aseScan != null)
                         {
@@ -4657,6 +4664,65 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
             return false;
         }
 
+        private static bool TryParseBaseAseInspectionId(string? inspectionId, out int aseInspectionId)
+        {
+            aseInspectionId = 0;
+            if (string.IsNullOrWhiteSpace(inspectionId))
+                return false;
+
+            var trimmed = inspectionId.Trim();
+            var suffixIndex = trimmed.IndexOf('-', StringComparison.Ordinal);
+            var baseInspectionId = suffixIndex > 0
+                ? trimmed[..suffixIndex]
+                : trimmed;
+
+            return int.TryParse(baseInspectionId, out aseInspectionId);
+        }
+
+        private static async Task<Core.Entities.ASE.AseScan?> ResolveLatestAseScanForContainerAsync(
+            ApplicationDbContext db,
+            string containerNumber,
+            bool requireImage,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(containerNumber))
+                return null;
+
+            var exactQuery = db.AseScans
+                .AsNoTracking()
+                .Where(s => s.ContainerNumber == containerNumber);
+
+            if (requireImage)
+                exactQuery = exactQuery.Where(s => s.ScanImage != null && s.ScanImage.Length > 0);
+
+            var exact = await exactQuery
+                .OrderByDescending(s => s.ScanTime)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (exact != null)
+                return exact;
+
+            var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+            if (string.IsNullOrWhiteSpace(normalizedContainer))
+                return null;
+
+            var tokenizedQuery = db.AseScans
+                .AsNoTracking()
+                .Where(s => s.ContainerNumber != null
+                    && s.ContainerNumber.ToUpper().Contains(normalizedContainer));
+
+            if (requireImage)
+                tokenizedQuery = tokenizedQuery.Where(s => s.ScanImage != null && s.ScanImage.Length > 0);
+
+            var candidates = await tokenizedQuery
+                .OrderByDescending(s => s.ScanTime)
+                .Take(25)
+                .ToListAsync(cancellationToken);
+
+            return candidates.FirstOrDefault(scan =>
+                ContainerNumberListMatcher.ContainsContainer(scan.ContainerNumber, normalizedContainer));
+        }
+
         private static bool IsCompositeContainerPairIdentifier(string? identifier)
         {
             var parts = (identifier ?? string.Empty)
@@ -5233,7 +5299,34 @@ RETURNING (xmax = 0)::int;";
                             .FromSqlRaw(aseSql, parameters)
                             .AsNoTracking()
                             .ToListAsync(ct);
-                        allAseData.AddRange(aseScans.Select(s => (s.ContainerNumber ?? string.Empty, !string.IsNullOrEmpty(s.ImageDisplayName))));
+
+                        var exactLookup = aseScans
+                            .Where(s => !string.IsNullOrWhiteSpace(s.ContainerNumber))
+                            .GroupBy(s => s.ContainerNumber!, comparer)
+                            .ToDictionary(
+                                g => g.Key,
+                                g => g.Any(s => !string.IsNullOrEmpty(s.ImageDisplayName)),
+                                comparer);
+
+                        foreach (var container in batch)
+                        {
+                            if (exactLookup.TryGetValue(container, out var hasExactImage))
+                            {
+                                allAseData.Add((container, hasExactImage));
+                                continue;
+                            }
+
+                            var tokenizedScan = await ResolveLatestAseScanForContainerAsync(
+                                db,
+                                container,
+                                requireImage: false,
+                                ct);
+
+                            if (tokenizedScan != null)
+                            {
+                                allAseData.Add((container, !string.IsNullOrEmpty(tokenizedScan.ImageDisplayName)));
+                            }
+                        }
 
                         if (batchNum % 10 == 0 || batchNum == totalAseBatches)
                         {

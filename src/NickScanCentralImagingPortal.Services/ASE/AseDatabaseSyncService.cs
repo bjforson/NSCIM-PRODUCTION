@@ -319,7 +319,7 @@ namespace NickScanCentralImagingPortal.Services.ASE
                             var queueItems = aseScans
                                 .Where(s => !string.IsNullOrWhiteSpace(s.ContainerNumber)
                                             && !string.Equals(s.ContainerNumber, "Unknown", StringComparison.OrdinalIgnoreCase))
-                                .SelectMany(scan => SplitAseScanIntoQueueItems(scan))
+                                .SelectMany(scan => AseScanQueueItemFactory.CreateFromScan(scan))
                                 .ToList();
 
                             if (queueItems.Any())
@@ -412,89 +412,6 @@ namespace NickScanCentralImagingPortal.Services.ASE
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error updating last synced ID");
-            }
-        }
-
-        /// <summary>
-        /// 1.18.0 — Splits an ASE scan's (possibly comma-joined) container number into one
-        /// or more queue items, one per physical container.
-        ///
-        /// The ASE source database stores "C1, C2" verbatim when a single inspection event
-        /// covers multiple containers (e.g. a truck carrying two 20ft containers past the
-        /// portal). Before this fix, the queue publish step forwarded the joined string
-        /// unchanged, and every downstream consumer (containerscanqueues,
-        /// containercompletenessstatuses, analysisgroups, analysisrecords) faithfully
-        /// propagated the garbage. Analysts ended up with groups whose BOE lookups failed
-        /// because no boedocuments row has containernumber = "C1, C2". Split at the publish
-        /// step so each token gets its own row all the way down.
-        ///
-        /// Preserves queue uniqueness by suffixing InspectionId with a token index when
-        /// there's more than one token (e.g. "123456-a", "123456-b"). Single-container
-        /// scans pass through unchanged so no bookkeeping churn.
-        ///
-        /// The audit trail of the original joined string lives in asescans.containernumber
-        /// (verbatim) and in the queue metadata field (OriginalContainerNumber).
-        /// </summary>
-        private static IEnumerable<ContainerScanInfo> SplitAseScanIntoQueueItems(AseScan scan)
-        {
-            var raw = (scan.ContainerNumber ?? string.Empty).Trim();
-            if (string.IsNullOrEmpty(raw))
-                yield break;
-
-            // Fast path: no comma → single token, no bookkeeping
-            if (!raw.Contains(','))
-            {
-                yield return new ContainerScanInfo
-                {
-                    ContainerNumber = raw,
-                    ScannerType = CommonScannerTypes.ASE,
-                    InspectionId = scan.InspectionId.ToString(),
-                    ScanDate = scan.ScanTime,
-                    Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\" }}"
-                };
-                yield break;
-            }
-
-            // Split, trim, dedupe, drop "Unknown" and empties
-            var tokens = raw
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Where(t => !string.IsNullOrWhiteSpace(t)
-                            && !string.Equals(t, "Unknown", StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (tokens.Count == 0)
-                yield break;
-
-            // Single valid token after cleaning → same as fast path (but preserve original raw in metadata)
-            if (tokens.Count == 1)
-            {
-                yield return new ContainerScanInfo
-                {
-                    ContainerNumber = tokens[0],
-                    ScannerType = CommonScannerTypes.ASE,
-                    InspectionId = scan.InspectionId.ToString(),
-                    ScanDate = scan.ScanTime,
-                    Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\" }}"
-                };
-                yield break;
-            }
-
-            // Multi-container inspection — emit one queue item per token with a unique InspectionId suffix
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                var suffix = (char)('a' + i);
-                yield return new ContainerScanInfo
-                {
-                    ContainerNumber = tokens[i],
-                    ScannerType = CommonScannerTypes.ASE,
-                    InspectionId = $"{scan.InspectionId}-{suffix}",
-                    ScanDate = scan.ScanTime,
-                    Priority = 0,
-                    Metadata = $"{{ \"TruckPlate\": \"{scan.TruckPlate}\", \"InspectionUuid\": \"{scan.InspectionUuid}\", \"OriginalContainerNumber\": \"{raw.Replace("\"", "\\\"")}\", \"MultiContainerScan\": true, \"SplitTokenIndex\": {i}, \"SplitTokenCount\": {tokens.Count} }}"
-                };
             }
         }
 

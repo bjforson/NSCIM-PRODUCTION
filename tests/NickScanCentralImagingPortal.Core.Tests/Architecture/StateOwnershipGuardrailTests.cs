@@ -200,6 +200,53 @@ public class StateOwnershipGuardrailTests
             string.Join("\n", violations));
     }
 
+    [Fact]
+    public void AseIngestionAndRecovery_ShareSingleContainerQueueSplitHelper()
+    {
+        var aseSync = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ASE/AseDatabaseSyncService.cs");
+        var recovery = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/QueueRecoveryService.cs");
+        var factory = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ASE/AseScanQueueItemFactory.cs");
+        var recoveryAseBatch = Slice(
+            recovery,
+            "private async Task ProcessAseBatchAsync(",
+            "// Publish recovered scans to queue");
+
+        Assert.Contains("AseScanQueueItemFactory.CreateFromScan(scan)", aseSync);
+        Assert.Contains("AseScanQueueItemFactory.Create(", recoveryAseBatch);
+        Assert.Contains("OriginalContainerNumber", factory);
+        Assert.Contains("MultiContainerScan", factory);
+        Assert.Contains("SplitTokenIndex", factory);
+        Assert.Contains("SplitTokenCount", factory);
+        Assert.DoesNotContain("ContainerNumber = containerNumber", recoveryAseBatch);
+        Assert.DoesNotContain("InspectionId = inspectionId", recoveryAseBatch);
+    }
+
+    [Fact]
+    public void ContainerCompleteness_AseImageEvidenceIsTokenAware()
+    {
+        var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ContainerCompleteness/ContainerCompletenessService.cs");
+        var aseImageEvidence = Slice(
+            service,
+            "private static async Task<int> CountAseImagesForContainerAsync(",
+            "public async Task<bool> ValidateAndFixContainerDataIntegrityAsync");
+
+        Assert.Contains("ContainerNumberListMatcher.Normalize(containerNumber)", aseImageEvidence);
+        Assert.Contains("ContainerNumberListMatcher.ContainsContainer", aseImageEvidence);
+        Assert.Contains("s.ContainerNumber.ToUpper().Contains(normalizedContainer)", aseImageEvidence);
+    }
+
+    [Fact]
+    public void ImageAnalysis_AsePayloadAndIntakeResolveSplitSourceRows()
+    {
+        var service = ReadRepoFile("src/NickScanCentralImagingPortal.Services/ImageAnalysis/ImageAnalysisOrchestratorService.cs");
+
+        Assert.Contains("TryParseBaseAseInspectionId(inspectionId, out var aseInspId)", service);
+        Assert.Contains("ResolveLatestAseScanForContainerAsync", service);
+        Assert.Contains("ContainerNumberListMatcher.ContainsContainer", service);
+        Assert.Contains("s.ContainerNumber.ToUpper().Contains(normalizedContainer)", service);
+        Assert.DoesNotContain("int.TryParse(inspectionId, out var aseInspId)", service);
+    }
+
     private static string ReadRepoFile(string relativePath, [CallerFilePath] string callerPath = "")
     {
         return File.ReadAllText(Path.Combine(ResolveRepoRoot(callerPath), relativePath));

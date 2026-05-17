@@ -10,6 +10,7 @@ using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
 using NickScanCentralImagingPortal.Services.ContainerValidation;
 using NickScanCentralImagingPortal.Services.Logging;
@@ -1817,15 +1818,7 @@ LIMIT {take} OFFSET {skip}";
                 }
                 else if (scannerType == "ASE")
                 {
-                    // ✅ FIX: Check ImageDisplayName instead of just record existence
-                    // ImageDisplayName is indexed and indicates image likely exists
-                    // This aligns with GetImageMetadata endpoint logic (ContainerDetailsController.cs line 2053)
-                    // Previous logic only checked if record exists, causing 15,434+ containers to show HasImageData=false
-                    // when images were actually available (ImageDisplayName exists)
-                    var hasAseScan = await dbContext.AseScans
-                        .AnyAsync(s => s.ContainerNumber == containerNumber &&
-                                      !string.IsNullOrEmpty(s.ImageDisplayName));
-                    imageCount = hasAseScan ? 1 : 0; // Binary: has images or not
+                    imageCount = await CountAseImagesForContainerAsync(containerNumber, dbContext);
                 }
 
                 return (imageCount > 0, imageCount);
@@ -1836,6 +1829,43 @@ LIMIT {take} OFFSET {skip}";
                     SERVICE_ID, containerNumber);
                 return (false, 0);
             }
+        }
+
+        private static async Task<int> CountAseImagesForContainerAsync(
+            string containerNumber,
+            ApplicationDbContext dbContext)
+        {
+            if (string.IsNullOrWhiteSpace(containerNumber))
+                return 0;
+
+            // Fast path: preserve the historical exact lookup for old rows that
+            // still have the same source label as the queue/completeness row.
+            var hasExactAseScan = await dbContext.AseScans
+                .AsNoTracking()
+                .AnyAsync(s => s.ContainerNumber == containerNumber
+                    && !string.IsNullOrEmpty(s.ImageDisplayName));
+
+            if (hasExactAseScan)
+                return 1;
+
+            var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
+            if (string.IsNullOrWhiteSpace(normalizedContainer))
+                return 0;
+
+            var candidates = await dbContext.AseScans
+                .AsNoTracking()
+                .Where(s => s.ContainerNumber != null
+                    && s.ContainerNumber.ToUpper().Contains(normalizedContainer)
+                    && !string.IsNullOrEmpty(s.ImageDisplayName))
+                .OrderByDescending(s => s.ScanTime)
+                .Take(25)
+                .Select(s => s.ContainerNumber)
+                .ToListAsync();
+
+            return candidates.Any(sourceContainer =>
+                ContainerNumberListMatcher.ContainsContainer(sourceContainer, normalizedContainer))
+                ? 1
+                : 0;
         }
 
         /// <summary>

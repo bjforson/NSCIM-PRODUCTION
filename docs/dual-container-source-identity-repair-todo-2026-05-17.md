@@ -1,0 +1,67 @@
+# Dual-Container Source Identity Repair TODO
+
+Date: 2026-05-17
+Status: Active - first repair slice locally validated
+
+## Problem Statement
+
+Dual-container ASE scans are still leaking comma-joined identifiers into workflow tables after the original ingestion split fix. The expected invariant is:
+
+- Source scanner/audit tables may preserve the raw scanner label, for example `C1, C2`.
+- Queue, completeness, record completeness, analysis, audit, cache, and ICUMS submission rows must use one physical container number per row.
+- When a child container needs an image, it must resolve back to the original source scan and optional split choice rather than using the comma-joined source label as its operational identifier.
+
+## Live Evidence Before This Repair
+
+- `containerscanqueues.containernumber`: 743 comma/semicolon rows.
+- `containercompletenessstatuses.containernumber`: 212 comma/semicolon rows.
+- `analysisrecords.containernumber`: 1 comma/semicolon row.
+- Recent queue rows created on 2026-05-17 still included combined ASE containers, proving the issue was active and not only historical.
+
+## Work Tracker
+
+- [x] Phase 1: Stop new pollution from ASE queue recovery.
+  - [x] Lift ASE split-to-queue logic into one reusable helper.
+  - [x] Use the helper from ASE ingestion.
+  - [x] Use the helper from queue recovery.
+  - [x] Preserve raw source container string only in queue metadata.
+  - [x] Ensure recovered multi-container queue items get suffixed inspection IDs.
+- [ ] Phase 2: Add guardrails.
+  - [x] Unit/architecture guard that queue recovery cannot publish raw comma-joined ASE identifiers.
+  - [x] Guard that ingestion and recovery share the same ASE queue split helper.
+  - [ ] Optional publisher-level single-container guard after recovery is patched.
+- [ ] Phase 3: Fix completeness image evidence.
+  - [x] Make ASE image existence token/source aware.
+  - [x] Keep child completeness rows as single-container rows for new/recovered ASE queue work.
+  - [ ] Mark or ignore combined completeness rows as superseded during healing.
+- [ ] Phase 4: Fix analysis and ICUMS image lookup.
+  - [x] Resolve suffixed ASE inspection IDs back to the base inspection/source scan.
+  - [x] Prefer source scan identity when building ICUMS payload image data.
+  - [ ] Preserve selected split lineage through analyst decision, audit, and submission.
+- [ ] Phase 5: Data-heal existing polluted rows.
+  - [ ] Split or supersede existing combined queue rows.
+  - [ ] Split or supersede existing combined completeness rows.
+  - [ ] Repair the remaining combined analysis record.
+  - [ ] Verify child records have assignment/image/submission progression.
+- [ ] Phase 6: Cache and UI/API hardening.
+  - [ ] Prevent predictive preload from caching comma-joined single-container keys.
+  - [ ] Return clear errors from single-container endpoints when passed multi-container identifiers.
+  - [ ] Add explicit source/aggregate route usage where the original combined image is required.
+- [ ] Phase 7: Verification and closeout.
+  - [x] Run focused tests.
+  - [x] Build affected projects.
+  - [ ] Re-run read-only production pollution audit.
+  - [x] Commit coherent completed slice.
+  - [ ] Ask before merge/deploy.
+
+## Current Slice
+
+Implemented and locally validated the first repair slice:
+
+- ASE ingestion and queue recovery now share `AseScanQueueItemFactory`.
+- Recovered ASE source rows with two containers are split into one queue row per physical container with suffixed inspection IDs.
+- Completeness ASE image evidence is token/source aware.
+- Image analysis and ICUMS payload lookup can resolve suffixed ASE inspection IDs and tokenized ASE source rows.
+- Focused factory tests, architecture guardrails, services build, and API build pass locally.
+
+Next gate: ask before merge/deploy, then run the production pollution audit after deployment/recovery so the live counts prove the fix landed.
