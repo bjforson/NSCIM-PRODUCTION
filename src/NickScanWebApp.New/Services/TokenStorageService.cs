@@ -18,7 +18,7 @@ namespace NickScanWebApp.New.Services
         private static string? _defaultCircuitToken; // Fallback for single-user scenarios
 
         private readonly ILogger<TokenStorageService> _logger;
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly AuthenticationClient _authenticationClient;
         private readonly IConfiguration _configuration;
         private readonly ProtectedSessionStorage _sessionStorage;
         private readonly AuthenticationStateProvider _authStateProvider;
@@ -30,13 +30,13 @@ namespace NickScanWebApp.New.Services
 
         public TokenStorageService(
             ILogger<TokenStorageService> logger,
-            IHttpClientFactory httpClientFactory,
+            AuthenticationClient authenticationClient,
             IConfiguration configuration,
             ProtectedSessionStorage sessionStorage,
             AuthenticationStateProvider authStateProvider)
         {
             _logger = logger;
-            _httpClientFactory = httpClientFactory;
+            _authenticationClient = authenticationClient;
             _configuration = configuration;
             _sessionStorage = sessionStorage;
             _authStateProvider = authStateProvider;
@@ -80,24 +80,19 @@ namespace NickScanWebApp.New.Services
 
                 _logger.LogInformation("🔧 Development Mode: Attempting auto-login with default credentials...");
 
-                // Create a temporary HTTP client without the authenticated handler
-                var client = new HttpClient
-                {
-                    BaseAddress = new Uri(_configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205"),
-                    Timeout = TimeSpan.FromSeconds(10)
-                };
-
                 var loginRequest = new
                 {
                     username = defaultUsername,
                     password = defaultPassword
                 };
 
-                var response = await client.PostAsJsonAsync(AuthenticationRoutes.LoginPath, loginRequest);
+                var response = await _authenticationClient.LoginAsync<object, LoginResponse>(
+                    loginRequest,
+                    TimeSpan.FromSeconds(10));
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var result = await response.Content.ReadFromJsonAsync<LoginResponse>();
+                    var result = response.Payload;
                     if (result != null && !string.IsNullOrEmpty(result.Token))
                     {
                         SetToken(result.Token, DateTime.UtcNow.AddHours(8));

@@ -12,14 +12,14 @@ namespace NickScanWebApp.New.Controllers
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly AuthenticationClient _authenticationClient;
         private readonly ILogger<AuthController> _logger;
 
         public AuthController(
-            IHttpClientFactory httpClientFactory,
+            AuthenticationClient authenticationClient,
             ILogger<AuthController> logger)
         {
-            _httpClientFactory = httpClientFactory;
+            _authenticationClient = authenticationClient;
             _logger = logger;
         }
 
@@ -34,13 +34,9 @@ namespace NickScanWebApp.New.Controllers
             {
                 _logger.LogInformation("🔐 Server-side login attempt for user: {Username}", request.Username);
 
-                // Use the same configured API client as the rest of the WebApp so
-                // login honors the production certificate validation policy.
-                var client = _httpClientFactory.CreateClient("NickScanAPI");
-
                 // Call backend API to validate credentials
                 var loginData = new { Username = request.Username, Password = request.Password };
-                var response = await client.PostAsJsonAsync(AuthenticationRoutes.LoginPath, loginData);
+                var response = await _authenticationClient.LoginAsync<object, ApiLoginResponse>(loginData);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -48,7 +44,7 @@ namespace NickScanWebApp.New.Controllers
                     return Unauthorized(new { error = "Invalid credentials" });
                 }
 
-                var apiResponse = await response.Content.ReadFromJsonAsync<ApiLoginResponse>();
+                var apiResponse = response.Payload;
                 if (apiResponse == null || string.IsNullOrEmpty(apiResponse.Token))
                 {
                     _logger.LogWarning("❌ Invalid API response for user: {Username}", request.Username);
