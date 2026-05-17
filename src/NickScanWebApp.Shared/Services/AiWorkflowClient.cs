@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using System.Text.Json;
 
 namespace NickScanWebApp.Shared.Services;
@@ -9,26 +8,11 @@ public sealed class AiWorkflowClient
     public const string ImageSuggestionsPath = BasePath + "/image/suggestions";
     public const string ShadowMetricsPath = BasePath + "/shadow/metrics";
 
-    private const string ApiClientName = "NickScanAPI";
+    private readonly ApiService _apiService;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    public AiWorkflowClient(ApiService apiService)
     {
-        PropertyNameCaseInsensitive = true
-    };
-
-    private readonly IHttpClientFactory _httpClientFactory;
-
-    public AiWorkflowClient(IHttpClientFactory httpClientFactory)
-    {
-        _httpClientFactory = httpClientFactory;
-    }
-
-    public Task<HttpResponseMessage> GetImageSuggestionsResponseAsync(
-        string? status = null,
-        string? containerNumber = null,
-        int? pageSize = null)
-    {
-        return CreateClient().GetAsync(BuildImageSuggestionsPath(status, containerNumber, pageSize));
+        _apiService = apiService;
     }
 
     public async Task<List<TSuggestion>?> GetImageSuggestionsAsync<TSuggestion>(
@@ -36,13 +20,8 @@ public sealed class AiWorkflowClient
         string? containerNumber = null,
         int? pageSize = null)
     {
-        using var response = await GetImageSuggestionsResponseAsync(status, containerNumber, pageSize);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        return await response.Content.ReadFromJsonAsync<List<TSuggestion>>(JsonOptions);
+        return await _apiService.TryGetAsync<List<TSuggestion>>(
+            BuildImageSuggestionsPath(status, containerNumber, pageSize));
     }
 
     public Task<List<TSuggestion>?> GetContainerSuggestionProbeAsync<TSuggestion>(string containerNumber)
@@ -57,44 +36,17 @@ public sealed class AiWorkflowClient
         long id,
         TRequest request)
     {
-        using var response = await ResolveImageSuggestionResponseAsync(id, request);
-        return response.IsSuccessStatusCode;
-    }
-
-    public Task<HttpResponseMessage> ResolveImageSuggestionResponseAsync<TRequest>(
-        long id,
-        TRequest request)
-    {
-        return CreateClient().PostAsJsonAsync(BuildResolveImageSuggestionPath(id), request);
-    }
-
-    public Task<HttpResponseMessage> GetShadowMetricsResponseAsync()
-    {
-        return CreateClient().GetAsync(ShadowMetricsPath);
+        return await _apiService.TryPostAsync(BuildResolveImageSuggestionPath(id), request);
     }
 
     public async Task<TMetrics?> GetShadowMetricsAsync<TMetrics>()
     {
-        using var response = await GetShadowMetricsResponseAsync();
-        if (!response.IsSuccessStatusCode)
-        {
-            return default;
-        }
-
-        return await response.Content.ReadFromJsonAsync<TMetrics>(JsonOptions);
+        return await _apiService.TryGetAsync<TMetrics>(ShadowMetricsPath);
     }
 
     public async Task<JsonElement?> GetShadowMetricsElementAsync()
     {
-        using var response = await GetShadowMetricsResponseAsync();
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var document = await JsonDocument.ParseAsync(stream);
-        return document.RootElement.Clone();
+        return await GetShadowMetricsAsync<JsonElement>();
     }
 
     public static string BuildImageSuggestionsPath(
@@ -113,11 +65,6 @@ public sealed class AiWorkflowClient
     public static string BuildResolveImageSuggestionPath(long id)
     {
         return $"{ImageSuggestionsPath}/{id}/resolve";
-    }
-
-    private HttpClient CreateClient()
-    {
-        return _httpClientFactory.CreateClient(ApiClientName);
     }
 
     private static void Add(List<string> parts, string name, string? value)
