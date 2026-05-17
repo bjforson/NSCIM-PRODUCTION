@@ -1164,6 +1164,19 @@
             || IsCmrOperationalKey(normalizedGroupIdentifier);
     }
 
+    private bool ShouldUseRecordBackedIcumsLookup()
+    {
+        return RecordCompletenessStatusId.HasValue || IsCmrRecord();
+    }
+
+    private string? GetRecordIcumsLookupKey(string? groupIdentifier)
+    {
+        var normalizedGroupIdentifier = NormalizeDataLookupGroupIdentifier(groupIdentifier);
+        return IsCmrOperationalKey(normalizedGroupIdentifier)
+            ? normalizedGroupIdentifier
+            : null;
+    }
+
     private static bool IsCmrOperationalKey(string? value)
     {
         var key = value?.Trim();
@@ -1313,12 +1326,12 @@
             ?? throw new InvalidOperationException(
                 "BuildContainerEndpointUrl: non-consolidated path requires a routeContainer (typically Containers.First()).");
 
-        if (string.Equals(endpoint, "icums", StringComparison.OrdinalIgnoreCase) && IsCmrRecord())
+        if (string.Equals(endpoint, "icums", StringComparison.OrdinalIgnoreCase) && ShouldUseRecordBackedIcumsLookup())
         {
             return ContainerDetailsRoutes.BuildImageAnalysisRecordIcumsPath(
                 routeCn,
                 RecordCompletenessStatusId,
-                NormalizeDataLookupGroupIdentifier(groupIdentifier),
+                GetRecordIcumsLookupKey(groupIdentifier),
                 page,
                 pageSize);
         }
