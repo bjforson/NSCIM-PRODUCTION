@@ -48,7 +48,7 @@ Do not fold these into local route cleanup just because they use `/api`. Validat
 
 ## Running The Inventory
 
-From `C:\Shared\NSCIM_PRODUCTION_API_CONSOLIDATION_IMPL`:
+From the active NSCIM checkout or endpoint-consolidation worktree:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnostics\Invoke-RouteCallsiteInventory.ps1
