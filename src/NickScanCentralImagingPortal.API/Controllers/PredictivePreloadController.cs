@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Services.Caching;
 
 namespace NickScanCentralImagingPortal.API.Controllers;
@@ -71,6 +72,15 @@ public sealed class PredictivePreloadController : ControllerBase
     [HttpPost("invalidate/container/{containerNumber}")]
     public async Task<IActionResult> InvalidateContainer(string containerNumber, CancellationToken cancellationToken)
     {
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(containerNumber))
+        {
+            return BadRequest(new
+            {
+                Message = "Predictive container cache routes require one physical container number. Use source-scan or split-context routes for composite scan labels.",
+                ContainerNumber = containerNumber
+            });
+        }
+
         await _preloadService.InvalidateContainerContextAsync(containerNumber, cancellationToken);
         return Ok(new { Message = "Predictive container cache invalidated.", ContainerNumber = containerNumber });
     }
@@ -81,6 +91,15 @@ public sealed class PredictivePreloadController : ControllerBase
         string containerNumber,
         CancellationToken cancellationToken)
     {
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(containerNumber))
+        {
+            return BadRequest(new
+            {
+                Message = "Predictive container preload requires one physical container number. Use source-scan or split-context routes for composite scan labels.",
+                ContainerNumber = containerNumber
+            });
+        }
+
         var result = await _preloadService.PreloadContainerContextAsync(containerNumber, cancellationToken);
         return result.Success ? Ok(result) : StatusCode(500, result);
     }
@@ -105,6 +124,15 @@ public sealed class PredictivePreloadController : ControllerBase
         string containerNumber,
         CancellationToken cancellationToken)
     {
+        if (ContainerNumberListMatcher.IsCompositeContainerIdentifier(containerNumber))
+        {
+            return BadRequest(new
+            {
+                Message = "Predictive container cache routes require one physical container number. Use source-scan or split-context routes for composite scan labels.",
+                ContainerNumber = containerNumber
+            });
+        }
+
         var context = await _preloadService.GetContainerContextAsync(containerNumber, cancellationToken);
         if (context == null)
         {

@@ -15,6 +15,7 @@ using NickScanCentralImagingPortal.Core.Entities.FS6000;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Utilities;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ASE;
 using NickScanCentralImagingPortal.Services.Logging;
 
 namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
@@ -372,11 +373,39 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                 {
                     var containerNumber = scan.ContainerNumber?.Trim();
                     var scanDate = scan.ScanTime;
+                    var recoveryDateUtc = DateTime.UtcNow;
+                    var queueItems = AseScanQueueItemFactory.Create(
+                        scan.InspectionId,
+                        containerNumber,
+                        scanDate,
+                        priority: 1,
+                        recovered: true,
+                        recoveryDateUtc: recoveryDateUtc);
 
-                    if (string.IsNullOrWhiteSpace(containerNumber))
+                    if (queueItems.Count == 0)
                     {
                         stats.TotalSkipped++;
                         continue;
+                    }
+
+                    if (queueItems.Count > 1)
+                    {
+                        _logger.LogInformation(
+                            "{ServiceId} Splitting recovered ASE inspection {InspectionId} from source container label {SourceContainer} into {Count} queue item(s)",
+                            SERVICE_ID,
+                            scan.InspectionId,
+                            scan.ContainerNumber,
+                            queueItems.Count);
+                    }
+
+                    var identityContainerNumbers = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber);
+                    if (identityContainerNumbers.Count == 0)
+                    {
+                        identityContainerNumbers = queueItems
+                            .Select(item => item.ContainerNumber)
+                            .Where(value => !string.IsNullOrWhiteSpace(value))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
                     }
 
                     var identity = scanIdentityService == null
@@ -387,50 +416,34 @@ namespace NickScanCentralImagingPortal.Services.ContainerCompleteness
                             ScannerType = CommonScannerTypes.ASE,
                             ScannerNativeId = scan.InspectionId.ToString(),
                             SourceContainerLabel = containerNumber,
-                            ContainerNumbers = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber),
+                            ContainerNumbers = identityContainerNumbers,
                             ImageDisplayName = scan.ImageDisplayName,
                             FileSizeBytes = scan.ImageSizeBytes,
                             ScanTimeUtc = scanDate,
                             StorageKind = ScanImageAssetStorageKinds.Database
                         }, cancellationToken);
 
-                    var tokens = ContainerNumberListMatcher.ExtractContainerTokens(containerNumber);
-                    if (tokens.Count == 0)
-                        tokens = new[] { containerNumber }.ToList();
-
-                    for (var index = 0; index < tokens.Count; index++)
+                    foreach (var queueItem in queueItems)
                     {
-                        var token = tokens[index];
-                        var inspectionId = tokens.Count > 1
-                            ? $"{scan.InspectionId}-{(char)('a' + index)}"
-                            : scan.InspectionId.ToString();
+                        queueItem.ScanImageAssetId = identity?.Asset.Id;
+                        queueItem.OriginalScanRecordId = scan.OriginalScanRecordId;
+                        queueItem.SourceContainerLabel = containerNumber;
+                        queueItem.ScanContainerPosition = identity?.FindLink(queueItem.ContainerNumber)?.Position;
 
                         var isQueued = await queueRepository.IsInQueueAsync(
-                            token,
-                            CommonScannerTypes.ASE,
-                            inspectionId);
+                            queueItem.ContainerNumber,
+                            queueItem.ScannerType,
+                            queueItem.InspectionId);
 
-                        if (isQueued)
+                        if (!isQueued)
+                        {
+                            scansToQueue.Add(queueItem);
+                            stats.TotalFound++;
+                        }
+                        else
                         {
                             stats.TotalSkipped++;
-                            continue;
                         }
-
-                        // Scan not in queue - add to recovery list
-                        scansToQueue.Add(new ContainerScanInfo
-                        {
-                            ContainerNumber = token,
-                            ScannerType = CommonScannerTypes.ASE,
-                            InspectionId = inspectionId,
-                            ScanDate = scanDate,
-                            Priority = 1, // Higher priority for recovered scans
-                            Metadata = $"{{\"Recovered\": true, \"RecoveryDate\": \"{DateTime.UtcNow:O}\", \"OriginalContainerNumber\": \"{containerNumber.Replace("\"", "\\\"")}\"}}",
-                            ScanImageAssetId = identity?.Asset.Id,
-                            OriginalScanRecordId = scan.OriginalScanRecordId,
-                            SourceContainerLabel = containerNumber,
-                            ScanContainerPosition = identity?.FindLink(token)?.Position
-                        });
-                        stats.TotalFound++;
                     }
                 }
                 catch (Exception ex)

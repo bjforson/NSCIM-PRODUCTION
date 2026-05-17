@@ -1,0 +1,507 @@
+@page "/camera-evidence"
+@page "/camera-evidence/events"
+@page "/camera-evidence/review"
+@page "/camera-evidence/settings"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesServicesMonitoring)]
+@using NickScanCentralImagingPortal.Core.DTOs.CameraEvidence
+@using NickScanWebApp.Shared.Services
+@inject NickScanWebApp.Shared.Services.CameraEvidenceClient CameraEvidenceClient
+@inject ISnackbar Snackbar
+@inject ILogger<CameraEvidence> Logger
+
+<PageTitle>NSCIS - Camera Evidence</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="pa-4">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-4">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+            <MudIcon Icon="@Icons.Material.Filled.Videocam" Color="Color.Primary" />
+            <MudText Typo="Typo.h4">Camera Evidence</MudText>
+        </MudStack>
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh" OnClick="LoadAllAsync" Disabled="_loading">
+            Refresh
+        </MudButton>
+    </MudStack>
+
+    <MudTabs Rounded="true" Elevation="1" PanelClass="pa-4">
+        <MudTabPanel Text="Operations" Icon="@Icons.Material.Filled.MonitorHeart">
+            <MudGrid Spacing="3">
+                <MudItem xs="12" md="3">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Module</MudText>
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudIcon Icon="@Icons.Material.Filled.Circle" Size="Size.Small" Color="@(_health?.Enabled == true ? Color.Success : Color.Default)" />
+                            <MudText Typo="Typo.h6">@Flag(_health?.Enabled)</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Sites</MudText>
+                        <MudText Typo="Typo.h6">@(_health?.SiteCount ?? 0)</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Queue</MudText>
+                        <MudText Typo="Typo.h6">@(_health?.PendingQueueCount ?? 0)</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="3">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Review</MudText>
+                        <MudText Typo="Typo.h6">@(_health?.ReviewBacklogCount ?? 0)</MudText>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+
+            <MudPaper Class="pa-3 mt-4" Elevation="1">
+                <MudText Typo="Typo.h6" Class="mb-2">Sites</MudText>
+                <MudTable Items="@(_health?.Sites ?? new List<CameraEvidenceSiteHealthDto>())" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Site</MudTh>
+                        <MudTh>Location</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Sources</MudTh>
+                        <MudTh>Queue</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Site">@context.SiteKey</MudTd>
+                        <MudTd DataLabel="Location">@context.LocationName</MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Size="Size.Small" Color="@(context.IsEnabled ? Color.Success : Color.Default)">@context.Status</MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Sources">@context.SourceCount</MudTd>
+                        <MudTd DataLabel="Queue">@context.PendingQueueCount</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Events" Icon="@Icons.Material.Filled.Event">
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-3">
+                <MudSelect T="string" Label="Site" Dense="true" Variant="Variant.Outlined" @bind-Value="_eventQuery.SiteKey" Style="max-width: 260px;">
+                    <MudSelectItem T="string" Value="@string.Empty">All sites</MudSelectItem>
+                    @foreach (var site in _sites)
+                    {
+                        <MudSelectItem T="string" Value="@site.SiteKey">@site.DisplayName</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect T="string" Label="Review" Dense="true" Variant="Variant.Outlined" @bind-Value="_eventQuery.ReviewStatus" Style="max-width: 220px;">
+                    <MudSelectItem T="string" Value="@string.Empty">All</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Pending")">Pending</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Accepted")">Accepted</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Corrected")">Corrected</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Rejected")">Rejected</MudSelectItem>
+                </MudSelect>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Search" OnClick="LoadEventsAsync" Disabled="_loading">
+                    Search
+                </MudButton>
+            </MudStack>
+
+            <MudTable Items="@(_eventPage?.Data ?? new List<CameraEvidenceEventListItemDto>())" Dense="true" Hover="true">
+                <HeaderContent>
+                    <MudTh>Received</MudTh>
+                    <MudTh>Site</MudTh>
+                    <MudTh>Camera</MudTh>
+                    <MudTh>Alarm</MudTh>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Frames</MudTh>
+                    <MudTh></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Received">@FormatDate(context.ReceivedAtUtc)</MudTd>
+                    <MudTd DataLabel="Site">@context.SiteKey</MudTd>
+                    <MudTd DataLabel="Camera">@(context.SourceName ?? context.ProtectDeviceKey ?? "Unmapped")</MudTd>
+                    <MudTd DataLabel="Alarm">@context.AlarmName</MudTd>
+                    <MudTd DataLabel="Status">
+                        <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.ProcessingStatus)">@context.ProcessingStatus</MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="Frames">@context.FrameCount / @context.OcrResultCount</MudTd>
+                    <MudTd>
+                        <MudIconButton Icon="@Icons.Material.Filled.Visibility" Color="Color.Primary" Size="Size.Small" OnClick="@(() => SelectEventAsync(context.Id))" />
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudTabPanel>
+
+        <MudTabPanel Text="Review" Icon="@Icons.Material.Filled.RateReview">
+            @if (_selectedEvent == null)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">Select an event from the Events tab.</MudAlert>
+            }
+            else
+            {
+                <MudStack Spacing="3">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.h6">@_selectedEvent.SiteName / @(_selectedEvent.SourceName ?? "Unmapped")</MudText>
+                                <MudText Typo="Typo.caption">@FormatDate(_selectedEvent.ReceivedAtUtc) - @_selectedEvent.AlarmName - @_selectedEvent.ProcessingStatus</MudText>
+                            </MudStack>
+                            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="@(() => SelectEventAsync(_selectedEvent.Id))">
+                                Reload
+                            </MudButton>
+                        </MudStack>
+                    </MudPaper>
+
+                    <MudGrid Spacing="3">
+                        <MudItem xs="12" lg="6">
+                            <MudPaper Class="pa-3" Elevation="1">
+                                <MudText Typo="Typo.h6" Class="mb-2">Frame</MudText>
+                                @if (!string.IsNullOrWhiteSpace(_selectedFrameDataUrl))
+                                {
+                                    <img src="@_selectedFrameDataUrl" style="width:100%; max-height:560px; object-fit:contain; background:#111; border-radius:6px;" />
+                                }
+                                else
+                                {
+                                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No frame loaded.</MudAlert>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="12" lg="6">
+                            <MudPaper Class="pa-3" Elevation="1">
+                                <MudText Typo="Typo.h6" Class="mb-2">OCR Results</MudText>
+                                @foreach (var frame in _selectedEvent.Frames)
+                                {
+                                    <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Image" OnClick="@(() => LoadFrameAsync(frame))">
+                                        @FormatDate(frame.FrameTimestampUtc)
+                                    </MudButton>
+                                    @foreach (var result in frame.OcrResults)
+                                    {
+                                        <MudPaper Class="pa-3 my-2" Elevation="0" Outlined="true">
+                                            <MudStack Spacing="1">
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                    <MudText Typo="Typo.subtitle2">@(result.NormalizedText ?? "No candidate")</MudText>
+                                                    <MudChip T="string" Size="Size.Small" Color="@ReviewColor(result.ReviewStatus)">@result.ReviewStatus</MudChip>
+                                                </MudStack>
+                                                <MudText Typo="Typo.caption">@result.CandidateType - @result.ValidationStatus - @result.Confidence.ToString("P0")</MudText>
+                                                <MudText Typo="Typo.body2" Style="white-space: pre-wrap;">@result.RawText</MudText>
+                                                <MudStack Row="true" Spacing="1">
+                                                    <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Small" OnClick="@(() => ReviewAsync(result.Id, "Accepted"))">Accept</MudButton>
+                                                    <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick="@(() => ReviewAsync(result.Id, "Rejected"))">Reject</MudButton>
+                                                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small" OnClick="@(() => BeginCorrection(result))">Correct</MudButton>
+                                                </MudStack>
+                                            </MudStack>
+                                        </MudPaper>
+                                    }
+                                }
+
+                                @if (_correctionTarget != null)
+                                {
+                                    <MudDivider Class="my-3" />
+                                    <MudText Typo="Typo.subtitle1">Correction</MudText>
+                                    <MudTextField @bind-Value="_correctionText" Label="Text" Variant="Variant.Outlined" Dense="true" />
+                                    <MudTextField @bind-Value="_correctionType" Label="Type" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                                    <MudTextField @bind-Value="_correctionNotes" Label="Notes" Variant="Variant.Outlined" Dense="true" Lines="2" Class="mt-2" />
+                                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Class="mt-2" OnClick="SubmitCorrectionAsync">Save</MudButton>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                </MudStack>
+            }
+        </MudTabPanel>
+
+        <MudTabPanel Text="Settings" Icon="@Icons.Material.Filled.Settings">
+            <MudGrid Spacing="3">
+                <MudItem xs="12" lg="6">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Site</MudText>
+                        <MudTextField @bind-Value="_siteEdit.SiteKey" Label="Site Key" Variant="Variant.Outlined" Dense="true" />
+                        <MudTextField @bind-Value="_siteEdit.DisplayName" Label="Display Name" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_siteEdit.LocationName" Label="Location" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_siteEdit.BaseUrl" Label="Protect Base URL" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_siteEdit.ApiKeySecretName" Label="API Key Secret Name" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_siteEdit.WebhookSecretName" Label="Webhook Secret Name" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudSwitch T="bool" @bind-Value="_siteEdit.IsEnabled" Color="Color.Primary" Class="mt-2">Enabled</MudSwitch>
+                        <MudStack Row="true" Spacing="1" Class="mt-2">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveSiteAsync">Save</MudButton>
+                            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="NewSite">New</MudButton>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" lg="6">
+                    <MudPaper Class="pa-3" Elevation="1">
+                        <MudText Typo="Typo.h6" Class="mb-3">Camera Source</MudText>
+                        <MudSelect T="Guid" Label="Site" Variant="Variant.Outlined" Dense="true" @bind-Value="_sourceEdit.SiteId">
+                            @foreach (var site in _sites)
+                            {
+                                <MudSelectItem T="Guid" Value="@site.Id">@site.DisplayName</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudTextField @bind-Value="_sourceEdit.DisplayName" Label="Display Name" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_sourceEdit.ProtectCameraId" Label="Protect Camera ID" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_sourceEdit.ProtectDeviceKey" Label="Protect Device Key" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_sourceEdit.MacAddress" Label="MAC Address" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudTextField @bind-Value="_sourceEdit.OperationalZone" Label="Zone" Variant="Variant.Outlined" Dense="true" Class="mt-2" />
+                        <MudSelect T="string" Label="Expected Text" Variant="Variant.Outlined" Dense="true" @bind-Value="_sourceEdit.ExpectedTextType" Class="mt-2">
+                            <MudSelectItem T="string" Value="@("unknown")">Unknown</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("container")">Container</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("plate")">Plate</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("seal")">Seal</MudSelectItem>
+                            <MudSelectItem T="string" Value="@("mixed")">Mixed</MudSelectItem>
+                        </MudSelect>
+                        <MudSwitch T="bool" @bind-Value="_sourceEdit.IsEnabled" Color="Color.Primary" Class="mt-2">Enabled</MudSwitch>
+                        <MudStack Row="true" Spacing="1" Class="mt-2">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveSourceAsync">Save</MudButton>
+                            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="NewSource">New</MudButton>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+
+            <MudPaper Class="pa-3 mt-4" Elevation="1">
+                <MudText Typo="Typo.h6" Class="mb-2">Configured Sources</MudText>
+                <MudTable Items="_sources" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Site</MudTh>
+                        <MudTh>Camera</MudTh>
+                        <MudTh>Protect ID</MudTh>
+                        <MudTh>Type</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh></MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Site">@context.SiteKey</MudTd>
+                        <MudTd DataLabel="Camera">@context.DisplayName</MudTd>
+                        <MudTd DataLabel="Protect ID">@context.ProtectCameraId</MudTd>
+                        <MudTd DataLabel="Type">@context.ExpectedTextType</MudTd>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string" Size="Size.Small" Color="@(context.IsEnabled ? Color.Success : Color.Default)">@Flag(context.IsEnabled)</MudChip>
+                        </MudTd>
+                        <MudTd>
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditSource(context))" />
+                            <MudIconButton Icon="@Icons.Material.Filled.PhotoCamera" Color="Color.Primary" Size="Size.Small" OnClick="@(() => TestSnapshotAsync(context.Id))" />
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            </MudPaper>
+        </MudTabPanel>
+    </MudTabs>
+</MudContainer>
+
+@code {
+    private bool _loading;
+    private CameraEvidenceHealthDto? _health;
+    private List<CameraEvidenceSiteDto> _sites = new();
+    private List<CameraEvidenceSourceDto> _sources = new();
+    private CameraEvidenceEventPageDto? _eventPage;
+    private CameraEvidenceEventDetailDto? _selectedEvent;
+    private string? _selectedFrameDataUrl;
+    private CameraEvidenceEventQuery _eventQuery = new() { PageSize = 50 };
+    private CameraEvidenceSiteUpsertRequest _siteEdit = new();
+    private CameraEvidenceSourceUpsertRequest _sourceEdit = new() { ExpectedTextType = "unknown", CaptureMode = "snapshot", OcrProfile = "default", IsEnabled = true };
+    private CameraEvidenceOcrResultDto? _correctionTarget;
+    private string? _correctionText;
+    private string? _correctionType;
+    private string? _correctionNotes;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllAsync();
+    }
+
+    private async Task LoadAllAsync()
+    {
+        _loading = true;
+        try
+        {
+            _health = await CameraEvidenceClient.GetHealthAsync();
+            _sites = await CameraEvidenceClient.GetSitesAsync() ?? new();
+            _sources = await CameraEvidenceClient.GetSourcesAsync() ?? new();
+            if (_sourceEdit.SiteId == Guid.Empty && _sites.Count > 0)
+            {
+                _sourceEdit.SiteId = _sites[0].Id;
+            }
+            await LoadEventsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load camera evidence data");
+            Snackbar.Add("Camera evidence data could not be loaded.", Severity.Warning);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadEventsAsync()
+    {
+        _eventQuery.SiteKey = string.IsNullOrWhiteSpace(_eventQuery.SiteKey) ? null : _eventQuery.SiteKey;
+        _eventQuery.ReviewStatus = string.IsNullOrWhiteSpace(_eventQuery.ReviewStatus) ? null : _eventQuery.ReviewStatus;
+        _eventPage = await CameraEvidenceClient.GetEventsAsync(_eventQuery);
+    }
+
+    private async Task SelectEventAsync(Guid eventId)
+    {
+        _selectedEvent = await CameraEvidenceClient.GetEventAsync(eventId);
+        var firstFrame = _selectedEvent?.Frames.FirstOrDefault();
+        if (firstFrame != null)
+        {
+            await LoadFrameAsync(firstFrame);
+        }
+        else
+        {
+            _selectedFrameDataUrl = null;
+        }
+    }
+
+    private async Task LoadFrameAsync(CameraEvidenceFrameDto frame)
+    {
+        var bytes = await CameraEvidenceClient.GetFrameBytesAsync(frame.Id);
+        _selectedFrameDataUrl = bytes == null || bytes.Length == 0
+            ? null
+            : $"data:{frame.ContentType};base64,{Convert.ToBase64String(bytes)}";
+    }
+
+    private async Task ReviewAsync(Guid ocrResultId, string decision)
+    {
+        await CameraEvidenceClient.ReviewOcrResultAsync(ocrResultId, new CameraEvidenceReviewRequest { Decision = decision });
+        Snackbar.Add($"Review saved: {decision}", Severity.Success);
+        if (_selectedEvent != null)
+        {
+            await SelectEventAsync(_selectedEvent.Id);
+        }
+        await LoadEventsAsync();
+    }
+
+    private void BeginCorrection(CameraEvidenceOcrResultDto result)
+    {
+        _correctionTarget = result;
+        _correctionText = result.NormalizedText;
+        _correctionType = result.CandidateType;
+        _correctionNotes = null;
+    }
+
+    private async Task SubmitCorrectionAsync()
+    {
+        if (_correctionTarget == null)
+        {
+            return;
+        }
+
+        await CameraEvidenceClient.ReviewOcrResultAsync(_correctionTarget.Id, new CameraEvidenceReviewRequest
+        {
+            Decision = "Corrected",
+            CorrectedText = _correctionText,
+            CorrectedCandidateType = _correctionType,
+            Notes = _correctionNotes
+        });
+        Snackbar.Add("Correction saved.", Severity.Success);
+        _correctionTarget = null;
+        if (_selectedEvent != null)
+        {
+            await SelectEventAsync(_selectedEvent.Id);
+        }
+    }
+
+    private async Task SaveSiteAsync()
+    {
+        if (_siteEdit.Id.HasValue)
+        {
+            await CameraEvidenceClient.UpdateSiteAsync(_siteEdit.Id.Value, _siteEdit);
+        }
+        else
+        {
+            await CameraEvidenceClient.CreateSiteAsync(_siteEdit);
+        }
+
+        Snackbar.Add("Site saved.", Severity.Success);
+        NewSite();
+        await LoadAllAsync();
+    }
+
+    private void NewSite()
+    {
+        _siteEdit = new CameraEvidenceSiteUpsertRequest { VerifySsl = true, RequestTimeoutSeconds = 10 };
+    }
+
+    private async Task SaveSourceAsync()
+    {
+        if (_sourceEdit.Id.HasValue)
+        {
+            await CameraEvidenceClient.UpdateSourceAsync(_sourceEdit.Id.Value, _sourceEdit);
+        }
+        else
+        {
+            await CameraEvidenceClient.CreateSourceAsync(_sourceEdit);
+        }
+
+        Snackbar.Add("Source saved.", Severity.Success);
+        NewSource();
+        await LoadAllAsync();
+    }
+
+    private void NewSource()
+    {
+        _sourceEdit = new CameraEvidenceSourceUpsertRequest
+        {
+            SiteId = _sites.FirstOrDefault()?.Id ?? Guid.Empty,
+            ExpectedTextType = "unknown",
+            CaptureMode = "snapshot",
+            OcrProfile = "default",
+            IsEnabled = true
+        };
+    }
+
+    private void EditSource(CameraEvidenceSourceDto source)
+    {
+        _sourceEdit = new CameraEvidenceSourceUpsertRequest
+        {
+            Id = source.Id,
+            SiteId = source.SiteId,
+            ProtectCameraId = source.ProtectCameraId,
+            ProtectDeviceKey = source.ProtectDeviceKey,
+            MacAddress = source.MacAddress,
+            DisplayName = source.DisplayName,
+            LocationName = source.LocationName,
+            OperationalZone = source.OperationalZone,
+            ExpectedTextType = source.ExpectedTextType,
+            CaptureMode = source.CaptureMode,
+            OcrProfile = source.OcrProfile,
+            IsEnabled = source.IsEnabled
+        };
+    }
+
+    private async Task TestSnapshotAsync(Guid sourceId)
+    {
+        var result = await CameraEvidenceClient.TestSnapshotAsync(sourceId);
+        if (result?.Success == true)
+        {
+            Snackbar.Add("Snapshot captured.", Severity.Success);
+            await LoadEventsAsync();
+        }
+        else
+        {
+            Snackbar.Add(result?.Error ?? "Snapshot failed.", Severity.Warning);
+        }
+    }
+
+    private static string Flag(bool? value) => value == true ? "Enabled" : "Disabled";
+    private static string FormatDate(DateTime? value) => value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "";
+    private static string FormatDate(DateTime value) => value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+    private static Color StatusColor(string status)
+    {
+        return status switch
+        {
+            "OcrCompleted" or "FrameCaptured" => Color.Success,
+            "Received" or "Pending" => Color.Info,
+            "UnmappedSource" => Color.Warning,
+            _ when status.Contains("Failed", StringComparison.OrdinalIgnoreCase) => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private static Color ReviewColor(string status)
+    {
+        return status switch
+        {
+            "Accepted" => Color.Success,
+            "Corrected" => Color.Primary,
+            "Rejected" => Color.Error,
+            _ => Color.Default
+        };
+    }
+}
