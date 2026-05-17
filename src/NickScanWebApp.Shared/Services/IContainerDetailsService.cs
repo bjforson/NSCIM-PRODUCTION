@@ -54,6 +54,12 @@ namespace NickScanWebApp.Shared.Services
         Task<PagedResult<ICUMSDataRecord>?> GetICUMSDataAsync(string containerNumber, int page = 1, int pageSize = 50);
 
         /// <summary>
+        /// Get ICUMS data for the image-analysis workflow while preserving
+        /// consolidated, declaration-keyed, and record-backed lookup semantics.
+        /// </summary>
+        Task<PagedResult<ICUMSDataRecord>?> GetImageAnalysisICUMSDataAsync(ImageAnalysisIcumsQuery query);
+
+        /// <summary>
         /// Get full BOE data record (cached for 5 minutes)
         /// </summary>
         Task<FullBOEDataRecord?> GetFullBOEDataAsync(string containerNumber);
@@ -86,6 +92,19 @@ namespace NickScanWebApp.Shared.Services
         /// Clear all cached data for a specific container
         /// </summary>
         void ClearContainerCache(string containerNumber);
+    }
+
+    public sealed class ImageAnalysisIcumsQuery
+    {
+        public string GroupIdentifier { get; set; } = string.Empty;
+        public bool IsConsolidated { get; set; }
+        public string? DeclarationNumber { get; set; }
+        public string? RouteContainer { get; set; }
+        public int? RecordCompletenessStatusId { get; set; }
+        public string? RecordKey { get; set; }
+        public bool PreferRecordBacked { get; set; }
+        public int Page { get; set; } = 1;
+        public int PageSize { get; set; } = 1000;
     }
 }
 

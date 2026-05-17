@@ -453,6 +453,56 @@ namespace NickScanWebApp.Shared.Services
             }
         }
 
+        public async Task<PagedResult<ICUMSDataRecord>?> GetImageAnalysisICUMSDataAsync(ImageAnalysisIcumsQuery query)
+        {
+            try
+            {
+                ArgumentNullException.ThrowIfNull(query);
+
+                var page = query.Page <= 0 ? 1 : query.Page;
+                var pageSize = query.PageSize <= 0 ? 1000 : query.PageSize;
+                var groupIdentifier = NormalizeDataLookupIdentifier(query.GroupIdentifier);
+                if (string.IsNullOrWhiteSpace(groupIdentifier))
+                {
+                    return null;
+                }
+
+                var routeContainer = NormalizeContainerNumber(query.RouteContainer ?? string.Empty);
+                var endpoint = BuildImageAnalysisIcumsPath(query, groupIdentifier, routeContainer, page, pageSize);
+                if (string.IsNullOrWhiteSpace(endpoint))
+                {
+                    return null;
+                }
+
+                var cacheKey = BuildImageAnalysisIcumsCacheKey(query, groupIdentifier, routeContainer, page, pageSize);
+                if (_cache.TryGetValue(cacheKey, out PagedResult<ICUMSDataRecord>? cachedData))
+                {
+                    return cachedData;
+                }
+
+                var response = await _apiService.GetAsync<PagedResult<ICUMSDataRecord>>(endpoint);
+                if (response != null)
+                {
+                    SetVolatileCache(cacheKey, response, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2),
+                        Size = 1
+                    });
+                }
+
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Error getting image-analysis ICUMS data for group {GroupIdentifier}, route container {RouteContainer}",
+                    query?.GroupIdentifier,
+                    query?.RouteContainer);
+                return null;
+            }
+        }
+
         /// <summary>
         /// Get full BOE data (cached for 5 minutes)
         /// ✅ Phase 2: Uses ?full=true parameter to get FullBOEDataRecord directly from API
@@ -763,6 +813,7 @@ namespace NickScanWebApp.Shared.Services
 
                 RemoveTrackedCacheKeys($"scan_asset_resolution_{normalizedContainerNumber}_");
                 RemoveTrackedCacheKeys($"image_metadata_resolved_{normalizedContainerNumber}_");
+                RemoveTrackedCacheKeys($"image_analysis_icums_{normalizedContainerNumber}_");
 
                 _logger.LogInformation("Cache cleared for container {ContainerNumber}", normalizedContainerNumber);
             }
@@ -1132,6 +1183,76 @@ namespace NickScanWebApp.Shared.Services
             return string.IsNullOrWhiteSpace(containerNumber)
                 ? string.Empty
                 : containerNumber.Trim().ToUpperInvariant();
+        }
+
+        private static string BuildImageAnalysisIcumsPath(
+            ImageAnalysisIcumsQuery query,
+            string groupIdentifier,
+            string routeContainer,
+            int page,
+            int pageSize)
+        {
+            if (query.IsConsolidated)
+            {
+                return ContainerDetailsRoutes.BuildImageAnalysisGroupEndpointPath("icums", groupIdentifier, page, pageSize);
+            }
+
+            if (string.IsNullOrWhiteSpace(routeContainer))
+            {
+                return string.Empty;
+            }
+
+            if (query.PreferRecordBacked)
+            {
+                return ContainerDetailsRoutes.BuildImageAnalysisRecordIcumsPath(
+                    routeContainer,
+                    query.RecordCompletenessStatusId,
+                    NormalizeOptionalIdentifier(query.RecordKey),
+                    page,
+                    pageSize);
+            }
+
+            var declarationNumber = NormalizeDataLookupIdentifier(query.DeclarationNumber ?? groupIdentifier);
+            return ContainerDetailsRoutes.BuildImageAnalysisContainerEndpointPath(
+                "icums",
+                routeContainer,
+                declarationNumber,
+                page,
+                pageSize);
+        }
+
+        private static string BuildImageAnalysisIcumsCacheKey(
+            ImageAnalysisIcumsQuery query,
+            string groupIdentifier,
+            string routeContainer,
+            int page,
+            int pageSize)
+        {
+            var keyRoot = !string.IsNullOrWhiteSpace(routeContainer)
+                ? routeContainer
+                : NormalizeCachePart(groupIdentifier);
+            return $"image_analysis_icums_{keyRoot}_{query.IsConsolidated}_{query.PreferRecordBacked}_{NormalizeCachePart(groupIdentifier)}_{NormalizeCachePart(query.DeclarationNumber)}_{query.RecordCompletenessStatusId}_{NormalizeCachePart(query.RecordKey)}_page_{page}_size_{pageSize}";
+        }
+
+        private static string NormalizeDataLookupIdentifier(string? identifier)
+        {
+            if (string.IsNullOrWhiteSpace(identifier))
+            {
+                return string.Empty;
+            }
+
+            var normalized = identifier.Trim();
+            var waveMatch = System.Text.RegularExpressions.Regex.Match(
+                normalized,
+                @"^(?<base>.+)_W\d+$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+            return waveMatch.Success ? waveMatch.Groups["base"].Value : normalized;
+        }
+
+        private static string? NormalizeOptionalIdentifier(string? identifier)
+        {
+            var normalized = NormalizeDataLookupIdentifier(identifier);
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
         }
 
         /// <summary>

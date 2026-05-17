@@ -15,6 +15,7 @@
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
+@inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
 @inject PermissionGuard PermissionGuard
@@ -2990,14 +2991,17 @@
             return false;
         }
 
-        var endpoint = ContainerDetailsRoutes.BuildImageAnalysisRecordIcumsPath(
-            ContainerNumber.Trim(),
-            RecordCompletenessStatusId,
-            GetRecordIcumsLookupKey(GroupIdentifier),
-            page: 1,
-            pageSize: 1000);
-
-        var response = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(endpoint);
+        var response = await ContainerDetailsService.GetImageAnalysisICUMSDataAsync(new ImageAnalysisIcumsQuery
+        {
+            GroupIdentifier = string.IsNullOrWhiteSpace(GroupIdentifier) ? ContainerNumber : GroupIdentifier,
+            IsConsolidated = false,
+            RouteContainer = ContainerNumber.Trim(),
+            RecordCompletenessStatusId = RecordCompletenessStatusId,
+            RecordKey = GetRecordIcumsLookupKey(GroupIdentifier),
+            PreferRecordBacked = true,
+            Page = 1,
+            PageSize = 1000
+        });
         if (response?.Data?.Any() != true)
         {
             return false;
@@ -3009,7 +3013,7 @@
         _goodsPanelSourceLabel = RecordCompletenessStatusId.HasValue
             ? $"Record-backed ICUMS (record #{RecordCompletenessStatusId.Value})"
             : "Record-backed ICUMS";
-        Console.WriteLine($"[GoodsPanel] Loaded record-backed ICUMS panel for container {ContainerNumber} using {endpoint}");
+        Console.WriteLine($"[GoodsPanel] Loaded record-backed ICUMS panel for container {ContainerNumber}");
         return _goodsPanelGroups.Any();
     }
 
