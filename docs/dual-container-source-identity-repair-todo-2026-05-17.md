@@ -124,5 +124,15 @@ Final guard/cache hardening:
 - Focused validation:
   - `dotnet test tests/NickScanCentralImagingPortal.Integration.Tests/NickScanCentralImagingPortal.Integration.Tests.csproj --filter "FullyQualifiedName~PredictivePreloadServiceTests"` passed: 13/13.
   - `dotnet test tests/NickScanCentralImagingPortal.Core.Tests/NickScanCentralImagingPortal.Core.Tests.csproj --filter "FullyQualifiedName~StateOwnershipGuardrailTests"` passed: 15/15.
+- API-only controlled deploy:
+  - Staged publish: `deploy-staging/api-dual-container-hardening-20260517-182239`.
+  - Backup: `deploy-backups/api-before-dual-container-hardening-20260517-182338`.
+  - Live `appsettings*.json` hashes were unchanged before/after deploy.
+  - Live `NickScanCentralImagingPortal.API.dll`, `NickScanCentralImagingPortal.Services.dll`, and `NickScanCentralImagingPortal.Core.dll` hashes match the staged publish.
+  - `NSCIM_API` and `NSCIM_WebApp` are running.
+  - `https://10.0.1.254:5206/health` returned `200 Healthy`.
+  - Post-deploy repair dry-run remained clean with zero pollution across the tracked operational tables.
+  - Windows service event log shows `NSCIM_API` stopped and restarted successfully at 18:23.
+  - `Data/Logs/nickhr-20260517.log` had no matching `Error`, `Exception`, `Unhandled`, `42P01`, cancellation, connection-refused, or composite-source-label lines in the checked post-deploy search.
 
 Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` and was clean during the final hardening pass. Per workflow rule, merge still requires explicit user approval after the branch commits are complete.
