@@ -283,11 +283,11 @@
                                Size="Size.Small"
                                Title="@(_pixelProbeEnabled ? "Pixel Probe ON — hover for HE/LE/Material/RGB" : "Pixel Probe (hover chip)")" />
 
-                @* Goods Description quick reference *@
+                @* ICUMS details quick reference *@
                 <MudIconButton Icon="@Icons.Material.Outlined.Description"
                                OnClick="ToggleGoodsPanel"
                                Style="@(_showGoodsPanel ? "color:#4fc3f7;" : "color:white;")"
-                               Size="Size.Small" Title="Goods Description" />
+                               Size="Size.Small" Title="ICUMS Details" />
 
                 <div style="width:1px; height:24px; background:rgba(255,255,255,0.2);"></div>
 
@@ -476,18 +476,22 @@
                 @* ═══ LEFT: Image Viewport (70%) ═══ *@
                 <div class="ia-viewer-image" style="flex: 7; position: relative; overflow: hidden; background: #1e1e2e; @GetContainerStyle()">
 
-                    @* Floating Goods Description Panel *@
+                    @* Floating ICUMS Details Panel *@
                     @if (_showGoodsPanel)
                     {
-                        <div style="position: absolute; top: 12px; right: 12px; z-index: 40; width: 420px; max-height: 60%;
+                        <div style="position: absolute; top: 12px; right: 12px; z-index: 40; width: min(620px, calc(100% - 24px)); max-height: 72%;
                                     background: rgba(255,255,255,0.97); border-radius: 8px;
                                     box-shadow: 0 8px 32px rgba(0,0,0,0.3); overflow: hidden; display: flex; flex-direction: column;">
                             <div style="background: #546e7a; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
                                 <span style="color: white; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
-                                    Goods Description
+                                    ICUMS Details
                                     @if (_goodsPanelItems.Any())
                                     {
-                                        <text> (@_goodsPanelItems.Count items across @_goodsPanelGroups.Count BOE@(_goodsPanelGroups.Count != 1 ? "s" : ""))</text>
+                                        <text> (@GetGoodsPanelFieldCount() fields, @_goodsPanelItems.Count item@(_goodsPanelItems.Count != 1 ? "s" : ""))</text>
+                                    }
+                                    else if (_goodsPanelGroups.Any())
+                                    {
+                                        <text> (@GetGoodsPanelFieldCount() fields)</text>
                                     }
                                     @if (!string.IsNullOrEmpty(_crmsRiskLevel))
                                     {
@@ -518,35 +522,70 @@
                                 }
                                 else if (_goodsPanelGroups.Any())
                                 {
+                                    @if (!string.IsNullOrWhiteSpace(_goodsPanelSourceLabel))
+                                    {
+                                        <div style="padding: 7px 12px; background: #f5f7f8; border-bottom: 1px solid #dce3e7; color: #607d8b; font-size: 11px; font-weight: 600; letter-spacing: 0.2px;">
+                                            Source: @_goodsPanelSourceLabel
+                                        </div>
+                                    }
                                     @foreach (var grp in _goodsPanelGroups)
                                     {
-                                        @if (_goodsPanelGroups.Count > 1)
-                                        {
-                                            <div style="background: #eceff1; padding: 5px 10px; font-size: 11px; font-weight: 700; color: #455a64; border-bottom: 1px solid #cfd8dc; position: sticky; top: 0; z-index: 1;">
-                                                @grp.Label
-                                                @if (grp.Items.Any())
-                                                {
-                                                    <span style="font-weight: 400; color: #78909c; margin-left: 6px;">(@grp.Items.Count items)</span>
-                                                }
-                                            </div>
-                                        }
-                                        @* Narrative summary from BOE goodsdescription — always shown first *@
+                                        <div style="background: #eceff1; padding: 6px 10px; font-size: 11px; font-weight: 700; color: #455a64; border-bottom: 1px solid #cfd8dc; position: sticky; top: 0; z-index: 1;">
+                                            @grp.Label
+                                            <span style="font-weight: 400; color: #78909c; margin-left: 6px;">(@grp.Sections.Sum(s => s.Fields.Count) fields@((grp.Items.Any()) ? $", {grp.Items.Count} items" : ""))</span>
+                                        </div>
+                                        @* Narrative summary from BOE goodsdescription — shown first for analyst context *@
                                         @if (!string.IsNullOrEmpty(grp.NarrativeText))
                                         {
-                                            <div style="padding: 8px 12px; font-size: 13px; color: #1a237e; line-height: 1.5; background: #e8eaf6; border-bottom: 1px solid #c5cae9; font-weight: 500;">
-                                                @grp.NarrativeText
+                                            <div style="padding: 8px 12px; font-size: 13px; color: #1a237e; line-height: 1.5; background: #e8eaf6; border-bottom: 1px solid #c5cae9;">
+                                                <div style="font-size: 10px; font-weight: 700; color: #3949ab; text-transform: uppercase; margin-bottom: 3px;">Goods Description</div>
+                                                <div style="font-weight: 500;">@grp.NarrativeText</div>
+                                            </div>
+                                        }
+                                        @if (grp.Sections.Any())
+                                        {
+                                            <div style="padding: 8px 10px 2px 10px;">
+                                                @foreach (var icumsSection in grp.Sections)
+                                                {
+                                                    var sectionAccent = GetIcumsSectionAccent(icumsSection.Title);
+                                                    <div style="border: 1px solid #d9e2e7; border-left: 4px solid @sectionAccent; border-radius: 6px; margin-bottom: 8px; overflow: hidden; background: #ffffff;">
+                                                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; background: #f8fafb; border-bottom: 1px solid #e7edf0;">
+                                                            <span style="display: flex; align-items: center; gap: 6px; color: #37474f; font-size: 12px; font-weight: 700;">
+                                                                <MudIcon Icon="@GetIcumsSectionIcon(icumsSection.Title)" Size="Size.Small" Style="@($"color:{sectionAccent};")" />
+                                                                @icumsSection.Title
+                                                            </span>
+                                                            <span style="font-size: 10px; color: #78909c; font-weight: 600;">@icumsSection.Fields.Count field@((icumsSection.Fields.Count != 1) ? "s" : "")</span>
+                                                        </div>
+                                                        <div style="display: grid; grid-template-columns: minmax(140px, 0.42fr) minmax(0, 1fr);">
+                                                            @foreach (var field in icumsSection.Fields)
+                                                            {
+                                                                <div style="padding: 5px 8px; border-bottom: 1px solid #f0f3f5; color: #607d8b; font-size: 11px; font-weight: 600; overflow-wrap: anywhere;">@field.Label</div>
+                                                                <div style="@($"padding: 5px 8px; border-bottom: 1px solid #f0f3f5; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; {GetIcumsValueStyle(field)}")">
+                                                                    @field.Value
+                                                                    @if (field.IsRequired)
+                                                                    {
+                                                                        <span style="margin-left: 6px; font-size: 9px; color: #bf360c; font-weight: 700;">REQUIRED</span>
+                                                                    }
+                                                                </div>
+                                                            }
+                                                        </div>
+                                                    </div>
+                                                }
                                             </div>
                                         }
                                         @* Structured line items from manifest — shown below narrative *@
                                         @if (grp.Items.Any())
                                         {
-                                            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
                                                 <thead>
                                                     <tr style="background: #f5f5f5;">
                                                         <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">#</th>
                                                         <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Description</th>
                                                         <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">HS Code</th>
                                                         <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Qty</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Weight</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Value</th>
+                                                        <th style="padding: 6px 10px; text-align: left; font-weight: 600; color: #666; border-bottom: 1px solid #e0e0e0;">Origin</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
@@ -557,6 +596,9 @@
                                                             <td style="padding: 5px 10px; font-weight: 500; color: #333;">@item.Description</td>
                                                             <td style="padding: 5px 10px; font-family: monospace; font-size: 11px; color: #666;">@(item.HsCode ?? "-")</td>
                                                             <td style="padding: 5px 10px; color: #666;">@(item.Quantity ?? "-")</td>
+                                                            <td style="padding: 5px 10px; color: #666;">@(item.Weight ?? "-")</td>
+                                                            <td style="padding: 5px 10px; color: #666;">@(item.Value ?? "-")</td>
+                                                            <td style="padding: 5px 10px; color: #666;">@(item.Origin ?? "-")</td>
                                                         </tr>
                                                     }
                                                 </tbody>
@@ -564,9 +606,13 @@
                                         }
                                     }
                                 }
+                                else if (!string.IsNullOrWhiteSpace(_goodsPanelText))
+                                {
+                                    <div style="padding: 16px; text-align: center; color: #607d8b; font-size: 12px;">@_goodsPanelText</div>
+                                }
                                 else
                                 {
-                                    <div style="padding: 16px; text-align: center; color: #999; font-size: 12px;">No goods description available</div>
+                                    <div style="padding: 16px; text-align: center; color: #999; font-size: 12px;">No ICUMS details available</div>
                                 }
                             </div>
                         </div>
@@ -1369,6 +1415,8 @@
     [Parameter] public DateTime ScanDate { get; set; }
     [Parameter] public string? GroupIdentifier { get; set; }
     [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public int? RecordCompletenessStatusId { get; set; }
+    [Parameter] public string? ClearanceType { get; set; }
     [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
 
     // Audit mode — when true, shows Approve/Reject instead of Normal/Abnormal
@@ -1443,6 +1491,7 @@
     private bool _showGoodsPanel = false;
     private bool _goodsPanelLoading = false;
     private string? _goodsPanelText;
+    private string? _goodsPanelSourceLabel;
     private List<GoodsPanelItem> _goodsPanelItems = new();
     private List<GoodsPanelGroup> _goodsPanelGroups = new();
     private string? _crmsRiskLevel;
@@ -2878,10 +2927,16 @@
         _goodsPanelItems.Clear();
         _goodsPanelGroups.Clear();
         _goodsPanelText = null;
+        _goodsPanelSourceLabel = null;
         _crmsRiskLevel = null;
         StateHasChanged();
         try
         {
+            if (await TryLoadRecordBackedGoodsPanelData())
+            {
+                return;
+            }
+
             CargoGroupResponse? cargoGroup = null;
             string? resolvedLookup = null;
             foreach (var lookup in GetGoodsPanelLookupCandidates())
@@ -2901,17 +2956,9 @@
 
             if (cargoGroup?.Data?.ICUMSData != null)
             {
-                // Extract CRMS Risk Level from any group
-                foreach (var group in cargoGroup.Data.ICUMSData)
-                {
-                    if (string.IsNullOrEmpty(_crmsRiskLevel))
-                    {
-                        var riskRecord = group.Records?.FirstOrDefault(r =>
-                            r.Field == "CRMS Risk Level" && !string.IsNullOrWhiteSpace(r.Value) && r.Value != "Not assessed");
-                        if (riskRecord != null)
-                            _crmsRiskLevel = riskRecord.Value;
-                    }
-                }
+                _goodsPanelSourceLabel = !string.IsNullOrWhiteSpace(resolvedLookup)
+                    ? $"Cargo group ICUMS ({resolvedLookup})"
+                    : "Cargo group ICUMS";
 
                 foreach (var group in cargoGroup.Data.ICUMSData)
                 {
@@ -2920,94 +2967,14 @@
                               : !string.IsNullOrEmpty(group.ContainerNumber) ? group.ContainerNumber
                               : "BOE";
 
-                    var panelGroup = new GoodsPanelGroup { Label = label };
-
-                    // Primary path: structured ManifestItems on each BOE. Always present
-                    // for any BOE with line items, irrespective of single vs. multi-item.
-                    // This avoids the "Item N:" prefix parsing which silently drops
-                    // single-item declarations (CargoGroupService only prefixes when
-                    // count > 1).
-                    if (group.BOEDetails != null)
-                    {
-                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var boe in group.BOEDetails)
-                        {
-                            if (boe.ManifestItems == null) continue;
-                            foreach (var mi in boe.ManifestItems
-                                .Where(m => !string.IsNullOrWhiteSpace(m.Description))
-                                .OrderBy(m => m.ItemNo ?? m.ItemIndex))
-                            {
-                                var dedupeKey = $"{mi.Description!.Trim()}|{mi.HsCode}|{mi.Quantity}|{mi.Unit}";
-                                if (!seen.Add(dedupeKey)) continue;
-                                var qty = mi.Quantity.HasValue && mi.Quantity.Value > 0
-                                    ? $"{mi.Quantity.Value:N2} {mi.Unit ?? ""}".Trim()
-                                    : null;
-                                var item = new GoodsPanelItem
-                                {
-                                    ItemNo = mi.ItemNo ?? (panelGroup.Items.Count + 1),
-                                    Description = mi.Description!.Trim(),
-                                    HsCode = mi.HsCode,
-                                    Quantity = qty
-                                };
-                                panelGroup.Items.Add(item);
-                                _goodsPanelItems.Add(item);
-                            }
-                        }
-                    }
-
-                    // Fallback: parse "Item N:"-prefixed Records (multi-item BOEs only —
-                    // CargoGroupService omits the prefix for single-item BOEs).
-                    if (!panelGroup.Items.Any())
-                    {
-                        var cargo = group.Records?.Where(r => r.Category == "Cargo Info" && r.Field.Contains(":")) ?? Enumerable.Empty<CargoRecord>();
-                        var itemGroups = cargo
-                            .GroupBy(r =>
-                            {
-                                var match = System.Text.RegularExpressions.Regex.Match(r.Field, @"Item\s+(\d+):");
-                                return match.Success ? int.Parse(match.Groups[1].Value) : 0;
-                            })
-                            .Where(g => g.Key > 0)
-                            .OrderBy(g => g.Key);
-
-                        foreach (var ig in itemGroups)
-                        {
-                            var desc = ig.FirstOrDefault(r => r.Field.Contains("Description", StringComparison.OrdinalIgnoreCase))?.Value;
-                            if (string.IsNullOrWhiteSpace(desc)) continue;
-                            var item = new GoodsPanelItem
-                            {
-                                ItemNo = ig.Key,
-                                Description = desc.Trim(),
-                                HsCode = ig.FirstOrDefault(r => r.Field.Contains("HS Code", StringComparison.OrdinalIgnoreCase))?.Value,
-                                Quantity = ig.FirstOrDefault(r => r.Field.Contains("Quantity", StringComparison.OrdinalIgnoreCase))?.Value
-                            };
-                            panelGroup.Items.Add(item);
-                            _goodsPanelItems.Add(item);
-                        }
-                    }
-
-                    // Narrative Goods Description from the BOE — only show when there
-                    // are no structured items, so multi-item declarations show every
-                    // line instead of a one-liner summary.
-                    if (!panelGroup.Items.Any())
-                    {
-                        var goodsDesc = group.Records?
-                            .Where(r => r.Field == "Goods Description" && !string.IsNullOrWhiteSpace(r.Value))
-                            .Select(r => r.Value!.Trim())
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToList();
-                        if (goodsDesc?.Any() == true)
-                            panelGroup.NarrativeText = string.Join("; ", goodsDesc);
-                    }
-
-                    if (panelGroup.Items.Any() || !string.IsNullOrEmpty(panelGroup.NarrativeText))
-                        _goodsPanelGroups.Add(panelGroup);
+                    AddGoodsPanelGroup(BuildGoodsPanelGroup(label, group.Records, group.BOEDetails));
                 }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[GoodsPanel] Error loading: {ex.Message}");
-            _goodsPanelText = "Could not load goods description.";
+            _goodsPanelText = "Could not load ICUMS details.";
         }
         finally
         {
@@ -3015,6 +2982,398 @@
             StateHasChanged();
         }
     }
+
+    private async Task<bool> TryLoadRecordBackedGoodsPanelData()
+    {
+        if (!ShouldUseRecordBackedIcumsLookup() || string.IsNullOrWhiteSpace(ContainerNumber))
+        {
+            return false;
+        }
+
+        var endpoint = ContainerDetailsRoutes.BuildImageAnalysisRecordIcumsPath(
+            ContainerNumber.Trim(),
+            RecordCompletenessStatusId,
+            GetRecordIcumsLookupKey(GroupIdentifier),
+            page: 1,
+            pageSize: 1000);
+
+        var response = await ApiService.GetAsync<NickScanWebApp.Shared.Models.PagedResult<NickScanWebApp.Shared.Models.ICUMSDataRecord>>(endpoint);
+        if (response?.Data?.Any() != true)
+        {
+            return false;
+        }
+
+        var records = response.Data.Select(MapIcumsRecord).ToList();
+        var label = BuildRecordBackedPanelLabel(records);
+        AddGoodsPanelGroup(BuildGoodsPanelGroup(label, records, null));
+        _goodsPanelSourceLabel = RecordCompletenessStatusId.HasValue
+            ? $"Record-backed ICUMS (record #{RecordCompletenessStatusId.Value})"
+            : "Record-backed ICUMS";
+        Console.WriteLine($"[GoodsPanel] Loaded record-backed ICUMS panel for container {ContainerNumber} using {endpoint}");
+        return _goodsPanelGroups.Any();
+    }
+
+    private GoodsPanelGroup BuildGoodsPanelGroup(
+        string label,
+        IEnumerable<CargoRecord>? records,
+        IEnumerable<BoeDetailResponse>? boeDetails)
+    {
+        var recordList = records?.ToList() ?? new List<CargoRecord>();
+        SetRiskLevelFromRecords(recordList);
+
+        var panelGroup = new GoodsPanelGroup
+        {
+            Label = label,
+            NarrativeText = BuildNarrativeGoodsDescription(recordList),
+            Sections = BuildIcumsSections(recordList)
+        };
+
+        AddManifestItemsFromBoeDetails(panelGroup, boeDetails);
+        if (!panelGroup.Items.Any())
+        {
+            AddManifestItemsFromRecords(panelGroup, recordList);
+        }
+
+        return panelGroup;
+    }
+
+    private void AddGoodsPanelGroup(GoodsPanelGroup panelGroup)
+    {
+        if (!panelGroup.Sections.Any() && !panelGroup.Items.Any() && string.IsNullOrWhiteSpace(panelGroup.NarrativeText))
+        {
+            return;
+        }
+
+        _goodsPanelGroups.Add(panelGroup);
+        _goodsPanelItems.AddRange(panelGroup.Items);
+    }
+
+    private CargoRecord MapIcumsRecord(NickScanWebApp.Shared.Models.ICUMSDataRecord record)
+        => new()
+        {
+            Field = record.Field,
+            Value = record.Value,
+            Category = record.Category,
+            IsRequired = record.IsRequired
+        };
+
+    private string BuildRecordBackedPanelLabel(IReadOnlyCollection<CargoRecord> records)
+    {
+        var clearance = FindRecordValue(records, "Clearance Type");
+        var rotation = FindRecordValue(records, "Rotation Number");
+        var blNumber = FindRecordValue(records, "BL Number");
+        var parts = new[] { clearance, rotation, blNumber }
+            .Where(v => !string.IsNullOrWhiteSpace(v) && !IsPlaceholderValue(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var suffix = parts.Any() ? $" - {string.Join(" / ", parts)}" : "";
+        return $"{ContainerNumber}{suffix}";
+    }
+
+    private void SetRiskLevelFromRecords(IEnumerable<CargoRecord> records)
+    {
+        if (!string.IsNullOrEmpty(_crmsRiskLevel))
+        {
+            return;
+        }
+
+        var riskRecord = records.FirstOrDefault(r =>
+            string.Equals(r.Field, "CRMS Risk Level", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(r.Value)
+            && !string.Equals(r.Value, "Not assessed", StringComparison.OrdinalIgnoreCase)
+            && !IsPlaceholderValue(r.Value));
+        if (riskRecord != null)
+        {
+            _crmsRiskLevel = riskRecord.Value;
+        }
+    }
+
+    private static string? FindRecordValue(IEnumerable<CargoRecord> records, string field)
+        => records.FirstOrDefault(r => string.Equals(r.Field, field, StringComparison.OrdinalIgnoreCase))?.Value;
+
+    private static string? BuildNarrativeGoodsDescription(IEnumerable<CargoRecord> records)
+    {
+        var goodsDesc = records
+            .Where(r => string.Equals(r.Field, "Goods Description", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(r.Value)
+                && !IsPlaceholderValue(r.Value))
+            .Select(r => r.Value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return goodsDesc.Any() ? string.Join("; ", goodsDesc) : null;
+    }
+
+    private static List<IcumsPanelSection> BuildIcumsSections(IEnumerable<CargoRecord> records)
+    {
+        return records
+            .Where(r => !string.IsNullOrWhiteSpace(r.Field) && !string.IsNullOrWhiteSpace(r.Value))
+            .GroupBy(r => $"{NormalizeIcumsSectionTitle(r.Category)}|{NormalizeFieldLabel(r.Field)}|{r.Value!.Trim()}", StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .GroupBy(r => NormalizeIcumsSectionTitle(r.Category), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => GetIcumsSectionOrder(g.Key))
+            .ThenBy(g => g.Key)
+            .Select(g => new IcumsPanelSection
+            {
+                Title = g.Key,
+                Fields = g
+                    .OrderBy(r => GetIcumsFieldOrder(g.Key, r.Field))
+                    .ThenBy(r => r.Field)
+                    .Select(r => new IcumsPanelField
+                    {
+                        Label = NormalizeFieldLabel(r.Field),
+                        Value = r.Value!.Trim(),
+                        IsRequired = r.IsRequired,
+                        IsMissing = IsPlaceholderValue(r.Value) || r.Value.Contains("MISSING", StringComparison.OrdinalIgnoreCase)
+                    })
+                    .ToList()
+            })
+            .Where(s => s.Fields.Any())
+            .ToList();
+    }
+
+    private static string NormalizeIcumsSectionTitle(string? category)
+    {
+        return (category ?? "").Trim() switch
+        {
+            "Cargo Info" => "Goods / Commodity Info",
+            "Manifest Info" => "Shipping / Manifest Info",
+            "Risk Assessment" => "Risk / Remarks",
+            "Location Info" => "Location Info",
+            "Data Info" => "Data Lineage",
+            "" => "Other ICUMS Fields",
+            var value => value
+        };
+    }
+
+    private static string NormalizeFieldLabel(string? field)
+    {
+        var value = (field ?? "").Trim();
+        var match = System.Text.RegularExpressions.Regex.Match(value, @"^Item\s+\d+:\s*(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value.Trim() : value;
+    }
+
+    private static int GetIcumsSectionOrder(string title)
+        => title switch
+        {
+            "Container Info" => 10,
+            "Declaration Info" => 20,
+            "CMR Info" => 30,
+            "Shipping / Manifest Info" => 40,
+            "Goods / Commodity Info" => 50,
+            "Party Info" => 60,
+            "Financial Info" => 70,
+            "Risk / Remarks" => 80,
+            "Location Info" => 90,
+            "Status" => 100,
+            "Integrity" => 110,
+            "Data Lineage" => 120,
+            "Additional Fields" => 130,
+            _ => 999
+        };
+
+    private static int GetIcumsFieldOrder(string sectionTitle, string field)
+    {
+        var normalized = NormalizeFieldLabel(field);
+        return normalized switch
+        {
+            "Container Number" => 10,
+            "Clearance Type" => 10,
+            "Rotation Number" => 10,
+            "Declaration Number (BOE)" => 20,
+            "Declaration Date" => 30,
+            "BL Number" => 10,
+            "House BL" => 20,
+            "Master BL Number" => 30,
+            "Goods Description" => 10,
+            "CRMS Risk Level" => 10,
+            _ => 500
+        };
+    }
+
+    private static bool IsPlaceholderValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var normalized = value.Trim();
+        return normalized.Equals("Not available", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("N/A", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("N/A ", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("N/A (", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void AddManifestItemsFromBoeDetails(GoodsPanelGroup panelGroup, IEnumerable<BoeDetailResponse>? boeDetails)
+    {
+        if (boeDetails == null)
+        {
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var boe in boeDetails)
+        {
+            if (boe.ManifestItems == null)
+            {
+                continue;
+            }
+
+            foreach (var mi in boe.ManifestItems
+                .Where(m => !string.IsNullOrWhiteSpace(m.Description))
+                .OrderBy(m => m.ItemNo ?? m.ItemIndex))
+            {
+                var item = new GoodsPanelItem
+                {
+                    ItemNo = mi.ItemNo ?? (panelGroup.Items.Count + 1),
+                    Description = mi.Description!.Trim(),
+                    HsCode = mi.HsCode,
+                    Quantity = FormatQuantity(mi.Quantity, mi.Unit),
+                    Weight = FormatDecimal(mi.Weight),
+                    Value = FormatCurrency(mi.ItemFob, mi.FobCurrency),
+                    DutyPaid = FormatCurrency(mi.ItemDutyPaid, null),
+                    Origin = mi.CountryOfOrigin,
+                    Cpc = mi.Cpc
+                };
+
+                var dedupeKey = $"{item.Description}|{item.HsCode}|{item.Quantity}|{item.Weight}|{item.Value}|{item.Origin}|{item.Cpc}";
+                if (seen.Add(dedupeKey))
+                {
+                    panelGroup.Items.Add(item);
+                }
+            }
+        }
+    }
+
+    private static void AddManifestItemsFromRecords(GoodsPanelGroup panelGroup, IEnumerable<CargoRecord> records)
+    {
+        var itemGroups = records
+            .Where(r => string.Equals(NormalizeIcumsSectionTitle(r.Category), "Goods / Commodity Info", StringComparison.OrdinalIgnoreCase))
+            .Select(r => new
+            {
+                Record = r,
+                Match = System.Text.RegularExpressions.Regex.Match(r.Field, @"^Item\s+(\d+):\s*(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            })
+            .Where(x => x.Match.Success)
+            .GroupBy(x => int.Parse(x.Match.Groups[1].Value))
+            .OrderBy(g => g.Key);
+
+        foreach (var itemGroup in itemGroups)
+        {
+            string? GetValue(params string[] labels)
+                => itemGroup
+                    .FirstOrDefault(x => labels.Any(label =>
+                        x.Match.Groups[2].Value.Contains(label, StringComparison.OrdinalIgnoreCase)))?
+                    .Record.Value;
+
+            var description = GetValue("Description");
+            if (string.IsNullOrWhiteSpace(description) || IsPlaceholderValue(description))
+            {
+                continue;
+            }
+
+            var quantity = GetValue("Quantity");
+            var unit = GetValue("Unit");
+            panelGroup.Items.Add(new GoodsPanelItem
+            {
+                ItemNo = itemGroup.Key,
+                Description = description.Trim(),
+                HsCode = GetValue("HS Code"),
+                Quantity = !string.IsNullOrWhiteSpace(quantity) && !IsPlaceholderValue(quantity)
+                    ? $"{quantity} {unit}".Trim()
+                    : null,
+                Weight = GetValue("Weight"),
+                Value = GetValue("FOB") ?? GetValue("Value"),
+                DutyPaid = GetValue("Duty Paid"),
+                Origin = GetValue("Origin"),
+                Cpc = GetValue("CPC")
+            });
+        }
+    }
+
+    private static string? FormatQuantity(decimal? quantity, string? unit)
+        => quantity.HasValue && quantity.Value > 0
+            ? $"{quantity.Value:N2} {unit ?? ""}".Trim()
+            : null;
+
+    private static string? FormatDecimal(decimal? value)
+        => value.HasValue ? value.Value.ToString("N2") : null;
+
+    private static string? FormatCurrency(decimal? value, string? currency)
+        => value.HasValue
+            ? $"{value.Value:N2} {currency ?? ""}".Trim()
+            : null;
+
+    private bool ShouldUseRecordBackedIcumsLookup()
+    {
+        return RecordCompletenessStatusId.HasValue || IsCmrRecord();
+    }
+
+    private bool IsCmrRecord()
+    {
+        return string.Equals(ClearanceType?.Trim(), "CMR", StringComparison.OrdinalIgnoreCase)
+            || IsCmrOperationalKey(GroupIdentifier);
+    }
+
+    private static bool IsCmrOperationalKey(string? value)
+    {
+        var key = value?.Trim();
+        return !string.IsNullOrWhiteSpace(key)
+            && key.StartsWith("CMR-", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? GetRecordIcumsLookupKey(string? groupIdentifier)
+        => IsCmrOperationalKey(groupIdentifier)
+            ? groupIdentifier!.Trim()
+            : null;
+
+    private int GetGoodsPanelFieldCount()
+        => _goodsPanelGroups.Sum(g => g.Sections.Sum(s => s.Fields.Count));
+
+    private static string GetIcumsSectionIcon(string sectionTitle)
+        => sectionTitle switch
+        {
+            "Container Info" => Icons.Material.Outlined.Inventory2,
+            "Declaration Info" => Icons.Material.Outlined.Article,
+            "CMR Info" => Icons.Material.Outlined.Route,
+            "Shipping / Manifest Info" => Icons.Material.Outlined.LocalShipping,
+            "Goods / Commodity Info" => Icons.Material.Outlined.Category,
+            "Party Info" => Icons.Material.Outlined.Groups,
+            "Financial Info" => Icons.Material.Outlined.Payments,
+            "Risk / Remarks" => Icons.Material.Outlined.Security,
+            "Location Info" => Icons.Material.Outlined.Place,
+            "Status" => Icons.Material.Outlined.FactCheck,
+            "Integrity" => Icons.Material.Outlined.Verified,
+            "Data Lineage" => Icons.Material.Outlined.Timeline,
+            _ => Icons.Material.Outlined.Info
+        };
+
+    private static string GetIcumsSectionAccent(string sectionTitle)
+        => sectionTitle switch
+        {
+            "Container Info" => "#00897b",
+            "Declaration Info" => "#3949ab",
+            "CMR Info" => "#7b1fa2",
+            "Shipping / Manifest Info" => "#0277bd",
+            "Goods / Commodity Info" => "#2e7d32",
+            "Party Info" => "#6d4c41",
+            "Financial Info" => "#ef6c00",
+            "Risk / Remarks" => "#c62828",
+            "Location Info" => "#558b2f",
+            "Status" => "#455a64",
+            "Integrity" => "#5d4037",
+            "Data Lineage" => "#00695c",
+            _ => "#607d8b"
+        };
+
+    private static string GetIcumsValueStyle(IcumsPanelField field)
+        => field.IsMissing
+            ? "color: #90a4ae; font-style: italic;"
+            : field.IsRequired
+                ? "color: #263238; font-weight: 600;"
+                : "color: #263238;";
 
     private IEnumerable<string> GetGoodsPanelLookupCandidates()
     {
@@ -3076,6 +3435,7 @@
         public string Field { get; set; } = "";
         public string? Value { get; set; }
         public string? Category { get; set; }
+        public bool IsRequired { get; set; }
     }
     private class BoeDetailResponse
     {
@@ -3089,6 +3449,12 @@
         public string? Description { get; set; }
         public decimal? Quantity { get; set; }
         public string? Unit { get; set; }
+        public decimal? Weight { get; set; }
+        public decimal? ItemFob { get; set; }
+        public decimal? ItemDutyPaid { get; set; }
+        public string? FobCurrency { get; set; }
+        public string? CountryOfOrigin { get; set; }
+        public string? Cpc { get; set; }
     }
     private class GoodsPanelItem
     {
@@ -3096,12 +3462,30 @@
         public string Description { get; set; } = "";
         public string? HsCode { get; set; }
         public string? Quantity { get; set; }
+        public string? Weight { get; set; }
+        public string? Value { get; set; }
+        public string? DutyPaid { get; set; }
+        public string? Origin { get; set; }
+        public string? Cpc { get; set; }
     }
     private class GoodsPanelGroup
     {
         public string Label { get; set; } = "";
+        public List<IcumsPanelSection> Sections { get; set; } = new();
         public List<GoodsPanelItem> Items { get; set; } = new();
         public string? NarrativeText { get; set; }
+    }
+    private class IcumsPanelSection
+    {
+        public string Title { get; set; } = "";
+        public List<IcumsPanelField> Fields { get; set; } = new();
+    }
+    private class IcumsPanelField
+    {
+        public string Label { get; set; } = "";
+        public string Value { get; set; } = "";
+        public bool IsRequired { get; set; }
+        public bool IsMissing { get; set; }
     }
 
     private async Task ToggleMagnifier()
