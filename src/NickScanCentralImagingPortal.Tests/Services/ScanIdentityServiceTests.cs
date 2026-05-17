@@ -52,7 +52,7 @@ public sealed class ScanIdentityServiceTests
     }
 
     [Fact]
-    public async Task ScanAssetResolver_UsesCanonicalLinkBeforeContainerStringFallback()
+    public async Task ScanAssetResolver_UsesAnalysisRecordAssetIdentityBeforeContainerStringFallback()
     {
         await using var db = CreateDb();
         var original = new OriginalScanRecord
@@ -108,7 +108,7 @@ public sealed class ScanIdentityServiceTests
         var result = await resolver.ResolveAsync("TEMU2527526");
 
         Assert.True(result.Found);
-        Assert.Equal("SourceScanContainerLink", result.ResolvedBy);
+        Assert.Equal("ScanImageAssetId", result.ResolvedBy);
         Assert.Equal(identity.Asset.Id, result.ScanImageAssetId);
         Assert.Equal(original.Id, result.OriginalScanRecordId);
         Assert.Equal("TEMU2527526, TIIU2732427", result.SourceContainerNumbers);

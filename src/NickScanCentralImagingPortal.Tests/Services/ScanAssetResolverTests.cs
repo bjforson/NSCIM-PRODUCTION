@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using NickScanCentralImagingPortal.Core.DTOs.ScanAssets;
 using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.ASE;
 using NickScanCentralImagingPortal.Core.Entities.FS6000;
@@ -115,6 +116,129 @@ public sealed class ScanAssetResolverTests
         Assert.True(result.IsAmbiguous);
         Assert.Equal("AmbiguousSourceScan", result.ResolutionReason);
         Assert.Equal(2, result.Candidates.Count);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AnalysisRecordScanImageAssetId_WinsBeforeTokenizedAmbiguity()
+    {
+        await using var db = CreateDb();
+        var assetId = Guid.NewGuid();
+        var splitJobId = Guid.NewGuid();
+
+        db.ScanImageAssets.Add(new ScanImageAsset
+        {
+            Id = assetId,
+            OriginalScanRecordId = 9201,
+            ScannerType = "ASE",
+            ScannerNativeId = Guid.NewGuid().ToString(),
+            SourceContainerLabel = "TEMU2527526, TIIU2732427",
+            ImageDisplayName = "ase-pair.jpg",
+            FileSizeBytes = 517_120,
+            ScanTimeUtc = DateTime.UtcNow
+        });
+        db.SourceScanContainerLinks.Add(new SourceScanContainerLink
+        {
+            ScanImageAssetId = assetId,
+            OriginalScanRecordId = 9201,
+            ScannerType = "ASE",
+            ContainerNumber = "TIIU2732427",
+            NormalizedContainerNumber = "TIIU2732427",
+            SourceContainerLabel = "TEMU2527526, TIIU2732427"
+        });
+        db.AnalysisRecords.Add(new AnalysisRecord
+        {
+            Id = 4410,
+            GroupId = Guid.NewGuid(),
+            ContainerNumber = "TEMU2527526",
+            ScannerType = "ASE",
+            IsMultiContainerScan = true,
+            SplitJobId = splitJobId,
+            SplitPosition = "left",
+            ScanImageAssetId = assetId,
+            OriginalScanRecordId = 9201,
+            Status = "Ready"
+        });
+        db.AseScans.AddRange(
+            new AseScan
+            {
+                InspectionId = 101,
+                InspectionUuid = "ambiguous-1",
+                ContainerNumber = "TEMU2527526, TIIU2732427",
+                ScanTime = DateTime.UtcNow.AddMinutes(-10),
+                ScanImage = new byte[2048]
+            },
+            new AseScan
+            {
+                InspectionId = 102,
+                InspectionUuid = "ambiguous-2",
+                ContainerNumber = "TEMU2527526, CMAU7810482",
+                ScanTime = DateTime.UtcNow.AddMinutes(-5),
+                ScanImage = new byte[2048]
+            });
+        await db.SaveChangesAsync();
+
+        var result = await CreateResolver(db).ResolveAsync("TEMU2527526", analysisRecordId: 4410);
+
+        Assert.True(result.Found);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(assetId, result.ScanImageAssetId);
+        Assert.Equal("ScanImageAssetId", result.ResolvedBy);
+        Assert.Equal("CanonicalScanImageAssetId", result.ResolutionReason);
+        Assert.Equal("TEMU2527526, TIIU2732427", result.SourceContainerNumbers);
+        Assert.Equal(splitJobId, result.SplitJobId);
+        Assert.Equal("left", result.SplitPosition);
+        Assert.Equal(517_120, result.ImageSizeBytes);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RequestScanImageAssetId_CanResolveWithoutContainerNumber()
+    {
+        await using var db = CreateDb();
+        var assetId = Guid.NewGuid();
+
+        db.ScanImageAssets.Add(new ScanImageAsset
+        {
+            Id = assetId,
+            OriginalScanRecordId = 9301,
+            ScannerType = "ASE",
+            ScannerNativeId = Guid.NewGuid().ToString(),
+            SourceContainerLabel = "TEMU2527526, TIIU2732427",
+            ImageDisplayName = "ase-pair-no-container.jpg",
+            FileSizeBytes = 811_008,
+            ScanTimeUtc = DateTime.UtcNow
+        });
+        db.SourceScanContainerLinks.AddRange(
+            new SourceScanContainerLink
+            {
+                ScanImageAssetId = assetId,
+                OriginalScanRecordId = 9301,
+                ScannerType = "ASE",
+                ContainerNumber = "TEMU2527526",
+                NormalizedContainerNumber = "TEMU2527526",
+                SourceContainerLabel = "TEMU2527526, TIIU2732427"
+            },
+            new SourceScanContainerLink
+            {
+                ScanImageAssetId = assetId,
+                OriginalScanRecordId = 9301,
+                ScannerType = "ASE",
+                ContainerNumber = "TIIU2732427",
+                NormalizedContainerNumber = "TIIU2732427",
+                SourceContainerLabel = "TEMU2527526, TIIU2732427"
+            });
+        await db.SaveChangesAsync();
+
+        var result = await CreateResolver(db).ResolveAsync(new ScanAssetResolutionRequest
+        {
+            ScanImageAssetId = assetId
+        });
+
+        Assert.True(result.Found);
+        Assert.Equal(assetId, result.ScanImageAssetId);
+        Assert.Equal("ScanImageAssetId", result.ResolvedBy);
+        Assert.Equal("TEMU2527526, TIIU2732427", result.SourceContainerNumbers);
+        Assert.Equal("9301", result.SourceScanId);
+        Assert.True(result.HasImage);
     }
 
     [Fact]

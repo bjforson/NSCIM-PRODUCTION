@@ -315,6 +315,7 @@ namespace NickScanWebApp.Shared.Services
                             AnalysisRecordId = resolution.AnalysisRecordId,
                             SplitJobId = resolution.SplitJobId,
                             SplitResultId = resolution.SplitResultId,
+                            ScanImageAssetId = resolution.ScanImageAssetId,
                             Side = resolution.EffectiveSplitSide,
                             Page = page,
                             PageSize = pageSize
@@ -605,6 +606,7 @@ namespace NickScanWebApp.Shared.Services
                                 AnalysisRecordId = resolution.AnalysisRecordId,
                                 SplitJobId = resolution.SplitJobId,
                                 SplitResultId = resolution.SplitResultId,
+                                ScanImageAssetId = resolution.ScanImageAssetId,
                                 Side = resolution.EffectiveSplitSide
                             }));
 
@@ -827,6 +829,7 @@ namespace NickScanWebApp.Shared.Services
             foreach (var image in images)
             {
                 image.SourceScanId ??= resolution.SourceScanId;
+                image.ScanImageAssetId ??= resolution.ScanImageAssetId;
                 image.OriginalScanRecordId ??= resolution.OriginalScanRecordId;
                 image.SplitJobId ??= resolution.SplitJobId;
                 image.SplitResultId ??= resolution.SplitResultId;
@@ -854,6 +857,7 @@ namespace NickScanWebApp.Shared.Services
                 ThumbnailUrl = thumbnailPath,
                 FullImageUrl = imagePath,
                 SourceScanId = resolution.SourceScanId,
+                ScanImageAssetId = resolution.ScanImageAssetId,
                 OriginalScanRecordId = resolution.OriginalScanRecordId,
                 SplitJobId = resolution.SplitJobId,
                 SplitResultId = resolution.SplitResultId,
@@ -882,8 +886,10 @@ namespace NickScanWebApp.Shared.Services
                 {
                     Size = size,
                     ContainerNumber = containerHint,
+                    AnalysisRecordId = resolution.AnalysisRecordId,
                     SplitJobId = resolution.SplitJobId,
                     SplitResultId = resolution.SplitResultId,
+                    ScanImageAssetId = resolution.ScanImageAssetId,
                     Side = resolution.EffectiveSplitSide
                 });
         }

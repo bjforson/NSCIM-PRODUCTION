@@ -71,6 +71,7 @@ public sealed class ScanAssetResolutionRequest
     public string? GroupIdentifier { get; set; }
     public int? AnalysisRecordId { get; set; }
     public Guid? SplitJobId { get; set; }
+    public Guid? ScanImageAssetId { get; set; }
     public string? ScannerType { get; set; }
 }
 
@@ -159,6 +160,7 @@ public static class ScanAssetResolutionStatuses
 
 public static class ScanAssetResolvedBy
 {
+    public const string ScanImageAssetId = "ScanImageAssetId";
     public const string ExactFS6000 = "ExactFS6000";
     public const string ExactASE = "ExactASE";
     public const string TokenizedASE = "TokenizedASE";

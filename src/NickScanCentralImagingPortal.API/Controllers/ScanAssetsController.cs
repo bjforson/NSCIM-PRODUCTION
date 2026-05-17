@@ -38,17 +38,22 @@ public sealed class ScanAssetsController : ControllerBase
 
     [HttpGet("resolve")]
     public async Task<IActionResult> Resolve(
-        [FromQuery] string containerNumber,
+        [FromQuery] string? containerNumber = null,
         [FromQuery] string? groupIdentifier = null,
         [FromQuery] int? analysisRecordId = null,
         [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
         CancellationToken cancellationToken = default)
     {
         var resolution = await _resolver.ResolveAsync(
-            containerNumber,
-            groupIdentifier,
-            analysisRecordId,
-            splitJobId,
+            new ScanAssetResolutionRequest
+            {
+                ContainerNumber = containerNumber,
+                GroupIdentifier = groupIdentifier,
+                AnalysisRecordId = analysisRecordId,
+                SplitJobId = splitJobId,
+                ScanImageAssetId = scanImageAssetId
+            },
             cancellationToken);
 
         if (resolution.IsAmbiguous)
@@ -61,15 +66,31 @@ public sealed class ScanAssetsController : ControllerBase
     public async Task<IActionResult> GetSourceImage(
         string sourceScanId,
         [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
         [FromQuery] string? imageType = null,
         [FromQuery] string size = "full",
         [FromQuery] Guid? splitJobId = null,
         [FromQuery] Guid? splitResultId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
         [FromQuery] string? side = null,
         CancellationToken cancellationToken = default)
     {
-        var resolution = !string.IsNullOrWhiteSpace(containerNumber)
-            ? await _resolver.ResolveAsync(containerNumber, splitJobId: splitJobId, cancellationToken: cancellationToken)
+        var hasResolverContext = !string.IsNullOrWhiteSpace(containerNumber)
+            || !string.IsNullOrWhiteSpace(groupIdentifier)
+            || analysisRecordId.HasValue
+            || scanImageAssetId.HasValue;
+        var resolution = hasResolverContext
+            ? await _resolver.ResolveAsync(
+                new ScanAssetResolutionRequest
+                {
+                    ContainerNumber = containerNumber,
+                    GroupIdentifier = groupIdentifier,
+                    AnalysisRecordId = analysisRecordId,
+                    SplitJobId = splitJobId,
+                    ScanImageAssetId = scanImageAssetId
+                },
+                cancellationToken)
             : await ResolveBySourceScanIdAsync(sourceScanId, cancellationToken);
 
         if (!resolution.Found || resolution.IsAmbiguous || string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
@@ -182,14 +203,19 @@ public sealed class ScanAssetsController : ControllerBase
         [FromQuery] int? analysisRecordId = null,
         [FromQuery] Guid? splitJobId = null,
         [FromQuery] Guid? splitResultId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
         [FromQuery] string? side = null,
         CancellationToken cancellationToken = default)
     {
         var resolution = await _resolver.ResolveAsync(
-            containerNumber ?? string.Empty,
-            groupIdentifier,
-            analysisRecordId,
-            splitJobId,
+            new ScanAssetResolutionRequest
+            {
+                ContainerNumber = containerNumber,
+                GroupIdentifier = groupIdentifier,
+                AnalysisRecordId = analysisRecordId,
+                SplitJobId = splitJobId,
+                ScanImageAssetId = scanImageAssetId
+            },
             cancellationToken);
 
         if (!resolution.Found || resolution.IsAmbiguous || string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
@@ -206,8 +232,8 @@ public sealed class ScanAssetsController : ControllerBase
         var effectiveSplitJobId = splitJobId ?? resolution.SplitJobId;
         var effectiveSplitResultId = splitResultId ?? resolution.SplitResultId;
         var effectiveSide = side ?? resolution.SplitPosition;
-        var imagePath = BuildSourceImagePath(sourceScanId, containerNumber, "full", effectiveSplitJobId, effectiveSplitResultId, effectiveSide);
-        var thumbnailPath = BuildSourceImagePath(sourceScanId, containerNumber, "thumbnail", effectiveSplitJobId, effectiveSplitResultId, effectiveSide);
+        var imagePath = BuildSourceImagePath(sourceScanId, containerNumber, "full", effectiveSplitJobId, effectiveSplitResultId, resolution.ScanImageAssetId, effectiveSide);
+        var thumbnailPath = BuildSourceImagePath(sourceScanId, containerNumber, "thumbnail", effectiveSplitJobId, effectiveSplitResultId, resolution.ScanImageAssetId, effectiveSide);
         var imageHash = HashCode.Combine(sourceScanId, effectiveSplitJobId, effectiveSplitResultId, effectiveSide);
         var imageId = imageHash == int.MinValue ? int.MaxValue : Math.Abs(imageHash);
 
@@ -223,6 +249,7 @@ public sealed class ScanAssetsController : ControllerBase
                 ThumbnailUrl = thumbnailPath,
                 FullImageUrl = imagePath,
                 SourceScanId = resolution.SourceScanId,
+                ScanImageAssetId = resolution.ScanImageAssetId,
                 OriginalScanRecordId = resolution.OriginalScanRecordId,
                 ScannerScanId = resolution.ScannerScanId,
                 SplitJobId = effectiveSplitJobId,
@@ -241,6 +268,7 @@ public sealed class ScanAssetsController : ControllerBase
         [FromQuery] string? groupIdentifier = null,
         [FromQuery] int? analysisRecordId = null,
         [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 50,
         [FromQuery] bool full = false,
@@ -249,8 +277,21 @@ public sealed class ScanAssetsController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 500);
 
-        var resolution = !string.IsNullOrWhiteSpace(containerNumber)
-            ? await _resolver.ResolveAsync(containerNumber, groupIdentifier, analysisRecordId, splitJobId, cancellationToken)
+        var hasResolverContext = !string.IsNullOrWhiteSpace(containerNumber)
+            || !string.IsNullOrWhiteSpace(groupIdentifier)
+            || analysisRecordId.HasValue
+            || scanImageAssetId.HasValue;
+        var resolution = hasResolverContext
+            ? await _resolver.ResolveAsync(
+                new ScanAssetResolutionRequest
+                {
+                    ContainerNumber = containerNumber,
+                    GroupIdentifier = groupIdentifier,
+                    AnalysisRecordId = analysisRecordId,
+                    SplitJobId = splitJobId,
+                    ScanImageAssetId = scanImageAssetId
+                },
+                cancellationToken)
             : await ResolveBySourceScanIdAsync(sourceScanId, cancellationToken);
 
         if (resolution.IsAmbiguous)
@@ -299,6 +340,7 @@ public sealed class ScanAssetsController : ControllerBase
         string size,
         Guid? splitJobId,
         Guid? splitResultId,
+        Guid? scanImageAssetId,
         string? side)
     {
         var parts = new List<string>
@@ -319,6 +361,11 @@ public sealed class ScanAssetsController : ControllerBase
         if (splitResultId.HasValue)
         {
             parts.Add($"splitResultId={splitResultId.Value}");
+        }
+
+        if (scanImageAssetId.HasValue)
+        {
+            parts.Add($"scanImageAssetId={scanImageAssetId.Value}");
         }
 
         if (!string.IsNullOrWhiteSpace(side))
@@ -826,6 +873,16 @@ public sealed class ScanAssetsController : ControllerBase
 
         if (Guid.TryParse(lookupId, out var scannerScanId))
         {
+            var asset = await _resolver.ResolveAsync(
+                new ScanAssetResolutionRequest
+                {
+                    ScanImageAssetId = scannerScanId
+                },
+                cancellationToken);
+
+            if (asset.Found)
+                return asset;
+
             var ase = await _db.AseScans
                 .AsNoTracking()
                 .Where(scan => scan.Id == scannerScanId)
@@ -976,6 +1033,8 @@ public sealed class ScanAssetsController : ControllerBase
 
         return string.Equals(NormalizeSourceScanIdForLookup(resolution.SourceScanId), lookupId, StringComparison.OrdinalIgnoreCase)
             || string.Equals(resolution.OriginalScanRecordId?.ToString(), lookupId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(resolution.ScanImageAssetId?.ToString(), lookupId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(resolution.ScanImageAssetId?.ToString("N"), lookupId, StringComparison.OrdinalIgnoreCase)
             || string.Equals(resolution.ScannerScanId?.ToString(), lookupId, StringComparison.OrdinalIgnoreCase)
             || string.Equals(resolution.ScannerScanId?.ToString("N"), lookupId, StringComparison.OrdinalIgnoreCase);
     }

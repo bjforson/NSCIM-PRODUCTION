@@ -15,20 +15,22 @@ public sealed class ScanAssetClient
         string containerNumber,
         string? groupIdentifier = null,
         int? analysisRecordId = null,
-        Guid? splitJobId = null)
+        Guid? splitJobId = null,
+        Guid? scanImageAssetId = null)
     {
         return _apiService.GetAsync<ScanAssetResolution>(
-            BuildResolvePath(containerNumber, groupIdentifier, analysisRecordId, splitJobId));
+            BuildResolvePath(containerNumber, groupIdentifier, analysisRecordId, splitJobId, scanImageAssetId));
     }
 
     public Task<ScanAssetResolution?> TryResolveAsync(
         string containerNumber,
         string? groupIdentifier = null,
         int? analysisRecordId = null,
-        Guid? splitJobId = null)
+        Guid? splitJobId = null,
+        Guid? scanImageAssetId = null)
     {
         return _apiService.TryGetAsync<ScanAssetResolution>(
-            BuildResolvePath(containerNumber, groupIdentifier, analysisRecordId, splitJobId));
+            BuildResolvePath(containerNumber, groupIdentifier, analysisRecordId, splitJobId, scanImageAssetId));
     }
 
     public Task<List<ImageMetadata>?> TryGetImagesAsync(
@@ -56,6 +58,7 @@ public sealed class ScanAssetClient
             AnalysisRecordId = query?.AnalysisRecordId,
             SplitJobId = query?.SplitJobId,
             SplitResultId = query?.SplitResultId,
+            ScanImageAssetId = query?.ScanImageAssetId,
             Side = query?.Side,
             Page = query?.Page,
             PageSize = query?.PageSize,
@@ -69,13 +72,15 @@ public sealed class ScanAssetClient
         string containerNumber,
         string? groupIdentifier = null,
         int? analysisRecordId = null,
-        Guid? splitJobId = null)
+        Guid? splitJobId = null,
+        Guid? scanImageAssetId = null)
     {
         var parts = new List<string>();
         Add(parts, "containerNumber", containerNumber);
         Add(parts, "groupIdentifier", groupIdentifier);
         Add(parts, "analysisRecordId", analysisRecordId);
         Add(parts, "splitJobId", splitJobId);
+        Add(parts, "scanImageAssetId", scanImageAssetId);
 
         return "/api/scan-assets/resolve" + ToQueryString(parts);
     }
@@ -86,10 +91,13 @@ public sealed class ScanAssetClient
     {
         var parts = new List<string>();
         Add(parts, "containerNumber", query?.ContainerNumber);
+        Add(parts, "groupIdentifier", query?.GroupIdentifier);
+        Add(parts, "analysisRecordId", query?.AnalysisRecordId);
         Add(parts, "imageType", query?.ImageType);
         Add(parts, "size", string.IsNullOrWhiteSpace(query?.Size) ? "full" : query.Size);
         Add(parts, "splitJobId", query?.SplitJobId);
         Add(parts, "splitResultId", query?.SplitResultId);
+        Add(parts, "scanImageAssetId", query?.ScanImageAssetId);
         Add(parts, "side", query?.Side);
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image{ToQueryString(parts)}";
@@ -105,6 +113,7 @@ public sealed class ScanAssetClient
         Add(parts, "analysisRecordId", query?.AnalysisRecordId);
         Add(parts, "splitJobId", query?.SplitJobId);
         Add(parts, "splitResultId", query?.SplitResultId);
+        Add(parts, "scanImageAssetId", query?.ScanImageAssetId);
         Add(parts, "side", query?.Side);
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/images{ToQueryString(parts)}";
@@ -120,6 +129,7 @@ public sealed class ScanAssetClient
         Add(parts, "analysisRecordId", query?.AnalysisRecordId);
         Add(parts, "splitJobId", query?.SplitJobId);
         Add(parts, "splitResultId", query?.SplitResultId);
+        Add(parts, "scanImageAssetId", query?.ScanImageAssetId);
         Add(parts, "side", query?.Side);
         Add(parts, "page", query?.Page);
         Add(parts, "pageSize", query?.PageSize);
@@ -175,6 +185,7 @@ public sealed class ScanAssetImageQuery
     public string? Size { get; set; } = "full";
     public Guid? SplitJobId { get; set; }
     public Guid? SplitResultId { get; set; }
+    public Guid? ScanImageAssetId { get; set; }
     public string? Side { get; set; }
 }
 
@@ -185,6 +196,7 @@ public sealed class ScanAssetScannerDataQuery
     public int? AnalysisRecordId { get; set; }
     public Guid? SplitJobId { get; set; }
     public Guid? SplitResultId { get; set; }
+    public Guid? ScanImageAssetId { get; set; }
     public string? Side { get; set; }
     public int? Page { get; set; }
     public int? PageSize { get; set; }

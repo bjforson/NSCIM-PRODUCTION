@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NickScanCentralImagingPortal.Core.DTOs.ScanAssets;
+using NickScanCentralImagingPortal.Core.Entities;
 using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Interfaces;
@@ -25,21 +26,35 @@ public sealed class ScanAssetResolver : IScanAssetResolver
         ScanAssetResolutionRequest request,
         CancellationToken cancellationToken = default)
     {
-        return ResolveAsync(
-            request.ContainerNumber ?? string.Empty,
-            request.GroupIdentifier,
-            request.AnalysisRecordId,
-            request.SplitJobId,
-            cancellationToken);
+        return ResolveCoreAsync(request, cancellationToken);
     }
 
-    public async Task<ScanAssetResolution> ResolveAsync(
+    public Task<ScanAssetResolution> ResolveAsync(
         string containerNumber,
         string? groupIdentifier = null,
         int? analysisRecordId = null,
         Guid? splitJobId = null,
         CancellationToken cancellationToken = default)
     {
+        return ResolveCoreAsync(
+            new ScanAssetResolutionRequest
+            {
+                ContainerNumber = containerNumber,
+                GroupIdentifier = groupIdentifier,
+                AnalysisRecordId = analysisRecordId,
+                SplitJobId = splitJobId
+            },
+            cancellationToken);
+    }
+
+    private async Task<ScanAssetResolution> ResolveCoreAsync(
+        ScanAssetResolutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var containerNumber = request.ContainerNumber ?? string.Empty;
+        var groupIdentifier = request.GroupIdentifier;
+        var analysisRecordId = request.AnalysisRecordId;
+        var splitJobId = request.SplitJobId;
         var normalizedContainer = ContainerNumberListMatcher.Normalize(containerNumber);
         var recordContext = await ResolveAnalysisRecordContextAsync(
             normalizedContainer,
@@ -52,6 +67,26 @@ public sealed class ScanAssetResolver : IScanAssetResolver
         {
             normalizedContainer = ContainerNumberListMatcher.Normalize(recordContext.ContainerNumber);
             splitJobId ??= recordContext.SplitJobId;
+        }
+
+        var effectiveScanImageAssetId = request.ScanImageAssetId ?? recordContext?.ScanImageAssetId;
+        if (effectiveScanImageAssetId.HasValue)
+        {
+            var assetResolution = await ResolveScanImageAssetAsync(
+                effectiveScanImageAssetId.Value,
+                containerNumber,
+                normalizedContainer,
+                recordContext,
+                cancellationToken);
+
+            if (assetResolution != null)
+            {
+                return ApplyWorkflowContext(
+                    assetResolution,
+                    recordContext,
+                    splitJobId,
+                    ScanAssetResolvedBy.ScanImageAssetId);
+            }
         }
 
         if (string.IsNullOrEmpty(normalizedContainer))
@@ -147,6 +182,106 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             CacheKey = BuildCacheKey(null, null, splitJobId, recordContext?.SplitResultId)
         };
     }
+
+    private async Task<ScanAssetResolution?> ResolveScanImageAssetAsync(
+        Guid scanImageAssetId,
+        string requestedContainer,
+        string normalizedContainer,
+        AnalysisRecord? recordContext,
+        CancellationToken cancellationToken)
+    {
+        var asset = await _db.ScanImageAssets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(row => row.Id == scanImageAssetId, cancellationToken);
+
+        if (asset == null)
+            return null;
+
+        var links = await _db.SourceScanContainerLinks
+            .AsNoTracking()
+            .Where(link => link.ScanImageAssetId == scanImageAssetId)
+            .OrderByDescending(link => link.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        var recordContainer = ContainerNumberListMatcher.Normalize(recordContext?.ContainerNumber);
+        var selectedLink = SelectAssetContainerLink(links, normalizedContainer, recordContainer);
+        var effectiveNormalizedContainer = !string.IsNullOrWhiteSpace(normalizedContainer)
+            ? normalizedContainer
+            : !string.IsNullOrWhiteSpace(recordContainer)
+                ? recordContainer
+                : selectedLink?.NormalizedContainerNumber ?? ContainerNumberListMatcher.Normalize(selectedLink?.ContainerNumber);
+        var displayContainer = selectedLink?.ContainerNumber
+            ?? recordContext?.ContainerNumber
+            ?? (!string.IsNullOrWhiteSpace(effectiveNormalizedContainer)
+                ? effectiveNormalizedContainer
+                : requestedContainer);
+        var sourceScanId = asset.OriginalScanRecordId.HasValue
+            ? asset.OriginalScanRecordId.Value.ToString(CultureInfo.InvariantCulture)
+            : asset.Id.ToString();
+
+        return new ScanAssetResolution
+        {
+            Status = ScanAssetResolutionStatuses.Resolved,
+            Found = true,
+            RequestedContainerNumber = requestedContainer,
+            NormalizedContainerNumber = effectiveNormalizedContainer,
+            ContainerNumber = displayContainer,
+            SourceScannerType = asset.ScannerType,
+            ScanImageAssetId = asset.Id,
+            SourceScanId = sourceScanId,
+            OriginalScanRecordId = asset.OriginalScanRecordId ?? selectedLink?.OriginalScanRecordId,
+            ScannerScanId = TryParseScannerNativeGuid(asset.ScannerNativeId),
+            SourceContainerNumbers = asset.SourceContainerLabel
+                ?? selectedLink?.SourceContainerLabel
+                ?? selectedLink?.ContainerNumber
+                ?? requestedContainer,
+            ResolvedBy = ScanAssetResolvedBy.ScanImageAssetId,
+            MatchKind = ScanAssetMatchKinds.Exact,
+            ResolutionReason = "CanonicalScanImageAssetId",
+            ScanTime = asset.ScanTimeUtc,
+            ImageSizeBytes = asset.FileSizeBytes,
+            ImageDisplayName = asset.ImageDisplayName,
+            HasImage = asset.FileSizeBytes.GetValueOrDefault() > 0
+                || !string.IsNullOrWhiteSpace(asset.ImageDisplayName)
+                || !string.IsNullOrWhiteSpace(asset.LocalPath)
+                || !string.IsNullOrWhiteSpace(asset.SourcePath),
+            CacheKey = BuildCacheKey(
+                asset.ScannerType,
+                sourceScanId,
+                recordContext?.SplitJobId,
+                recordContext?.SplitResultId)
+        };
+    }
+
+    private static SourceScanContainerLink? SelectAssetContainerLink(
+        IReadOnlyList<SourceScanContainerLink> links,
+        string normalizedContainer,
+        string recordContainer)
+    {
+        if (links.Count == 0)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(normalizedContainer))
+        {
+            var match = links.FirstOrDefault(link =>
+                string.Equals(link.NormalizedContainerNumber, normalizedContainer, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                return match;
+        }
+
+        if (!string.IsNullOrWhiteSpace(recordContainer))
+        {
+            var match = links.FirstOrDefault(link =>
+                string.Equals(link.NormalizedContainerNumber, recordContainer, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                return match;
+        }
+
+        return links[0];
+    }
+
+    private static Guid? TryParseScannerNativeGuid(string? scannerNativeId)
+        => Guid.TryParse(scannerNativeId, out var value) ? value : null;
 
     private async Task<AnalysisRecord?> ResolveAnalysisRecordContextAsync(
         string normalizedContainer,

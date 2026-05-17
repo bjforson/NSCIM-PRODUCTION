@@ -67,6 +67,7 @@ namespace NickScanWebApp.Shared.Models
         public string? GroupIdentifier { get; set; }
         public int? AnalysisRecordId { get; set; }
         public string? SourceScanId { get; set; }
+        public Guid? ScanImageAssetId { get; set; }
         public int? OriginalScanRecordId { get; set; }
         public Guid? ScannerScanId { get; set; }
         public Guid? ScannerRecordId
@@ -112,6 +113,7 @@ namespace NickScanWebApp.Shared.Models
         public string? EffectiveSourceScanId =>
             GetStableSourceIdentifier(SourceScanId)
             ?? OriginalScanRecordId?.ToString()
+            ?? ScanImageAssetId?.ToString()
             ?? ScannerScanId?.ToString();
 
         [JsonIgnore]
@@ -154,6 +156,7 @@ namespace NickScanWebApp.Shared.Models
     {
         public string? SourceScannerType { get; set; }
         public string? SourceScanId { get; set; }
+        public Guid? ScanImageAssetId { get; set; }
         public int? OriginalScanRecordId { get; set; }
         public Guid? ScannerScanId { get; set; }
         public string? SourceContainerNumbers { get; set; }
@@ -251,6 +254,7 @@ namespace NickScanWebApp.Shared.Models
         public string ThumbnailUrl { get; set; } = string.Empty;
         public string FullImageUrl { get; set; } = string.Empty;
         public string? SourceScanId { get; set; }
+        public Guid? ScanImageAssetId { get; set; }
         public int? OriginalScanRecordId { get; set; }
         public Guid? SplitJobId { get; set; }
         public Guid? SplitResultId { get; set; }
