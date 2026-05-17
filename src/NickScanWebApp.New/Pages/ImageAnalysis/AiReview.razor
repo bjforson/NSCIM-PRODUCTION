@@ -385,30 +385,24 @@
         _suggestionsLoading = true;
         try
         {
-            using var response = await AiWorkflowClient.GetImageSuggestionsResponseAsync(_statusFilter, _search);
-            if (response.IsSuccessStatusCode)
-            {
-                var json = await response.Content.ReadAsStringAsync();
-                var raw = System.Text.Json.JsonSerializer.Deserialize<List<SuggestionRaw>>(json,
-                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var raw = await AiWorkflowClient.GetImageSuggestionsAsync<SuggestionRaw>(_statusFilter, _search);
 
-                _suggestions = raw?.Select(r => new SuggestionViewModel
-                {
-                    Id = r.Id,
-                    ContainerNumber = r.ContainerNumber ?? "",
-                    ScannerType = r.ScannerType ?? "",
-                    GroupIdentifier = r.GroupIdentifier ?? "",
-                    ModelId = r.ModelId ?? "",
-                    SuggestedDecision = r.SuggestedDecision,
-                    Confidence = r.Confidence,
-                    HumanFinalDecision = r.HumanFinalDecision,
-                    HumanReviewedBy = r.HumanReviewedBy,
-                    ResolvedAtUtc = r.ResolvedAtUtc,
-                    ResolvedDiffersFromSuggestion = r.ResolvedDiffersFromSuggestion,
-                    CreatedAtUtc = r.CreatedAtUtc,
-                    Payload = TryParsePayload(r.SuggestionPayloadJson)
-                }).ToList() ?? new();
-            }
+            _suggestions = raw?.Select(r => new SuggestionViewModel
+            {
+                Id = r.Id,
+                ContainerNumber = r.ContainerNumber ?? "",
+                ScannerType = r.ScannerType ?? "",
+                GroupIdentifier = r.GroupIdentifier ?? "",
+                ModelId = r.ModelId ?? "",
+                SuggestedDecision = r.SuggestedDecision,
+                Confidence = r.Confidence,
+                HumanFinalDecision = r.HumanFinalDecision,
+                HumanReviewedBy = r.HumanReviewedBy,
+                ResolvedAtUtc = r.ResolvedAtUtc,
+                ResolvedDiffersFromSuggestion = r.ResolvedDiffersFromSuggestion,
+                CreatedAtUtc = r.CreatedAtUtc,
+                Payload = TryParsePayload(r.SuggestionPayloadJson)
+            }).ToList() ?? new();
         }
         catch (Exception ex)
         {
@@ -421,10 +415,10 @@
     {
         try
         {
-            using var response = await AiWorkflowClient.ResolveImageSuggestionResponseAsync(id,
+            var resolved = await AiWorkflowClient.ResolveImageSuggestionAsync(id,
                 new { Decision = decision });
 
-            if (response.IsSuccessStatusCode)
+            if (resolved)
             {
                 Snackbar.Add($"Marked as {decision}", Severity.Success);
                 await LoadSuggestions();
@@ -441,10 +435,10 @@
     {
         try
         {
-            using var response = await AiWorkflowClient.ResolveImageSuggestionResponseAsync(id,
+            var dismissed = await AiWorkflowClient.ResolveImageSuggestionAsync(id,
                 new { Decision = (string?)null, CorrectionReason = "Dismissed by analyst" });
 
-            if (response.IsSuccessStatusCode)
+            if (dismissed)
             {
                 Snackbar.Add("Suggestion dismissed", Severity.Info);
                 await LoadSuggestions();
@@ -542,13 +536,9 @@
     {
         try
         {
-            using var response = await AiWorkflowClient.GetShadowMetricsResponseAsync();
-            if (response.IsSuccessStatusCode)
+            _metrics = await AiWorkflowClient.GetShadowMetricsElementAsync();
+            if (_metrics.HasValue)
             {
-                var json = await response.Content.ReadAsStringAsync();
-                var doc = System.Text.Json.JsonDocument.Parse(json);
-                _metrics = doc.RootElement;
-
                 if (_metrics.Value.TryGetProperty("summary", out var s)) _summary = s;
                 if (_metrics.Value.TryGetProperty("confusionMatrix", out var c)) _confusion = c;
                 if (_metrics.Value.TryGetProperty("byScannerType", out var bst))

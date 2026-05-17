@@ -53,6 +53,14 @@ public sealed class AiWorkflowClient
             pageSize: 1);
     }
 
+    public async Task<bool> ResolveImageSuggestionAsync<TRequest>(
+        long id,
+        TRequest request)
+    {
+        using var response = await ResolveImageSuggestionResponseAsync(id, request);
+        return response.IsSuccessStatusCode;
+    }
+
     public Task<HttpResponseMessage> ResolveImageSuggestionResponseAsync<TRequest>(
         long id,
         TRequest request)
@@ -74,6 +82,19 @@ public sealed class AiWorkflowClient
         }
 
         return await response.Content.ReadFromJsonAsync<TMetrics>(JsonOptions);
+    }
+
+    public async Task<JsonElement?> GetShadowMetricsElementAsync()
+    {
+        using var response = await GetShadowMetricsResponseAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var document = await JsonDocument.ParseAsync(stream);
+        return document.RootElement.Clone();
     }
 
     public static string BuildImageSuggestionsPath(

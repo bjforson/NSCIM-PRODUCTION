@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NickScanWebApp.Shared.Models;
@@ -17,27 +16,18 @@ namespace NickScanWebApp.Shared.Services
         public const string HealthPath = BasePath + "/health";
         public const string DashboardStatsPath = BasePath + "/dashboard/stats";
 
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<GatewayService> _logger;
         private readonly ApiService _apiService;
-        private const string API_CLIENT_NAME = "NickScanAPI";
 
         public GatewayService(
-            IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
             ILogger<GatewayService> logger,
             ApiService apiService)
         {
-            _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _logger = logger;
             _apiService = apiService;
-        }
-
-        private HttpClient GetHttpClient()
-        {
-            return _httpClientFactory.CreateClient(API_CLIENT_NAME);
         }
 
         /// <summary>
@@ -54,19 +44,18 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var url = BuildApiUrl(BuildContainerCompletePath(
+                var path = BuildContainerCompletePath(
                     containerNumber,
                     includeImage,
                     includeScanner,
                     includeICUMS,
                     includeValidation,
                     includeVehicles,
-                    includeHistory));
+                    includeHistory);
 
                 _logger.LogInformation("Gateway: Requesting complete data for {Container}", containerNumber);
 
-                var http = GetHttpClient();
-                var response = await http.GetFromJsonAsync<ContainerCompleteData>(url);
+                var response = await _apiService.GetAsync<ContainerCompleteData>(path);
 
                 if (response != null)
                 {
@@ -113,10 +102,7 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var http = GetHttpClient();
-                using var response = await http.PostAsJsonAsync(SearchPath, request);
-                response.EnsureSuccessStatusCode();
-                return await response.Content.ReadFromJsonAsync<TResponse>();
+                return await _apiService.PostAsync<TRequest, TResponse>(SearchPath, request);
             }
             catch (HttpRequestException ex)
             {
@@ -162,9 +148,8 @@ namespace NickScanWebApp.Shared.Services
         {
             try
             {
-                var http = GetHttpClient();
-                var response = await http.GetAsync(HealthPath);
-                return response.IsSuccessStatusCode;
+                var response = await _apiService.TryGetAsync<object>(HealthPath);
+                return response != null;
             }
             catch
             {
