@@ -1,7 +1,7 @@
 # Dual-Container Source Identity Repair TODO
 
 Date: 2026-05-17
-Status: Active - first repair slice locally validated
+Status: Active - first repair slice deployed to API and post-deploy audit passed
 
 ## Problem Statement
 
@@ -50,9 +50,9 @@ Dual-container ASE scans are still leaking comma-joined identifiers into workflo
 - [ ] Phase 7: Verification and closeout.
   - [x] Run focused tests.
   - [x] Build affected projects.
-  - [ ] Re-run read-only production pollution audit.
+  - [x] Re-run read-only production pollution audit.
   - [x] Commit coherent completed slice.
-  - [ ] Ask before merge/deploy.
+  - [x] Ask before merge/deploy.
 
 ## Current Slice
 
@@ -64,4 +64,14 @@ Implemented and locally validated the first repair slice:
 - Image analysis and ICUMS payload lookup can resolve suffixed ASE inspection IDs and tokenized ASE source rows.
 - Focused factory tests, architecture guardrails, services build, and API build pass locally.
 
-Next gate: ask before merge/deploy, then run the production pollution audit after deployment/recovery so the live counts prove the fix landed.
+Deployment and live verification:
+
+- API-only controlled deploy completed from staged publish `deploy-staging/api-dual-container-identity-20260517-174603`.
+- Live API config hashes were preserved across deploy.
+- `NSCIM_API` restarted from `C:\Shared\NSCIM_PRODUCTION\publish\API`.
+- `https://10.0.1.254:5206/health` returned Healthy after restart.
+- Post-deploy pollution audit, filtered from the API restart window, returned zero comma/semicolon operational rows across queue, completeness, analysis groups, analysis queue entries, and image decisions.
+- Recent post-deploy ASE queue rows are single-container rows.
+- No dual-container ASE source rows existed in the last 24 hours, so the deployed recovery path had no fresh dual-source candidate to split during this watch window.
+
+Merge note: `main` is checked out in `C:\Shared\NSCIM_PRODUCTION_CMR_PAIR_FIX` and currently has an unrelated dirty modification in `src/NickScanWebApp.Shared/Services/ContainerDetailsService.cs`; merge is intentionally deferred until that worktree is clean or the owner confirms how to handle it.
