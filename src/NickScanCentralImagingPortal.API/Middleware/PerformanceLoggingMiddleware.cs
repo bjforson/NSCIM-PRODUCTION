@@ -3,6 +3,7 @@ using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 using NickScanCentralImagingPortal.Core.Interfaces;
 using NickScanCentralImagingPortal.Core.Models;
+using NickScanCentralImagingPortal.Services.Monitoring;
 
 namespace NickScanCentralImagingPortal.API.Middleware
 {
@@ -68,7 +69,7 @@ namespace NickScanCentralImagingPortal.API.Middleware
                 // Record endpoint usage - use buffer service (batched) when available, else fire-and-forget per-request
                 var record = new EndpointUsageRecord
                 {
-                    Endpoint = path,
+                    Endpoint = EndpointUsagePathNormalizer.Normalize(path),
                     Method = method,
                     StatusCode = statusCode,
                     ResponseTimeMs = elapsedMs,

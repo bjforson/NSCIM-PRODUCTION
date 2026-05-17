@@ -128,7 +128,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
                     var entities = batch.Select(r => new EndpointUsageLog
                     {
-                        Endpoint = r.Endpoint,
+                        Endpoint = EndpointUsagePathNormalizer.Normalize(r.Endpoint),
                         Method = r.Method,
                         StatusCode = r.StatusCode,
                         ResponseTimeMs = r.ResponseTimeMs,

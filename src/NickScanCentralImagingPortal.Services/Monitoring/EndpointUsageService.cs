@@ -45,7 +45,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
                 var logEntry = new EndpointUsageLog
                 {
-                    Endpoint = record.Endpoint,
+                    Endpoint = EndpointUsagePathNormalizer.Normalize(record.Endpoint),
                     Method = record.Method,
                     StatusCode = record.StatusCode,
                     ResponseTimeMs = record.ResponseTimeMs,
@@ -69,7 +69,8 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
         public async Task<EndpointUsageStats> GetUsageStatsAsync(string endpoint, DateTime? from = null, DateTime? to = null)
         {
-            var query = _context.EndpointUsageLogs.Where(e => e.Endpoint == endpoint);
+            var normalizedEndpoint = EndpointUsagePathNormalizer.Normalize(endpoint);
+            var query = _context.EndpointUsageLogs.Where(e => e.Endpoint.ToLower() == normalizedEndpoint);
 
             if (from.HasValue)
                 query = query.Where(e => e.Timestamp >= from.Value);
@@ -80,12 +81,12 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             if (!logs.Any())
             {
-                return new EndpointUsageStats { Endpoint = endpoint };
+                return new EndpointUsageStats { Endpoint = normalizedEndpoint };
             }
 
             var stats = new EndpointUsageStats
             {
-                Endpoint = endpoint,
+                Endpoint = normalizedEndpoint,
                 TotalCalls = logs.Count,
                 UniqueCallers = logs.Where(l => !string.IsNullOrEmpty(l.IpAddress))
                     .Select(l => l.IpAddress)
@@ -107,8 +108,9 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
         public async Task<List<EndpointCaller>> GetCallersAsync(string endpoint, DateTime? from = null, DateTime? to = null)
         {
+            var normalizedEndpoint = EndpointUsagePathNormalizer.Normalize(endpoint);
             var query = _context.EndpointUsageLogs
-                .Where(e => e.Endpoint == endpoint && !string.IsNullOrEmpty(e.IpAddress));
+                .Where(e => e.Endpoint.ToLower() == normalizedEndpoint && !string.IsNullOrEmpty(e.IpAddress));
 
             if (from.HasValue)
                 query = query.Where(e => e.Timestamp >= from.Value);
@@ -146,7 +148,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                 query = query.Where(e => e.Timestamp <= to.Value);
 
             var usage = await query
-                .GroupBy(e => e.Endpoint)
+                .GroupBy(e => e.Endpoint.ToLower())
                 .ToDictionaryAsync(g => g.Key, g => g.Count());
 
             return usage;
@@ -163,7 +165,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             var now = DateTime.UtcNow;
             var summaries = await query
-                .GroupBy(e => e.Endpoint)
+                .GroupBy(e => e.Endpoint.ToLower())
                 .Select(g => new DeprecatedEndpointSummary
                 {
                     Endpoint = g.Key,
@@ -196,7 +198,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                 query = query.Where(e => e.Timestamp <= to.Value);
 
             var usage = await query
-                .GroupBy(e => e.Endpoint)
+                .GroupBy(e => e.Endpoint.ToLower())
                 .ToDictionaryAsync(g => g.Key, g => g.Count());
 
             return usage;
@@ -216,7 +218,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             var logs = await query.ToListAsync();
 
             var summaries = logs
-                .GroupBy(e => e.Endpoint)
+                .GroupBy(e => EndpointUsagePathNormalizer.Normalize(e.Endpoint))
                 .Select(g => new Phase3RouteSummary
                 {
                     Endpoint = g.Key,
@@ -249,8 +251,9 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
         public async Task<List<EndpointUsageTrend>> GetUsageTrendsAsync(string endpoint, int days = 30)
         {
             var from = DateTime.UtcNow.AddDays(-days);
+            var normalizedEndpoint = EndpointUsagePathNormalizer.Normalize(endpoint);
             var query = _context.EndpointUsageLogs
-                .Where(e => e.Endpoint == endpoint && e.Timestamp >= from);
+                .Where(e => e.Endpoint.ToLower() == normalizedEndpoint && e.Timestamp >= from);
 
             var logs = await query.ToListAsync();
 
@@ -280,7 +283,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             // Get all deprecated endpoints
             var deprecatedEndpoints = await _context.EndpointUsageLogs
                 .Where(e => e.IsDeprecated)
-                .Select(e => e.Endpoint)
+                .Select(e => e.Endpoint.ToLower())
                 .Distinct()
                 .ToListAsync();
 
@@ -289,7 +292,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             foreach (var endpoint in deprecatedEndpoints)
             {
                 var hasRecentUsage = await _context.EndpointUsageLogs
-                    .AnyAsync(e => e.Endpoint == endpoint && e.Timestamp >= cutoffDate);
+                    .AnyAsync(e => e.Endpoint.ToLower() == endpoint && e.Timestamp >= cutoffDate);
 
                 if (!hasRecentUsage)
                 {
@@ -314,7 +317,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             // Push aggregation to SQL — avoid loading all rows into memory
             var summaries = await query
-                .GroupBy(e => new { e.Endpoint, e.Method })
+                .GroupBy(e => new { Endpoint = e.Endpoint.ToLower(), e.Method })
                 .Select(g => new AllEndpointsSummary
                 {
                     Endpoint = g.Key.Endpoint,
