@@ -980,12 +980,10 @@
 
         // 6.01 (Sprint 4): this is the canonical handoff point of the
         // (GroupIdentifier, IsConsolidated) tuple from the queue table to the
-        // dialog. The dialog's BuildContainerEndpointUrl helper centralizes the
-        // routing assumption "IsConsolidated => GroupIdentifier IS container
-        // number". If IsConsolidated is wrong here (e.g. mistag at ingest), the
-        // dialog will silently 404 — fix the upstream queue-entry tag, don't
-        // patch the dialog. Today's 2.16.3 is exactly that upstream guard for
-        // the MasterBlNumber=NULL mistag class.
+        // dialog. The dialog now delegates image-analysis ICUMS route selection
+        // to IContainerDetailsService, but the upstream assignment tag still has
+        // to be correct. If IsConsolidated is wrong here (e.g. mistag at ingest),
+        // fix the queue-entry tag rather than adding another dialog branch.
         IDialogReference? dialogRef = null;
         var parameters = new DialogParameters
         {
