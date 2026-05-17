@@ -583,6 +583,10 @@ function Get-WebAppApiCallsites {
 
             foreach ($match in $apiLiteralPattern.Matches($line)) {
                 $path = $match.Groups['path'].Value.TrimEnd([char[]]@('.', ',', ';'))
+                if (Test-IsIgnoredWebAppApiCallsite -Path $path -File $relativePath -Snippet $trimmed) {
+                    continue
+                }
+
                 $segment = Get-FirstApiSegment -Path $path
                 $knownExternalPrefix = Get-KnownExternalPrefix -Path $path
                 $category = 'UnmatchedLocalConsumerSegment'
@@ -609,6 +613,18 @@ function Get-WebAppApiCallsites {
     }
 
     return $callsites.ToArray()
+}
+
+function Test-IsIgnoredWebAppApiCallsite {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$File,
+        [Parameter(Mandatory = $true)][string]$Snippet
+    )
+
+    return $Path -eq '/api/' -and
+        $File -eq 'src\NickScanWebApp.New\Components\Monitoring\DebugPanel.razor' -and
+        $Snippet -like '*Placeholder=*'
 }
 
 function Get-KnownExternalServiceOnlySourceReferences {

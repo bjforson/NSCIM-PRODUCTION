@@ -16,16 +16,16 @@ The latest static inventory reports:
 | Controller files | 127 |
 | Minimal API routes | 58 |
 | FastAPI routes | 40 |
-| WebApp `/api` callsites | 104 |
+| WebApp `/api` callsites | 103 |
 | Provider `/api` first segments | 119 |
 | Consumer `/api` first segments | 69 |
-| Unmatched local consumer segments | 1 |
+| Unmatched local consumer segments | 0 |
 
-The only unmatched consumer segment is the intentional endpoint tester placeholder:
+The inventory now suppresses the intentional endpoint tester placeholder:
 
 | Segment | Location | Status |
 | --- | --- | --- |
-| `(empty)` from `/api/` | `src/NickScanWebApp.New/Components/Monitoring/DebugPanel.razor` | Intentional operator/debug tool. Do not count as a stale route. |
+| `(empty)` from `/api/` | `src/NickScanWebApp.New/Components/Monitoring/DebugPanel.razor` | Intentional operator/debug placeholder, ignored by inventory. |
 
 ## Completed Batches
 
@@ -45,7 +45,7 @@ The only unmatched consumer segment is the intentional endpoint tester placehold
 | --- | --- |
 | `dotnet build src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj --no-restore /p:UseSharedCompilation=false` | Passed, 202 existing warnings, 0 errors. |
 | `dotnet build src\NickScanWebApp.New\NickScanWebApp.New.csproj --no-restore /p:UseSharedCompilation=false` | Passed, 263 existing warnings, 0 errors. |
-| Route inventory script | Passed with only the intentional debug `/api/` placeholder unmatched. |
+| Route inventory script | Passed with zero unmatched local consumer segments. |
 | WebApp health after deploy | `http://localhost:5299/health` returned 200. |
 | WebApp login surface after deploy | `http://localhost:5299/login` returned 200. |
 | API health after deploy | `http://localhost:5205/health`, `/health/live`, and `/health/ready` returned 200 after restart settled. |
