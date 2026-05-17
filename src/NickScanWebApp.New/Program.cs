@@ -237,6 +237,7 @@ builder.Services.AddScoped<NickScanWebApp.New.Services.ReadinessKeepaliveCoordin
 // Singleton because the key is immutable for the process lifetime and the
 // signer holds no per-user state.
 builder.Services.AddSingleton<NickScanWebApp.New.Services.SignedImageUrlBuilder>();
+builder.Services.AddScoped<NickScanWebApp.New.Services.SignedImageProbeClient>();
 
 // Add application services. Keep the WebApp cache bounded; image-analysis
 // dialogs can touch large cargo/ICUMS payloads, and an unbounded in-process

@@ -10,6 +10,7 @@
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
 @inject IJSRuntime JSRuntime
 @inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
+@inject NickScanWebApp.New.Services.SignedImageProbeClient SignedImageProbeClient
 
 <MudContainer MaxWidth="MaxWidth.False" Class="pa-0">
     @* Header with proper name *@
@@ -1023,7 +1024,7 @@
             
             // ✅ Use existing image processing endpoint to check if image exists
             // This calls the same pipeline that serves the image (reuses existing functionality).
-            // Build a signed URL so the raw HttpClient below is authenticated without a JWT header.
+            // Build a signed URL so the probe can authenticate exactly like browser image loads.
             var authState = await AuthStateProvider.GetAuthenticationStateAsync();
             var uid = authState.User.Identity?.Name ?? "anon";
             var urlPath = BuildPreferredImagePath(image, "full");
@@ -1035,24 +1036,12 @@
             }
             var checkUrl = UrlBuilder.Build(urlPath, uid);
             
-            // Make GET request to check existence (API doesn't support HEAD)
-            // We'll check the status code to determine if image exists
-            // Use ResponseHeadersRead to avoid downloading full image
-            using var httpClient = new System.Net.Http.HttpClient();
-            httpClient.Timeout = TimeSpan.FromSeconds(10);
-            
-            using var response = await httpClient.GetAsync(checkUrl, HttpCompletionOption.ResponseHeadersRead);
-            
-            // Dispose content without reading to minimize data transfer
-            response.Content?.Dispose();
-            
+            var probeResult = await SignedImageProbeClient.ProbeAsync(checkUrl);
             var result = new ImageExistsCheckResult
             {
-                Exists = response.IsSuccessStatusCode,
-                StatusCode = (int)response.StatusCode,
-                Details = response.IsSuccessStatusCode 
-                    ? $"HTTP {response.StatusCode} - Image found in database" 
-                    : $"HTTP {response.StatusCode} - {response.ReasonPhrase}"
+                Exists = probeResult.Exists,
+                StatusCode = probeResult.StatusCode,
+                Details = probeResult.Details
             };
             
             _imageExistsCheckResult[image.Id] = result;
