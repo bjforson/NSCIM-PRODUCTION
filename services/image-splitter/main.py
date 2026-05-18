@@ -43,6 +43,8 @@ from pipeline.image_utils import (
     crop_side_and_encode,
     detect_image_media_type,
     get_image_dimensions,
+    invert_encoded_image,
+    is_16bit_grayscale_image,
 )
 from pipeline.visual_eligibility import classify_visual_eligibility
 from strategies.base import SplitResult
@@ -353,6 +355,15 @@ def ensure_minimum_split_candidates(results: list[SplitResult], image_data: byte
         existing.append(split_x)
 
     return results
+
+
+def _should_invert_legacy_fs6000_split_display(job: ImageSplitJob | None) -> bool:
+    """Legacy FS6000 jobs could store raw 16-bit PNG input with viewer-opposite polarity."""
+    if not job or not job.image_data:
+        return False
+    if (job.scanner_type or "").upper() != "FS6000":
+        return False
+    return is_16bit_grayscale_image(bytes(job.image_data))
 
 
 def _remote_vision_run_from_openai_advisory(job_id: UUID, result: SplitResult) -> Optional[RemoteVisionRun]:
@@ -842,6 +853,19 @@ async def get_result_image(job_id: UUID, result_id: UUID, side: str, db: AsyncSe
     if not img_data:
         raise HTTPException(404, "Image not available")
 
+    job = await db.get(ImageSplitJob, job_id)
+    if _should_invert_legacy_fs6000_split_display(job):
+        try:
+            img_data = invert_encoded_image(bytes(img_data), format="jpeg")
+        except Exception:
+            logger.warning(
+                "Failed to invert legacy FS6000 split preview job=%s result=%s side=%s",
+                job_id,
+                result_id,
+                side,
+                exc_info=True,
+            )
+
     return Response(content=img_data, media_type="image/jpeg")
 
 
@@ -861,6 +885,8 @@ async def get_result_lossless_image(job_id: UUID, result_id: UUID, side: str, db
 
     try:
         img_data = crop_side_and_encode(bytes(job.image_data), result.split_x, side, format="png")
+        if _should_invert_legacy_fs6000_split_display(job):
+            img_data = invert_encoded_image(img_data, format="png")
     except Exception as exc:
         logger.warning(
             "Failed to render lossless split crop job=%s result=%s side=%s",

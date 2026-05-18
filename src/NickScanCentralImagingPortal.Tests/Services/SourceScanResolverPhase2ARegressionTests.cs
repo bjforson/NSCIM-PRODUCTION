@@ -113,6 +113,69 @@ public sealed class SourceScanResolverPhase2ARegressionTests
     }
 
     [Fact]
+    public async Task ResolveAsync_NonCrossRecordSplitJobOnly_CarriesAnalysisRecordIdentity()
+    {
+        await using var db = NewInMemoryDb();
+        var groupId = Guid.NewGuid();
+        var splitJobId = Guid.NewGuid();
+        var splitResultId = Guid.NewGuid();
+        var source = new OriginalScanRecord
+        {
+            ScannerType = "ASE",
+            OriginalContainerNumbers = "MSMU1683356, MRKU8254509",
+            DerivedRecordCount = 2,
+            ScanTime = DateTime.UtcNow.AddMinutes(-20),
+            IngestedAt = DateTime.UtcNow.AddMinutes(-19)
+        };
+        db.OriginalScanRecords.Add(source);
+        await db.SaveChangesAsync();
+
+        db.AseScans.Add(new AseScan
+        {
+            Id = Guid.NewGuid(),
+            OriginalScanRecordId = source.Id,
+            InspectionId = 84722,
+            InspectionUuid = "ASE-84722",
+            ContainerNumber = "MSMU1683356, MRKU8254509",
+            ScanTime = DateTime.UtcNow.AddMinutes(-20),
+            ScanImage = new byte[1_753_540],
+            ImageDisplayName = "40426305424_W1.ase"
+        });
+        db.AnalysisRecords.Add(new AnalysisRecord
+        {
+            GroupId = groupId,
+            ContainerNumber = "MSMU1683356",
+            ScannerType = "ASE",
+            IsMultiContainerScan = true,
+            SplitJobId = splitJobId,
+            SplitResultId = splitResultId,
+            SplitPosition = "left",
+            SplitStatus = "Chosen",
+            CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+        var record = db.AnalysisRecords.Single();
+
+        var resolution = await NewResolver(db).ResolveAsync(
+            string.Empty,
+            splitJobId: splitJobId);
+
+        Assert.True(resolution.Found);
+        Assert.False(resolution.IsAmbiguous);
+        Assert.Equal("TokenizedSourceContainer", resolution.ResolvedBy);
+        Assert.Equal(record.Id, resolution.AnalysisRecordId);
+        Assert.Equal(source.Id.ToString(), resolution.SourceScanId);
+        Assert.Equal("MSMU1683356, MRKU8254509", resolution.SourceContainerNumbers);
+        Assert.Equal(splitJobId, resolution.SplitJobId);
+        Assert.Equal(splitResultId, resolution.SplitResultId);
+        Assert.Equal("left", resolution.SplitPosition);
+        Assert.NotNull(resolution.SplitContext);
+        Assert.Equal(record.Id, resolution.SplitContext.AnalysisRecordId);
+        Assert.Equal(splitJobId, resolution.SplitContext.SplitJobId);
+        Assert.Equal(splitResultId, resolution.SplitContext.SplitResultId);
+    }
+
+    [Fact]
     public async Task ResolveAsync_TokenizedLogicalChildAse_ReturnsNonZeroImageFileSize()
     {
         await using var db = NewInMemoryDb();

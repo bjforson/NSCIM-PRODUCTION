@@ -141,12 +141,18 @@ public sealed class SplitOptionContext
     public string? GroupIdentifier { get; set; }
     public string ContainerNumber { get; set; } = string.Empty;
     public string? ScannerType { get; set; }
+    public bool IsMultiContainer { get; set; }
     public Guid? SplitJobId { get; set; }
     public Guid? SplitResultId { get; set; }
     public Guid? SplitOptionAResultId { get; set; }
     public Guid? SplitOptionBResultId { get; set; }
     public string? SplitPosition { get; set; }
     public string? SplitStatus { get; set; }
+    public string? SourceScanId { get; set; }
+    public int? OriginalScanRecordId { get; set; }
+    public Guid? ScannerScanId { get; set; }
+    public string? SourceScannerType { get; set; }
+    public string? ResolverReason { get; set; }
     public ScanAssetResolution? Source { get; set; }
 }
 

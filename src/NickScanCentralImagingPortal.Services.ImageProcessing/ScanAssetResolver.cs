@@ -134,7 +134,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 normalizedContainer,
                 tokenizedCandidates.Count);
 
-            return new ScanAssetResolution
+            var ambiguous = new ScanAssetResolution
             {
                 Status = ScanAssetResolutionStatuses.Ambiguous,
                 RequestedContainerNumber = containerNumber,
@@ -149,6 +149,8 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 CacheKey = BuildCacheKey(null, null, splitJobId, recordContext?.SplitResultId),
                 Candidates = tokenizedCandidates
             };
+
+            return ApplyAnalysisRecordContext(ambiguous, recordContext);
         }
 
         if (splitJobId.HasValue)
@@ -164,7 +166,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 return splitResolution;
         }
 
-        return new ScanAssetResolution
+        return ApplyAnalysisRecordContext(new ScanAssetResolution
         {
             Status = ScanAssetResolutionStatuses.NotFound,
             RequestedContainerNumber = containerNumber,
@@ -180,7 +182,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             SplitResultId = recordContext?.SplitResultId,
             SplitPosition = recordContext?.SplitPosition,
             CacheKey = BuildCacheKey(null, null, splitJobId, recordContext?.SplitResultId)
-        };
+        }, recordContext);
     }
 
     private async Task<ScanAssetResolution?> ResolveScanImageAssetAsync(
@@ -734,12 +736,12 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 resolution.SourceScanId,
                 resolution.SplitJobId,
                 resolution.SplitResultId);
-            return resolution;
+            return ApplyAnalysisRecordContext(resolution, recordContext);
         }
 
         if (candidates.Count > 1)
         {
-            return new ScanAssetResolution
+            return ApplyAnalysisRecordContext(new ScanAssetResolution
             {
                 Status = ScanAssetResolutionStatuses.Ambiguous,
                 RequestedContainerNumber = requestedContainer,
@@ -753,10 +755,12 @@ public sealed class ScanAssetResolver : IScanAssetResolver
                 SplitPosition = recordContext?.SplitPosition,
                 CacheKey = BuildCacheKey(null, null, splitJobId, recordContext?.SplitResultId),
                 Candidates = candidates
-            };
+            }, recordContext);
         }
 
-        return ScanAssetResolution.NotFound(requestedContainer, "SplitJobSourceScanNotFound");
+        return ApplyAnalysisRecordContext(
+            ScanAssetResolution.NotFound(requestedContainer, "SplitJobSourceScanNotFound"),
+            recordContext);
     }
 
     private static ScanAssetResolution ApplyWorkflowContext(
@@ -779,7 +783,7 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             resolution.SourceScanId,
             resolution.SplitJobId,
             resolution.SplitResultId);
-        return resolution;
+        return ApplyAnalysisRecordContext(resolution, recordContext);
     }
 
     private static ScanAssetResolution ToResolution(
@@ -833,6 +837,42 @@ public sealed class ScanAssetResolver : IScanAssetResolver
             resolution.SourceScanId,
             resolution.SplitJobId,
             resolution.SplitResultId);
+        return ApplyAnalysisRecordContext(resolution, recordContext);
+    }
+
+    private static ScanAssetResolution ApplyAnalysisRecordContext(
+        ScanAssetResolution resolution,
+        AnalysisRecord? recordContext)
+    {
+        if (recordContext == null)
+            return resolution;
+
+        resolution.AnalysisRecordId = recordContext.Id;
+        resolution.SplitJobId ??= recordContext.SplitJobId;
+        resolution.SplitResultId ??= recordContext.SplitResultId;
+        resolution.SplitPosition ??= recordContext.SplitPosition;
+
+        resolution.SplitContext = new SplitOptionContext
+        {
+            AnalysisRecordId = recordContext.Id,
+            GroupId = recordContext.GroupId,
+            GroupIdentifier = resolution.GroupIdentifier,
+            ContainerNumber = recordContext.ContainerNumber,
+            ScannerType = recordContext.ScannerType,
+            IsMultiContainer = recordContext.IsMultiContainerScan,
+            SplitJobId = recordContext.SplitJobId,
+            SplitResultId = recordContext.SplitResultId,
+            SplitOptionAResultId = recordContext.SplitOptionA_ResultId,
+            SplitOptionBResultId = recordContext.SplitOptionB_ResultId,
+            SplitPosition = recordContext.SplitPosition,
+            SplitStatus = recordContext.SplitStatus,
+            SourceScanId = resolution.SourceScanId,
+            OriginalScanRecordId = resolution.OriginalScanRecordId,
+            ScannerScanId = resolution.ScannerScanId,
+            SourceScannerType = resolution.SourceScannerType,
+            ResolverReason = resolution.ResolutionReason
+        };
+
         return resolution;
     }
 

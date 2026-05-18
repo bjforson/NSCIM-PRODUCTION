@@ -282,6 +282,71 @@ public sealed class SourceScanSplitFlowRegressionTests
     }
 
     [Fact]
+    public async Task TwoContainerSplitIntake_Fs6000NonJpegImage_UsesViewerRenderedImageForSubmission()
+    {
+        await using var db = NewInMemoryDb();
+        var groupId = Guid.NewGuid();
+        var jobId = Guid.NewGuid();
+        var rawPng = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00 };
+        var renderedViewerJpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 };
+        var splitter = new StubImageSplitterService
+        {
+            SubmittedJob = new SplitJobReference(jobId, "pending"),
+            StatusByJobId =
+            {
+                [jobId] = new SplitJobStatus(
+                    jobId,
+                    "pending",
+                    BestStrategy: null,
+                    BestConfidence: null,
+                    SplitX: null,
+                    ResultCount: 0)
+            }
+        };
+
+        var original = await SeedOriginalScanAsync(db, "FS6000", "CAXU6863152, MSBU3047832");
+        var scanId = Guid.NewGuid();
+        db.FS6000Scans.Add(new FS6000Scan
+        {
+            Id = scanId,
+            OriginalScanRecordId = original.Id,
+            ContainerNumber = "CAXU6863152",
+            PicNumber = "PIC-FS-RAW",
+            ScanTime = DateTime.UtcNow.AddMinutes(-15),
+            HasImage = true,
+            ImageCount = 1,
+            Images =
+            {
+                new FS6000Image
+                {
+                    ScanId = scanId,
+                    ImageType = "Main",
+                    FileName = "raw-main.png",
+                    ImageData = rawPng,
+                    FileSizeBytes = rawPng.Length,
+                    CreatedAt = DateTime.UtcNow.AddMinutes(-15)
+                }
+            }
+        });
+        SeedAnalysisGroupWithRecords(db, groupId, "FS6000", "CAXU6863152", "MSBU3047832");
+        await db.SaveChangesAsync();
+
+        var service = NewSplitIntake(
+            db,
+            splitter,
+            new StubAseConverter(),
+            new ThrowingImageProcessingService(renderedViewerJpeg));
+
+        var result = await service.EnsureSplitJobForOriginalAsync(original.Id);
+
+        Assert.True(result.IsApplicable);
+        Assert.True(result.SplitJobCreated);
+        Assert.Equal(scanId, splitter.SubmittedSourceImageId);
+        Assert.Equal(renderedViewerJpeg, splitter.SubmittedImageData);
+        Assert.NotEqual(rawPng, splitter.SubmittedImageData);
+    }
+
+    [Fact]
     public async Task TwoContainerSplitIntake_CompositeAnalysisRecord_PromotesToLogicalChildAndCreatesSibling()
     {
         await using var db = NewInMemoryDb();
@@ -804,6 +869,13 @@ public sealed class SourceScanSplitFlowRegressionTests
 
     private sealed class ThrowingImageProcessingService : IImageProcessingService
     {
+        private readonly byte[]? _completeContainerImageBytes;
+
+        public ThrowingImageProcessingService(byte[]? completeContainerImageBytes = null)
+        {
+            _completeContainerImageBytes = completeContainerImageBytes;
+        }
+
         public Task<NickScanCentralImagingPortal.Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber) => throw new NotSupportedException();
         public Task<NickScanCentralImagingPortal.Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber, ScannerType preferredScanner) => throw new NotSupportedException();
         public Task<NickScanCentralImagingPortal.Core.Models.ImageProcessingResult> ProcessImageAsync(ImageDetails image, ImageProcessingRequest request) => throw new NotSupportedException();
@@ -813,8 +885,21 @@ public sealed class SourceScanSplitFlowRegressionTests
         public Task<BatchProcessingResult> BatchProcessImagesAsync(BatchProcessingRequest request) => throw new NotSupportedException();
         public Task RetryImageProcessingAsync(int imageId) => throw new NotSupportedException();
         public Task<string> GetImageAsBase64Async(string containerNumber, ScannerType? preferredScanner = null) => throw new NotSupportedException();
-        public Task<ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber) => throw new NotSupportedException();
-        public Task<ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber, string? imageType) => throw new NotSupportedException();
+        public Task<ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber) => GetCompleteContainerDataAsync(containerNumber, null);
+        public Task<ContainerImageDataResponse?> GetCompleteContainerDataAsync(string containerNumber, string? imageType)
+        {
+            if (_completeContainerImageBytes == null)
+                throw new NotSupportedException();
+
+            return Task.FromResult<ContainerImageDataResponse?>(new ContainerImageDataResponse
+            {
+                ContainerNumber = containerNumber,
+                DetectedScanner = ScannerType.FS6000,
+                ImageBytes = _completeContainerImageBytes,
+                MimeType = "image/jpeg",
+                ImageSizeBytes = _completeContainerImageBytes.Length
+            });
+        }
         public Task<byte[]?> GetRenderedImageBytesAsync(string containerNumber, string mode, float loPct = 1, float hiPct = 99.5F, float gamma = 1, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<RoiInspectorResult?> GetRoiInspectorAsync(string containerNumber, int x, int y, int width, int height, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<ScanModeCapabilities?> GetScanModeCapabilitiesAsync(string containerNumber, CancellationToken ct = default) => throw new NotSupportedException();

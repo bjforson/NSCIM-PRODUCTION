@@ -552,19 +552,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         private async Task RemoveQueueEntriesForAssignmentsAsync(IEnumerable<AnalysisAssignment> assignments, CancellationToken ct = default)
         {
-            if (_readyGroupsCache == null)
-                return;
-
             foreach (var assignment in assignments)
             {
-                try
+                if (_readyGroupsCache != null)
                 {
-                    await _readyGroupsCache.RemoveQueueEntryAsync(_context, assignment.Id, ct);
+                    try
+                    {
+                        await _readyGroupsCache.RemoveQueueEntryAsync(_context, assignment.Id, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to remove queue entry for released assignment {AssignmentId}", assignment.Id);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to remove queue entry for released assignment {AssignmentId}", assignment.Id);
-                }
+
+                InvalidateMyAssignmentsCache(assignment.AssignedTo, assignment.Role);
             }
         }
 

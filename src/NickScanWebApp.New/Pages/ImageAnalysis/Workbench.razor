@@ -926,6 +926,26 @@
         return WorkflowClient.TryGetAvailableAsync<MyAssignmentDto>(role);
     }
 
+    private async Task RefreshAssignmentsOnly()
+    {
+        try
+        {
+            Console.WriteLine("🔄 [ImageAnalysis] RefreshAssignmentsOnly START");
+            var assignments = await WorkflowClient.GetMyAssignmentsAsync<MyAssignmentDto>(_userRole);
+            _myAssignments = assignments?.Any() == true ? assignments : new();
+            Logger?.LogInformation("Refreshed {Count} assignments after decision save", _myAssignments.Count);
+        }
+        catch (Exception ex)
+        {
+            Logger?.LogWarning(ex, "Failed to refresh assignments after decision save");
+            Snackbar.Add("Decision saved, but assignment refresh failed. Use refresh if the list looks stale.", Severity.Warning);
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
     private async Task ClaimGroup(MyAssignmentDto group)
     {
         try
@@ -1010,7 +1030,7 @@
                 // 28s away, the idle window slowly creeps. Failure-isolated.
                 try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
 
-                _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
+                _ = InvokeAsync(RefreshAssignmentsOnly); // background reconcile, fire-and-forget
             }),
             ["OnAllContainersDecided"] = EventCallback.Factory.Create(this, async () =>
             {
@@ -1018,7 +1038,7 @@
                 // 2026-05-09 (Phase B / B7 UX): optimistic remove + close-first + parallel refresh.
                 // Previously did `await Task.Delay(1000); await LoadData();` — analyst stared at the
                 // dialog for ~1.7s. Now the AG vanishes from the list in the same frame the dialog
-                // closes; LoadData reconciles in the background. AG.GroupIdentifier is the dedup key.
+                // closes; RefreshAssignmentsOnly reconciles in the background. AG.GroupIdentifier is the dedup key.
                 if (dialogRef != null)
                 {
                     dialogRef.Close(DialogResult.Ok(true));
@@ -1035,7 +1055,7 @@
                 // Failure-isolated.
                 try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
 
-                _ = InvokeAsync(LoadData); // background reconcile, fire-and-forget
+                _ = InvokeAsync(RefreshAssignmentsOnly); // background reconcile, fire-and-forget
             })
         };
 

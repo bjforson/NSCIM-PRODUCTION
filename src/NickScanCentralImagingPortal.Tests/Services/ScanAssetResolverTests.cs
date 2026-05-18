@@ -81,8 +81,15 @@ public sealed class ScanAssetResolverTests
         Assert.Equal("TokenizedSourceContainer", result.ResolvedBy);
         Assert.Equal("4243", result.SourceScanId);
         Assert.Equal("MSMU1683356, MRKU8254509", result.SourceContainerNumbers);
+        Assert.Equal(3418, result.AnalysisRecordId);
         Assert.Equal(splitJobId, result.SplitJobId);
         Assert.Equal("left", result.SplitPosition);
+        Assert.NotNull(result.SplitContext);
+        Assert.Equal(3418, result.SplitContext.AnalysisRecordId);
+        Assert.True(result.SplitContext.IsMultiContainer);
+        Assert.Equal("MSMU1683356", result.SplitContext.ContainerNumber);
+        Assert.Equal(splitJobId, result.SplitContext.SplitJobId);
+        Assert.Equal("left", result.SplitContext.SplitPosition);
         Assert.Equal(1_753_540, result.ImageSizeBytes);
         Assert.Contains(splitJobId.ToString("N"), result.CacheKey?.Value);
     }

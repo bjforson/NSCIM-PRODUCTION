@@ -54,6 +54,21 @@ def encode_image(image_array: np.ndarray, format: str = "jpeg", quality: int = 9
     return buf.tobytes()
 
 
+def is_16bit_grayscale_image(image_data: bytes) -> bool:
+    """Return True when the encoded source is a 16-bit grayscale image."""
+    try:
+        with Image.open(io.BytesIO(image_data)) as img:
+            return img.mode in ("I;16", "I;16B", "I;16L", "I")
+    except Exception:
+        return False
+
+
+def invert_encoded_image(image_data: bytes, format: str = "jpeg", quality: int = 90) -> bytes:
+    """Invert an encoded crop and re-encode it in the requested format."""
+    img = decode_image(image_data)
+    return encode_image(255 - img, format=format, quality=quality)
+
+
 def crop_image(image_array: np.ndarray, split_x: int) -> Tuple[np.ndarray, np.ndarray]:
     """
     Split an image vertically at split_x.

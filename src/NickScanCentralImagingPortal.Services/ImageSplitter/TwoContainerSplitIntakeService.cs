@@ -295,30 +295,76 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 return null;
 
             if (IsSupportedImageBytes(row.ImageData))
-                return new SplitSourceImage(row.ScanId, row.ImageData);
-
-            try
             {
-                var rendered = await _imageProcessing.GetCompleteContainerDataAsync(row.ContainerNumber, imageType: null);
-                if (rendered?.ImageBytes is { Length: > 0 } && IsSupportedImageBytes(rendered.ImageBytes))
-                {
-                    _logger.LogInformation(
-                        "{ServiceId} Rendered FS6000 source image for scan {ScanId} ({Container}) before split submission because stored {ImageType} blob is not a supported image file.",
-                        ServiceId,
-                        row.ScanId,
-                        row.ContainerNumber,
-                        row.ImageType);
-                    return new SplitSourceImage(row.ScanId, rendered.ImageBytes);
-                }
+                if (IsJpegImageBytes(row.ImageData))
+                    return new SplitSourceImage(row.ScanId, row.ImageData);
+
+                var rendered = await TryRenderFs6000SourceImageAsync(
+                    row.ScanId,
+                    row.ContainerNumber,
+                    row.ImageType,
+                    row.ImageData.Length);
+                if (rendered != null)
+                    return new SplitSourceImage(row.ScanId, rendered);
 
                 _logger.LogWarning(
-                    "{ServiceId} FS6000 source image for scan {ScanId} ({Container}) is unsupported ({ImageType}, {Bytes} bytes, magic={Magic}) and rendered fallback was unavailable.",
+                    "{ServiceId} FS6000 source image for scan {ScanId} ({Container}) is a supported non-JPEG blob ({ImageType}, magic={Magic}) but viewer-rendered fallback was unavailable; submitting stored blob to splitter.",
                     ServiceId,
                     row.ScanId,
                     row.ContainerNumber,
                     row.ImageType,
-                    row.ImageData.Length,
                     GetMagicHex(row.ImageData));
+                return new SplitSourceImage(row.ScanId, row.ImageData);
+            }
+
+            var renderedUnsupported = await TryRenderFs6000SourceImageAsync(
+                row.ScanId,
+                row.ContainerNumber,
+                row.ImageType,
+                row.ImageData.Length);
+            if (renderedUnsupported != null)
+                return new SplitSourceImage(row.ScanId, renderedUnsupported);
+
+            _logger.LogWarning(
+                "{ServiceId} FS6000 source image for scan {ScanId} ({Container}) is unsupported ({ImageType}, {Bytes} bytes, magic={Magic}) and rendered fallback was unavailable.",
+                ServiceId,
+                row.ScanId,
+                row.ContainerNumber,
+                row.ImageType,
+                row.ImageData.Length,
+                GetMagicHex(row.ImageData));
+
+            return null;
+        }
+
+        private async Task<byte[]?> TryRenderFs6000SourceImageAsync(
+            Guid scanId,
+            string containerNumber,
+            string? imageType,
+            int storedBytes)
+        {
+            try
+            {
+                var rendered = await _imageProcessing.GetCompleteContainerDataAsync(containerNumber, imageType: null);
+                if (rendered?.ImageBytes is { Length: > 0 } && IsSupportedImageBytes(rendered.ImageBytes))
+                {
+                    _logger.LogInformation(
+                        "{ServiceId} Rendered FS6000 source image for scan {ScanId} ({Container}) before split submission so splitter previews match the normal viewer image (stored {ImageType}, {Bytes} bytes).",
+                        ServiceId,
+                        scanId,
+                        containerNumber,
+                        imageType,
+                        storedBytes);
+                    return rendered.ImageBytes;
+                }
+
+                _logger.LogWarning(
+                    "{ServiceId} Rendered FS6000 source image for scan {ScanId} ({Container}) was unavailable or unsupported (stored {ImageType}, {Bytes} bytes).",
+                    ServiceId,
+                    scanId,
+                    containerNumber,
+                    imageType,
+                    storedBytes);
             }
             catch (Exception ex)
             {
@@ -326,19 +372,24 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                     ex,
                     "{ServiceId} Failed to render FS6000 source image for scan {ScanId} ({Container}) before split submission.",
                     ServiceId,
-                    row.ScanId,
-                    row.ContainerNumber);
+                    scanId,
+                    containerNumber);
             }
 
             return null;
         }
 
-        private static bool IsSupportedImageBytes(byte[] imageData)
+        private static bool IsJpegImageBytes(byte[] imageData)
         {
-            if (imageData.Length >= 3
+            return imageData.Length >= 3
                 && imageData[0] == 0xFF
                 && imageData[1] == 0xD8
-                && imageData[2] == 0xFF)
+                && imageData[2] == 0xFF;
+        }
+
+        private static bool IsSupportedImageBytes(byte[] imageData)
+        {
+            if (IsJpegImageBytes(imageData))
             {
                 return true;
             }
