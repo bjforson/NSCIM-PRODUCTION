@@ -9,6 +9,8 @@ public sealed class SystemCacheMetrics
     private long _removes;
     private long _prefixInvalidations;
     private long _prefixInvalidatedKeys;
+    private long _tagInvalidations;
+    private long _tagInvalidatedKeys;
     private long _stampedeWaits;
     private long _stampedePrevented;
     private long _stampedeTimeouts;
@@ -31,6 +33,12 @@ public sealed class SystemCacheMetrics
         Interlocked.Add(ref _prefixInvalidatedKeys, Math.Max(0, removedKeys));
     }
 
+    public void RecordTagInvalidation(int removedKeys)
+    {
+        Interlocked.Increment(ref _tagInvalidations);
+        Interlocked.Add(ref _tagInvalidatedKeys, Math.Max(0, removedKeys));
+    }
+
     public void RecordStampedeWait() => Interlocked.Increment(ref _stampedeWaits);
 
     public void RecordStampedePrevented() => Interlocked.Increment(ref _stampedePrevented);
@@ -49,6 +57,8 @@ public sealed class SystemCacheMetrics
         Removes: Interlocked.Read(ref _removes),
         PrefixInvalidations: Interlocked.Read(ref _prefixInvalidations),
         PrefixInvalidatedKeys: Interlocked.Read(ref _prefixInvalidatedKeys),
+        TagInvalidations: Interlocked.Read(ref _tagInvalidations),
+        TagInvalidatedKeys: Interlocked.Read(ref _tagInvalidatedKeys),
         StampedeWaits: Interlocked.Read(ref _stampedeWaits),
         StampedePrevented: Interlocked.Read(ref _stampedePrevented),
         StampedeTimeouts: Interlocked.Read(ref _stampedeTimeouts),
@@ -64,6 +74,8 @@ public sealed record SystemCacheMetricsSnapshot(
     long Removes,
     long PrefixInvalidations,
     long PrefixInvalidatedKeys,
+    long TagInvalidations,
+    long TagInvalidatedKeys,
     long StampedeWaits,
     long StampedePrevented,
     long StampedeTimeouts,

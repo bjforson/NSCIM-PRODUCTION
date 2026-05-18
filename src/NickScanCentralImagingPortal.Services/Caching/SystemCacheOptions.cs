@@ -14,4 +14,7 @@ public sealed class SystemCacheOptions
     public int MaxTrackedKeyLength { get; set; } = 512;
     public bool EnableStampedeProtection { get; set; } = true;
     public int StampedeLockTimeoutSeconds { get; set; } = 30;
+    public bool UseDistributedInvalidationIndex { get; set; } = true;
+    public int InvalidationIndexExpirationMinutes { get; set; } = 120;
+    public int MaxInvalidationIndexKeys { get; set; } = 5000;
 }

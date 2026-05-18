@@ -905,10 +905,12 @@ else
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.RedisCacheService>();
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.SystemCacheMetrics>();
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>();
+builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.ISystemCacheService>(sp =>
+    sp.GetRequiredService<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>());
 if (useSystemCacheService)
 {
-    builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICacheService,
-        NickScanCentralImagingPortal.Services.Caching.SystemCacheService>();
+    builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICacheService>(sp =>
+        sp.GetRequiredService<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>());
     Log.Information("✅ System-wide L1/L2 cache service enabled");
 }
 else

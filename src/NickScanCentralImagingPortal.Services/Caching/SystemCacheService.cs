@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
@@ -8,9 +10,11 @@ using NickScanCentralImagingPortal.Core.Interfaces;
 
 namespace NickScanCentralImagingPortal.Services.Caching;
 
-public sealed class SystemCacheService : ICacheService
+public sealed class SystemCacheService : ISystemCacheService
 {
     private const string LocalKeyPrefix = "SystemCache:L1:";
+    private const string PrefixIndexKeyPrefix = "SystemCache:Index:Prefix:";
+    private const string TagIndexKeyPrefix = "SystemCache:Index:Tag:";
     private static readonly ConcurrentDictionary<string, byte> KnownKeys = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> KeyLocks = new(StringComparer.Ordinal);
 
@@ -64,7 +68,7 @@ public sealed class SystemCacheService : ICacheService
                 return null;
             }
 
-            TrackKey(key);
+            TrackLocalKey(key);
             SetLocalPayload(key, distributedPayload, _defaultExpiration);
             _metrics.RecordL2Hit();
             _logger.LogDebug("System cache L2 hit for key: {Key}", key);
@@ -108,7 +112,7 @@ public sealed class SystemCacheService : ICacheService
             }
 
             SetLocalPayload(key, payload, effectiveExpiration);
-            TrackKey(key);
+            await TrackKeyAsync(key, cancellationToken);
             _metrics.RecordSet();
 
             _logger.LogDebug(
@@ -156,7 +160,15 @@ public sealed class SystemCacheService : ICacheService
 
             var matchingKeys = KnownKeys.Keys
                 .Where(key => key.StartsWith(prefix, StringComparison.Ordinal))
-                .ToList();
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var indexedKey in await ReadIndexedKeysAsync(GetPrefixIndexKey(prefix), cancellationToken))
+            {
+                if (indexedKey.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    matchingKeys.Add(indexedKey);
+                }
+            }
 
             foreach (var key in matchingKeys)
             {
@@ -170,6 +182,7 @@ public sealed class SystemCacheService : ICacheService
                 KnownKeys.TryRemove(key, out _);
             }
 
+            await RemoveIndexAsync(GetPrefixIndexKey(prefix), cancellationToken);
             _metrics.RecordPrefixInvalidation(matchingKeys.Count);
             _logger.LogInformation(
                 "Removed {Count} system cache value(s) by prefix: {Prefix}",
@@ -205,6 +218,58 @@ public sealed class SystemCacheService : ICacheService
             _metrics.RecordCacheError();
             _logger.LogError(ex, "Error checking if system cache key exists: {Key}", key);
             return false;
+        }
+    }
+
+    public async Task SetWithTagsAsync<T>(
+        string key,
+        T value,
+        IEnumerable<string> tags,
+        TimeSpan? expiration = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        await SetAsync(key, value, expiration, cancellationToken);
+        await TrackTagsAsync(key, tags, cancellationToken);
+    }
+
+    public async Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                return;
+            }
+
+            var tagIndexKey = GetTagIndexKey(tag);
+            var indexedKeys = await ReadIndexedKeysAsync(tagIndexKey, cancellationToken);
+            var removedCount = 0;
+
+            foreach (var key in indexedKeys)
+            {
+                _memoryCache.Remove(GetLocalKey(key));
+
+                if (_options.UseDistributedCache)
+                {
+                    await _distributedCache.RemoveAsync(key, cancellationToken);
+                }
+
+                KnownKeys.TryRemove(key, out _);
+                removedCount++;
+            }
+
+            await RemoveIndexAsync(tagIndexKey, cancellationToken);
+            _metrics.RecordTagInvalidation(removedCount);
+
+            _logger.LogInformation(
+                "Removed {Count} system cache value(s) by tag: {Tag}",
+                removedCount,
+                tag);
+        }
+        catch (Exception ex)
+        {
+            _metrics.RecordCacheError();
+            _logger.LogError(ex, "Error removing system cache values by tag: {Tag}", tag);
         }
     }
 
@@ -294,7 +359,7 @@ public sealed class SystemCacheService : ICacheService
             });
     }
 
-    private void TrackKey(string key)
+    private void TrackLocalKey(string key)
     {
         if (!_options.TrackKeysForPrefixInvalidation)
         {
@@ -307,6 +372,37 @@ public sealed class SystemCacheService : ICacheService
         }
 
         KnownKeys[key] = 0;
+    }
+
+    private async Task TrackKeyAsync(string key, CancellationToken cancellationToken)
+    {
+        TrackLocalKey(key);
+
+        if (!ShouldUseDistributedIndex())
+        {
+            return;
+        }
+
+        foreach (var prefix in EnumeratePrefixIndexes(key))
+        {
+            await AddIndexKeyAsync(GetPrefixIndexKey(prefix), key, cancellationToken);
+        }
+    }
+
+    private async Task TrackTagsAsync(
+        string key,
+        IEnumerable<string> tags,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldUseDistributedIndex())
+        {
+            return;
+        }
+
+        foreach (var tag in tags.Where(tag => !string.IsNullOrWhiteSpace(tag)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            await AddIndexKeyAsync(GetTagIndexKey(tag), key, cancellationToken);
+        }
     }
 
     private async Task<T> CreateAndCacheAsync<T>(
@@ -343,6 +439,153 @@ public sealed class SystemCacheService : ICacheService
 
         KeyLocks.TryRemove(new KeyValuePair<string, SemaphoreSlim>(key, keyLock));
     }
+
+    private async Task AddIndexKeyAsync(
+        string indexKey,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        var indexLock = KeyLocks.GetOrAdd(indexKey, _ => new SemaphoreSlim(1, 1));
+        var acquired = false;
+
+        try
+        {
+            await indexLock.WaitAsync(cancellationToken);
+            acquired = true;
+            var document = await ReadIndexDocumentAsync(indexKey, cancellationToken);
+
+            if (!document.Keys.Contains(key, StringComparer.Ordinal))
+            {
+                document.Keys.Add(key);
+            }
+
+            var maxKeys = Math.Max(1, _options.MaxInvalidationIndexKeys);
+            if (document.Keys.Count > maxKeys)
+            {
+                document.Keys = document.Keys
+                    .Skip(document.Keys.Count - maxKeys)
+                    .ToList();
+            }
+
+            document.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            await WriteIndexDocumentAsync(indexKey, document, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _metrics.RecordCacheError();
+            _logger.LogWarning(ex, "Error tracking system cache index key: {IndexKey}", indexKey);
+        }
+        finally
+        {
+            if (acquired)
+            {
+                indexLock.Release();
+                TryReleaseKeyLock(indexKey, indexLock);
+            }
+        }
+    }
+
+    private async Task<IReadOnlyCollection<string>> ReadIndexedKeysAsync(
+        string indexKey,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldUseDistributedIndex())
+        {
+            return Array.Empty<string>();
+        }
+
+        var document = await ReadIndexDocumentAsync(indexKey, cancellationToken);
+        return document.Keys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private async Task<SystemCacheIndexDocument> ReadIndexDocumentAsync(
+        string indexKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payload = await _distributedCache.GetStringAsync(indexKey, cancellationToken);
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return new SystemCacheIndexDocument();
+            }
+
+            return JsonSerializer.Deserialize<SystemCacheIndexDocument>(payload)
+                ?? new SystemCacheIndexDocument();
+        }
+        catch (Exception ex)
+        {
+            _metrics.RecordCacheError();
+            _logger.LogWarning(ex, "Error reading system cache index: {IndexKey}", indexKey);
+            return new SystemCacheIndexDocument();
+        }
+    }
+
+    private Task WriteIndexDocumentAsync(
+        string indexKey,
+        SystemCacheIndexDocument document,
+        CancellationToken cancellationToken)
+    {
+        var expiration = TimeSpan.FromMinutes(Math.Max(1, _options.InvalidationIndexExpirationMinutes));
+        var payload = JsonSerializer.Serialize(document);
+
+        return _distributedCache.SetStringAsync(
+            indexKey,
+            payload,
+            new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = expiration
+            },
+            cancellationToken);
+    }
+
+    private Task RemoveIndexAsync(string indexKey, CancellationToken cancellationToken)
+    {
+        return ShouldUseDistributedIndex()
+            ? _distributedCache.RemoveAsync(indexKey, cancellationToken)
+            : Task.CompletedTask;
+    }
+
+    private bool ShouldUseDistributedIndex() =>
+        _options.UseDistributedCache && _options.UseDistributedInvalidationIndex;
+
+    private static IEnumerable<string> EnumeratePrefixIndexes(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            yield break;
+        }
+
+        yield return key;
+
+        var segments = key.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0)
+        {
+            yield break;
+        }
+
+        var current = segments[0];
+        yield return current;
+
+        for (var i = 1; i < segments.Length; i++)
+        {
+            yield return current + ":";
+            current += ":" + segments[i];
+            yield return current;
+        }
+    }
+
+    private static string GetPrefixIndexKey(string prefix) =>
+        PrefixIndexKeyPrefix + HashIndexName(prefix);
+
+    private static string GetTagIndexKey(string tag) =>
+        TagIndexKeyPrefix + HashIndexName(tag.Trim().ToUpperInvariant());
+
+    private static string HashIndexName(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
     private T? Deserialize<T>(string payload, string key) where T : class
     {

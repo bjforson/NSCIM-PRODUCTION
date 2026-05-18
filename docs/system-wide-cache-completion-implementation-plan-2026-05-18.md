@@ -260,19 +260,19 @@ Exit criteria:
 
 Goal: Make invalidation reliable across app instances when Redis is enabled, while still working with memory fallback.
 
-- [ ] Add key indexing when `SetAsync` is called.
-- [ ] Track keys by prefix.
-- [ ] Track keys by tag.
-- [ ] Use distributed index keys for L2 when Redis/distributed cache supports it.
-- [ ] Keep in-process index as fallback.
-- [ ] Add index TTL longer than entry TTL.
-- [ ] Implement `RemoveByPrefixAsync` using index.
-- [ ] Add `RemoveByTagAsync` if the interface is extended.
-- [ ] Add compatibility path so existing callers of `RemoveByPrefixAsync` keep working.
-- [ ] Add tests for prefix invalidation.
-- [ ] Add tests for tag invalidation.
-- [ ] Add tests for stale index entries.
-- [ ] Add tests for missing index fallback.
+- [x] Add key indexing when `SetAsync` is called.
+- [x] Track keys by prefix.
+- [x] Track keys by tag.
+- [x] Use distributed index keys for L2 when Redis/distributed cache supports it.
+- [x] Keep in-process index as fallback.
+- [x] Add index TTL longer than entry TTL.
+- [x] Implement `RemoveByPrefixAsync` using index.
+- [x] Add `RemoveByTagAsync` if the interface is extended.
+- [x] Add compatibility path so existing callers of `RemoveByPrefixAsync` keep working.
+- [x] Add tests for prefix invalidation.
+- [x] Add tests for tag invalidation.
+- [x] Add tests for stale index entries.
+- [x] Add tests for missing index fallback.
 
 Exit criteria:
 
@@ -292,7 +292,7 @@ Goal: Make cache behavior visible before broad migration.
   - [x] set
   - [x] remove
   - [x] prefix remove
-  - [ ] tag remove
+  - [x] tag remove
   - [ ] factory success
   - [x] factory failure
   - [ ] fallback to source

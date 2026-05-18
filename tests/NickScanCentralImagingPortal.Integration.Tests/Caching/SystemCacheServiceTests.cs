@@ -53,6 +53,36 @@ public sealed class SystemCacheServiceTests
     }
 
     [Fact]
+    public async Task RemoveByPrefixAsync_UsesDistributedIndexAcrossServiceInstances()
+    {
+        var distributedCache = NewDistributedCache();
+        using var writerMemoryCache = NewMemoryCache();
+        using var removerMemoryCache = NewMemoryCache();
+        using var verifierMemoryCache = NewMemoryCache();
+        var options = new SystemCacheOptions
+        {
+            TrackKeysForPrefixInvalidation = false,
+            UseDistributedInvalidationIndex = true
+        };
+        var writer = NewService(distributedCache, writerMemoryCache, options);
+        var remover = NewService(distributedCache, removerMemoryCache, options);
+        var verifier = NewService(distributedCache, verifierMemoryCache, options);
+        var prefix = UniqueKey("distributed-prefix") + ":";
+        var otherKey = UniqueKey("distributed-other");
+
+        await writer.SetAsync(prefix + "one", new CacheValue("one"));
+        await writer.SetAsync(prefix + "two", new CacheValue("two"));
+        await writer.SetAsync(otherKey, new CacheValue("other"));
+
+        await remover.RemoveByPrefixAsync(prefix);
+
+        Assert.False(await verifier.ExistsAsync(prefix + "one"));
+        Assert.False(await verifier.ExistsAsync(prefix + "two"));
+        Assert.True(await verifier.ExistsAsync(otherKey));
+        Assert.Equal(2, remover.Metrics.Snapshot().PrefixInvalidatedKeys);
+    }
+
+    [Fact]
     public async Task UseDistributedCacheFalse_StoresOnlyInLocalMemory()
     {
         var distributedCache = NewDistributedCache();
@@ -72,6 +102,55 @@ public sealed class SystemCacheServiceTests
         Assert.NotNull(await firstService.GetAsync<CacheValue>(key));
         Assert.Null(await secondService.GetAsync<CacheValue>(key));
         Assert.Null(await distributedCache.GetStringAsync(key));
+    }
+
+    [Fact]
+    public async Task RemoveByTagAsync_RemovesDistributedTaggedKeys()
+    {
+        var distributedCache = NewDistributedCache();
+        using var writerMemoryCache = NewMemoryCache();
+        using var removerMemoryCache = NewMemoryCache();
+        using var verifierMemoryCache = NewMemoryCache();
+        var writer = NewService(distributedCache, writerMemoryCache);
+        var remover = NewService(distributedCache, removerMemoryCache);
+        var verifier = NewService(distributedCache, verifierMemoryCache);
+        var tag = UniqueKey("tag");
+        var firstKey = UniqueKey("tagged-one");
+        var secondKey = UniqueKey("tagged-two");
+        var otherKey = UniqueKey("tagged-other");
+
+        await writer.SetWithTagsAsync(firstKey, new CacheValue("one"), [tag]);
+        await writer.SetWithTagsAsync(secondKey, new CacheValue("two"), [tag]);
+        await writer.SetWithTagsAsync(otherKey, new CacheValue("other"), ["other-tag"]);
+
+        await remover.RemoveByTagAsync(tag);
+
+        Assert.False(await verifier.ExistsAsync(firstKey));
+        Assert.False(await verifier.ExistsAsync(secondKey));
+        Assert.True(await verifier.ExistsAsync(otherKey));
+        Assert.Equal(2, remover.Metrics.Snapshot().TagInvalidatedKeys);
+    }
+
+    [Fact]
+    public async Task RemoveByPrefixAsync_ToleratesStaleIndexEntries()
+    {
+        var distributedCache = NewDistributedCache();
+        using var writerMemoryCache = NewMemoryCache();
+        using var removerMemoryCache = NewMemoryCache();
+        using var verifierMemoryCache = NewMemoryCache();
+        var writer = NewService(distributedCache, writerMemoryCache);
+        var remover = NewService(distributedCache, removerMemoryCache);
+        var verifier = NewService(distributedCache, verifierMemoryCache);
+        var prefix = UniqueKey("stale-prefix") + ":";
+        var staleKey = prefix + "stale";
+
+        await writer.SetAsync(staleKey, new CacheValue("stale"));
+        await writer.RemoveAsync(staleKey);
+
+        await remover.RemoveByPrefixAsync(prefix);
+
+        Assert.False(await verifier.ExistsAsync(staleKey));
+        Assert.Equal(1, remover.Metrics.Snapshot().PrefixInvalidatedKeys);
     }
 
     [Fact]
@@ -213,8 +292,22 @@ public sealed class SystemCacheServiceTests
         public Task RemoveByPrefixAsync(string prefix, CancellationToken cancellationToken = default) =>
             Service.RemoveByPrefixAsync(prefix, cancellationToken);
 
+        public Task RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+            Service.RemoveAsync(key, cancellationToken);
+
+        public Task RemoveByTagAsync(string tag, CancellationToken cancellationToken = default) =>
+            Service.RemoveByTagAsync(tag, cancellationToken);
+
         public Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default) =>
             Service.ExistsAsync(key, cancellationToken);
+
+        public Task SetWithTagsAsync<T>(
+            string key,
+            T value,
+            IEnumerable<string> tags,
+            TimeSpan? expiration = null,
+            CancellationToken cancellationToken = default) where T : class =>
+            Service.SetWithTagsAsync(key, value, tags, expiration, cancellationToken);
 
         public Task<T> GetOrSetAsync<T>(
             string key,
