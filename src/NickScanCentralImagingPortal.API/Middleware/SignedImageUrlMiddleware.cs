@@ -179,6 +179,7 @@ public static class SignedImageUrl
         // views render this through browser <img src>, so signed-url auth must
         // cover it the same way it covers the legacy ASE/complete-image routes.
         if (p.StartsWith("/api/scan-assets/") && p.EndsWith("/image")) return true;
+        if (p.StartsWith("/api/scan-assets/") && p.EndsWith("/raw")) return true;
 
         // Eagle A25 copied scanner assets. The WebApp renders JPEG scan
         // documents and x-ray previews directly in <img src> tags.

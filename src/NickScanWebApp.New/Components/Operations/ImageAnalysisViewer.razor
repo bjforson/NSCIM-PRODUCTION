@@ -15,6 +15,7 @@
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject NickScanWebApp.Shared.Services.CargoGroupClient CargoGroupClient
 @inject NickScanWebApp.Shared.Services.CrossRecordScansClient CrossRecordScansClient
+@inject NickScanWebApp.Shared.Services.ScanAssetClient ScanAssetClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject ISnackbar Snackbar
 @inject AuthenticationStateProvider AuthStateProvider
@@ -1784,6 +1785,18 @@
             size);
     }
 
+    private ScanAssetImageQuery? BuildPreferredSourceQuery(string? size = "full")
+        => NickScanWebApp.Shared.Services.ScanAssetClient.TryBuildImageQuery(
+            SourceScanResolution,
+            GetImageRequestContainerHint(),
+            size);
+
+    private string? BuildPreferredRawPlanePath(string plane)
+        => NickScanWebApp.Shared.Services.ScanAssetClient.TryBuildRawPlanePath(
+            SourceScanResolution,
+            GetImageRequestContainerHint(),
+            plane);
+
     private static string? StrictSingleContainerToken(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2145,7 +2158,17 @@
         }
         try
         {
-            var caps = await ImageProcessingClient.GetModeCapabilitiesAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
+            NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities? caps = null;
+            var sourceScanId = SourceScanResolution?.EffectiveSourceScanId;
+            var sourceQuery = BuildPreferredSourceQuery();
+            if (!string.IsNullOrWhiteSpace(sourceScanId) && sourceQuery != null)
+            {
+                caps = await ScanAssetClient.TryGetModeCapabilitiesAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
+                    sourceScanId,
+                    sourceQuery);
+            }
+
+            caps ??= await ImageProcessingClient.GetModeCapabilitiesAsync<NickScanCentralImagingPortal.Core.Interfaces.ScanModeCapabilities>(
                 ContainerNumber);
             if (caps != null)
             {
@@ -2283,6 +2306,60 @@
         StateHasChanged();
     }
 
+    private async Task<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult?> GetPixelValueAsync(int x, int y)
+    {
+        var sourceScanId = SourceScanResolution?.EffectiveSourceScanId;
+        var sourceQuery = BuildPreferredSourceQuery();
+        if (!string.IsNullOrWhiteSpace(sourceScanId) && sourceQuery != null)
+        {
+            var result = await ScanAssetClient.TryGetPixelAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
+                sourceScanId,
+                x,
+                y,
+                sourceQuery);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return await ImageProcessingClient.GetPixelAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
+            ContainerNumber,
+            x,
+            y);
+    }
+
+    private async Task<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult?> GetRoiInspectorAsync(
+        int x,
+        int y,
+        int width,
+        int height)
+    {
+        var sourceScanId = SourceScanResolution?.EffectiveSourceScanId;
+        var sourceQuery = BuildPreferredSourceQuery();
+        if (!string.IsNullOrWhiteSpace(sourceScanId) && sourceQuery != null)
+        {
+            var result = await ScanAssetClient.TryGetRoiAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(
+                sourceScanId,
+                x,
+                y,
+                width,
+                height,
+                sourceQuery);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return await ImageProcessingClient.GetRoiAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(
+            ContainerNumber,
+            x,
+            y,
+            width,
+            height);
+    }
+
     /// <summary>
     /// Mouse-move on the probe overlay. OffsetX/Y on the overlay is in image-
     /// native pixel coords (the overlay lives inside the transform wrapper and
@@ -2307,10 +2384,7 @@
                 if (!_pixelProbeEnabled) return;
                 try
                 {
-                    var probe = await ImageProcessingClient.GetPixelAsync<NickScanCentralImagingPortal.Core.Interfaces.PixelValueResult>(
-                        ContainerNumber,
-                        _probeLastX,
-                        _probeLastY);
+                    var probe = await GetPixelValueAsync(_probeLastX, _probeLastY);
                     if (probe != null && _pixelProbeEnabled)
                     {
                         _probeData = probe;
@@ -2379,8 +2453,10 @@
             // viewer no longer builds the URL itself because it has no access
             // to the signing key. Same UX as the JPEG path but now the tone
             // mapping runs in the browser instead of re-rendering on the server.
+            var rawPath = BuildPreferredRawPlanePath(_rawPlane)
+                ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildRawPlanePath(ContainerNumber, _rawPlane);
             var rawUrl = UrlBuilder.Build(
-                NickScanWebApp.Shared.Services.ImageProcessingClient.BuildRawPlanePath(ContainerNumber, _rawPlane),
+                rawPath,
                 _currentUsername);
             if (IsEagleA25Scan)
             {
@@ -2501,12 +2577,7 @@
                 return;
             }
 
-            var roi = await ImageProcessingClient.GetRoiAsync<NickScanCentralImagingPortal.Core.Interfaces.RoiInspectorResult>(
-                ContainerNumber,
-                x,
-                y,
-                w,
-                h);
+            var roi = await GetRoiInspectorAsync(x, y, w, h);
             _roiData = roi;
             if (roi == null)
             {

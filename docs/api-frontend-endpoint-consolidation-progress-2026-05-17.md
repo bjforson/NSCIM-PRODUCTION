@@ -180,3 +180,34 @@ Batch sequence for each future retirement:
 2. Add new catalog entries only when a route owner and canonical replacement are agreed.
 3. Use `tools\diagnostics\Invoke-RouteCallsiteInventory.ps1` before every route behavior change.
 4. Retire compatibility aliases in narrow batches, with one build/deploy/smoke cycle per route family.
+
+## 2026-05-18 Advanced Image Tooling Caller Drain
+
+The post-deploy telemetry check showed that the first image caller-drain batch stopped new `/complete/image` traffic, but `/mode-capabilities` was still active in production:
+
+| Shape | Calls since 2026-05-17 23:05 UTC | Errors | Approx callers | Last call UTC |
+| --- | ---: | ---: | ---: | --- |
+| `/mode-capabilities` | 299 | 18 | 1 | 2026-05-18 17:05:07 |
+
+This batch moves the source-scan aware image-analysis tool surface behind canonical scan-assets routes while keeping legacy `ImageProcessing` routes as compatibility fallbacks:
+
+- Added canonical scan-assets endpoints:
+  - `GET /api/scan-assets/{sourceScanId}/mode-capabilities`
+  - `GET /api/scan-assets/{sourceScanId}/pixel`
+  - `GET /api/scan-assets/{sourceScanId}/roi`
+  - `GET /api/scan-assets/{sourceScanId}/raw`
+- Extended `GET /api/scan-assets/{sourceScanId}/image` to honor `mode`, `loPct`, `hiPct`, and `gamma` so the mode toolbar and window/level path can stay source-scan based.
+- Rewired `ImageAnalysisViewer` to prefer scan-assets for mode capabilities, pixel probe, raw plane loading, and ROI inspector, with legacy fallback retained for unresolved source scans.
+- Rewired ICUMS payload image fallback and server-generated CargoGroup/Split original image URLs to prefer scan-assets where an original scan identity is available.
+- Added signed-URL support for `/api/scan-assets/{sourceScanId}/raw` because the raw 16-bit viewer fetches that binary path from browser JavaScript.
+
+Validation for this batch:
+
+| Check | Result |
+| --- | --- |
+| `dotnet build src\NickScanCentralImagingPortal.API\NickScanCentralImagingPortal.API.csproj --no-restore /p:UseSharedCompilation=false` | Passed, existing warnings, 0 errors. |
+| `dotnet build src\NickScanWebApp.New\NickScanWebApp.New.csproj --no-restore /p:UseSharedCompilation=false` | Passed on rerun, existing warnings, 0 errors. Initial parallel run hit a shared compiler file lock only. |
+| `tools\diagnostics\Invoke-RouteCallsiteInventory.ps1` | Passed with zero unmatched local consumer segments. |
+| `tools\diagnostics\Invoke-EndpointRetirementReadiness.ps1 -AsJson` | Deprecated families remain blocked: ready `0`, blocked `2`; `/api/imageprocessing/container/*` last seen 2026-05-18 17:05:07 UTC before this batch is deployed. |
+
+Next check after deployment: confirm `/mode-capabilities` traffic stops moving, then repeat the same drain approach for any remaining shapes that appear in telemetry.

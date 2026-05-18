@@ -74,6 +74,11 @@ public sealed class ScanAssetsController : ControllerBase
         [FromQuery] Guid? splitResultId = null,
         [FromQuery] Guid? scanImageAssetId = null,
         [FromQuery] string? side = null,
+        [FromQuery] bool annotations = false,
+        [FromQuery] string? mode = null,
+        [FromQuery] float? loPct = null,
+        [FromQuery] float? hiPct = null,
+        [FromQuery] float? gamma = null,
         CancellationToken cancellationToken = default)
     {
         var hasResolverContext = !string.IsNullOrWhiteSpace(containerNumber)
@@ -103,6 +108,10 @@ public sealed class ScanAssetsController : ControllerBase
                 sourceScanId,
                 resolution
             });
+
+        var sourceContainer = GetPipelineContainerNumber(resolution);
+        if (string.IsNullOrWhiteSpace(sourceContainer))
+            return NotFound(new { error = "Source container identity not available", sourceScanId, resolution });
 
         if (splitJobId.HasValue && splitResultId.HasValue)
         {
@@ -140,14 +149,77 @@ public sealed class ScanAssetsController : ControllerBase
             });
         }
 
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            var modeBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
+                sourceContainer,
+                mode,
+                loPct ?? 1.0f,
+                hiPct ?? 99.5f,
+                gamma ?? 1.0f,
+                cancellationToken);
+            if (modeBytes is { Length: > 0 })
+            {
+                Response.Headers.CacheControl = "private, max-age=3600";
+                return File(modeBytes, "image/jpeg");
+            }
+
+            var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(sourceContainer, cancellationToken);
+            if (caps == null)
+                return NotFound(new { error = "No scan found for source", sourceScanId, resolution });
+
+            var normalized = mode.Trim().ToLowerInvariant();
+            var claimedSupported = caps.SupportedModes != null
+                && caps.SupportedModes.Any(m => string.Equals(m, normalized, StringComparison.OrdinalIgnoreCase));
+            if (claimedSupported)
+            {
+                return StatusCode(500, new
+                {
+                    error = $"Render failed for mode '{mode}' even though capabilities claim support.",
+                    sourceScanId,
+                    scanner = caps.Scanner,
+                    variant = caps.Variant,
+                    resolution
+                });
+            }
+
+            return UnprocessableEntity(new
+            {
+                error = $"Mode '{mode}' not supported for this scan variant",
+                sourceScanId,
+                scanner = caps.Scanner,
+                variant = caps.Variant,
+                supportedModes = caps.SupportedModes,
+                resolution
+            });
+        }
+
+        if (IsAse(resolution.SourceScannerType))
+        {
+            var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(sourceContainer, cancellationToken);
+            var compositeAvailable = caps?.SupportedModes != null
+                && caps.SupportedModes.Any(m => string.Equals(m, "composite", StringComparison.OrdinalIgnoreCase));
+            if (compositeAvailable)
+            {
+                var autoBytes = await _imageProcessingService.GetRenderedImageBytesAsync(
+                    sourceContainer,
+                    "composite",
+                    loPct ?? 1.0f,
+                    hiPct ?? 99.5f,
+                    gamma ?? 1.0f,
+                    cancellationToken);
+                if (autoBytes is { Length: > 0 })
+                {
+                    Response.Headers.CacheControl = "private, max-age=3600";
+                    return File(autoBytes, "image/jpeg");
+                }
+            }
+        }
+
         if (IsEagleA25(resolution.SourceScannerType))
         {
-            var eagleLookup = !string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers)
-                ? resolution.SourceContainerNumbers
-                : resolution.SourceScanId ?? sourceScanId;
-
             var rendered = await _imageProcessingService.GetRenderedImageBytesAsync(
-                eagleLookup,
+                sourceContainer,
                 "bw",
                 ct: cancellationToken);
 
@@ -165,7 +237,7 @@ public sealed class ScanAssetsController : ControllerBase
                 return File(rendered, "image/jpeg");
             }
 
-            var fallback = await _imageProcessingService.GetCompleteContainerDataAsync(eagleLookup, imageType);
+            var fallback = await _imageProcessingService.GetCompleteContainerDataAsync(sourceContainer, imageType);
             if (fallback?.ImageBytes is { Length: > 0 })
             {
                 Response.Headers.CacheControl = string.Equals(size, "thumbnail", StringComparison.OrdinalIgnoreCase)
@@ -176,7 +248,7 @@ public sealed class ScanAssetsController : ControllerBase
         }
 
         var data = await _imageProcessingService.GetCompleteContainerDataAsync(
-            resolution.SourceContainerNumbers,
+            sourceContainer,
             imageType);
 
         if (data?.ImageBytes == null || data.ImageBytes.Length == 0)
@@ -193,6 +265,171 @@ public sealed class ScanAssetsController : ControllerBase
             : "private, max-age=3600";
 
         return File(data.ImageBytes, data.MimeType ?? "image/jpeg");
+    }
+
+    [HttpGet("{sourceScanId}/mode-capabilities")]
+    [ProducesResponseType(200, Type = typeof(ScanModeCapabilities))]
+    [ProducesResponseType(404)]
+    public async Task<IActionResult> GetSourceModeCapabilities(
+        string sourceScanId,
+        [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
+        [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var (resolution, error) = await ResolveSourceForRequestAsync(
+            sourceScanId,
+            containerNumber,
+            groupIdentifier,
+            analysisRecordId,
+            splitJobId,
+            scanImageAssetId,
+            cancellationToken);
+        if (error != null)
+            return error;
+
+        var sourceContainer = GetPipelineContainerNumber(resolution!);
+        if (string.IsNullOrWhiteSpace(sourceContainer))
+            return NotFound(new { error = "Source container identity not available", sourceScanId, resolution });
+
+        var caps = await _imageProcessingService.GetScanModeCapabilitiesAsync(sourceContainer, cancellationToken);
+        if (caps == null)
+            return NotFound(new { error = "No scan found or scanner type not resolvable", sourceScanId, resolution });
+
+        Response.Headers.CacheControl = "private, max-age=60";
+        return Ok(caps);
+    }
+
+    [HttpGet("{sourceScanId}/roi")]
+    [ProducesResponseType(200, Type = typeof(RoiInspectorResult))]
+    [ProducesResponseType(404)]
+    public async Task<IActionResult> GetSourceRoiInspector(
+        string sourceScanId,
+        [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
+        [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
+        [FromQuery] int x = 0,
+        [FromQuery] int y = 0,
+        [FromQuery] int w = 100,
+        [FromQuery] int h = 100,
+        CancellationToken cancellationToken = default)
+    {
+        if (w <= 0 || h <= 0)
+            return BadRequest(new { error = "w and h must be positive" });
+
+        var (resolution, error) = await ResolveSourceForRequestAsync(
+            sourceScanId,
+            containerNumber,
+            groupIdentifier,
+            analysisRecordId,
+            splitJobId,
+            scanImageAssetId,
+            cancellationToken);
+        if (error != null)
+            return error;
+
+        var sourceContainer = GetPipelineContainerNumber(resolution!);
+        if (string.IsNullOrWhiteSpace(sourceContainer))
+            return NotFound(new { error = "Source container identity not available", sourceScanId, resolution });
+
+        var result = await _imageProcessingService.GetRoiInspectorAsync(sourceContainer, x, y, w, h, cancellationToken);
+        if (result == null)
+            return NotFound(new { error = "ROI inspector unavailable for source scan", sourceScanId, resolution });
+
+        Response.Headers.CacheControl = "private, max-age=300";
+        return Ok(result);
+    }
+
+    [HttpGet("{sourceScanId}/pixel")]
+    [ProducesResponseType(200, Type = typeof(PixelValueResult))]
+    [ProducesResponseType(404)]
+    public async Task<IActionResult> GetSourcePixelValue(
+        string sourceScanId,
+        [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
+        [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
+        [FromQuery] int x = 0,
+        [FromQuery] int y = 0,
+        CancellationToken cancellationToken = default)
+    {
+        var (resolution, error) = await ResolveSourceForRequestAsync(
+            sourceScanId,
+            containerNumber,
+            groupIdentifier,
+            analysisRecordId,
+            splitJobId,
+            scanImageAssetId,
+            cancellationToken);
+        if (error != null)
+            return error;
+
+        var sourceContainer = GetPipelineContainerNumber(resolution!);
+        if (string.IsNullOrWhiteSpace(sourceContainer))
+            return NotFound(new { error = "Source container identity not available", sourceScanId, resolution });
+
+        var result = await _imageProcessingService.GetPixelValueAsync(sourceContainer, x, y, cancellationToken);
+        if (result == null)
+            return NotFound(new { error = "Pixel probe unavailable for source scan", sourceScanId, resolution });
+
+        Response.Headers.CacheControl = "private, max-age=10";
+        return Ok(result);
+    }
+
+    [HttpGet("{sourceScanId}/raw")]
+    [ProducesResponseType(200)]
+    [ProducesResponseType(400)]
+    [ProducesResponseType(404)]
+    public async Task<IActionResult> GetSourceRawPlane(
+        string sourceScanId,
+        [FromQuery] string? containerNumber = null,
+        [FromQuery] string? groupIdentifier = null,
+        [FromQuery] int? analysisRecordId = null,
+        [FromQuery] Guid? splitJobId = null,
+        [FromQuery] Guid? scanImageAssetId = null,
+        [FromQuery] string plane = "he",
+        CancellationToken cancellationToken = default)
+    {
+        var (resolution, error) = await ResolveSourceForRequestAsync(
+            sourceScanId,
+            containerNumber,
+            groupIdentifier,
+            analysisRecordId,
+            splitJobId,
+            scanImageAssetId,
+            cancellationToken);
+        if (error != null)
+            return error;
+
+        var sourceContainer = GetPipelineContainerNumber(resolution!);
+        if (string.IsNullOrWhiteSpace(sourceContainer))
+            return NotFound(new { error = "Source container identity not available", sourceScanId, resolution });
+
+        var result = await _imageProcessingService.GetRawPlaneAsync(sourceContainer, plane, cancellationToken);
+        if (result == null)
+        {
+            return NotFound(new
+            {
+                error = $"Raw plane '{plane}' not available for this source scan",
+                sourceScanId,
+                resolution
+            });
+        }
+
+        Response.Headers["X-Width"] = result.Width.ToString(CultureInfo.InvariantCulture);
+        Response.Headers["X-Height"] = result.Height.ToString(CultureInfo.InvariantCulture);
+        Response.Headers["X-BitDepth"] = result.BitDepth.ToString(CultureInfo.InvariantCulture);
+        Response.Headers["X-Plane"] = result.Plane;
+        Response.Headers["X-Source-Format"] = result.SourceFormat;
+        Response.Headers["Access-Control-Expose-Headers"] =
+            "X-Width, X-Height, X-BitDepth, X-Plane, X-Source-Format";
+        Response.Headers.CacheControl = "private, max-age=60";
+        return File(result.Bytes, "application/octet-stream");
     }
 
     [HttpGet("{sourceScanId}/images")]
@@ -374,6 +611,59 @@ public sealed class ScanAssetsController : ControllerBase
         }
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}";
+    }
+
+    private async Task<(ScanAssetResolution? Resolution, IActionResult? Error)> ResolveSourceForRequestAsync(
+        string sourceScanId,
+        string? containerNumber,
+        string? groupIdentifier,
+        int? analysisRecordId,
+        Guid? splitJobId,
+        Guid? scanImageAssetId,
+        CancellationToken cancellationToken)
+    {
+        var hasResolverContext = !string.IsNullOrWhiteSpace(containerNumber)
+            || !string.IsNullOrWhiteSpace(groupIdentifier)
+            || analysisRecordId.HasValue
+            || scanImageAssetId.HasValue;
+        var resolution = hasResolverContext
+            ? await _resolver.ResolveAsync(
+                new ScanAssetResolutionRequest
+                {
+                    ContainerNumber = containerNumber,
+                    GroupIdentifier = groupIdentifier,
+                    AnalysisRecordId = analysisRecordId,
+                    SplitJobId = splitJobId,
+                    ScanImageAssetId = scanImageAssetId
+                },
+                cancellationToken)
+            : await ResolveBySourceScanIdAsync(sourceScanId, cancellationToken);
+
+        if (resolution.IsAmbiguous)
+            return (resolution, Conflict(resolution));
+
+        if (!resolution.Found)
+            return (resolution, NotFound(resolution));
+
+        if (!SourceIdMatches(sourceScanId, resolution))
+        {
+            return (resolution, NotFound(new
+            {
+                error = "Source scan id does not match resolved container source",
+                sourceScanId,
+                resolution
+            }));
+        }
+
+        return (resolution, null);
+    }
+
+    private static string? GetPipelineContainerNumber(ScanAssetResolution resolution)
+    {
+        if (!string.IsNullOrWhiteSpace(resolution.SourceContainerNumbers))
+            return resolution.SourceContainerNumbers;
+
+        return GetDisplayContainerNumber(resolution);
     }
 
     private async Task<List<ScannerDataRecord>> BuildSourceScannerRecordsAsync(
