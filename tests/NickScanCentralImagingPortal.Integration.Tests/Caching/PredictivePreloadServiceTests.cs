@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -58,7 +60,7 @@ public sealed class PredictivePreloadServiceTests
             new AnalysisRecord { GroupId = groupId, ContainerNumber = "MSCU1234567, TGHU7654321", ScannerType = "FS6000" });
         await db.SaveChangesAsync();
 
-        var cache = new InMemoryCacheService();
+        var cache = NewSystemCacheService();
         var service = NewService(
             db,
             icumDb,
@@ -366,6 +368,16 @@ public sealed class PredictivePreloadServiceTests
             .EnableServiceProviderCaching(false)
             .Options;
         return new IcumDownloadsDbContext(options);
+    }
+
+    private static SystemCacheService NewSystemCacheService()
+    {
+        return new SystemCacheService(
+            new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
+            new MemoryCache(new MemoryCacheOptions { SizeLimit = 100 }),
+            Options.Create(new SystemCacheOptions()),
+            new SystemCacheMetrics(),
+            NullLogger<SystemCacheService>.Instance);
     }
 
     private static PredictivePreloadService NewService(

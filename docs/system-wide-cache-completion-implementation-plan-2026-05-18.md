@@ -315,6 +315,10 @@ Goal: Safely switch `ICacheService` to `SystemCacheService`.
 
 - [x] Add `SystemCache:UseSystemCacheService`.
 - [x] Register both old and new implementations internally if needed.
+- [x] Move active cache selection into tested `AddSystemCacheServices` registration.
+- [x] Add tests proving default registration keeps `RedisCacheService` active.
+- [x] Add tests proving enabled registration makes `SystemCacheService` active.
+- [x] Add status endpoint coverage for disabled and enabled registration modes.
 - [x] Default to current behavior until tests pass.
 - [ ] Switch development config to new implementation.
 - [x] Keep production template explicit and controllable.
@@ -322,10 +326,10 @@ Goal: Safely switch `ICacheService` to `SystemCacheService`.
   - [ ] L1 enabled
   - [ ] L2 provider
   - [ ] Redis enabled/disabled
-  - [ ] system cache enabled
+  - [x] system cache enabled
   - [ ] warmup enabled
-- [ ] Run existing predictive preload tests against new implementation.
-- [ ] Run `RedisCacheServiceTests` or replace with system cache tests.
+- [x] Run predictive preload write/read coverage through `SystemCacheService`.
+- [x] Run `RedisCacheServiceTests` and system cache tests.
 
 Exit criteria:
 

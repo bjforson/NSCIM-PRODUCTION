@@ -22,6 +22,7 @@ using NickScanCentralImagingPortal.API.Monitoring;
 using NickScanCentralImagingPortal.API.Startup;
 using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Services;
+using NickScanCentralImagingPortal.Services.Caching;
 using Serilog;
 // using AspNetCoreRateLimit; // REMOVED - replaced with .NET 8 built-in rate limiting
 
@@ -54,8 +55,6 @@ if (!_skipMutex)
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService();
-builder.Services.Configure<NickScanCentralImagingPortal.Services.Caching.SystemCacheOptions>(
-    builder.Configuration.GetSection(NickScanCentralImagingPortal.Services.Caching.SystemCacheOptions.SectionName));
 builder.Services.Configure<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadOptions>(
     builder.Configuration.GetSection(NickScanCentralImagingPortal.Services.Caching.PredictivePreloadOptions.SectionName));
 
@@ -846,9 +845,6 @@ var redisInstanceName = "NickScanPortal:";
 var responseCachingEnabled = false;
 var maxResponseBodySizeMB = 1;
 var useCaseSensitivePaths = false;
-var useSystemCacheService = builder.Configuration.GetValue<bool>(
-    "SystemCache:UseSystemCacheService",
-    false);
 
 try
 {
@@ -902,23 +898,9 @@ else
     Log.Information("⚠️ Redis disabled - using in-memory cache");
 }
 
-builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.RedisCacheService>();
-builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.SystemCacheMetrics>();
-builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>();
-builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.ISystemCacheService>(sp =>
-    sp.GetRequiredService<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>());
-if (useSystemCacheService)
-{
-    builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICacheService>(sp =>
-        sp.GetRequiredService<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>());
-    Log.Information("✅ System-wide L1/L2 cache service enabled");
-}
-else
-{
-    builder.Services.AddScoped<NickScanCentralImagingPortal.Core.Interfaces.ICacheService,
-        NickScanCentralImagingPortal.Services.Caching.RedisCacheService>();
-    Log.Information("✅ Legacy distributed cache service remains active");
-}
+builder.Services.AddSystemCacheServices(
+    builder.Configuration,
+    message => Log.Information("✅ {Message}", message));
 
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadState>();
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService,
