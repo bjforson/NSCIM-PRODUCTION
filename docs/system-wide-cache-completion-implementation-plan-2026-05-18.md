@@ -298,12 +298,12 @@ Goal: Make cache behavior visible before broad migration.
   - [ ] fallback to source
   - [ ] payload too large
   - [x] stampede prevented
-- [ ] Add admin endpoint `GET /api/cache/system/status`.
-- [ ] Add admin endpoint `GET /api/cache/system/metrics`.
-- [ ] Add admin endpoint `POST /api/cache/system/invalidate/prefix`.
-- [ ] Add admin endpoint `POST /api/cache/system/invalidate/tag`.
+- [x] Add admin endpoint `GET /api/cache/system/status`.
+- [x] Add admin endpoint `GET /api/cache/system/metrics`.
+- [x] Add admin endpoint `POST /api/cache/system/invalidate/prefix`.
+- [x] Add admin endpoint `POST /api/cache/system/invalidate/tag`.
 - [ ] Add optional metric log summary.
-- [ ] Add endpoint tests.
+- [x] Add endpoint tests.
 
 Exit criteria:
 
