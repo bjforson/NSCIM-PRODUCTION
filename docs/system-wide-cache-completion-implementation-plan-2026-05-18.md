@@ -243,12 +243,12 @@ Exit criteria:
 
 Goal: Stop repeated LAN/database calls when many users request the same hot key.
 
-- [ ] Add per-key async locks in `SystemCacheService`.
-- [ ] Ensure `GetOrSetAsync` rechecks cache after acquiring lock.
-- [ ] Ensure lock dictionary is pruned to avoid unbounded growth.
-- [ ] Make lock timeout configurable.
-- [ ] Add tests proving parallel requests call the factory once.
-- [ ] Add tests proving factory exceptions do not poison the lock.
+- [x] Add per-key async locks in `SystemCacheService`.
+- [x] Ensure `GetOrSetAsync` rechecks cache after acquiring lock.
+- [x] Ensure lock dictionary is pruned to avoid unbounded growth.
+- [x] Make lock timeout configurable.
+- [x] Add tests proving parallel requests call the factory once.
+- [x] Add tests proving factory exceptions do not poison the lock.
 - [ ] Add metrics counters for stampede prevented and factory failures.
 
 Exit criteria:

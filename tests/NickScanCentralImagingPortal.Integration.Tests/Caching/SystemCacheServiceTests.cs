@@ -75,11 +75,87 @@ public sealed class SystemCacheServiceTests
     }
 
     [Fact]
+    public async Task GetOrSetAsync_CoalescesConcurrentMissesForSameKey()
+    {
+        var distributedCache = NewDistributedCache();
+        using var memoryCache = NewMemoryCache();
+        var service = NewService(distributedCache, memoryCache);
+        var key = UniqueKey("stampede");
+        var factoryCalls = 0;
+
+        async Task<CacheValue> Factory()
+        {
+            Interlocked.Increment(ref factoryCalls);
+            await Task.Delay(50);
+            return new CacheValue("coalesced");
+        }
+
+        var tasks = Enumerable.Range(0, 20)
+            .Select(_ => service.GetOrSetAsync(key, Factory, TimeSpan.FromMinutes(5)))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        Assert.All(results, result => Assert.Equal("coalesced", result.Value));
+        Assert.Equal(1, factoryCalls);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_DoesNotCoalesceWhenStampedeProtectionDisabled()
+    {
+        var distributedCache = NewDistributedCache();
+        using var memoryCache = NewMemoryCache();
+        var service = NewService(
+            distributedCache,
+            memoryCache,
+            new SystemCacheOptions { EnableStampedeProtection = false });
+        var key = UniqueKey("stampede-disabled");
+        var factoryCalls = 0;
+
+        async Task<CacheValue> Factory()
+        {
+            Interlocked.Increment(ref factoryCalls);
+            await Task.Delay(50);
+            return new CacheValue("not-coalesced");
+        }
+
+        var tasks = Enumerable.Range(0, 20)
+            .Select(_ => service.GetOrSetAsync(key, Factory, TimeSpan.FromMinutes(5)))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        Assert.All(results, result => Assert.Equal("not-coalesced", result.Value));
+        Assert.True(factoryCalls > 1);
+    }
+
+    [Fact]
+    public async Task GetOrSetAsync_FactoryExceptionDoesNotPoisonKeyLock()
+    {
+        var distributedCache = NewDistributedCache();
+        using var memoryCache = NewMemoryCache();
+        var service = NewService(distributedCache, memoryCache);
+        var key = UniqueKey("factory-failure");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.GetOrSetAsync<CacheValue>(
+                key,
+                () => throw new InvalidOperationException("source failed")));
+
+        var recovered = await service.GetOrSetAsync(
+            key,
+            () => Task.FromResult(new CacheValue("recovered")));
+
+        Assert.Equal("recovered", recovered.Value);
+    }
+
+    [Fact]
     public void SystemCacheOptions_DefaultsToDisabledRegistrationFlag()
     {
         var options = new SystemCacheOptions();
 
         Assert.False(options.UseSystemCacheService);
+        Assert.True(options.EnableStampedeProtection);
     }
 
     [Fact]

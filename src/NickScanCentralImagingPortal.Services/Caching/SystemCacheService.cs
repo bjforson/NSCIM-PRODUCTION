@@ -12,6 +12,7 @@ public sealed class SystemCacheService : ICacheService
 {
     private const string LocalKeyPrefix = "SystemCache:L1:";
     private static readonly ConcurrentDictionary<string, byte> KnownKeys = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> KeyLocks = new(StringComparer.Ordinal);
 
     private readonly IDistributedCache _distributedCache;
     private readonly IMemoryCache _memoryCache;
@@ -198,26 +199,58 @@ public sealed class SystemCacheService : ICacheService
         TimeSpan? expiration = null,
         CancellationToken cancellationToken = default) where T : class
     {
+        var cachedData = await GetAsync<T>(key, cancellationToken);
+        if (cachedData is not null)
+        {
+            return cachedData;
+        }
+
+        if (!_options.EnableStampedeProtection)
+        {
+            return await CreateAndCacheAsync(key, factory, expiration, cancellationToken);
+        }
+
+        var keyLock = KeyLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        var acquired = false;
+        var factoryStarted = false;
+
         try
         {
-            var cachedData = await GetAsync<T>(key, cancellationToken);
+            var timeout = TimeSpan.FromSeconds(Math.Max(1, _options.StampedeLockTimeoutSeconds));
+            acquired = await keyLock.WaitAsync(timeout, cancellationToken);
+            if (!acquired)
+            {
+                _logger.LogWarning(
+                    "Timed out waiting for system cache stampede lock for key: {Key}",
+                    key);
+                return await CreateAndCacheAsync(key, factory, expiration, cancellationToken);
+            }
+
+            cachedData = await GetAsync<T>(key, cancellationToken);
             if (cachedData is not null)
             {
                 return cachedData;
             }
 
-            var data = await factory();
-            if (data is not null)
-            {
-                await SetAsync(key, data, expiration, cancellationToken);
-            }
-
-            return data;
+            factoryStarted = true;
+            return await CreateAndCacheAsync(key, factory, expiration, cancellationToken);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (!factoryStarted)
         {
             _logger.LogError(ex, "Error in system cache GetOrSetAsync for key: {Key}", key);
             return await factory();
+        }
+        finally
+        {
+            if (acquired)
+            {
+                keyLock.Release();
+                TryReleaseKeyLock(key, keyLock);
+            }
         }
     }
 
@@ -254,6 +287,31 @@ public sealed class SystemCacheService : ICacheService
         }
 
         KnownKeys[key] = 0;
+    }
+
+    private async Task<T> CreateAndCacheAsync<T>(
+        string key,
+        Func<Task<T>> factory,
+        TimeSpan? expiration,
+        CancellationToken cancellationToken) where T : class
+    {
+        var data = await factory();
+        if (data is not null)
+        {
+            await SetAsync(key, data, expiration, cancellationToken);
+        }
+
+        return data;
+    }
+
+    private static void TryReleaseKeyLock(string key, SemaphoreSlim keyLock)
+    {
+        if (keyLock.CurrentCount != 1)
+        {
+            return;
+        }
+
+        KeyLocks.TryRemove(new KeyValuePair<string, SemaphoreSlim>(key, keyLock));
     }
 
     private T? Deserialize<T>(string payload, string key) where T : class

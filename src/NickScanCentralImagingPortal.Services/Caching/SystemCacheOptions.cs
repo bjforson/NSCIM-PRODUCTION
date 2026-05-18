@@ -12,4 +12,6 @@ public sealed class SystemCacheOptions
     public long DefaultL1SizeUnits { get; set; } = 1;
     public bool TrackKeysForPrefixInvalidation { get; set; } = true;
     public int MaxTrackedKeyLength { get; set; } = 512;
+    public bool EnableStampedeProtection { get; set; } = true;
+    public int StampedeLockTimeoutSeconds { get; set; } = 30;
 }
