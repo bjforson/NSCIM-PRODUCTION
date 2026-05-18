@@ -249,7 +249,7 @@ Goal: Stop repeated LAN/database calls when many users request the same hot key.
 - [x] Make lock timeout configurable.
 - [x] Add tests proving parallel requests call the factory once.
 - [x] Add tests proving factory exceptions do not poison the lock.
-- [ ] Add metrics counters for stampede prevented and factory failures.
+- [x] Add metrics counters for stampede prevented and factory failures.
 
 Exit criteria:
 
@@ -283,21 +283,21 @@ Exit criteria:
 
 Goal: Make cache behavior visible before broad migration.
 
-- [ ] Add `SystemCacheMetrics`.
+- [x] Add `SystemCacheMetrics`.
 - [ ] Track:
-  - [ ] L1 hit
+  - [x] L1 hit
   - [ ] L1 miss
-  - [ ] L2 hit
+  - [x] L2 hit
   - [ ] L2 miss
-  - [ ] set
-  - [ ] remove
-  - [ ] prefix remove
+  - [x] set
+  - [x] remove
+  - [x] prefix remove
   - [ ] tag remove
   - [ ] factory success
-  - [ ] factory failure
+  - [x] factory failure
   - [ ] fallback to source
   - [ ] payload too large
-  - [ ] stampede prevented
+  - [x] stampede prevented
 - [ ] Add admin endpoint `GET /api/cache/system/status`.
 - [ ] Add admin endpoint `GET /api/cache/system/metrics`.
 - [ ] Add admin endpoint `POST /api/cache/system/invalidate/prefix`.

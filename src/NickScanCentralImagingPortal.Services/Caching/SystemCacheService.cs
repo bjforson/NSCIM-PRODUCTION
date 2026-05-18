@@ -17,6 +17,7 @@ public sealed class SystemCacheService : ICacheService
     private readonly IDistributedCache _distributedCache;
     private readonly IMemoryCache _memoryCache;
     private readonly ILogger<SystemCacheService> _logger;
+    private readonly SystemCacheMetrics _metrics;
     private readonly SystemCacheOptions _options;
     private readonly TimeSpan _defaultExpiration;
 
@@ -24,11 +25,13 @@ public sealed class SystemCacheService : ICacheService
         IDistributedCache distributedCache,
         IMemoryCache memoryCache,
         IOptions<SystemCacheOptions> options,
+        SystemCacheMetrics metrics,
         ILogger<SystemCacheService> logger)
     {
         _distributedCache = distributedCache;
         _memoryCache = memoryCache;
         _logger = logger;
+        _metrics = metrics;
         _options = options.Value;
         _defaultExpiration = TimeSpan.FromMinutes(Math.Max(1, _options.DefaultExpirationMinutes));
     }
@@ -41,12 +44,14 @@ public sealed class SystemCacheService : ICacheService
                 _memoryCache.TryGetValue(GetLocalKey(key), out string? localPayload) &&
                 !string.IsNullOrWhiteSpace(localPayload))
             {
+                _metrics.RecordL1Hit();
                 _logger.LogDebug("System cache L1 hit for key: {Key}", key);
                 return Deserialize<T>(localPayload, key);
             }
 
             if (!_options.UseDistributedCache)
             {
+                _metrics.RecordMiss();
                 _logger.LogDebug("System cache miss for key: {Key}", key);
                 return null;
             }
@@ -54,18 +59,21 @@ public sealed class SystemCacheService : ICacheService
             var distributedPayload = await _distributedCache.GetStringAsync(key, cancellationToken);
             if (string.IsNullOrWhiteSpace(distributedPayload))
             {
+                _metrics.RecordMiss();
                 _logger.LogDebug("System cache miss for key: {Key}", key);
                 return null;
             }
 
             TrackKey(key);
             SetLocalPayload(key, distributedPayload, _defaultExpiration);
+            _metrics.RecordL2Hit();
             _logger.LogDebug("System cache L2 hit for key: {Key}", key);
 
             return Deserialize<T>(distributedPayload, key);
         }
         catch (Exception ex)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error getting system cache value for key: {Key}", key);
             return null;
         }
@@ -101,6 +109,7 @@ public sealed class SystemCacheService : ICacheService
 
             SetLocalPayload(key, payload, effectiveExpiration);
             TrackKey(key);
+            _metrics.RecordSet();
 
             _logger.LogDebug(
                 "Stored system cache value for key: {Key} with expiration: {Expiration}",
@@ -109,6 +118,7 @@ public sealed class SystemCacheService : ICacheService
         }
         catch (Exception ex)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error setting system cache value for key: {Key}", key);
         }
     }
@@ -125,10 +135,12 @@ public sealed class SystemCacheService : ICacheService
             }
 
             KnownKeys.TryRemove(key, out _);
+            _metrics.RecordRemove();
             _logger.LogDebug("Removed system cache value for key: {Key}", key);
         }
         catch (Exception ex)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error removing system cache value for key: {Key}", key);
         }
     }
@@ -158,6 +170,7 @@ public sealed class SystemCacheService : ICacheService
                 KnownKeys.TryRemove(key, out _);
             }
 
+            _metrics.RecordPrefixInvalidation(matchingKeys.Count);
             _logger.LogInformation(
                 "Removed {Count} system cache value(s) by prefix: {Prefix}",
                 matchingKeys.Count,
@@ -165,6 +178,7 @@ public sealed class SystemCacheService : ICacheService
         }
         catch (Exception ex)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error removing system cache values by prefix: {Prefix}", prefix);
         }
     }
@@ -188,6 +202,7 @@ public sealed class SystemCacheService : ICacheService
         }
         catch (Exception ex)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error checking if system cache key exists: {Key}", key);
             return false;
         }
@@ -217,18 +232,22 @@ public sealed class SystemCacheService : ICacheService
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Max(1, _options.StampedeLockTimeoutSeconds));
+            _metrics.RecordStampedeWait();
             acquired = await keyLock.WaitAsync(timeout, cancellationToken);
             if (!acquired)
             {
+                _metrics.RecordStampedeTimeout();
                 _logger.LogWarning(
                     "Timed out waiting for system cache stampede lock for key: {Key}",
                     key);
+                factoryStarted = true;
                 return await CreateAndCacheAsync(key, factory, expiration, cancellationToken);
             }
 
             cachedData = await GetAsync<T>(key, cancellationToken);
             if (cachedData is not null)
             {
+                _metrics.RecordStampedePrevented();
                 return cachedData;
             }
 
@@ -241,6 +260,7 @@ public sealed class SystemCacheService : ICacheService
         }
         catch (Exception ex) when (!factoryStarted)
         {
+            _metrics.RecordCacheError();
             _logger.LogError(ex, "Error in system cache GetOrSetAsync for key: {Key}", key);
             return await factory();
         }
@@ -295,7 +315,17 @@ public sealed class SystemCacheService : ICacheService
         TimeSpan? expiration,
         CancellationToken cancellationToken) where T : class
     {
-        var data = await factory();
+        T data;
+        try
+        {
+            data = await factory();
+        }
+        catch
+        {
+            _metrics.RecordFactoryFailure();
+            throw;
+        }
+
         if (data is not null)
         {
             await SetAsync(key, data, expiration, cancellationToken);

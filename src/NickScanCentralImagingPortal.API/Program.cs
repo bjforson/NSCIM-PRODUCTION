@@ -903,6 +903,7 @@ else
 }
 
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.RedisCacheService>();
+builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.SystemCacheMetrics>();
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.SystemCacheService>();
 if (useSystemCacheService)
 {
