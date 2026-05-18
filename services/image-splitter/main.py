@@ -52,6 +52,8 @@ from strategies.base import SplitResult
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("image-splitter")
 
+VIEWER_RENDERED_DISPLAY_PROFILE = "viewer_rendered"
+
 
 async def resume_pending_jobs():
     """On startup, process any jobs left in 'pending' or stuck 'processing' state.
@@ -357,13 +359,58 @@ def ensure_minimum_split_candidates(results: list[SplitResult], image_data: byte
     return results
 
 
-def _should_invert_legacy_fs6000_split_display(job: ImageSplitJob | None) -> bool:
-    """Legacy FS6000 jobs could store raw 16-bit PNG input with viewer-opposite polarity."""
+def _new_job_display_profile(scanner_type: Optional[str]) -> Optional[str]:
+    """Mark new ASE jobs as viewer-rendered so legacy polarity correction stays bounded."""
+    if (scanner_type or "").upper() == "ASE":
+        return VIEWER_RENDERED_DISPLAY_PROFILE
+    return None
+
+
+def _has_viewer_rendered_display_profile(job: ImageSplitJob) -> bool:
+    return (getattr(job, "image_display_profile", None) or "").lower() == VIEWER_RENDERED_DISPLAY_PROFILE
+
+
+def _should_invert_legacy_split_display(job: ImageSplitJob | None) -> bool:
+    """Return True for old split jobs whose stored bytes have viewer-opposite polarity."""
     if not job or not job.image_data:
         return False
-    if (job.scanner_type or "").upper() != "FS6000":
-        return False
-    return is_16bit_grayscale_image(bytes(job.image_data))
+
+    scanner_type = (job.scanner_type or "").upper()
+    if scanner_type == "FS6000":
+        return is_16bit_grayscale_image(bytes(job.image_data))
+
+    if scanner_type == "ASE":
+        return not _has_viewer_rendered_display_profile(job)
+
+    return False
+
+
+def _invert_for_legacy_split_display(
+    image_data: bytes,
+    job: ImageSplitJob | None,
+    *,
+    image_format: str,
+    context: str,
+    job_id: UUID,
+    result_id: UUID | None = None,
+    side: str | None = None,
+) -> bytes:
+    if not _should_invert_legacy_split_display(job):
+        return image_data
+
+    try:
+        return invert_encoded_image(image_data, format=image_format)
+    except Exception:
+        logger.warning(
+            "Failed to invert legacy split display image context=%s job=%s result=%s side=%s scanner=%s",
+            context,
+            job_id,
+            result_id,
+            side,
+            getattr(job, "scanner_type", None),
+            exc_info=True,
+        )
+        return image_data
 
 
 def _remote_vision_run_from_openai_advisory(job_id: UUID, result: SplitResult) -> Optional[RemoteVisionRun]:
@@ -589,6 +636,7 @@ async def create_split_job(
         container_numbers=request.container_numbers,
         source_image_id=UUID(request.source_image_id) if request.source_image_id else None,
         scanner_type=request.scanner_type,
+        image_display_profile=_new_job_display_profile(request.scanner_type),
         image_data=image_data,
         image_width=w,
         image_height=h,
@@ -639,6 +687,7 @@ async def create_split_job_upload(
         container_numbers=container_numbers,
         source_image_id=parsed_source_image_id,
         scanner_type=scanner_type,
+        image_display_profile=_new_job_display_profile(scanner_type),
         image_data=image_data,
         image_width=w,
         image_height=h,
@@ -854,17 +903,15 @@ async def get_result_image(job_id: UUID, result_id: UUID, side: str, db: AsyncSe
         raise HTTPException(404, "Image not available")
 
     job = await db.get(ImageSplitJob, job_id)
-    if _should_invert_legacy_fs6000_split_display(job):
-        try:
-            img_data = invert_encoded_image(bytes(img_data), format="jpeg")
-        except Exception:
-            logger.warning(
-                "Failed to invert legacy FS6000 split preview job=%s result=%s side=%s",
-                job_id,
-                result_id,
-                side,
-                exc_info=True,
-            )
+    img_data = _invert_for_legacy_split_display(
+        bytes(img_data),
+        job,
+        image_format="jpeg",
+        context="preview",
+        job_id=job_id,
+        result_id=result_id,
+        side=side,
+    )
 
     return Response(content=img_data, media_type="image/jpeg")
 
@@ -885,8 +932,15 @@ async def get_result_lossless_image(job_id: UUID, result_id: UUID, side: str, db
 
     try:
         img_data = crop_side_and_encode(bytes(job.image_data), result.split_x, side, format="png")
-        if _should_invert_legacy_fs6000_split_display(job):
-            img_data = invert_encoded_image(img_data, format="png")
+        img_data = _invert_for_legacy_split_display(
+            img_data,
+            job,
+            image_format="png",
+            context="lossless",
+            job_id=job_id,
+            result_id=result_id,
+            side=side,
+        )
     except Exception as exc:
         logger.warning(
             "Failed to render lossless split crop job=%s result=%s side=%s",
@@ -1076,6 +1130,13 @@ async def get_original_image(job_id: UUID, db: AsyncSession = Depends(get_db)):
     if not job or not job.image_data:
         raise HTTPException(404, "Job or image not found")
     image_data = bytes(job.image_data)
+    image_data = _invert_for_legacy_split_display(
+        image_data,
+        job,
+        image_format="jpeg",
+        context="original",
+        job_id=job_id,
+    )
     return Response(content=image_data, media_type=detect_image_media_type(image_data))
 
 

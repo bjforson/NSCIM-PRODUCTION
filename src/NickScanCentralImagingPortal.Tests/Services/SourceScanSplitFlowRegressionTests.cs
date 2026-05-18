@@ -203,6 +203,71 @@ public sealed class SourceScanSplitFlowRegressionTests
     }
 
     [Fact]
+    public async Task TwoContainerSplitIntake_AseOriginal_UsesViewerRenderedImageForSubmission()
+    {
+        await using var db = NewInMemoryDb();
+        var groupId = Guid.NewGuid();
+        var jobId = Guid.NewGuid();
+        var optionA = Guid.NewGuid();
+        var optionB = Guid.NewGuid();
+        var viewerRenderedJpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0x11, 0xD9 };
+        var converterJpeg = new byte[] { 0xFF, 0xD8, 0xFF, 0x22, 0xD9 };
+        var splitter = new StubImageSplitterService
+        {
+            SubmittedJob = new SplitJobReference(jobId, "completed"),
+            StatusByJobId =
+            {
+                [jobId] = new SplitJobStatus(
+                    jobId,
+                    "completed",
+                    BestStrategy: "projection",
+                    BestConfidence: 0.98,
+                    SplitX: 420,
+                    ResultCount: 2)
+            },
+            ResultsByJobId =
+            {
+                [jobId] = new[]
+                {
+                    new SplitResultReference(optionA, "projection", 0.98),
+                    new SplitResultReference(optionB, "edge", 0.91)
+                }
+            }
+        };
+
+        var original = await SeedOriginalScanAsync(db, "ASE", "MSMU1683356, MRKU8254509");
+        var scanId = Guid.NewGuid();
+        db.AseScans.Add(new AseScan
+        {
+            Id = scanId,
+            OriginalScanRecordId = original.Id,
+            InspectionId = 84722,
+            InspectionUuid = "ASE-84722",
+            ContainerNumber = "MSMU1683356, MRKU8254509",
+            ScanTime = DateTime.UtcNow.AddMinutes(-30),
+            ScanImage = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray(),
+            ImageDisplayName = "40426305424_W1.ase"
+        });
+        SeedAnalysisGroupWithRecords(db, groupId, "ASE", "MSMU1683356", "MRKU8254509");
+        await db.SaveChangesAsync();
+
+        var service = NewSplitIntake(
+            db,
+            splitter,
+            new StubAseConverter(converterJpeg),
+            new ThrowingImageProcessingService(viewerRenderedJpeg, ScannerType.ASE));
+
+        var result = await service.EnsureSplitJobForOriginalAsync(original.Id);
+
+        Assert.True(result.IsApplicable);
+        Assert.True(result.SplitJobCreated);
+        Assert.Equal(scanId, splitter.SubmittedSourceImageId);
+        Assert.Equal("ASE", splitter.SubmittedScannerType);
+        Assert.Equal(viewerRenderedJpeg, splitter.SubmittedImageData);
+        Assert.NotEqual(converterJpeg, splitter.SubmittedImageData);
+    }
+
+    [Fact]
     public async Task TwoContainerSplitIntake_ExactFs6000Original_UsesImageBytesAndFileSizeRankForSubmission()
     {
         await using var db = NewInMemoryDb();
@@ -870,10 +935,14 @@ public sealed class SourceScanSplitFlowRegressionTests
     private sealed class ThrowingImageProcessingService : IImageProcessingService
     {
         private readonly byte[]? _completeContainerImageBytes;
+        private readonly ScannerType _detectedScanner;
 
-        public ThrowingImageProcessingService(byte[]? completeContainerImageBytes = null)
+        public ThrowingImageProcessingService(
+            byte[]? completeContainerImageBytes = null,
+            ScannerType detectedScanner = ScannerType.FS6000)
         {
             _completeContainerImageBytes = completeContainerImageBytes;
+            _detectedScanner = detectedScanner;
         }
 
         public Task<NickScanCentralImagingPortal.Core.Models.ImageProcessingResult> ProcessImageAsync(string containerNumber) => throw new NotSupportedException();
@@ -894,7 +963,7 @@ public sealed class SourceScanSplitFlowRegressionTests
             return Task.FromResult<ContainerImageDataResponse?>(new ContainerImageDataResponse
             {
                 ContainerNumber = containerNumber,
-                DetectedScanner = ScannerType.FS6000,
+                DetectedScanner = _detectedScanner,
                 ImageBytes = _completeContainerImageBytes,
                 MimeType = "image/jpeg",
                 ImageSizeBytes = _completeContainerImageBytes.Length

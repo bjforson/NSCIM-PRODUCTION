@@ -443,6 +443,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 .Select(scan => new
                 {
                     scan.Id,
+                    scan.ContainerNumber,
                     scan.ScanImage,
                     scan.ScanTime
                 })
@@ -451,10 +452,56 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             if (row?.ScanImage == null || row.ScanImage.Length < 16)
                 return null;
 
+            var rendered = await TryRenderAseSourceImageAsync(row.Id, row.ContainerNumber, row.ScanImage.Length);
+            if (rendered != null)
+                return new SplitSourceImage(row.Id, rendered);
+
             var imageBytes = await RenderAseForSplitterAsync(row.Id, containerCsv, row.ScanTime, row.ScanImage, cancellationToken);
             return imageBytes == null || imageBytes.Length == 0
                 ? null
                 : new SplitSourceImage(row.Id, imageBytes);
+        }
+
+        private async Task<byte[]?> TryRenderAseSourceImageAsync(
+            Guid scanId,
+            string? sourceContainerNumber,
+            int storedBytes)
+        {
+            if (string.IsNullOrWhiteSpace(sourceContainerNumber))
+                return null;
+
+            try
+            {
+                var rendered = await _imageProcessing.GetCompleteContainerDataAsync(sourceContainerNumber, imageType: null);
+                if (rendered?.ImageBytes is { Length: > 0 } && IsSupportedImageBytes(rendered.ImageBytes))
+                {
+                    _logger.LogInformation(
+                        "{ServiceId} Rendered ASE source image for scan {ScanId} ({Container}) before split submission so splitter previews match the normal viewer image ({Bytes} stored bytes).",
+                        ServiceId,
+                        scanId,
+                        sourceContainerNumber,
+                        storedBytes);
+                    return rendered.ImageBytes;
+                }
+
+                _logger.LogWarning(
+                    "{ServiceId} Rendered ASE source image for scan {ScanId} ({Container}) was unavailable or unsupported ({Bytes} stored bytes).",
+                    ServiceId,
+                    scanId,
+                    sourceContainerNumber,
+                    storedBytes);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "{ServiceId} Failed to render ASE source image for scan {ScanId} ({Container}) before split submission.",
+                    ServiceId,
+                    scanId,
+                    sourceContainerNumber);
+            }
+
+            return null;
         }
 
         private async Task<byte[]?> RenderAseForSplitterAsync(
@@ -464,6 +511,16 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
             byte[] scanImage,
             CancellationToken cancellationToken)
         {
+            var conversion = await _aseConverter.ConvertAseImageToJpegAsync(scanImage);
+            if (conversion.Success && conversion.ImageData != null && conversion.ImageData.Length > 0)
+                return conversion.ImageData;
+
+            _logger.LogWarning(
+                "{ServiceId} ASE converter render failed for scan {ScanId}; trying kernel renderer. Error: {Error}",
+                ServiceId,
+                scanId,
+                conversion.ErrorMessage);
+
             var adapter = _formatAdapters.FirstOrDefault(a => a.SourceFormatTag == ASEFormatAdapter.FormatTag);
             if (adapter != null)
             {
@@ -491,11 +548,7 @@ namespace NickScanCentralImagingPortal.Services.ImageSplitter
                 }
             }
 
-            var fallback = await _aseConverter.ConvertAseImageToJpegAsync(scanImage);
-            if (fallback.Success && fallback.ImageData != null && fallback.ImageData.Length > 0)
-                return fallback.ImageData;
-
-            _logger.LogWarning("{ServiceId} ASE render failed for scan {ScanId}: {Error}", ServiceId, scanId, fallback.ErrorMessage);
+            _logger.LogWarning("{ServiceId} ASE render failed for scan {ScanId}: {Error}", ServiceId, scanId, conversion.ErrorMessage);
             return null;
         }
 

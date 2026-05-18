@@ -32,6 +32,7 @@ class ImageSplitJob(Base):
     container_numbers = Column(Text, nullable=False)
     source_image_id = Column(UUID(as_uuid=True), nullable=True)
     scanner_type = Column(String(50), nullable=True)
+    image_display_profile = Column(String(64), nullable=True)
     image_data = Column(LargeBinary, nullable=True)
     image_width = Column(Integer, nullable=True)
     image_height = Column(Integer, nullable=True)
@@ -180,6 +181,7 @@ def create_tables():
             "ALTER TABLE image_split_jobs ADD COLUMN IF NOT EXISTS claude_vision_latency_ms INT",
             "ALTER TABLE image_split_jobs ADD COLUMN IF NOT EXISTS claude_vision_model VARCHAR(64)",
             "ALTER TABLE image_split_jobs ADD COLUMN IF NOT EXISTS claude_vision_ran_at TIMESTAMPTZ",
+            "ALTER TABLE image_split_jobs ADD COLUMN IF NOT EXISTS image_display_profile VARCHAR(64)",
             """
             CREATE TABLE IF NOT EXISTS image_split_remote_vision_runs (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
