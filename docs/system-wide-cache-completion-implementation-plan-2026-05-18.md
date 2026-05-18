@@ -199,15 +199,15 @@ Exit criteria:
 
 Goal: Define the cache platform contract without changing runtime behavior.
 
-- [ ] Add `SystemCacheOptions`.
-- [ ] Add config section to `appsettings.json`.
-- [ ] Add config section to `appsettings.Production.template.json`.
-- [ ] Add `SystemCacheKeyRegistry`.
-- [ ] Add key-family constants and helpers.
+- [x] Add `SystemCacheOptions`.
+- [x] Add config section to `appsettings.json`.
+- [x] Add config section to `appsettings.Production.template.json`.
+- [x] Add `SystemCacheKeyRegistry`.
+- [x] Add key-family constants and helpers.
 - [ ] Add cache entry metadata DTOs if needed.
-- [ ] Add tests for option defaults.
-- [ ] Add tests for key naming stability.
-- [ ] Keep `RedisCacheService` as the active registered implementation.
+- [x] Add tests for option defaults.
+- [x] Add tests for key naming stability.
+- [x] Keep `RedisCacheService` as the active registered implementation.
 
 Exit criteria:
 
@@ -219,19 +219,19 @@ Exit criteria:
 
 Goal: Implement unified L1/L2 cache but keep rollout behind config.
 
-- [ ] Create `SystemCacheService`.
-- [ ] Implement `GetAsync<T>`.
-- [ ] Implement `SetAsync<T>`.
-- [ ] Implement `RemoveAsync`.
-- [ ] Implement `ExistsAsync`.
-- [ ] Implement `GetOrSetAsync`.
-- [ ] Add L1 `IMemoryCache` support.
-- [ ] Add L2 `IDistributedCache` support.
-- [ ] Add configurable L1/L2 TTL behavior.
+- [x] Create `SystemCacheService`.
+- [x] Implement `GetAsync<T>`.
+- [x] Implement `SetAsync<T>`.
+- [x] Implement `RemoveAsync`.
+- [x] Implement `ExistsAsync`.
+- [x] Implement `GetOrSetAsync`.
+- [x] Add L1 `IMemoryCache` support.
+- [x] Add L2 `IDistributedCache` support.
+- [x] Add configurable L1/L2 TTL behavior.
 - [ ] Add max serialized payload guard.
-- [ ] Add null-value handling policy.
-- [ ] Add serialization options consistent with existing cache behavior.
-- [ ] Add graceful fallback on cache errors.
+- [x] Add null-value handling policy.
+- [x] Add serialization options consistent with existing cache behavior.
+- [x] Add graceful fallback on cache errors.
 - [ ] Add tests for L1 hit, L2 hit, miss, set, remove, exists, serialization failure, and fallback.
 
 Exit criteria:
@@ -313,11 +313,11 @@ Exit criteria:
 
 Goal: Safely switch `ICacheService` to `SystemCacheService`.
 
-- [ ] Add `SystemCache:UseSystemCacheService`.
-- [ ] Register both old and new implementations internally if needed.
-- [ ] Default to current behavior until tests pass.
+- [x] Add `SystemCache:UseSystemCacheService`.
+- [x] Register both old and new implementations internally if needed.
+- [x] Default to current behavior until tests pass.
 - [ ] Switch development config to new implementation.
-- [ ] Keep production template explicit and controllable.
+- [x] Keep production template explicit and controllable.
 - [ ] Add startup log showing:
   - [ ] L1 enabled
   - [ ] L2 provider
