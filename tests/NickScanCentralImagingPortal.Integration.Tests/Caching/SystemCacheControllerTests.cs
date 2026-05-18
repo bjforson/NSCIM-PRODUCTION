@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NickScanCentralImagingPortal.API.Controllers;
@@ -27,6 +28,7 @@ public sealed class SystemCacheControllerTests
         Assert.Equal(nameof(SystemCacheService), status.ActiveImplementation);
         Assert.True(status.L1Enabled);
         Assert.True(status.L2Enabled);
+        Assert.False(status.WarmupEnabled);
     }
 
     [Fact]
@@ -102,7 +104,41 @@ public sealed class SystemCacheControllerTests
         Assert.IsType<BadRequestObjectResult>(tag.Result);
     }
 
-    private static SystemCacheHarness NewHarness(SystemCacheOptions? options = null)
+    [Fact]
+    public void GetWarmup_ReturnsWarmupSnapshot()
+    {
+        var providerName = UniqueKey("warmup-provider");
+        var harness = NewHarness(warmupProviders: [new StubWarmupProvider(providerName, 3)]);
+        var controller = harness.NewController(harness.SystemCache);
+
+        var action = controller.GetWarmup();
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var snapshot = Assert.IsType<SystemCacheWarmupSnapshot>(ok.Value);
+        Assert.Contains(providerName, snapshot.RegisteredProviders);
+        Assert.False(snapshot.Enabled);
+    }
+
+    [Fact]
+    public async Task RunWarmup_ExecutesRegisteredProviderWhenForced()
+    {
+        var providerName = UniqueKey("warmup-provider");
+        var harness = NewHarness(warmupProviders: [new StubWarmupProvider(providerName, 3)]);
+        var controller = harness.NewController(harness.SystemCache);
+
+        var action = await controller.RunWarmup(new SystemCacheWarmupRunRequest(), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var result = Assert.IsType<SystemCacheWarmupRunResult>(ok.Value);
+        Assert.True(result.Started);
+        Assert.Equal(1, result.ProviderCount);
+        Assert.Equal(1, result.SuccessCount);
+        Assert.Equal(3, result.WarmedKeyCount);
+    }
+
+    private static SystemCacheHarness NewHarness(
+        SystemCacheOptions? options = null,
+        ISystemCacheWarmupProvider[]? warmupProviders = null)
     {
         var distributedCache = new MemoryDistributedCache(
             Options.Create(new MemoryDistributedCacheOptions()));
@@ -115,8 +151,33 @@ public sealed class SystemCacheControllerTests
             Options.Create(effectiveOptions),
             metrics,
             NullLogger<SystemCacheService>.Instance);
+        var warmupService = NewWarmupService(effectiveOptions, warmupProviders ?? []);
 
-        return new SystemCacheHarness(systemCache, metrics, effectiveOptions, memoryCache);
+        return new SystemCacheHarness(systemCache, metrics, effectiveOptions, memoryCache, warmupService);
+    }
+
+    private static SystemCacheWarmupService NewWarmupService(
+        SystemCacheOptions options,
+        ISystemCacheWarmupProvider[] providers)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.Configure<SystemCacheOptions>(configured =>
+        {
+            configured.WarmupEnabled = options.WarmupEnabled;
+            configured.WarmupStartupDelaySeconds = options.WarmupStartupDelaySeconds;
+            configured.WarmupIntervalMinutes = options.WarmupIntervalMinutes;
+            configured.WarmupJitterSeconds = options.WarmupJitterSeconds;
+            configured.MaxWarmupConcurrency = options.MaxWarmupConcurrency;
+        });
+        services.AddSingleton<SystemCacheWarmupState>();
+        services.AddSingleton<SystemCacheWarmupService>();
+        foreach (var provider in providers)
+        {
+            services.AddSingleton<ISystemCacheWarmupProvider>(provider);
+        }
+
+        return services.BuildServiceProvider().GetRequiredService<SystemCacheWarmupService>();
     }
 
     private static string UniqueKey(string purpose) => $"test:system-cache-controller:{purpose}:{Guid.NewGuid():N}";
@@ -127,7 +188,8 @@ public sealed class SystemCacheControllerTests
         SystemCacheService SystemCache,
         SystemCacheMetrics Metrics,
         SystemCacheOptions Options,
-        MemoryCache MemoryCache)
+        MemoryCache MemoryCache,
+        SystemCacheWarmupService WarmupService)
     {
         public SystemCacheController NewController(ICacheService activeCache)
         {
@@ -135,8 +197,30 @@ public sealed class SystemCacheControllerTests
                 activeCache,
                 SystemCache,
                 Metrics,
+                WarmupService,
                 Microsoft.Extensions.Options.Options.Create(Options),
                 NullLogger<SystemCacheController>.Instance);
+        }
+    }
+
+    private sealed class StubWarmupProvider : ISystemCacheWarmupProvider
+    {
+        private readonly int _warmedKeyCount;
+
+        public StubWarmupProvider(string name, int warmedKeyCount)
+        {
+            Name = name;
+            _warmedKeyCount = warmedKeyCount;
+        }
+
+        public string Name { get; }
+
+        public Task<SystemCacheWarmupProviderResult> WarmupAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(SystemCacheWarmupProviderResult.Succeeded(
+                Name,
+                _warmedKeyCount,
+                TimeSpan.FromMilliseconds(1)));
         }
     }
 }

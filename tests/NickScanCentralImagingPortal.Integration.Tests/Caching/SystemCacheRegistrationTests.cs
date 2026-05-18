@@ -116,6 +116,7 @@ public sealed class SystemCacheRegistrationTests
             provider.GetRequiredService<ICacheService>(),
             provider.GetRequiredService<ISystemCacheService>(),
             provider.GetRequiredService<SystemCacheMetrics>(),
+            provider.GetRequiredService<SystemCacheWarmupService>(),
             provider.GetRequiredService<IOptions<SystemCacheOptions>>(),
             NullLogger<SystemCacheController>.Instance);
     }

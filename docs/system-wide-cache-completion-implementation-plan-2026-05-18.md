@@ -340,20 +340,22 @@ Exit criteria:
 
 Goal: Replace ad hoc preload behavior with a clean warmup framework while preserving predictive preload.
 
-- [ ] Add `ISystemCacheWarmupProvider`.
-- [ ] Add `SystemCacheWarmupService`.
-- [ ] Add warmup state DTO.
-- [ ] Add admin endpoint to view warmup state.
-- [ ] Add admin endpoint to run warmup once.
-- [ ] Add provider for predictive role assignment candidates.
+- [x] Add `ISystemCacheWarmupProvider`.
+- [x] Add `SystemCacheWarmupService`.
+- [x] Add warmup state DTO.
+- [x] Add admin endpoint to view warmup state.
+- [x] Add admin endpoint to run warmup once.
+- [x] Add provider for predictive role assignment candidates.
 - [ ] Add provider for ready groups.
 - [ ] Add provider for settings.
 - [ ] Add provider for permission catalog.
-- [ ] Add provider for container contexts using existing predictive preload service.
-- [ ] Add max concurrency controls.
+- [x] Add provider for container contexts using existing predictive preload service.
+- [x] Add max concurrency controls.
 - [ ] Add CPU/DB-latency guard hooks if already available.
-- [ ] Add startup delay.
-- [ ] Add interval jitter to avoid synchronized warmup spikes.
+- [x] Add startup delay.
+- [x] Add interval jitter to avoid synchronized warmup spikes.
+- [x] Keep background warmup disabled by default.
+- [x] Add tests for disabled, forced manual, no-provider, controller, and predictive-provider behavior.
 
 Exit criteria:
 

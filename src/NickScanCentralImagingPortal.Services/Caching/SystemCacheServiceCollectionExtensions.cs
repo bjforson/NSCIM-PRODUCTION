@@ -23,6 +23,8 @@ public static class SystemCacheServiceCollectionExtensions
         services.TryAddScoped<SystemCacheService>();
         services.TryAddScoped<ISystemCacheService>(sp =>
             sp.GetRequiredService<SystemCacheService>());
+        services.TryAddSingleton<SystemCacheWarmupState>();
+        services.TryAddSingleton<SystemCacheWarmupService>();
 
         var useSystemCacheService = configuration.GetValue<bool>(
             $"{SystemCacheOptions.SectionName}:{nameof(SystemCacheOptions.UseSystemCacheService)}",

@@ -905,9 +905,13 @@ builder.Services.AddSystemCacheServices(
 builder.Services.AddSingleton<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadState>();
 builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.IPredictivePreloadService,
     NickScanCentralImagingPortal.Services.Caching.PredictivePreloadService>();
+builder.Services.AddScoped<NickScanCentralImagingPortal.Services.Caching.ISystemCacheWarmupProvider,
+    NickScanCentralImagingPortal.Services.Caching.PredictivePreloadWarmupProvider>();
 if (!disableHostedServicesForStaging)
 {
     builder.Services.AddHostedService<NickScanCentralImagingPortal.Services.Caching.PredictivePreloadBackgroundService>();
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<NickScanCentralImagingPortal.Services.Caching.SystemCacheWarmupService>());
 }
 
 // ✅ Add Response Caching (always registered so [ResponseCache] VaryByQueryKeys works)

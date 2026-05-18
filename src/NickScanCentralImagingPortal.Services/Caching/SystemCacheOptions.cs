@@ -17,4 +17,9 @@ public sealed class SystemCacheOptions
     public bool UseDistributedInvalidationIndex { get; set; } = true;
     public int InvalidationIndexExpirationMinutes { get; set; } = 120;
     public int MaxInvalidationIndexKeys { get; set; } = 5000;
+    public bool WarmupEnabled { get; set; }
+    public int WarmupStartupDelaySeconds { get; set; } = 30;
+    public int WarmupIntervalMinutes { get; set; } = 15;
+    public int WarmupJitterSeconds { get; set; } = 30;
+    public int MaxWarmupConcurrency { get; set; } = 2;
 }

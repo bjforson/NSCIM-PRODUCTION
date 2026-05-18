@@ -14,6 +14,7 @@ public sealed class SystemCacheController : ControllerBase
     private readonly ICacheService _activeCache;
     private readonly ISystemCacheService _systemCache;
     private readonly SystemCacheMetrics _metrics;
+    private readonly SystemCacheWarmupService _warmupService;
     private readonly SystemCacheOptions _options;
     private readonly ILogger<SystemCacheController> _logger;
 
@@ -21,12 +22,14 @@ public sealed class SystemCacheController : ControllerBase
         ICacheService activeCache,
         ISystemCacheService systemCache,
         SystemCacheMetrics metrics,
+        SystemCacheWarmupService warmupService,
         IOptions<SystemCacheOptions> options,
         ILogger<SystemCacheController> logger)
     {
         _activeCache = activeCache;
         _systemCache = systemCache;
         _metrics = metrics;
+        _warmupService = warmupService;
         _options = options.Value;
         _logger = logger;
     }
@@ -50,6 +53,7 @@ public sealed class SystemCacheController : ControllerBase
             L1ExpirationSeconds: _options.L1ExpirationSeconds,
             StampedeLockTimeoutSeconds: _options.StampedeLockTimeoutSeconds,
             InvalidationIndexExpirationMinutes: _options.InvalidationIndexExpirationMinutes,
+            WarmupEnabled: _options.WarmupEnabled,
             Metrics: _metrics.Snapshot()));
     }
 
@@ -58,6 +62,30 @@ public sealed class SystemCacheController : ControllerBase
     public ActionResult<SystemCacheMetricsSnapshot> GetMetrics()
     {
         return Ok(_metrics.Snapshot());
+    }
+
+    [Authorize(Policy = "AdminOnly")]
+    [HttpGet("warmup")]
+    public ActionResult<SystemCacheWarmupSnapshot> GetWarmup()
+    {
+        return Ok(_warmupService.Snapshot());
+    }
+
+    [Authorize(Policy = "AdminOnly")]
+    [HttpPost("warmup/run")]
+    public async Task<ActionResult<SystemCacheWarmupRunResult>> RunWarmup(
+        [FromBody] SystemCacheWarmupRunRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var force = request?.Force ?? true;
+        var result = await _warmupService.RunOnceAsync("admin-api", force, cancellationToken);
+
+        if (result.AlreadyRunning)
+        {
+            return Conflict(result);
+        }
+
+        return Ok(result);
     }
 
     [Authorize(Policy = "AdminOnly")]
@@ -127,6 +155,7 @@ public sealed record SystemCacheStatusSnapshot(
     int L1ExpirationSeconds,
     int StampedeLockTimeoutSeconds,
     int InvalidationIndexExpirationMinutes,
+    bool WarmupEnabled,
     SystemCacheMetricsSnapshot Metrics);
 
 public sealed record SystemCacheInvalidatePrefixRequest(string Prefix);
