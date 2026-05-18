@@ -2985,6 +2985,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                             {
                                 ContainerNumber = scan.ContainerNumber,
                                 ScanTime = scan.ScanTime,
+                                OriginalScanRecordId = scan.OriginalScanRecordId,
                                 FilePath = scan.FilePath,
                                 Images = imagesList
                             });
@@ -3064,6 +3065,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                             {
                                 ContainerNumber = scan.ContainerNumber,
                                 ScanTime = scan.ScanTime,
+                                OriginalScanRecordId = scan.OriginalScanRecordId,
                                 ImageDisplayName = scan.ImageDisplayName,
                                 ImageSize = scan.ScanImage != null ? scan.ScanImage.Length : 0
                             });
@@ -3096,6 +3098,44 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                     {
                         // Fallback to BaseUrl from config
                         publicBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5205";
+                    }
+                }
+
+                string BuildSignedImageUrl(string? sourceScanId, string containerNumber, string? imageType, string size, string cacheBuster)
+                {
+                    if (!string.IsNullOrWhiteSpace(sourceScanId))
+                    {
+                        var parts = new List<string>
+                        {
+                            $"containerNumber={Uri.EscapeDataString(containerNumber)}",
+                            $"size={Uri.EscapeDataString(size)}"
+                        };
+                        if (!string.IsNullOrWhiteSpace(imageType))
+                        {
+                            parts.Add($"imageType={Uri.EscapeDataString(imageType)}");
+                        }
+
+                        return publicBaseUrl + _urlSigner.SignRelative(
+                            $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/image?{string.Join("&", parts)}{cacheBuster}");
+                    }
+
+                    var legacyImageType = string.IsNullOrWhiteSpace(imageType)
+                        ? string.Empty
+                        : $"imageType={Uri.EscapeDataString(imageType)}&";
+                    return publicBaseUrl + _urlSigner.SignRelative(
+                        $"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?{legacyImageType}size={Uri.EscapeDataString(size)}{cacheBuster}");
+                }
+
+                static string? GetSourceScanId(dynamic scan)
+                {
+                    try
+                    {
+                        object? value = scan.OriginalScanRecordId;
+                        return value == null ? null : value.ToString();
+                    }
+                    catch
+                    {
+                        return null;
                     }
                 }
 
@@ -3134,6 +3174,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                 {
                                     var imageType = image.ImageType?.ToString() ?? "Main";
                                     var imageCacheBuster = $"&v={((DateTime)scan.ScanTime).Ticks}";
+                                    var sourceScanId = GetSourceScanId(scan);
                                     images.Add(new ImageMetadataDto
                                     {
                                         Id = imageId++,
@@ -3141,15 +3182,15 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                         FileName = image.FileName?.ToString() ?? scan.FilePath?.ToString() ?? "",
                                         FileSizeBytes = image.FileSizeBytes != null ? (long)image.FileSizeBytes : 0,
                                         CreatedAt = (DateTime)scan.ScanTime,
-                                        // ✅ Signed URL — browser <img src> can't carry JWT.
-                                        ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=thumbnail{imageCacheBuster}"),
-                                        FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType={Uri.EscapeDataString(imageType)}&size=full{imageCacheBuster}")
+                                        ThumbnailUrl = BuildSignedImageUrl(sourceScanId, containerNumber, imageType, "thumbnail", imageCacheBuster),
+                                        FullImageUrl = BuildSignedImageUrl(sourceScanId, containerNumber, imageType, "full", imageCacheBuster)
                                     });
                                 }
                             }
                             else if (!string.IsNullOrEmpty(scan.FilePath?.ToString()))
                             {
                                 var cacheBuster = $"&v={((DateTime)scan.ScanTime).Ticks}";
+                                var sourceScanId = GetSourceScanId(scan);
                                 images.Add(new ImageMetadataDto
                                 {
                                     Id = imageId++,
@@ -3157,9 +3198,8 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                     FileName = scan.FilePath?.ToString() ?? "",
                                     FileSizeBytes = 0L,
                                     CreatedAt = (DateTime)scan.ScanTime,
-                                    // ✅ Signed URL (see earlier).
-                                    ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=thumbnail{cacheBuster}"),
-                                    FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?size=full{cacheBuster}")
+                                    ThumbnailUrl = BuildSignedImageUrl(sourceScanId, containerNumber, null, "thumbnail", cacheBuster),
+                                    FullImageUrl = BuildSignedImageUrl(sourceScanId, containerNumber, null, "full", cacheBuster)
                                 });
                             }
                         }
@@ -3172,6 +3212,7 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                         foreach (var scan in containerASE)
                         {
                             var cacheBuster = $"&v={((DateTime)scan.ScanTime).Ticks}";
+                            var sourceScanId = GetSourceScanId(scan);
                             images.Add(new ImageMetadataDto
                             {
                                 Id = imageId++,
@@ -3179,9 +3220,8 @@ namespace NickScanCentralImagingPortal.Services.CargoGrouping
                                 FileName = scan.ImageDisplayName?.ToString() ?? $"ASE_Scan_{containerNumber}.jpg",
                                 FileSizeBytes = scan.ImageSize != null ? (int)scan.ImageSize : 0,
                                 CreatedAt = (DateTime)scan.ScanTime,
-                                // ✅ Signed URL (see earlier).
-                                ThumbnailUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=thumbnail{cacheBuster}"),
-                                FullImageUrl = publicBaseUrl + _urlSigner.SignRelative($"/api/ImageProcessing/container/{Uri.EscapeDataString(containerNumber)}/complete/image?imageType=ASE&size=full{cacheBuster}")
+                                ThumbnailUrl = BuildSignedImageUrl(sourceScanId, containerNumber, "ASE", "thumbnail", cacheBuster),
+                                FullImageUrl = BuildSignedImageUrl(sourceScanId, containerNumber, "ASE", "full", cacheBuster)
                             });
                         }
                     }

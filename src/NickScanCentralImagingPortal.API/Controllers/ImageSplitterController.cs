@@ -634,13 +634,15 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     jobId = record.SplitJobId,
                     chosenResultId = record.SplitResultId,
                     options,
-                    originalImageUrl = record.SplitJobId.HasValue
-                        ? _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/original")
-                        : _urlSigner.SignRelative($"/api/ImageProcessing/container/{containerNumber}/complete/image"),
+                    originalImageUrl = BuildOriginalImageUrl(record),
                     resolver = new
                     {
-                        resolvedBy = record.SplitJobId.HasValue ? "split_job_original" : "legacy_container_image",
-                        source = record.SplitJobId.HasValue ? "split_job" : "container"
+                        resolvedBy = record.SplitJobId.HasValue
+                            ? "split_job_original"
+                            : record.OriginalScanRecordId.HasValue ? "scan_assets_original_scan" : "legacy_container_image",
+                        source = record.SplitJobId.HasValue
+                            ? "split_job"
+                            : record.OriginalScanRecordId.HasValue ? "scan_assets" : "container"
                     }
                 });
             }
@@ -681,15 +683,41 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 analysisRecordId = record.Id,
                 chosenResultId = record.SplitResultId,
                 options,
-                originalImageUrl = record.SplitJobId.HasValue
-                    ? _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/original")
-                    : _urlSigner.SignRelative($"/api/ImageProcessing/container/{record.ContainerNumber}/complete/image"),
+                originalImageUrl = BuildOriginalImageUrl(record),
                 resolver = new
                 {
-                    resolvedBy = record.SplitJobId.HasValue ? "analysis_record_split_job" : "legacy_container_image",
-                    source = record.SplitJobId.HasValue ? "split_job" : "container"
+                    resolvedBy = record.SplitJobId.HasValue
+                        ? "analysis_record_split_job"
+                        : record.OriginalScanRecordId.HasValue ? "scan_assets_original_scan" : "legacy_container_image",
+                    source = record.SplitJobId.HasValue
+                        ? "split_job"
+                        : record.OriginalScanRecordId.HasValue ? "scan_assets" : "container"
                 }
             });
+        }
+
+        private string BuildOriginalImageUrl(AnalysisRecord record)
+        {
+            if (record.SplitJobId.HasValue)
+                return _urlSigner.SignRelative($"/api/image-splitter/jobs/{record.SplitJobId}/original");
+
+            if (record.OriginalScanRecordId.HasValue)
+            {
+                var parts = new List<string>
+                {
+                    $"containerNumber={Uri.EscapeDataString(record.ContainerNumber)}",
+                    $"analysisRecordId={record.Id}",
+                    "size=full"
+                };
+
+                if (record.ScanImageAssetId.HasValue)
+                    parts.Add($"scanImageAssetId={record.ScanImageAssetId.Value}");
+
+                return _urlSigner.SignRelative(
+                    $"/api/scan-assets/{record.OriginalScanRecordId.Value}/image?{string.Join("&", parts)}");
+            }
+
+            return _urlSigner.SignRelative($"/api/ImageProcessing/container/{record.ContainerNumber}/complete/image");
         }
 
         private async Task<List<object>> BuildSplitOptionsAsync(AnalysisRecord record)

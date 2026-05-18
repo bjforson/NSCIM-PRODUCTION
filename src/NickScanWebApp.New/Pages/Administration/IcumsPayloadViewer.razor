@@ -2,6 +2,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = Permissions.PagesIcumsPayloads)]
 @inject ISnackbar Snackbar
 @inject IcumsPayloadClient IcumsPayloadClient
+@inject ScanAssetClient ScanAssetClient
 @inject IConfiguration Configuration
 @inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
 @inject AuthenticationStateProvider AuthStateProvider
@@ -449,9 +450,14 @@
                         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
                         var uid = authState.User.Identity?.Name ?? "anon";
                         hasImage = true;
+                        var resolution = await ScanAssetClient.TryResolveAsync(containerNumber);
+                        var sourcePath = NickScanWebApp.Shared.Services.ScanAssetClient.TryBuildImagePath(
+                            resolution,
+                            containerNumber,
+                            size: "full");
                         // HMAC-signed URL; browser <img src> can't carry JWT.
                         imageUrl = UrlBuilder.Build(
-                            NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(containerNumber, size: "full"),
+                            sourcePath ?? NickScanWebApp.Shared.Services.ImageProcessingClient.BuildCompleteImagePath(containerNumber, size: "full"),
                             uid);
                     }
                 }

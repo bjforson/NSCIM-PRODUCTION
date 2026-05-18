@@ -68,6 +68,33 @@ public sealed class ScanAssetClient
         return _apiService.TryGetAsync<FullScannerDataRecord>(BuildScannerDataPath(sourceScanId, fullQuery));
     }
 
+    public Task<TCapabilities?> TryGetModeCapabilitiesAsync<TCapabilities>(
+        string sourceScanId,
+        ScanAssetImageQuery? query = null)
+    {
+        return _apiService.TryGetAsync<TCapabilities>(BuildModeCapabilitiesPath(sourceScanId, query));
+    }
+
+    public Task<TPixel?> TryGetPixelAsync<TPixel>(
+        string sourceScanId,
+        int x,
+        int y,
+        ScanAssetImageQuery? query = null)
+    {
+        return _apiService.TryGetAsync<TPixel>(BuildPixelPath(sourceScanId, x, y, query));
+    }
+
+    public Task<TRoi?> TryGetRoiAsync<TRoi>(
+        string sourceScanId,
+        int x,
+        int y,
+        int width,
+        int height,
+        ScanAssetImageQuery? query = null)
+    {
+        return _apiService.TryGetAsync<TRoi>(BuildRoiPath(sourceScanId, x, y, width, height, query));
+    }
+
     public static string BuildResolvePath(
         string containerNumber,
         string? groupIdentifier = null,
@@ -109,14 +136,24 @@ public sealed class ScanAssetClient
         string? size = "full",
         string? imageType = null)
     {
+        var query = TryBuildImageQuery(resolution, containerNumber, size, imageType);
+        return query == null || string.IsNullOrWhiteSpace(resolution?.EffectiveSourceScanId)
+            ? null
+            : BuildImagePath(resolution.EffectiveSourceScanId!, query);
+    }
+
+    public static ScanAssetImageQuery? TryBuildImageQuery(
+        ScanAssetResolution? resolution,
+        string? containerNumber = null,
+        string? size = "full",
+        string? imageType = null)
+    {
         if (resolution?.HasUsableSourceScan != true || string.IsNullOrWhiteSpace(resolution.EffectiveSourceScanId))
         {
             return null;
         }
 
-        return BuildImagePath(
-            resolution.EffectiveSourceScanId!,
-            new ScanAssetImageQuery
+        return new ScanAssetImageQuery
             {
                 ContainerNumber = StrictSingleContainerToken(containerNumber)
                     ?? StrictSingleContainerToken(resolution.ContainerNumber)
@@ -131,7 +168,28 @@ public sealed class ScanAssetClient
                 SplitResultId = resolution.SplitResultId,
                 ScanImageAssetId = resolution.ScanImageAssetId,
                 Side = resolution.EffectiveSplitSide
-            });
+            };
+    }
+
+    public static string? TryBuildModeCapabilitiesPath(
+        ScanAssetResolution? resolution,
+        string? containerNumber = null)
+    {
+        var query = TryBuildImageQuery(resolution, containerNumber);
+        return query == null || string.IsNullOrWhiteSpace(resolution?.EffectiveSourceScanId)
+            ? null
+            : BuildModeCapabilitiesPath(resolution.EffectiveSourceScanId!, query);
+    }
+
+    public static string? TryBuildRawPlanePath(
+        ScanAssetResolution? resolution,
+        string? containerNumber,
+        string plane)
+    {
+        var query = TryBuildImageQuery(resolution, containerNumber);
+        return query == null || string.IsNullOrWhiteSpace(resolution?.EffectiveSourceScanId)
+            ? null
+            : BuildRawPlanePath(resolution.EffectiveSourceScanId!, plane, query);
     }
 
     public static string BuildImagesPath(
@@ -148,6 +206,52 @@ public sealed class ScanAssetClient
         Add(parts, "side", query?.Side);
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/images{ToQueryString(parts)}";
+    }
+
+    public static string BuildModeCapabilitiesPath(
+        string sourceScanId,
+        ScanAssetImageQuery? query = null)
+    {
+        var parts = BuildCommonSourceQuery(query);
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/mode-capabilities{ToQueryString(parts)}";
+    }
+
+    public static string BuildPixelPath(
+        string sourceScanId,
+        int x,
+        int y,
+        ScanAssetImageQuery? query = null)
+    {
+        var parts = BuildCommonSourceQuery(query);
+        Add(parts, "x", x);
+        Add(parts, "y", y);
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/pixel{ToQueryString(parts)}";
+    }
+
+    public static string BuildRawPlanePath(
+        string sourceScanId,
+        string plane,
+        ScanAssetImageQuery? query = null)
+    {
+        var parts = BuildCommonSourceQuery(query);
+        Add(parts, "plane", string.IsNullOrWhiteSpace(plane) ? "he" : plane);
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/raw{ToQueryString(parts)}";
+    }
+
+    public static string BuildRoiPath(
+        string sourceScanId,
+        int x,
+        int y,
+        int width,
+        int height,
+        ScanAssetImageQuery? query = null)
+    {
+        var parts = BuildCommonSourceQuery(query);
+        Add(parts, "x", x);
+        Add(parts, "y", y);
+        Add(parts, "w", width);
+        Add(parts, "h", height);
+        return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/roi{ToQueryString(parts)}";
     }
 
     public static string BuildScannerDataPath(
@@ -167,6 +271,19 @@ public sealed class ScanAssetClient
         Add(parts, "full", query?.Full);
 
         return $"/api/scan-assets/{Uri.EscapeDataString(sourceScanId)}/scanner-data{ToQueryString(parts)}";
+    }
+
+    private static List<string> BuildCommonSourceQuery(ScanAssetImageQuery? query)
+    {
+        var parts = new List<string>();
+        Add(parts, "containerNumber", query?.ContainerNumber);
+        Add(parts, "groupIdentifier", query?.GroupIdentifier);
+        Add(parts, "analysisRecordId", query?.AnalysisRecordId);
+        Add(parts, "splitJobId", query?.SplitJobId);
+        Add(parts, "splitResultId", query?.SplitResultId);
+        Add(parts, "scanImageAssetId", query?.ScanImageAssetId);
+        Add(parts, "side", query?.Side);
+        return parts;
     }
 
     private static void Add(List<string> parts, string name, string? value)
