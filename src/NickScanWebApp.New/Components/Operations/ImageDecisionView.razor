@@ -238,6 +238,8 @@
     [Parameter] public string ContainerNumber { get; set; } = string.Empty;
     [Parameter] public string GroupIdentifier { get; set; } = string.Empty;
     [Parameter] public bool IsConsolidated { get; set; }
+    [Parameter] public int? RecordCompletenessStatusId { get; set; }
+    [Parameter] public string? ClearanceType { get; set; }
     [Parameter] public ScanAssetResolution? SourceScanResolution { get; set; }
     [Parameter] public EventCallback OnDecisionChanged { get; set; }
     [Parameter] public EventCallback OnDecisionSaved { get; set; }
@@ -1143,6 +1145,8 @@
             ["ScanDate"] = DateTime.Now,
             ["GroupIdentifier"] = currentGroupIdentifier,
             ["IsConsolidated"] = currentIsConsolidated,
+            ["RecordCompletenessStatusId"] = RecordCompletenessStatusId,
+            ["ClearanceType"] = ClearanceType,
             ["SourceScanResolution"] = effectiveResolution,
             ["OnClose"] = EventCallback.Factory.Create(this, () =>
             {

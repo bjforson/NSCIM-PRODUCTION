@@ -3037,7 +3037,8 @@
         StateHasChanged();
         try
         {
-            if (await TryLoadRecordBackedGoodsPanelData())
+            var recordBackedLoaded = await TryLoadRecordBackedGoodsPanelData();
+            if (recordBackedLoaded && _goodsPanelItems.Any())
             {
                 return;
             }
@@ -3061,9 +3062,12 @@
 
             if (cargoGroup?.Data?.ICUMSData != null)
             {
-                _goodsPanelSourceLabel = !string.IsNullOrWhiteSpace(resolvedLookup)
+                var cargoSourceLabel = !string.IsNullOrWhiteSpace(resolvedLookup)
                     ? $"Cargo group ICUMS ({resolvedLookup})"
                     : "Cargo group ICUMS";
+                _goodsPanelSourceLabel = !string.IsNullOrWhiteSpace(_goodsPanelSourceLabel)
+                    ? $"{_goodsPanelSourceLabel}; {cargoSourceLabel}"
+                    : cargoSourceLabel;
 
                 foreach (var group in cargoGroup.Data.ICUMSData)
                 {
@@ -3258,8 +3262,7 @@
     private static string NormalizeFieldLabel(string? field)
     {
         var value = (field ?? "").Trim();
-        var match = System.Text.RegularExpressions.Regex.Match(value, @"^Item\s+\d+:\s*(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value.Trim() : value;
+        return ParseManifestItemField(value)?.Attribute ?? value;
     }
 
     private static int GetIcumsSectionOrder(string title)
@@ -3357,48 +3360,165 @@
 
     private static void AddManifestItemsFromRecords(GoodsPanelGroup panelGroup, IEnumerable<CargoRecord> records)
     {
-        var itemGroups = records
-            .Where(r => string.Equals(NormalizeIcumsSectionTitle(r.Category), "Goods / Commodity Info", StringComparison.OrdinalIgnoreCase))
-            .Select(r => new
-            {
-                Record = r,
-                Match = System.Text.RegularExpressions.Regex.Match(r.Field, @"^Item\s+(\d+):\s*(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-            })
-            .Where(x => x.Match.Success)
-            .GroupBy(x => int.Parse(x.Match.Groups[1].Value))
-            .OrderBy(g => g.Key);
+        var cargoRecords = records
+            .Where(r => string.Equals(NormalizeIcumsSectionTitle(r.Category), "Goods / Commodity Info", StringComparison.OrdinalIgnoreCase)
+                && !IsPlaceholderValue(r.Value))
+            .ToList();
 
-        foreach (var itemGroup in itemGroups)
+        if (!cargoRecords.Any())
         {
-            string? GetValue(params string[] labels)
-                => itemGroup
-                    .FirstOrDefault(x => labels.Any(label =>
-                        x.Match.Groups[2].Value.Contains(label, StringComparison.OrdinalIgnoreCase)))?
-                    .Record.Value;
+            return;
+        }
 
-            var description = GetValue("Description");
-            if (string.IsNullOrWhiteSpace(description) || IsPlaceholderValue(description))
+        var groupedRecords = new Dictionary<int, List<CargoRecord>>();
+        foreach (var record in cargoRecords)
+        {
+            var parsed = ParseManifestItemField(record.Field);
+            if (!parsed.HasValue)
             {
                 continue;
             }
 
-            var quantity = GetValue("Quantity");
-            var unit = GetValue("Unit");
-            panelGroup.Items.Add(new GoodsPanelItem
+            if (!groupedRecords.TryGetValue(parsed.Value.ItemNo, out var itemRecords))
             {
-                ItemNo = itemGroup.Key,
-                Description = description.Trim(),
-                HsCode = GetValue("HS Code"),
-                Quantity = !string.IsNullOrWhiteSpace(quantity) && !IsPlaceholderValue(quantity)
-                    ? $"{quantity} {unit}".Trim()
-                    : null,
-                Weight = GetValue("Weight"),
-                Value = GetValue("FOB") ?? GetValue("Value"),
-                DutyPaid = GetValue("Duty Paid"),
-                Origin = GetValue("Origin"),
-                Cpc = GetValue("CPC")
+                itemRecords = new List<CargoRecord>();
+                groupedRecords[parsed.Value.ItemNo] = itemRecords;
+            }
+
+            itemRecords.Add(new CargoRecord
+            {
+                Field = parsed.Value.Attribute,
+                Value = record.Value,
+                Category = record.Category,
+                IsRequired = record.IsRequired
             });
         }
+
+        foreach (var itemGroup in groupedRecords.OrderBy(kvp => kvp.Key))
+        {
+            var item = BuildGoodsPanelItemFromRecords(itemGroup.Key, itemGroup.Value);
+            if (item != null)
+            {
+                panelGroup.Items.Add(item);
+            }
+        }
+
+        if (panelGroup.Items.Any())
+        {
+            return;
+        }
+
+        var hasLineItemFields = cargoRecords.Any(r =>
+            FieldMatches(r.Field, "Item Description", "HS Code", "Quantity", "Weight", "FOB Value", "Duty Paid", "Item Country of Origin", "CPC"));
+        var singleItemDescription = FindCargoFieldValue(cargoRecords, "Item Description")
+            ?? (hasLineItemFields ? FindCargoFieldValue(cargoRecords, "Goods Description") : null);
+        if (IsPlaceholderValue(singleItemDescription))
+        {
+            return;
+        }
+
+        panelGroup.Items.Add(new GoodsPanelItem
+        {
+            ItemNo = 1,
+            Description = singleItemDescription!.Trim(),
+            HsCode = FindCargoFieldValue(cargoRecords, "HS Code"),
+            Quantity = FormatRecordQuantity(cargoRecords),
+            Weight = FindCargoFieldValue(cargoRecords, "Weight"),
+            Value = FindCargoFieldValue(cargoRecords, "FOB Value", "FOB", "Value"),
+            DutyPaid = FindCargoFieldValue(cargoRecords, "Duty Paid"),
+            Origin = FindCargoFieldValue(cargoRecords, "Item Country of Origin", "Country of Origin", "Origin"),
+            Cpc = FindCargoFieldValue(cargoRecords, "CPC")
+        });
+    }
+
+    private static GoodsPanelItem? BuildGoodsPanelItemFromRecords(int itemNo, IReadOnlyCollection<CargoRecord> itemRecords)
+    {
+        var description = FindCargoFieldValue(itemRecords, "Item Description", "Description", "Goods Description");
+        if (IsPlaceholderValue(description))
+        {
+            return null;
+        }
+
+        return new GoodsPanelItem
+        {
+            ItemNo = itemNo,
+            Description = description!.Trim(),
+            HsCode = FindCargoFieldValue(itemRecords, "HS Code"),
+            Quantity = FormatRecordQuantity(itemRecords),
+            Weight = FindCargoFieldValue(itemRecords, "Weight"),
+            Value = FindCargoFieldValue(itemRecords, "FOB Value", "FOB", "Value"),
+            DutyPaid = FindCargoFieldValue(itemRecords, "Duty Paid"),
+            Origin = FindCargoFieldValue(itemRecords, "Item Country of Origin", "Country of Origin", "Origin"),
+            Cpc = FindCargoFieldValue(itemRecords, "CPC")
+        };
+    }
+
+    private static (int ItemNo, string Attribute)? ParseManifestItemField(string? field)
+    {
+        if (string.IsNullOrWhiteSpace(field))
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            field.Trim(),
+            @"^Item\s+(?<item>\d+)\s*(?::|-)?\s*(?<attr>.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        if (!match.Success
+            || !int.TryParse(match.Groups["item"].Value, out var itemNo)
+            || string.IsNullOrWhiteSpace(match.Groups["attr"].Value))
+        {
+            return null;
+        }
+
+        return (itemNo, match.Groups["attr"].Value.Trim());
+    }
+
+    private static string? FindCargoFieldValue(IEnumerable<CargoRecord> records, params string[] fieldNames)
+    {
+        var normalizedNames = fieldNames
+            .Select(NormalizeCargoFieldName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return records
+            .FirstOrDefault(r => normalizedNames.Contains(NormalizeCargoFieldName(r.Field)))?.Value?.Trim()
+            ?? records.FirstOrDefault(r => fieldNames.Any(fieldName =>
+                r.Field.Contains(fieldName, StringComparison.OrdinalIgnoreCase)))?.Value?.Trim();
+    }
+
+    private static string? FormatRecordQuantity(IEnumerable<CargoRecord> records)
+    {
+        var quantity = FindCargoFieldValue(records, "Quantity");
+        if (IsPlaceholderValue(quantity))
+        {
+            return null;
+        }
+
+        var unit = FindCargoFieldValue(records, "Unit");
+        return !IsPlaceholderValue(unit) && !quantity!.Contains(unit!, StringComparison.OrdinalIgnoreCase)
+            ? $"{quantity} {unit}".Trim()
+            : quantity;
+    }
+
+    private static bool FieldMatches(string? field, params string[] fieldNames)
+    {
+        var normalizedField = NormalizeCargoFieldName(field);
+        return fieldNames.Any(fieldName => string.Equals(
+            normalizedField,
+            NormalizeCargoFieldName(fieldName),
+            StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeCargoFieldName(string? field)
+    {
+        var parsed = ParseManifestItemField(field);
+        var normalized = parsed?.Attribute ?? field ?? string.Empty;
+        return System.Text.RegularExpressions.Regex.Replace(
+            normalized,
+            @"[\s_\-/&]+",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim().ToLowerInvariant();
     }
 
     private static string? FormatQuantity(decimal? quantity, string? unit)
@@ -3486,18 +3606,44 @@
     private IEnumerable<string> GetGoodsPanelLookupCandidates()
     {
         var candidates = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(GroupIdentifier))
+        void AddCandidate(string? value)
         {
-            candidates.Add(GroupIdentifier.Trim());
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                candidates.Add(value.Trim());
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(ContainerNumber))
+        AddCandidate(GroupIdentifier);
+        AddCandidate(SourceScanResolution?.GroupIdentifier);
+        AddCandidate(SourceScanResolution?.SplitContext?.GroupIdentifier);
+        AddCandidate(ContainerNumber);
+        AddCandidate(SourceScanResolution?.ContainerNumber);
+        AddCandidate(SourceScanResolution?.NormalizedContainerNumber);
+        AddCandidate(SourceScanResolution?.RequestedContainerNumber);
+        AddCandidate(SourceScanResolution?.SplitContext?.ContainerNumber);
+
+        foreach (var sourceContainer in SplitGoodsPanelLookupList(SourceScanResolution?.SourceContainerNumbers))
         {
-            candidates.Add(ContainerNumber.Trim());
+            AddCandidate(sourceContainer);
+        }
+
+        foreach (var sourceContainer in SplitGoodsPanelLookupList(SourceScanResolution?.SourceContainerLabel))
+        {
+            AddCandidate(sourceContainer);
         }
 
         return candidates.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> SplitGoodsPanelLookupList(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Enumerable.Empty<string>();
+        }
+
+        return value.Split(new[] { ',', ';', '/', '|', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private async Task<CargoGroupResponse?> TryLoadCargoGroupForGoodsPanel(string lookup)
