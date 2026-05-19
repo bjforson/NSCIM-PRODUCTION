@@ -373,15 +373,15 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
             }
             else if (isMulti && _splitStatus == "Ready")
             {
-                _emptyStateMessage = "The splitter says this image is ready, but no crop choices were returned. The combined image remains available below.";
+                _emptyStateMessage = "The splitter says this image is ready, but no crop choices were returned. Retry split choices or choose Skip - Use Original Combined Image to continue.";
             }
 
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[SplitChoiceDialog] Error loading split options: {ex.Message}");
-            _loadErrorMessage = "Split choices could not be loaded. The combined image remains available below.";
-            _splitStatus = null; // Fall through to normal viewer
+            _loadErrorMessage = "Split choices could not be loaded. Retry split choices or choose Skip - Use Original Combined Image to continue.";
+            _splitStatus = null;
         }
         finally
         {
@@ -950,6 +950,11 @@ else if (_splitStatus == "Ready" && _options?.Count > 0)
         if (_loading)
         {
             return "Loading";
+        }
+
+        if (!string.IsNullOrWhiteSpace(_loadErrorMessage))
+        {
+            return "ChoiceRequired";
         }
 
         if (NeedsSplitInteraction || StatusEquals("Ready"))

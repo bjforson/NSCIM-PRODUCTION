@@ -959,9 +959,17 @@
                         </MudStack>
                     }
 
+                    @if (IsSplitChoiceRequiredForDecision())
+                    {
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true" Class="mt-3">
+                            @GetSplitChoiceRequiredMessage()
+                        </MudAlert>
+                    }
+
                     <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Medium"
                                StartIcon="@Icons.Material.Outlined.Save"
                                OnClick="SaveTagsAndDecision"
+                               Disabled="@IsSplitChoiceRequiredForDecision()"
                                FullWidth="true" Class="mt-3"
                                Style="white-space: nowrap;">
                         Save &amp; Next
@@ -1830,6 +1838,18 @@
             ?? StrictSingleContainerToken(ContainerNumber)
             ?? ContainerNumber;
     }
+
+    private bool IsSplitChoiceRequiredForDecision()
+    {
+        var splitContext = SourceScanResolution?.SplitContext;
+        return splitContext?.IsMultiContainer == true
+            && string.Equals(splitContext.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
+            && SourceScanResolution?.SplitResultId.HasValue != true
+            && splitContext.SplitResultId.HasValue != true;
+    }
+
+    private static string GetSplitChoiceRequiredMessage()
+        => "This scan has split crop choices waiting. Pick Option A or Option B, or choose Skip - Use Original Combined Image, before saving the decision.";
 
     private string? GetImageRequestContainerHint()
     {
@@ -4294,6 +4314,54 @@
         public string? Message { get; set; }
     }
 
+    private static string GetUserFacingApiError(Exception ex)
+    {
+        if (ex is ApiException apiEx && TryExtractApiError(apiEx.ResponseBody, out var apiMessage))
+        {
+            return apiMessage;
+        }
+
+        if (ex.InnerException is ApiException innerApiEx && TryExtractApiError(innerApiEx.ResponseBody, out var innerMessage))
+        {
+            return innerMessage;
+        }
+
+        return ex.Message;
+    }
+
+    private static bool TryExtractApiError(string? responseBody, out string message)
+    {
+        message = string.Empty;
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(responseBody);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var propertyName in new[] { "error", "message", "details" })
+                {
+                    if (doc.RootElement.TryGetProperty(propertyName, out var property)
+                        && property.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        message = property.GetString() ?? string.Empty;
+                        return !string.IsNullOrWhiteSpace(message);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            message = responseBody.Length > 500 ? responseBody[..500] : responseBody;
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task SaveTagsAndDecision()
     {
         if (!PermissionGuard.CanAny(PermissionIds.Images.Annotate, PermissionIds.Images.Edit))
@@ -4348,6 +4416,12 @@
 
             var tagsString = string.Join(", ", _tags);
             var rectanglesJson = _rectangles.Any() ? System.Text.Json.JsonSerializer.Serialize(_rectangles) : null;
+            if (IsSplitChoiceRequiredForDecision())
+            {
+                Snackbar.Add(GetSplitChoiceRequiredMessage(), Severity.Warning);
+                return;
+            }
+
             var decisionContainerNumber = GetDecisionContainerNumber();
             var splitSide = SourceScanResolution?.EffectiveSplitSide;
 
@@ -4416,8 +4490,9 @@
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error saving decision and tags: {ex.Message}");
-            Snackbar.Add($"Error saving decision and tags: {ex.Message}", Severity.Error);
+            var errorMessage = GetUserFacingApiError(ex);
+            Console.WriteLine($"Error saving decision and tags: {errorMessage}");
+            Snackbar.Add($"Error saving decision and tags: {errorMessage}", Severity.Error);
             // Don't close dialog on error - let user see the error and try again
         }
     }
@@ -4433,6 +4508,12 @@
 
         // Commit any tag text still in the input before saving
         FlushPendingTag();
+
+        if (IsSplitChoiceRequiredForDecision())
+        {
+            Snackbar.Add(GetSplitChoiceRequiredMessage(), Severity.Warning);
+            return;
+        }
 
         // If decision is selected, save both; otherwise just save tags (if decision exists)
         if (!string.Equals(_selectedDecision, "Pending", StringComparison.OrdinalIgnoreCase))
@@ -4488,7 +4569,9 @@
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error saving tags: {ex.Message}");
+                var errorMessage = GetUserFacingApiError(ex);
+                Console.WriteLine($"Error saving tags: {errorMessage}");
+                Snackbar.Add($"Error saving tags: {errorMessage}", Severity.Error);
             }
         }
     }

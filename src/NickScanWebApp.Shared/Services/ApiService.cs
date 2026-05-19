@@ -64,6 +64,37 @@ namespace NickScanWebApp.Shared.Services
             };
         }
 
+        private async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, string method, string endpoint)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            var status = (int)response.StatusCode;
+            var reason = response.ReasonPhrase ?? string.Empty;
+            var raw = await response.Content.ReadAsStringAsync();
+
+            if (status == 400 || status == 409)
+            {
+                _logger.LogWarning("HTTP {Status} {Method} {Endpoint}. Body: {Body}", status, method, endpoint, raw);
+            }
+            else if (status == 401 || status == 403)
+            {
+                _logger.LogWarning("HTTP {Status} {Method} {Endpoint} - authentication/authorization required. Body: {Body}", status, method, endpoint, raw);
+            }
+            else
+            {
+                _logger.LogError("HTTP {Status} {Method} {Endpoint}. Body: {Body}", status, method, endpoint, raw);
+            }
+
+            var message = string.IsNullOrWhiteSpace(raw)
+                ? $"{method} {endpoint} failed: {status} {reason}".TrimEnd()
+                : $"{method} {endpoint} failed: {status} {reason}. Body: {raw}".TrimEnd();
+
+            throw new ApiException(message, status, raw, method, endpoint);
+        }
+
         /// <summary>
         /// Get JWT token from the typed IAuthTokenSource interface (6.07).
         /// Falls back to reflection-based lookup on AuthenticationStateProvider
@@ -172,25 +203,7 @@ namespace NickScanWebApp.Shared.Services
                     var client = await GetAuthenticatedClientAsync();
                     var response = await client.GetAsync(endpoint);
 
-                    // Handle 401/403 errors more gracefully - don't log as error if it's expected
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        var status = (int)response.StatusCode;
-                        if (status == 401 || status == 403)
-                        {
-                            // 6.07 (Sprint 4): bumped from Debug to Warning so operators
-                            // see session-expiry / permission-denied signals at default
-                            // log levels. Previously this was invisible at Information
-                            // and below, masking the symptom for "everything looks empty".
-                            _logger.LogWarning("HTTP {Status} GET {Endpoint} - authentication/authorization required", status, endpoint);
-                        }
-                        else
-                        {
-                            var content = await response.Content.ReadAsStringAsync();
-                            _logger.LogError("HTTP {Status} GET {Endpoint}. Response: {Content}", status, endpoint, content);
-                        }
-                        response.EnsureSuccessStatusCode();
-                    }
+                    await EnsureSuccessOrThrowAsync(response, "GET", endpoint);
 
                     return await response.Content.ReadFromJsonAsync<T>(JsonOptions);
                 }
@@ -205,6 +218,10 @@ namespace NickScanWebApp.Shared.Services
                     // Request timed out - log as warning instead of error
                     _logger.LogWarning("Request timeout calling GET {Endpoint} (timeout after 60 seconds). The API may be slow or unavailable.", endpoint);
                     throw new ApiException($"Request to {endpoint} timed out. The API may be slow or unavailable.", ex);
+                }
+                catch (ApiException)
+                {
+                    throw;
                 }
                 catch (HttpRequestException ex)
                 {
@@ -363,29 +380,7 @@ namespace NickScanWebApp.Shared.Services
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.PostAsJsonAsync(endpoint, data);
 
-                var raw = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                {
-                    var status = (int)response.StatusCode;
-                    var reason = response.ReasonPhrase ?? "";
-
-                    // Log validation errors (400, 409) as warnings, not errors
-                    if (status == 400 || status == 409)
-                    {
-                        _logger.LogWarning("HTTP {Status} POST {Endpoint}. Body: {Body}", status, endpoint, raw);
-                    }
-                    // 6.07: bumped 401/403 from Debug to Warning so operators see auth signals
-                    else if (status == 401 || status == 403)
-                    {
-                        _logger.LogWarning("HTTP {Status} POST {Endpoint} - authentication/authorization required. Body: {Body}", status, endpoint, raw);
-                    }
-                    else
-                    {
-                        _logger.LogError("HTTP {Status} POST {Endpoint}. Body: {Body}", status, endpoint, raw);
-                    }
-
-                    throw new ApiException($"POST {endpoint} failed: {status} {reason}. Body: {raw}");
-                }
+                await EnsureSuccessOrThrowAsync(response, "POST", endpoint);
 
                 try
                 {
@@ -396,6 +391,10 @@ namespace NickScanWebApp.Shared.Services
                     // If no JSON body expected
                     return default;
                 }
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (HttpRequestException ex)
             {
@@ -462,8 +461,12 @@ namespace NickScanWebApp.Shared.Services
             {
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.PutAsJsonAsync(endpoint, data);
-                response.EnsureSuccessStatusCode();
+                await EnsureSuccessOrThrowAsync(response, "PUT", endpoint);
                 return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions);
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (HttpRequestException ex)
             {
@@ -486,8 +489,12 @@ namespace NickScanWebApp.Shared.Services
             {
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.PatchAsJsonAsync(endpoint, data);
-                response.EnsureSuccessStatusCode();
+                await EnsureSuccessOrThrowAsync(response, "PATCH", endpoint);
                 return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions);
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (HttpRequestException ex)
             {
@@ -510,7 +517,11 @@ namespace NickScanWebApp.Shared.Services
             {
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.DeleteAsync(endpoint);
-                response.EnsureSuccessStatusCode();
+                await EnsureSuccessOrThrowAsync(response, "DELETE", endpoint);
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (HttpRequestException ex)
             {
@@ -530,10 +541,14 @@ namespace NickScanWebApp.Shared.Services
             {
                 var client = await GetAuthenticatedClientAsync();
                 var response = await client.DeleteAsync(endpoint);
-                response.EnsureSuccessStatusCode();
+                await EnsureSuccessOrThrowAsync(response, "DELETE", endpoint);
 
                 var result = await response.Content.ReadFromJsonAsync<T>(JsonOptions);
                 return result;
+            }
+            catch (ApiException)
+            {
+                throw;
             }
             catch (HttpRequestException ex)
             {
@@ -553,7 +568,19 @@ namespace NickScanWebApp.Shared.Services
     /// </summary>
     public class ApiException : Exception
     {
+        public int? StatusCode { get; }
+        public string? ResponseBody { get; }
+        public string? Method { get; }
+        public string? Endpoint { get; }
+
         public ApiException(string message) : base(message) { }
         public ApiException(string message, Exception innerException) : base(message, innerException) { }
+        public ApiException(string message, int? statusCode, string? responseBody, string? method, string? endpoint) : base(message)
+        {
+            StatusCode = statusCode;
+            ResponseBody = responseBody;
+            Method = method;
+            Endpoint = endpoint;
+        }
     }
 }

@@ -99,8 +99,8 @@ public class CmrCompositeRecordIntakeGuardrailTests
 
         Assert.Contains("GetImageRequestContainerHint()", viewer);
         Assert.Contains("StrictSingleContainerToken(SourceScanResolution?.ContainerNumber)", viewer);
-        Assert.Contains("ScanAssetClient.BuildImagePath", viewer);
-        Assert.Contains("ContainerNumber = containerHint", viewer);
+        Assert.Contains("ScanAssetClient.TryBuildImagePath", viewer);
+        Assert.Contains("GetImageRequestContainerHint(),", viewer);
         Assert.Contains("StrictSingleContainerToken(ContainerNumber)", viewer);
     }
 

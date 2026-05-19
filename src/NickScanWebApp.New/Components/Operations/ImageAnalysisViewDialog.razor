@@ -930,6 +930,15 @@
         return string.Equals(splitState, "Resolved", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsSplitChoiceRequiredForDecision(ScanAssetResolution? resolution)
+    {
+        var splitContext = resolution?.SplitContext;
+        return splitContext?.IsMultiContainer == true
+            && string.Equals(splitContext.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
+            && resolution?.SplitResultId.HasValue != true
+            && splitContext.SplitResultId.HasValue != true;
+    }
+
     private ScanAssetResolution? GetEffectiveConsolidatedSplitResolution(ScanAssetResolution? baseResolution)
     {
         return PreferSplitResolution(_consolidatedSplitResolutionOverride, baseResolution);
@@ -2681,6 +2690,20 @@
             var sourceResolution = await ContainerDetailsService.ResolveScanAssetAsync(
                 containerNumber,
                 GroupIdentifier);
+
+            if (IsSplitChoiceRequiredForDecision(sourceResolution))
+            {
+                _perContainerSplitState[containerNumber] = "ChoiceRequired";
+                if (sourceResolution != null)
+                {
+                    _perContainerSplitResolutionOverrides[containerNumber] = sourceResolution;
+                }
+
+                Snackbar.Add("This container needs a split crop choice before the fullscreen decision can be saved.", Severity.Warning);
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+
             var imagePath = ScanAssetClient.TryBuildImagePath(sourceResolution, containerNumber, "full")
                 ?? ImageProcessingClient.BuildCompleteImagePath(containerNumber);
             var imageUrl = UrlBuilder.Build(imagePath, uid);
