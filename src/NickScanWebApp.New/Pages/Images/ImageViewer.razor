@@ -14,7 +14,6 @@
 @inject IJSRuntime JS
 @inject NickScanWebApp.Shared.Services.ImageAnalysisDecisionClient DecisionClient
 @inject NickScanWebApp.Shared.Services.ImageAnalysisWorkflowClient WorkflowClient
-@inject NickScanWebApp.Shared.Services.ImageProcessingClient ImageProcessingClient
 @inject NickScanWebApp.Shared.Services.IContainerDetailsService ContainerDetailsService
 @inject NickScanWebApp.Shared.Services.InspectionFindingCategoryClient FindingCategoryClient
 @inject ISnackbar Snackbar
@@ -545,19 +544,15 @@
     
     private async Task LoadImageMetadata()
     {
-        // Pull scanner type + scan date from the unified complete-container endpoint.
-        // The legacy /api/image/container/{c} path this used to hit returns 404
-        // (dead route), so the old code silently swallowed the exception and
-        // left _scannerType empty — that was masking the fact the metadata
-        // row was never loading at all.
         try
         {
             _sourceScanResolution = await ContainerDetailsService.ResolveScanAssetAsync(ContainerNumber);
-            var data = await ImageProcessingClient.GetCompleteContainerDataAsync<ContainerImageDataResponse>(ContainerNumber);
-            if (data != null)
+            if (_sourceScanResolution != null)
             {
-                _scannerType = data.DetectedScanner.ToString();
-                _scanDate = data.ScanTime;
+                _scannerType = _sourceScanResolution.SourceScannerType
+                    ?? _sourceScanResolution.Candidates.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.SourceScannerType))?.SourceScannerType
+                    ?? string.Empty;
+                _scanDate = _sourceScanResolution.ScanTime ?? default;
             }
         }
         catch (Exception ex)
