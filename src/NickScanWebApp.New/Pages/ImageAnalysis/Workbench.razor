@@ -737,6 +737,17 @@
         }
     }
 
+    private void QueueHeartbeatAfterSubmit(string reason)
+    {
+        _ = InvokeAsync(SendHeartbeatAsync).ContinueWith(t =>
+        {
+            if (t.IsFaulted && t.Exception is { } ex)
+            {
+                Logger.LogWarning(ex, "⚠️ [FRONTEND] Background heartbeat after {Reason} failed", reason);
+            }
+        }, TaskScheduler.Default);
+    }
+
     private async Task OnReadyChanged(bool isReady)
     {
         _isReadyForAssignment = isReady;
@@ -1028,7 +1039,7 @@
                 // orchestrator's 60-min idle window resets to "now". Otherwise the worst
                 // case is: analyst saves, doesn't navigate, the 30s timer happens to be
                 // 28s away, the idle window slowly creeps. Failure-isolated.
-                try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+                QueueHeartbeatAfterSubmit("decision save");
 
                 _ = InvokeAsync(RefreshAssignmentsOnly); // background reconcile, fire-and-forget
             }),
@@ -1053,7 +1064,7 @@
                 // the orchestrator's 60-min idle window resets to "now". Mirrors the per-container
                 // OnDecisionSaved heartbeat above — fires once more on the AG-level finish.
                 // Failure-isolated.
-                try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+                QueueHeartbeatAfterSubmit("group completion");
 
                 _ = InvokeAsync(RefreshAssignmentsOnly); // background reconcile, fire-and-forget
             })

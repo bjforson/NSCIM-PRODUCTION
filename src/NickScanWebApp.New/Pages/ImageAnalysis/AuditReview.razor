@@ -657,7 +657,7 @@
                             // orchestrator's 60-min idle window resets to "now". Otherwise the worst
                             // case is: paudit submits an audit, doesn't navigate, the 30s timer
                             // happens to be 28s away, the idle window slowly creeps. Failure-isolated.
-                            try { await SendHeartbeatAsync(); } catch { /* non-fatal */ }
+                            QueueHeartbeatAfterSubmit("audit submit");
 
                             _ = InvokeAsync(LoadAuditData); // background reconcile, fire-and-forget
                         }
@@ -940,6 +940,17 @@
         {
             Logger.LogWarning(ex, "⚠️ [AUDIT] Error sending heartbeat: {Message}", ex.Message);
         }
+    }
+
+    private void QueueHeartbeatAfterSubmit(string reason)
+    {
+        _ = InvokeAsync(SendHeartbeatAsync).ContinueWith(t =>
+        {
+            if (t.IsFaulted && t.Exception is { } ex)
+            {
+                Logger.LogWarning(ex, "⚠️ [AUDIT] Background heartbeat after {Reason} failed", reason);
+            }
+        }, TaskScheduler.Default);
     }
 
     public void Dispose()

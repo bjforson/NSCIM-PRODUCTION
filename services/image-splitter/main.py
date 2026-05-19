@@ -865,7 +865,7 @@ async def get_split_results(job_id: UUID, db: AsyncSession = Depends(get_db)):
     rows = results.scalars().all()
 
     out = []
-    print(f"[FLATTEN_V2] {len(rows)} results for job {job_id}", flush=True)
+    logger.debug("Returning %s split results for job %s", len(rows), job_id)
     for r in rows:
         meta = r.strategy_metadata if isinstance(r.strategy_metadata, dict) else {}
         out.append({
