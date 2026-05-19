@@ -68,6 +68,7 @@ namespace NickScanCentralImagingPortal.Services.Email
         public async Task<NickCommsEmailResult> SendBulkEmailAsync(
             IEnumerable<string> recipients, string subject, string htmlBody, bool isHtml = true,
             IEnumerable<NickCommsAttachment>? attachments = null,
+            string? clientReference = null,
             CancellationToken ct = default)
         {
             var ready = await EnsureClientConfiguredAsync(ct);
@@ -79,6 +80,7 @@ namespace NickScanCentralImagingPortal.Services.Email
                 subject,
                 body = htmlBody,
                 isHtml,
+                clientReference,
                 attachments = attachments?.Select(a => new { filename = a.Filename, contentBase64 = a.ContentBase64, contentType = a.ContentType })
             };
 
@@ -108,6 +110,8 @@ namespace NickScanCentralImagingPortal.Services.Email
                 if (root.TryGetProperty("id", out var idEl) && idEl.TryGetGuid(out var id)) result.MessageId = id;
                 if (root.TryGetProperty("batchId", out var bEl) && bEl.TryGetGuid(out var bid)) result.BatchId = bid;
                 if (root.TryGetProperty("acceptedCount", out var ac) && ac.TryGetInt32(out var n)) result.AcceptedCount = n;
+                if (root.TryGetProperty("duplicateSuppressed", out var ds) && ds.ValueKind == JsonValueKind.True) result.DuplicateSuppressed = true;
+                if (root.TryGetProperty("duplicateSuppressedCount", out var dsc) && dsc.TryGetInt32(out var dn)) result.DuplicateSuppressedCount = dn;
                 return result;
             }
             catch

@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -15,7 +17,10 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
     ///
     /// Behaviour summary:
     ///   - <c>RaiseAsync</c>: dedupe-or-insert, with email-on-Critical via
-    ///     <see cref="INickCommsClient"/>. Email recipients are looked up
+    ///     <see cref="INickCommsClient"/>. The first successful queue for a
+    ///     stable <c>AlertKey</c> is the only email sent for that same error by
+    ///     default; later repeats stay in the persisted dashboard alert log but
+    ///     do not page the same recipients again. Email recipients are looked up
     ///     from <c>Email:AdminRecipients</c> (the same list the existing
     ///     <c>EmailService</c> uses for CMR validation alerts), with a hard
     ///     fallback to <c>admin@nickscan.com</c> so a misconfiguration
@@ -33,6 +38,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
     {
         private static readonly TimeSpan DedupeWindow = TimeSpan.FromMinutes(30);
         private const int DefaultCriticalEmailCooldownMinutes = 120;
+        private const bool DefaultSendSameCriticalEmailOnlyOnce = true;
 
         private readonly ApplicationDbContext _db;
         private readonly INickCommsClient _comms;
@@ -181,6 +187,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
                 var subject = $"[NSCIM] {alert.Severity}: {alert.Title}";
                 var body = BuildEmailBody(alert);
+                var clientReference = BuildEmailDedupeReference(alert);
 
                 NickCommsEmailResult result;
                 if (recipients.Count == 1)
@@ -190,7 +197,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                         subject: subject,
                         htmlBody: body,
                         isHtml: true,
-                        clientReference: $"dashboardalert:{alert.Id}",
+                        clientReference: clientReference,
                         ct: ct);
                 }
                 else
@@ -200,6 +207,7 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
                         subject: subject,
                         htmlBody: body,
                         isHtml: true,
+                        clientReference: clientReference,
                         ct: ct);
                 }
 
@@ -235,6 +243,26 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
             if (alert.EmailSentAtUtc.HasValue)
             {
                 return false;
+            }
+
+            var sendSameAlertKeyOnlyOnce = _configuration.GetValue<bool?>("Alerting:SendSameCriticalEmailOnlyOnce")
+                ?? DefaultSendSameCriticalEmailOnlyOnce;
+            if (sendSameAlertKeyOnlyOnce && !string.IsNullOrWhiteSpace(alert.AlertKey))
+            {
+                var alreadyEmailed = await _db.DashboardAlerts
+                    .AsNoTracking()
+                    .AnyAsync(a => a.AlertKey == alert.AlertKey
+                        && a.Id != alert.Id
+                        && a.EmailSentAtUtc != null, ct);
+
+                if (alreadyEmailed)
+                {
+                    _logger.LogInformation(
+                        "[DASHBOARD-ALERTS] suppressing Critical email for id={Id}, key={AlertKey}; same alert key already emailed once",
+                        alert.Id, alert.AlertKey);
+                }
+
+                return !alreadyEmailed;
             }
 
             var cooldownMinutes = _configuration.GetValue<int?>("Alerting:CriticalEmailCooldownMinutes")
@@ -303,6 +331,16 @@ namespace NickScanCentralImagingPortal.Services.Monitoring
 
             cleanTitle = Regex.Replace(cleanTitle, @"\s*\(hash=[^)]+\)", "", RegexOptions.IgnoreCase);
             return Truncate($"{cleanType}:{cleanTitle}", 256) ?? cleanType;
+        }
+
+        private static string BuildEmailDedupeReference(DashboardAlertEntity alert)
+        {
+            var key = string.IsNullOrWhiteSpace(alert.AlertKey)
+                ? $"{alert.Type}:{alert.Title}"
+                : alert.AlertKey;
+
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(key.Trim().ToUpperInvariant()));
+            return $"dedupe:dashboardalert:{Convert.ToHexString(bytes, 0, 16).ToLowerInvariant()}";
         }
 
         private static string? Truncate(string? value, int maxLength)

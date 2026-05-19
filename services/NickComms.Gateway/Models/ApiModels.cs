@@ -131,12 +131,14 @@ public class EmailResponse
 {
     public Guid Id { get; set; }
     public string Status { get; set; } = string.Empty;
+    public bool DuplicateSuppressed { get; set; }
 }
 
 public class BulkEmailResponse
 {
     public Guid BatchId { get; set; }
     public int AcceptedCount { get; set; }
+    public int DuplicateSuppressedCount { get; set; }
     public string Message { get; set; } = string.Empty;
 }
 

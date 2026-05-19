@@ -10,6 +10,7 @@ namespace NickComms.Gateway.Services;
 public class EmailService : IEmailService
 {
     private const long MaxAttachmentBytes = 10L * 1024 * 1024; // 10 MB total per email
+    private const string DedupeClientReferencePrefix = "dedupe:";
 
     private readonly CommsDbContext _db;
     private readonly EmailQueueService _queue;
@@ -30,6 +31,24 @@ public class EmailService : IEmailService
 
     public async Task<EmailResponse> SendSingleAsync(SendEmailRequest request, string clientApp, CancellationToken ct = default)
     {
+        if (IsDedupeClientReference(request.ClientReference))
+        {
+            var duplicate = await FindDuplicateEmailAsync(clientApp, request.To, request.ClientReference!, ct);
+            if (duplicate != null)
+            {
+                _logger.LogInformation(
+                    "Email duplicate suppressed: ref={ClientReference} to={To} existing={Id} status={Status}",
+                    request.ClientReference, request.To, duplicate.Id, duplicate.Status);
+
+                return new EmailResponse
+                {
+                    Id = duplicate.Id,
+                    Status = duplicate.Status,
+                    DuplicateSuppressed = true
+                };
+            }
+        }
+
         // Outbox: attachments are persisted on the row as base64 JSON so a
         // crash between ACK and SMTP send can't lose them. We still validate
         // up-front so a malformed/oversized request fails fast at 4xx.
@@ -105,41 +124,63 @@ public class EmailService : IEmailService
         var fromName = request.FromName ?? _emailOptions.FromName;
         var persistedShared = ValidateAndPersistAttachments(request.Attachments);
         var sharedJson = EmailQueueService.SerializeAttachments(persistedShared);
+        var duplicates = IsDedupeClientReference(request.ClientReference)
+            ? await FindDuplicateEmailsAsync(clientApp, request.Recipients.Select(r => r.Email), request.ClientReference!, ct)
+            : new Dictionary<string, EmailMessage>(StringComparer.OrdinalIgnoreCase);
 
-        var messages = request.Recipients.Select(r => new EmailMessage
+        var duplicateSuppressedCount = 0;
+        var messages = new List<EmailMessage>();
+        foreach (var r in request.Recipients)
         {
-            FromEmail = fromEmail,
-            FromName = fromName,
-            ToEmail = r.Email,
-            ToName = r.Name,
-            Subject = request.Subject,
-            Body = request.Body,
-            IsHtml = request.IsHtml,
-            BatchId = batchId,
-            ClientApp = clientApp,
-            ClientReference = request.ClientReference,
-            Status = "queued",
-            // Each row gets its own copy of the same shared attachment JSON
-            // so the outbox path is uniform regardless of single vs bulk.
-            AttachmentsJson = sharedJson
-        }).ToList();
+            if (duplicates.ContainsKey(NormalizeEmail(r.Email)))
+            {
+                duplicateSuppressedCount++;
+                continue;
+            }
 
-        _db.EmailMessages.AddRange(messages);
-        await _db.SaveChangesAsync(ct);
-
-        // No-op enqueue for backward compat; outbox worker picks up via poll.
-        foreach (var msg in messages)
-        {
-            _queue.Enqueue(new EmailQueueItem { MessageId = msg.Id });
+            messages.Add(new EmailMessage
+            {
+                FromEmail = fromEmail,
+                FromName = fromName,
+                ToEmail = r.Email,
+                ToName = r.Name,
+                Subject = request.Subject,
+                Body = request.Body,
+                IsHtml = request.IsHtml,
+                BatchId = batchId,
+                ClientApp = clientApp,
+                ClientReference = request.ClientReference,
+                Status = "queued",
+                // Each row gets its own copy of the same shared attachment JSON
+                // so the outbox path is uniform regardless of single vs bulk.
+                AttachmentsJson = sharedJson
+            });
         }
 
-        _logger.LogInformation("Bulk email queued: batch={BatchId} count={Count} by {App}", batchId, messages.Count, clientApp);
+        if (messages.Count > 0)
+        {
+            _db.EmailMessages.AddRange(messages);
+            await _db.SaveChangesAsync(ct);
+
+            // No-op enqueue for backward compat; outbox worker picks up via poll.
+            foreach (var msg in messages)
+            {
+                _queue.Enqueue(new EmailQueueItem { MessageId = msg.Id });
+            }
+        }
+
+        _logger.LogInformation(
+            "Bulk email queued: batch={BatchId} count={Count} suppressed={Suppressed} by {App}",
+            batchId, messages.Count, duplicateSuppressedCount, clientApp);
 
         return new BulkEmailResponse
         {
             BatchId = batchId,
             AcceptedCount = messages.Count,
-            Message = $"{messages.Count} emails queued for delivery"
+            DuplicateSuppressedCount = duplicateSuppressedCount,
+            Message = duplicateSuppressedCount == 0
+                ? $"{messages.Count} emails queued for delivery"
+                : $"{messages.Count} emails queued for delivery; {duplicateSuppressedCount} duplicate(s) suppressed"
         };
     }
 
@@ -159,4 +200,54 @@ public class EmailService : IEmailService
             ErrorMessage = msg.ErrorMessage
         };
     }
+
+    private async Task<EmailMessage?> FindDuplicateEmailAsync(
+        string clientApp,
+        string toEmail,
+        string clientReference,
+        CancellationToken ct)
+    {
+        var normalizedTo = NormalizeEmail(toEmail);
+        return await _db.EmailMessages
+            .AsNoTracking()
+            .Where(m => m.ClientApp == clientApp && m.ClientReference == clientReference)
+            .Where(m => m.ToEmail.ToLower() == normalizedTo)
+            .OrderBy(m => m.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    private async Task<Dictionary<string, EmailMessage>> FindDuplicateEmailsAsync(
+        string clientApp,
+        IEnumerable<string> toEmails,
+        string clientReference,
+        CancellationToken ct)
+    {
+        var normalizedEmails = toEmails
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(NormalizeEmail)
+            .Distinct()
+            .ToList();
+
+        if (normalizedEmails.Count == 0)
+        {
+            return new Dictionary<string, EmailMessage>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var existing = await _db.EmailMessages
+            .AsNoTracking()
+            .Where(m => m.ClientApp == clientApp && m.ClientReference == clientReference)
+            .Where(m => normalizedEmails.Contains(m.ToEmail.ToLower()))
+            .OrderBy(m => m.CreatedAt)
+            .ToListAsync(ct);
+
+        return existing
+            .GroupBy(m => NormalizeEmail(m.ToEmail), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDedupeClientReference(string? clientReference)
+        => clientReference?.StartsWith(DedupeClientReferencePrefix, StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string NormalizeEmail(string email)
+        => email.Trim().ToLowerInvariant();
 }

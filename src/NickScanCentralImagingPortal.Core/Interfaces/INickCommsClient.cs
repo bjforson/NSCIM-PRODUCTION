@@ -21,6 +21,7 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
             string htmlBody,
             bool isHtml = true,
             IEnumerable<NickCommsAttachment>? attachments = null,
+            string? clientReference = null,
             CancellationToken ct = default);
 
         Task<NickCommsSmsResult> SendSmsAsync(
@@ -53,6 +54,8 @@ namespace NickScanCentralImagingPortal.Core.Interfaces
         public Guid? MessageId { get; set; }
         public Guid? BatchId { get; set; }
         public int AcceptedCount { get; set; }
+        public bool DuplicateSuppressed { get; set; }
+        public int DuplicateSuppressedCount { get; set; }
         public string? ErrorMessage { get; set; }
     }
 
