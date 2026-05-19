@@ -3869,7 +3869,10 @@
         try
         {
             Console.WriteLine($"[LoadExistingTags] Loading for container={ContainerNumber}, scanner={ScannerType}");
-            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(
+                ContainerNumber,
+                GroupIdentifier,
+                ScannerType);
             
             Console.WriteLine($"[LoadExistingTags] API returned {decisions?.Count ?? 0} decision(s)");
             if (decisions != null)
@@ -4530,7 +4533,10 @@
                 var splitSide = SourceScanResolution?.EffectiveSplitSide;
                 
                 // Get existing decision for this image
-                var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(decisionContainerNumber);
+                var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(
+                    decisionContainerNumber,
+                    GroupIdentifier,
+                    ScannerType);
                 
                 var existingDecision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
 
@@ -4597,7 +4603,10 @@
     {
         try
         {
-            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(ContainerNumber);
+            var decisions = await DecisionClient.GetContainerDecisionsAsync<ImageDecisionDto>(
+                ContainerNumber,
+                GroupIdentifier,
+                ScannerType);
 
             var decision = decisions?.FirstOrDefault(d => d.ScannerType == ScannerType);
 

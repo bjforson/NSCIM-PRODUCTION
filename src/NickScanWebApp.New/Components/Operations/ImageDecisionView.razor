@@ -501,7 +501,9 @@
         try
         {
             Console.WriteLine($"🔍 [ImageDecisionView] Loading decisions for container: {ContainerNumber}");
-            _decisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(ContainerNumber) ?? new();
+            _decisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(
+                ContainerNumber,
+                GroupIdentifier) ?? new();
             
             Console.WriteLine($"✅ [ImageDecisionView] Loaded {_decisions.Count} decision(s)");
             

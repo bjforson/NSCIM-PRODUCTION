@@ -13,9 +13,12 @@ public sealed class ImageAnalysisDecisionClient
         _apiService = apiService;
     }
 
-    public Task<List<TDecision>?> GetContainerDecisionsAsync<TDecision>(string containerNumber)
+    public Task<List<TDecision>?> GetContainerDecisionsAsync<TDecision>(
+        string containerNumber,
+        string? groupIdentifier = null,
+        string? scannerType = null)
     {
-        return _apiService.GetAsync<List<TDecision>>(BuildContainerDecisionsPath(containerNumber));
+        return _apiService.GetAsync<List<TDecision>>(BuildContainerDecisionsPath(containerNumber, groupIdentifier, scannerType));
     }
 
     public Task<TDecision?> GetGroupOverallDecisionAsync<TDecision>(string groupIdentifier)
@@ -43,9 +46,19 @@ public sealed class ImageAnalysisDecisionClient
         return _apiService.PostAsync<TRequest, object>(RectanglesPath, request);
     }
 
-    public static string BuildContainerDecisionsPath(string containerNumber)
+    public static string BuildContainerDecisionsPath(
+        string containerNumber,
+        string? groupIdentifier = null,
+        string? scannerType = null)
     {
-        return $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}";
+        var path = $"{BasePath}/container/{Uri.EscapeDataString(containerNumber)}";
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(groupIdentifier))
+            query.Add($"groupIdentifier={Uri.EscapeDataString(groupIdentifier)}");
+        if (!string.IsNullOrWhiteSpace(scannerType))
+            query.Add($"scannerType={Uri.EscapeDataString(scannerType)}");
+
+        return query.Count == 0 ? path : $"{path}?{string.Join("&", query)}";
     }
 
     public static string BuildGroupOverallDecisionPath(string groupIdentifier)

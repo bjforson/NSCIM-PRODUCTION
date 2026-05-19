@@ -150,16 +150,45 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
+                var recordsForContainer = await db.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(r => r.GroupId == group.Id
+                        && r.ContainerNumber == containerNumber)
+                    .ToListAsync(ct);
+
+                if (!string.IsNullOrWhiteSpace(effectiveScannerType))
+                {
+                    recordsForContainer = recordsForContainer
+                        .Where(r => ScannerMatches(r.ScannerType, effectiveScannerType))
+                        .ToList();
+                }
+
+                var unresolvedSplitRecord = recordsForContainer
+                    .FirstOrDefault(SplitDecisionEligibility.RequiresSplitResolution);
+                if (unresolvedSplitRecord != null)
+                {
+                    _logger.LogWarning(
+                        "[DECISION-FX] Split choice is unresolved for {Container} in {Group} ({Reason}) — skipping status flip",
+                        containerNumber,
+                        groupIdentifier,
+                        SplitDecisionEligibility.DescribeUnresolvedSplit(unresolvedSplitRecord));
+                    return;
+                }
+
                 // GUARD: Verify a real ImageAnalysisDecision exists before flipping to "Decided".
                 // Prevents the self-healing sweep from auto-deciding containers that were never reviewed.
-                var hasDecision = await ApplyScannerFilter(
-                    db.ImageAnalysisDecisions
-                        .Where(d => d.ContainerNumber == containerNumber
-                            && (d.Decision == "Normal" || d.Decision == "Abnormal")
-                            && d.GroupIdentifier != null
-                            && decisionGroupIdentifiers.Contains(d.GroupIdentifier)),
-                    effectiveScannerType)
-                    .AnyAsync(ct);
+                var candidateDecisions = await ApplyScannerFilter(
+                        db.ImageAnalysisDecisions
+                            .Where(d => d.ContainerNumber == containerNumber
+                                && (d.Decision == "Normal" || d.Decision == "Abnormal")
+                                && d.GroupIdentifier != null
+                                && decisionGroupIdentifiers.Contains(d.GroupIdentifier)),
+                        effectiveScannerType)
+                    .ToListAsync(ct);
+
+                var hasDecision = candidateDecisions.Any(decision =>
+                    recordsForContainer.Count == 0
+                    || recordsForContainer.Any(record => SplitDecisionEligibility.IsDecisionCompatible(record, decision)));
 
                 if (!hasDecision)
                 {

@@ -11,6 +11,7 @@ using Microsoft.Extensions.Caching.Memory;
 using NickScanCentralImagingPortal.API.Authorization;
 using NickScanCentralImagingPortal.Core.Constants;
 using NickScanCentralImagingPortal.Core.Entities;
+using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
@@ -82,13 +83,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
             return IsCompletedAnalystDecisionValue(decision.Decision);
         }
 
-        private static ImageAnalysisDecision SelectImageDecisionForDisplay(IEnumerable<ImageAnalysisDecision> decisions)
+        private static ImageAnalysisDecision? SelectImageDecisionForDisplay(
+            IEnumerable<ImageAnalysisDecision> decisions,
+            AnalysisRecord? analysisRecord = null)
         {
-            return decisions
+            var candidates = decisions;
+            if (analysisRecord != null)
+            {
+                candidates = candidates.Where(d => SplitDecisionEligibility.IsDecisionCompatible(analysisRecord, d));
+            }
+
+            return candidates
                 .OrderByDescending(d => !string.IsNullOrWhiteSpace(d.ReviewedBy))
                 .ThenByDescending(d => d.ReviewedAt)
                 .ThenByDescending(d => d.UpdatedAt ?? d.CreatedAt)
-                .First();
+                .FirstOrDefault();
         }
 
         private static string GetImageAnalystDisplay(IEnumerable<ImageAnalysisDecision> decisions)
@@ -180,17 +189,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
         private static bool IsAuditableAnalystDecision(
             ImageAnalysisDecision decision,
             IReadOnlyCollection<string> auditGroupIdentifiers,
-            string? scannerType)
+            string? scannerType,
+            AnalysisRecord? analysisRecord = null)
         {
             return HasCompletedAnalystDecision(decision)
                 && ScannerMatches(decision.ScannerType, scannerType)
-                && AnalystDecisionGroupMatches(decision.GroupIdentifier, auditGroupIdentifiers);
+                && AnalystDecisionGroupMatches(decision.GroupIdentifier, auditGroupIdentifiers)
+                && (analysisRecord == null || SplitDecisionEligibility.IsDecisionCompatible(analysisRecord, decision));
         }
 
         private async Task<ImageAnalysisDecision?> FindCompletedAnalystDecisionForAuditAsync(
             string containerNumber,
             IReadOnlyCollection<string> auditGroupIdentifiers,
-            string? scannerType)
+            string? scannerType,
+            AnalysisRecord? analysisRecord = null)
         {
             var completedCandidates = await _dbContext.ImageAnalysisDecisions
                 .Where(d => d.ContainerNumber == containerNumber
@@ -198,7 +210,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 .ToListAsync();
 
             var scoped = completedCandidates
-                .Where(d => IsAuditableAnalystDecision(d, auditGroupIdentifiers, scannerType))
+                .Where(d => IsAuditableAnalystDecision(d, auditGroupIdentifiers, scannerType, analysisRecord))
                 .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
                 .ThenByDescending(d => d.Id)
                 .FirstOrDefault();
@@ -208,12 +220,110 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
             var legacyUngrouped = completedCandidates
                 .Where(d => string.IsNullOrWhiteSpace(d.GroupIdentifier)
-                    && ScannerMatches(d.ScannerType, scannerType))
+                    && ScannerMatches(d.ScannerType, scannerType)
+                    && (analysisRecord == null || SplitDecisionEligibility.IsDecisionCompatible(analysisRecord, d)))
                 .OrderByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
                 .ThenByDescending(d => d.Id)
                 .ToList();
 
             return legacyUngrouped.Count == 1 ? legacyUngrouped[0] : null;
+        }
+
+        private async Task<(List<AnalysisGroup> Groups, List<AnalysisRecord> Records)> LoadAuditAnalysisContextAsync(
+            IEnumerable<ContainerCompletenessStatus> completenessRecords,
+            string? preferredGroupIdentifier = null,
+            string? scannerType = null)
+        {
+            var groupIdentifiers = completenessRecords
+                .Select(r => r.GroupIdentifier)
+                .Append(preferredGroupIdentifier)
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .SelectMany(g => new[] { g!, GroupIdentifierHelper.GetNormalizedGroupIdentifier(g!) })
+                .Where(g => !string.IsNullOrWhiteSpace(g))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (groupIdentifiers.Count == 0)
+                return (new List<AnalysisGroup>(), new List<AnalysisRecord>());
+
+            var groups = await _dbContext.AnalysisGroups
+                .AsNoTracking()
+                .Where(g => groupIdentifiers.Contains(g.GroupIdentifier)
+                    || (g.NormalizedGroupIdentifier != null && groupIdentifiers.Contains(g.NormalizedGroupIdentifier)))
+                .ToListAsync();
+
+            if (!string.IsNullOrWhiteSpace(scannerType))
+            {
+                groups = groups
+                    .Where(g => ScannerMatches(g.ScannerType, scannerType))
+                    .ToList();
+            }
+
+            if (groups.Count == 0)
+                return (groups, new List<AnalysisRecord>());
+
+            var groupIds = groups.Select(g => g.Id).Distinct().ToList();
+            var records = await _dbContext.AnalysisRecords
+                .AsNoTracking()
+                .Where(r => groupIds.Contains(r.GroupId))
+                .ToListAsync();
+
+            return (groups, records);
+        }
+
+        private static AnalysisRecord? FindAnalysisRecordForAudit(
+            ContainerCompletenessStatus completeness,
+            IReadOnlyList<AnalysisGroup> groups,
+            IReadOnlyList<AnalysisRecord> records)
+        {
+            var matchingGroups = groups
+                .Where(g => string.Equals(g.GroupIdentifier, completeness.GroupIdentifier, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(g.NormalizedGroupIdentifier, completeness.GroupIdentifier, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(g => ScannerMatches(g.ScannerType, completeness.ScannerType))
+                .ThenByDescending(g => !string.IsNullOrWhiteSpace(g.ScannerType))
+                .ThenByDescending(g => g.UpdatedAtUtc)
+                .ToList();
+
+            foreach (var group in matchingGroups)
+            {
+                var record = records
+                    .Where(r => r.GroupId == group.Id
+                        && string.Equals(r.ContainerNumber, completeness.ContainerNumber, StringComparison.OrdinalIgnoreCase)
+                        && ScannerMatches(r.ScannerType, completeness.ScannerType))
+                    .OrderByDescending(r => r.CreatedAtUtc)
+                    .FirstOrDefault();
+
+                if (record != null)
+                    return record;
+            }
+
+            return null;
+        }
+
+        private static AnalysisRecord? FindAnalysisRecordForAudit(
+            string containerNumber,
+            string? scannerType,
+            IReadOnlyList<AnalysisRecord> records)
+        {
+            return records
+                .Where(r => string.Equals(r.ContainerNumber, containerNumber, StringComparison.OrdinalIgnoreCase)
+                    && ScannerMatches(r.ScannerType, scannerType))
+                .OrderByDescending(r => r.CreatedAtUtc)
+                .FirstOrDefault();
+        }
+
+        private static ImageAnalysisDecision? SelectAuditDisplayDecision(
+            ContainerCompletenessStatus completeness,
+            IEnumerable<ImageAnalysisDecision> decisions,
+            AnalysisRecord? analysisRecord)
+        {
+            var groupIdentifiers = BuildAuditDecisionGroupIdentifiers(completeness.GroupIdentifier);
+            var candidates = decisions.Where(d =>
+                string.Equals(d.ContainerNumber, completeness.ContainerNumber, StringComparison.OrdinalIgnoreCase)
+                && ScannerMatches(d.ScannerType, completeness.ScannerType)
+                && AnalystDecisionGroupMatches(d.GroupIdentifier, groupIdentifiers));
+
+            return SelectImageDecisionForDisplay(candidates, analysisRecord);
         }
 
         /// <summary>
@@ -343,10 +453,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                 }
 
-                // Create dictionary with composite key as string
-                var allDecisions = allDecisionsList
-                    .GroupBy(d => $"{d.ContainerNumber}|{d.ScannerType}")
-                    .ToDictionary(g => g.Key, g => SelectImageDecisionForDisplay(g));
+                var (analysisGroups, analysisRecords) = await LoadAuditAnalysisContextAsync(auditRecords, scannerType: scannerType);
 
                 // Group by GroupIdentifier
                 var groups = auditRecords
@@ -361,18 +468,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         SubmittedBy = "System", // Can be enhanced later
                         ImageAnalysisDecisions = g.Select(s =>
                         {
-                            // ✅ FIX: Look up decision from pre-loaded dictionary instead of querying database
-                            var key = $"{s.ContainerNumber}|{s.ScannerType}";
-                            var decision = allDecisions.TryGetValue(key, out var d) ? d : null;
+                            var analysisRecord = FindAnalysisRecordForAudit(s, analysisGroups, analysisRecords);
+                            var decision = SelectAuditDisplayDecision(s, allDecisionsList, analysisRecord);
 
                             return new ImageAnalysisDecisionSummary
                             {
                                 ContainerNumber = s.ContainerNumber,
+                                ImageAnalysisDecisionId = decision?.Id,
                                 Decision = decision?.Decision ?? "Pending",
                                 ReviewedBy = decision?.ReviewedBy ?? "",
                                 ReviewedAt = decision?.ReviewedAt ?? DateTime.UtcNow,
                                 Comments = decision?.Comments,
-                                Tags = decision?.Tags // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
+                                Tags = decision?.Tags, // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
+                                SplitJobId = decision?.SplitJobId,
+                                SplitResultId = decision?.SplitResultId
                             };
                         }).ToList()
                     })
@@ -556,7 +665,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 if (!string.IsNullOrEmpty(groupIdentifier) && containerNumbers.Any() && scannerTypes.Any())
                 {
                     var prefix = groupIdentifier + "_";
-                    var alreadyMatched = allDecisionsList.Select(d => $"{d.ContainerNumber}|{d.ScannerType}").ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var auditGroupIdentifiersForFallback = BuildAuditDecisionGroupIdentifiers(groupIdentifier);
+                    var alreadyMatched = allDecisionsList
+                        .Where(d => AnalystDecisionGroupMatches(d.GroupIdentifier, auditGroupIdentifiersForFallback))
+                        .Select(d => $"{d.ContainerNumber}|{d.ScannerType}")
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var unmatchedContainers = containerNumbers.Where(cn => scannerTypes.Any(st => !alreadyMatched.Contains($"{cn}|{st}"))).ToList();
 
                     if (unmatchedContainers.Any())
@@ -580,9 +693,10 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
                 }
 
-                var allDecisions = allDecisionsList
-                    .GroupBy(d => $"{d.ContainerNumber}|{d.ScannerType}")
-                    .ToDictionary(g => g.Key, g => SelectImageDecisionForDisplay(g));
+                var (analysisGroups, analysisRecords) = await LoadAuditAnalysisContextAsync(
+                    completenessRecords,
+                    groupIdentifier,
+                    scannerType);
 
                 // Build AuditGroupDto
                 var firstRecord = completenessRecords.First();
@@ -596,17 +710,20 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     SubmittedBy = "System",
                     ImageAnalysisDecisions = completenessRecords.Select(s =>
                     {
-                        var key = $"{s.ContainerNumber}|{s.ScannerType}";
-                        var decision = allDecisions.TryGetValue(key, out var d) ? d : null;
+                        var analysisRecord = FindAnalysisRecordForAudit(s, analysisGroups, analysisRecords);
+                        var decision = SelectAuditDisplayDecision(s, allDecisionsList, analysisRecord);
 
                         return new ImageAnalysisDecisionSummary
                         {
                             ContainerNumber = s.ContainerNumber,
+                            ImageAnalysisDecisionId = decision?.Id,
                             Decision = decision?.Decision ?? "Pending",
                             ReviewedBy = decision?.ReviewedBy ?? "",
                             ReviewedAt = decision?.ReviewedAt ?? DateTime.UtcNow,
                             Comments = decision?.Comments,
-                            Tags = decision?.Tags // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
+                            Tags = decision?.Tags, // 2026-05-05 operator-reported tag persistence: was silently dropped by projection; renders chips on audit view
+                            SplitJobId = decision?.SplitJobId,
+                            SplitResultId = decision?.SplitResultId
                         };
                     }).ToList()
                 };
@@ -1035,14 +1152,28 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
+                var auditAnalysisRecords = await _dbContext.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(r => r.GroupId == group.Id)
+                    .ToListAsync();
+
                 var completedAnalystDecisionsByContainer = new Dictionary<string, ImageAnalysisDecision>(StringComparer.OrdinalIgnoreCase);
                 string? missingCompletedAnalystDecision = null;
+                string? unresolvedSplitContainer = null;
                 foreach (var container in requestedContainerNumbers)
                 {
+                    var analysisRecord = FindAnalysisRecordForAudit(container, scannerType, auditAnalysisRecords);
+                    if (SplitDecisionEligibility.RequiresSplitResolution(analysisRecord))
+                    {
+                        unresolvedSplitContainer = container;
+                        break;
+                    }
+
                     var completedDecision = await FindCompletedAnalystDecisionForAuditAsync(
                         container,
                         auditDecisionGroupIdentifiers,
-                        scannerType);
+                        scannerType,
+                        analysisRecord);
 
                     if (completedDecision == null)
                     {
@@ -1051,6 +1182,23 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     }
 
                     completedAnalystDecisionsByContainer[container] = completedDecision;
+                }
+
+                if (unresolvedSplitContainer != null)
+                {
+                    _logger.LogWarning(
+                        "SubmitAudit rejected before writes: split choice unresolved for container {Container} in group {GroupIdentifier}",
+                        unresolvedSplitContainer, request.GroupIdentifier);
+
+                    return BadRequest(new AuditSubmissionResponse
+                    {
+                        Success = false,
+                        Message = $"Split choice is still required for container {unresolvedSplitContainer}. Return it to image analysis and choose or skip the split before submitting audit.",
+                        OverallDecision = null,
+                        AuditedCount = 0,
+                        NextContainerNumber = null,
+                        AllContainersAudited = false
+                    });
                 }
 
                 if (missingCompletedAnalystDecision != null)
@@ -1073,95 +1221,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // Process each container decision
                 foreach (var containerDecision in request.ContainerDecisions)
                 {
-                    // Find the ImageAnalysisDecision for this container
-                    // ✅ FIX: Use flexible lookup - ImageAnalysisDecisions may have different GroupIdentifier formats
-                    // DB may have date-suffixed (70825542327_20250101_20250131) while request has base (70825542327)
-                    var normalized = GroupIdentifierHelper.GetNormalizedGroupIdentifier(request.GroupIdentifier);
-                    var imageDecision = await _dbContext.ImageAnalysisDecisions
-                        .FirstOrDefaultAsync(d =>
-                            d.ContainerNumber == containerDecision.ContainerNumber &&
-                            d.ScannerType == scannerType &&
-                            (d.GroupIdentifier == request.GroupIdentifier ||
-                             string.IsNullOrEmpty(d.GroupIdentifier) ||
-                             (normalized != null && d.GroupIdentifier == normalized)));
-
-                    // ✅ FALLBACK: Match when ImageAnalysisDecision has date-suffixed GroupIdentifier (e.g. 70825542327_...)
-                    // but request has base (70825542327) - requires in-memory normalized check
-                    if (imageDecision == null && !string.IsNullOrEmpty(request.GroupIdentifier))
-                    {
-                        var containerDecisions = await _dbContext.ImageAnalysisDecisions
-                            .Where(d => d.ContainerNumber == containerDecision.ContainerNumber && d.ScannerType == scannerType)
-                            .ToListAsync();
-                        imageDecision = containerDecisions.FirstOrDefault(d =>
-                            d.GroupIdentifier != null &&
-                            GroupIdentifierHelper.GetNormalizedGroupIdentifier(d.GroupIdentifier) == request.GroupIdentifier)
-                            ?? containerDecisions.FirstOrDefault(d =>
-                                d.GroupIdentifier != null &&
-                                request.GroupIdentifier.Length > 0 &&
-                                d.GroupIdentifier.StartsWith(request.GroupIdentifier + "_"));
-                        if (imageDecision != null)
-                            _logger.LogInformation("ImageAnalysisDecision found for container {Container} via date-suffix fallback (DB has {DbId})", containerDecision.ContainerNumber, imageDecision.GroupIdentifier);
-                    }
-
-                    // ✅ FALLBACK: Match by container+scanner only (one analyst decision per container per scanner)
-                    if (imageDecision == null)
-                    {
-                        imageDecision = await _dbContext.ImageAnalysisDecisions
-                            .FirstOrDefaultAsync(d =>
-                                d.ContainerNumber == containerDecision.ContainerNumber &&
-                                d.ScannerType == scannerType);
-                        if (imageDecision != null)
-                            _logger.LogInformation("ImageAnalysisDecision found for container {Container} via fallback (ContainerNumber+ScannerType only)", containerDecision.ContainerNumber);
-                    }
-
-                    // ✅ FALLBACK: Match by container only when scannerType unknown (single decision per container)
-                    if (imageDecision == null && string.IsNullOrEmpty(scannerType))
-                    {
-                        imageDecision = await _dbContext.ImageAnalysisDecisions
-                            .FirstOrDefaultAsync(d => d.ContainerNumber == containerDecision.ContainerNumber);
-                        if (imageDecision != null)
-                        {
-                            scannerType = imageDecision.ScannerType ?? "";
-                            _logger.LogInformation("ImageAnalysisDecision found for container {Container} via fallback (ContainerNumber only, ScannerType={ScannerType})", containerDecision.ContainerNumber, scannerType);
-                        }
-                    }
-
-                    // ✅ FALLBACK: Match by container only - use when ScannerType/GroupIdentifier mismatch (e.g. different casing or format)
-                    if (imageDecision == null)
-                    {
-                        var decisionsForContainer = await _dbContext.ImageAnalysisDecisions
-                            .Where(d => d.ContainerNumber == containerDecision.ContainerNumber)
-                            .ToListAsync();
-                        imageDecision = decisionsForContainer.FirstOrDefault(d =>
-                            string.IsNullOrEmpty(scannerType) || string.Equals(d.ScannerType, scannerType, StringComparison.OrdinalIgnoreCase))
-                            ?? decisionsForContainer.FirstOrDefault();
-                        if (imageDecision != null)
-                        {
-                            if (string.IsNullOrEmpty(scannerType))
-                                scannerType = imageDecision.ScannerType ?? "";
-                            _logger.LogInformation("ImageAnalysisDecision found for container {Container} via fallback (ContainerNumber only, matched ScannerType={ScannerType})", containerDecision.ContainerNumber, imageDecision.ScannerType);
-                        }
-                    }
-
-                    if (imageDecision == null || !HasCompletedAnalystDecision(imageDecision))
-                    {
-                        if (!completedAnalystDecisionsByContainer.TryGetValue(containerDecision.ContainerNumber, out var completedDecision))
-                        {
-                            completedDecision = await FindCompletedAnalystDecisionForAuditAsync(
-                                containerDecision.ContainerNumber,
-                                auditDecisionGroupIdentifiers,
-                                scannerType);
-                        }
-
-                        imageDecision = completedDecision;
-                        if (imageDecision != null && string.IsNullOrEmpty(scannerType))
-                            scannerType = imageDecision.ScannerType ?? "";
-                    }
+                    completedAnalystDecisionsByContainer.TryGetValue(containerDecision.ContainerNumber, out var imageDecision);
+                    var analysisRecord = FindAnalysisRecordForAudit(
+                        containerDecision.ContainerNumber,
+                        scannerType,
+                        auditAnalysisRecords);
 
                     // Audit must be based on a real analyst decision. Do not synthesize
                     // placeholder "Pending" rows here; that hides incomplete analysis.
                     if (imageDecision == null
-                        || !IsAuditableAnalystDecision(imageDecision, auditDecisionGroupIdentifiers, scannerType))
+                        || !IsAuditableAnalystDecision(imageDecision, auditDecisionGroupIdentifiers, scannerType, analysisRecord))
                     {
                         _logger.LogWarning("SubmitAudit rejected: missing completed ImageAnalysisDecision for container {Container} in group {GroupIdentifier} (ScannerType={ScannerType}, Decision={Decision})",
                             containerDecision.ContainerNumber, request.GroupIdentifier, scannerType, imageDecision?.Decision ?? "(none)");
@@ -1218,6 +1287,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     if (decision == "Rejected")
                         hasRejected = true;
 
+                    // Use group.GroupIdentifier for storage so SubmissionWorker (queries by AnalysisGroup.GroupIdentifier) finds them
+                    var storageGroupId = group.GroupIdentifier ?? request.GroupIdentifier;
+
                     // Use raw SQL to insert/update AuditDecision (bypasses EF Core trigger issue)
                     var connection = _dbContext.Database.GetDbConnection();
                     var wasOpen = connection.State == System.Data.ConnectionState.Open;
@@ -1225,8 +1297,6 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
                     try
                     {
-                        // Use group.GroupIdentifier for storage so SubmissionWorker (queries by AnalysisGroup.GroupIdentifier) finds them
-                        var storageGroupId = group.GroupIdentifier ?? request.GroupIdentifier;
                         // Check if audit decision exists
                         using (var checkCommand = connection.CreateCommand())
                         {
@@ -1276,19 +1346,21 @@ namespace NickScanCentralImagingPortal.API.Controllers
                                 {
                                     updateCommand.CommandText = @"
                                         UPDATE AuditDecisions
-                                        SET Decision = @p0,
-                                            AuditNotes = @p1,
-                                            AuditedBy = @p2,
-                                            AuditedAt = @p3,
-                                            UpdatedAt = @p4
-                                        WHERE Id = @p5";
+                                        SET ImageAnalysisDecisionId = @p0,
+                                            Decision = @p1,
+                                            AuditNotes = @p2,
+                                            AuditedBy = @p3,
+                                            AuditedAt = @p4,
+                                            UpdatedAt = @p5
+                                        WHERE Id = @p6";
 
-                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p0", decision));
-                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p1", containerDecision.Notes != null ? (object)containerDecision.Notes : DBNull.Value));
-                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p2", username));
-                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p3", now));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p0", imageDecision.Id));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p1", decision));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p2", containerDecision.Notes != null ? (object)containerDecision.Notes : DBNull.Value));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p3", username));
                                     updateCommand.Parameters.Add(new NpgsqlParameter("@p4", now));
-                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p5", existingId));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p5", now));
+                                    updateCommand.Parameters.Add(new NpgsqlParameter("@p6", existingId));
 
                                     await updateCommand.ExecuteNonQueryAsync();
                                 }
@@ -1314,7 +1386,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             var auditDecisionRow = await _dbContext.AuditDecisions
                                 .AsTracking()
                                 .Where(a => a.ContainerNumber == containerDecision.ContainerNumber
-                                            && a.ScannerType == scannerType)
+                                            && a.ScannerType == scannerType
+                                            && (a.GroupIdentifier == storageGroupId
+                                                || a.GroupIdentifier == request.GroupIdentifier))
                                 .OrderByDescending(a => a.AuditedAt)
                                 .FirstOrDefaultAsync();
 
@@ -2046,6 +2120,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
 
         public class ImageAnalysisDecisionSummary
         {
+            public int? ImageAnalysisDecisionId { get; set; }
             public string ContainerNumber { get; set; } = "";
             public string Decision { get; set; } = "";
             public string ReviewedBy { get; set; } = "";
@@ -2056,6 +2131,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             // imageanalysisdecisions.tags (varchar 500). Audit dialog reads via
             // AuditReviewDialog.razor:185-194 + 932 (forwarded as OriginalAnalystTags).
             public string? Tags { get; set; }
+            public Guid? SplitJobId { get; set; }
+            public Guid? SplitResultId { get; set; }
         }
 
         public class AuditStats

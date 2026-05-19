@@ -153,6 +153,32 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
+                var analysisRecords = await _context.AnalysisRecords
+                    .AsNoTracking()
+                    .Where(r => r.GroupId == group.Id && containerNumbers.Contains(r.ContainerNumber))
+                    .ToListAsync();
+
+                if (!string.IsNullOrWhiteSpace(groupScannerType))
+                {
+                    analysisRecords = analysisRecords
+                        .Where(r => ScannerMatches(r.ScannerType, groupScannerType))
+                        .ToList();
+                }
+
+                var unresolvedSplitContainers = analysisRecords
+                    .Where(SplitDecisionEligibility.RequiresSplitResolution)
+                    .Select(r => r.ContainerNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (unresolvedSplitContainers.Any())
+                {
+                    _logger.LogWarning(
+                        "EnsureGroupStatusFromWorkflowStageAsync: not promoting group {GroupIdentifier}; split choice unresolved for {Containers}",
+                        groupIdentifier,
+                        string.Join(", ", unresolvedSplitContainers));
+                    return;
+                }
+
                 var decisionsQuery = _context.ImageAnalysisDecisions
                     .Where(d => d.GroupIdentifier != null
                         && decisionGroupIdentifiers.Contains(d.GroupIdentifier)
@@ -167,10 +193,19 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         || d.ScannerType.StartsWith(scannerBase + "-"));
                 }
 
-                var decidedContainers = await decisionsQuery
-                    .Select(d => d.ContainerNumber)
-                    .Distinct()
+                var decisionRows = await decisionsQuery
                     .ToListAsync();
+
+                var recordsByContainer = analysisRecords
+                    .GroupBy(r => r.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.CreatedAtUtc).First(), StringComparer.OrdinalIgnoreCase);
+
+                var decidedContainers = decisionRows
+                    .Where(d => !recordsByContainer.TryGetValue(d.ContainerNumber, out var record)
+                        || SplitDecisionEligibility.IsDecisionCompatible(record, d))
+                    .Select(d => d.ContainerNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
                 if (decidedContainers.Count < containerNumbers.Count)
                 {
@@ -1258,7 +1293,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
             string groupIdentifier,
             List<string> groupContainers,
             string? scannerType = null,
-            string? resolvedGroupIdentifierForBackwardCompat = null)
+            string? resolvedGroupIdentifierForBackwardCompat = null,
+            Guid? analysisGroupId = null)
         {
             try
             {
@@ -1315,6 +1351,43 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     return true;
                 }
 
+                var splitRecordsByContainer = new Dictionary<string, AnalysisRecord>(StringComparer.OrdinalIgnoreCase);
+                if (analysisGroupId.HasValue)
+                {
+                    var splitRecords = await _context.AnalysisRecords
+                        .AsNoTracking()
+                        .Where(r => r.GroupId == analysisGroupId.Value
+                            && containersWithImages.Contains(r.ContainerNumber))
+                        .ToListAsync();
+
+                    if (!string.IsNullOrWhiteSpace(scannerType))
+                    {
+                        splitRecords = splitRecords
+                            .Where(r => ScannerMatches(r.ScannerType, scannerType))
+                            .ToList();
+                    }
+
+                    splitRecordsByContainer = splitRecords
+                        .GroupBy(r => r.ContainerNumber, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.OrderByDescending(r => r.CreatedAtUtc).First(),
+                            StringComparer.OrdinalIgnoreCase);
+
+                    var unresolvedSplitContainers = splitRecordsByContainer.Values
+                        .Where(SplitDecisionEligibility.RequiresSplitResolution)
+                        .Select(r => r.ContainerNumber)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (unresolvedSplitContainers.Any())
+                    {
+                        _logger.LogWarning("❌ [VALIDATION] Cannot progress: {Count} split container(s) still require split choice before audit: {Containers} (ScannerType: {ScannerType})",
+                            unresolvedSplitContainers.Count, string.Join(", ", unresolvedSplitContainers), scannerType ?? "ALL");
+                        return false;
+                    }
+                }
+
                 // ✅ FIX AUTO-PROGRESSION: Filter decisions by scanner type if provided
                 // Since groups are separated by scanner type, we should only count decisions for the group's scanner type
                 // ✅ SCANNER TYPE FIX: Normalize scanner type comparison (handle "FS6000-Main" vs "FS6000")
@@ -1338,10 +1411,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         d.ScannerType == baseScannerType);
                 }
 
-                var decidedContainers = await decidedContainersQuery
+                var decisionRows = await decidedContainersQuery.ToListAsync();
+                var decidedContainers = decisionRows
+                    .Where(d => !splitRecordsByContainer.TryGetValue(d.ContainerNumber, out var splitRecord)
+                        || SplitDecisionEligibility.IsDecisionCompatible(splitRecord, d))
                     .Select(d => d.ContainerNumber)
-                    .Distinct()
-                    .ToListAsync();
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
                 // Find containers WITH images that are missing decisions
                 var undecidedContainersWithImages = containersWithImages
@@ -1544,18 +1620,16 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 // multi-container records that haven't picked a split, AND copy the
                 // split-job/result IDs onto the persisted IAD so the audit trail
                 // captures which crop the analyst was looking at.
-                if (arForSplit != null
-                    && arForSplit.IsMultiContainerScan
-                    && string.Equals(arForSplit.SplitStatus, "Ready", StringComparison.OrdinalIgnoreCase)
-                    && arForSplit.SplitResultId == null)
+                if (SplitDecisionEligibility.RequiresSplitResolution(arForSplit))
                 {
                     _logger.LogWarning(
-                        "Decision blocked for {Container}: multi-container scan with split candidates ready but no choice made (jobId={JobId})",
-                        request.ContainerNumber, arForSplit.SplitJobId);
+                        "Decision blocked for {Container}: multi-container scan is not resolved for decision save ({Reason})",
+                        request.ContainerNumber,
+                        SplitDecisionEligibility.DescribeUnresolvedSplit(arForSplit!));
                     return BadRequest(new
                     {
                         success = false,
-                        error = "Multi-container scan: pick the correct split crop (Option A or Option B) or click \"Skip — Use Original Combined Image\" before saving the decision.",
+                        error = "Multi-container scan: pick the correct split crop (Option A or Option B), or click \"Skip — Use Original Combined Image\", before saving the decision.",
                         code = "split_choice_required"
                     });
                 }
@@ -1675,8 +1749,13 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     // SplitJobId/SplitResultId: prefer the values from the live analysisrecord
                     // when present (analyst's current pick) but preserve the existing IAD values
                     // if the analysisrecord doesn't have them (e.g. re-decision on a non-split path).
-                    var effectiveSplitJobId = splitJobIdForIad ?? existing.SplitJobId;
-                    var effectiveSplitResultId = splitResultIdForIad ?? existing.SplitResultId;
+                    var useLiveSplitState = arForSplit?.IsMultiContainerScan == true;
+                    var effectiveSplitJobId = useLiveSplitState
+                        ? splitJobIdForIad
+                        : splitJobIdForIad ?? existing.SplitJobId;
+                    var effectiveSplitResultId = useLiveSplitState
+                        ? splitResultIdForIad
+                        : splitResultIdForIad ?? existing.SplitResultId;
 
                     var updateSql = @"
                         UPDATE ImageAnalysisDecisions
@@ -2392,7 +2471,11 @@ namespace NickScanCentralImagingPortal.API.Controllers
                             // ✅ DATE-BASED GROUPING FIX: Use original GroupIdentifier for validation
                             // ContainerCompletenessStatus and ImageAnalysisDecisions use original GroupIdentifier
                             var validationPassed = await ValidateAllContainersWithImagesHaveDecisionsAsync(
-                                originalGroupIdentifier, groupContainers, groupScannerType, resolvedGroupIdentifier);
+                                originalGroupIdentifier,
+                                groupContainers,
+                                groupScannerType,
+                                resolvedGroupIdentifier,
+                                analysisGroup.Id);
 
                             if (!validationPassed)
                             {
@@ -2720,13 +2803,37 @@ namespace NickScanCentralImagingPortal.API.Controllers
         /// Get decisions for a specific container
         /// </summary>
         [HttpGet("container/{containerNumber}")]
-        public async Task<ActionResult<List<ImageAnalysisDecision>>> GetContainerDecisions(string containerNumber)
+        public async Task<ActionResult<List<ImageAnalysisDecision>>> GetContainerDecisions(
+            string containerNumber,
+            [FromQuery] string? groupIdentifier = null,
+            [FromQuery] string? scannerType = null)
         {
             try
             {
-                var decisions = await _context.ImageAnalysisDecisions
-                    .Where(d => d.ContainerNumber == containerNumber)
+                var query = _context.ImageAnalysisDecisions
+                    .Where(d => d.ContainerNumber == containerNumber);
+
+                if (!string.IsNullOrWhiteSpace(scannerType))
+                {
+                    var scannerBase = BaseScannerType(scannerType) ?? scannerType;
+                    query = query.Where(d =>
+                        d.ScannerType == scannerType
+                        || d.ScannerType == scannerBase
+                        || d.ScannerType.StartsWith(scannerBase + "-"));
+                }
+
+                if (!string.IsNullOrWhiteSpace(groupIdentifier))
+                {
+                    var groupIdentifiers = BuildDecisionGroupIdentifiers(
+                        groupIdentifier,
+                        GroupIdentifierHelper.GetNormalizedGroupIdentifier(groupIdentifier));
+                    query = query.Where(d => d.GroupIdentifier != null && groupIdentifiers.Contains(d.GroupIdentifier));
+                }
+
+                var decisions = await query
                     .OrderBy(d => d.ScannerType)
+                    .ThenByDescending(d => d.UpdatedAt ?? d.ReviewedAt)
+                    .ThenByDescending(d => d.Id)
                     .ToListAsync();
 
                 return Ok(decisions);

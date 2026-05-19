@@ -12,6 +12,7 @@ using NickScanCentralImagingPortal.Core.Entities.Analysis;
 using NickScanCentralImagingPortal.Core.Helpers;
 using NickScanCentralImagingPortal.Core.Models;
 using NickScanCentralImagingPortal.Infrastructure.Data;
+using NickScanCentralImagingPortal.Services.ImageAnalysis;
 using NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent.Evaluators;
 
 namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
@@ -233,6 +234,24 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
             else
                 decision = "Skipped";
 
+            if (decision != "Skipped")
+            {
+                var unresolvedSplitContainers = records
+                    .Where(SplitDecisionEligibility.RequiresSplitResolution)
+                    .Select(r => r.ContainerNumber)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (unresolvedSplitContainers.Any())
+                {
+                    logger.LogInformation(
+                        "[DECISION-AGENT] Skipping auto-decision for group {GroupIdentifier}: split choice required for {Containers}",
+                        group.GroupIdentifier,
+                        string.Join(", ", unresolvedSplitContainers));
+                    decision = "Skipped";
+                }
+            }
+
             // Apply decision if not shadow mode and not skipped
             var createdDecisionIds = new List<int>();
             var depthReached = "None";
@@ -253,7 +272,9 @@ namespace NickScanCentralImagingPortal.Services.ImageAnalysis.DecisionAgent
                         ReviewedBy = "DECISION-AGENT",
                         ReviewedAt = DateTime.UtcNow,
                         GroupIdentifier = group.GroupIdentifier,
-                        IsConsolidated = boeDocuments.Any(b => b.IsConsolidated)
+                        IsConsolidated = boeDocuments.Any(b => b.IsConsolidated),
+                        SplitJobId = record.SplitJobId,
+                        SplitResultId = record.SplitResultId
                     };
                     db.ImageAnalysisDecisions.Add(analysisDecision);
                 }

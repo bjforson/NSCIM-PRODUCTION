@@ -19,12 +19,15 @@ namespace NickScanWebApp.New.Models
 
     public class ImageAnalysisDecisionSummary
     {
+        public int? ImageAnalysisDecisionId { get; set; }
         public string ContainerNumber { get; set; } = "";
         public string Decision { get; set; } = "";
         public string ReviewedBy { get; set; } = "";
         public DateTime ReviewedAt { get; set; }
         public string? Comments { get; set; }
         public string? Tags { get; set; }
+        public Guid? SplitJobId { get; set; }
+        public Guid? SplitResultId { get; set; }
     }
 }
 

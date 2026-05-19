@@ -1734,6 +1734,27 @@ namespace NickScanCentralImagingPortal.API.Controllers
             var records = await _db.AnalysisRecords.Where(r => r.GroupId == gid).ToListAsync();
             var now = DateTime.UtcNow;
 
+            var unresolvedSplitRecords = records
+                .Where(SplitDecisionEligibility.RequiresSplitResolution)
+                .Select(r => r.ContainerNumber)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (unresolvedSplitRecords.Any())
+            {
+                _logger.LogWarning(
+                    "[DEPRECATED] SaveAnalystDecision rejected for group {GroupId}: split choice required for {Containers}",
+                    groupId,
+                    string.Join(", ", unresolvedSplitRecords));
+                return BadRequest(new
+                {
+                    success = false,
+                    error = "One or more split containers still need a split crop choice before analyst decision save.",
+                    code = "split_choice_required",
+                    containers = unresolvedSplitRecords
+                });
+            }
+
             foreach (var r in records)
             {
                 var scannerTypeForRecord = r.ScannerType ?? group.ScannerType ?? string.Empty;
@@ -1772,7 +1793,9 @@ namespace NickScanCentralImagingPortal.API.Controllers
                         ReviewedAt = now,
                         CreatedAt = now,
                         GroupIdentifier = group.GroupIdentifier,
-                        IsConsolidated = string.Equals(group.GroupType, "BL", StringComparison.OrdinalIgnoreCase)
+                        IsConsolidated = string.Equals(group.GroupType, "BL", StringComparison.OrdinalIgnoreCase),
+                        SplitJobId = r.SplitJobId,
+                        SplitResultId = r.SplitResultId
                     };
                     _db.ImageAnalysisDecisions.Add(existing);
                 }
@@ -1782,6 +1805,8 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     existing.ReviewedBy = username;
                     existing.ReviewedAt = now;
                     existing.UpdatedAt = now;
+                    existing.SplitJobId = r.SplitJobId;
+                    existing.SplitResultId = r.SplitResultId;
                 }
 
                 if (req.Tags != null)

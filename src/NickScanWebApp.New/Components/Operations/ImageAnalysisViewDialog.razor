@@ -2430,7 +2430,10 @@
             if (IsConsolidated)
             {
                 // For consolidated, GroupIdentifier = Container Number
-                _allDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(GroupIdentifier) ?? new();
+                _allDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(
+                    GroupIdentifier,
+                    GroupIdentifier,
+                    ScannerType) ?? new();
             }
             else
             {
@@ -2440,7 +2443,10 @@
                 {
                     foreach (var container in Containers)
                     {
-                        var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(container) ?? new();
+                        var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(
+                            container,
+                            GroupIdentifier,
+                            ScannerType) ?? new();
                         _allDecisions.AddRange(containerDecisions);
                     }
                 }
@@ -2868,7 +2874,10 @@
                 }
                 
                 // Check if container has decisions
-                var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(container);
+                var containerDecisions = await DecisionClient.GetContainerDecisionsAsync<ImageAnalysisDecisionDto>(
+                    container,
+                    GroupIdentifier,
+                    ScannerType);
                 
                 if (containerDecisions != null && containerDecisions.Any(d => 
                     d.Decision != "Pending" && !string.IsNullOrEmpty(d.Decision)))
