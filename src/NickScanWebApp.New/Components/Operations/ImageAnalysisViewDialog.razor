@@ -243,7 +243,7 @@
                                 <MudIcon Icon="@Icons.Material.Outlined.ImageSearch" Color="Color.Secondary" Size="Size.Large" />
                                 <MudText Typo="Typo.body2" Color="Color.Secondary">Image tools are waiting to start.</MudText>
                                 <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Image"
-                                           OnClick="EnsureConsolidatedImagesLoadedAsync">
+                                           OnClick="@EnsureConsolidatedImagesLoadedAsync">
                                     Load Image Tools
                                 </MudButton>
                             </MudStack>
@@ -1003,6 +1003,11 @@
         }
 
         await InvokeAsync(StateHasChanged);
+
+        if (!HasImageAnalysisContextFor(GroupIdentifier))
+        {
+            await EnsureImageAnalysisContextLoadedAsync();
+        }
     }
 
     private async Task EnsureContainerImagesLoadedAsync(string container)
@@ -1012,6 +1017,9 @@
             return;
         }
 
+        EnsureContainerShell(container);
+        _containerPanelsExpanded[container] = true;
+
         if (!_containerImagesLoaded.TryGetValue(container, out var loaded) || !loaded)
         {
             Console.WriteLine($"🖼️ [ImageAnalysisViewDialog] Ensuring Images tab is loaded for container {container}");
@@ -1020,6 +1028,11 @@
 
         _containerTabIndices[container] = NestedImagesTabIndex;
         await InvokeAsync(StateHasChanged);
+
+        if (!HasImageAnalysisContextFor(container))
+        {
+            await EnsureImageAnalysisContextLoadedAsync();
+        }
     }
 
     private async Task EnsureConsolidatedIcumsLoadedAsync()
@@ -1148,6 +1161,50 @@
             _containerImagesLoaded[firstContainer] = false;
             _currentProcessingContainer = firstContainer;
         }
+    }
+
+    private void EnsureContainerShell(string container)
+    {
+        if (string.IsNullOrWhiteSpace(container))
+        {
+            return;
+        }
+
+        _containerPanelsExpanded.TryAdd(container, false);
+        _containerTabIndices.TryAdd(container, NestedSummaryTabIndex);
+        _containerImagesLoaded.TryAdd(container, false);
+    }
+
+    private bool HasImageAnalysisContextFor(string? container)
+    {
+        if (_imageAnalysisContext == null)
+        {
+            return false;
+        }
+
+        if (IsConsolidated)
+        {
+            return _imageAnalysisContext.GetConsolidatedContainerContext() != null
+                || !_imageAnalysisContext.ContainerContexts.Any();
+        }
+
+        if (string.IsNullOrWhiteSpace(container))
+        {
+            return _imageAnalysisContext.ContainerContexts.Any();
+        }
+
+        return _imageAnalysisContext.GetContainerContext(container) != null
+            || !_imageAnalysisContext.ContainerContexts.Any();
+    }
+
+    private async Task EnsureImageAnalysisContextLoadedAsync()
+    {
+        if (_isLoadingImageAnalysisContext)
+        {
+            return;
+        }
+
+        await LoadImageAnalysisContext();
     }
 
     private static string NormalizeDataLookupGroupIdentifier(string? groupIdentifier)

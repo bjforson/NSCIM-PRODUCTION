@@ -286,6 +286,7 @@
     private string _currentUsername = "System";
     private Dictionary<string, string> _selectedDecision = new();
     private string _lastContainerNumber = string.Empty;
+    private string _lastSourceResolutionKey = string.Empty;
     private bool _hasLoadedOnce = false;
     private bool _isLoading = false;
     private bool _pendingAutoOpen = false;
@@ -304,10 +305,12 @@
         // Also reload if ContainerNumber changes (for non-consolidated cargo with multiple containers)
         if (!string.IsNullOrEmpty(ContainerNumber))
         {
-            if (ContainerNumber != _lastContainerNumber)
+            var sourceResolutionKey = BuildSourceResolutionKey(SourceScanResolution);
+            if (ContainerNumber != _lastContainerNumber || sourceResolutionKey != _lastSourceResolutionKey)
             {
-                Console.WriteLine($"🎬 [ImageDecisionView] Container changed from '{_lastContainerNumber}' to '{ContainerNumber}', resetting state");
+                Console.WriteLine($"🎬 [ImageDecisionView] Image identity changed for container '{ContainerNumber}', resetting state");
                 _lastContainerNumber = ContainerNumber;
+                _lastSourceResolutionKey = sourceResolutionKey;
                 _hasLoadedOnce = false; // Reset flag when container changes
                 _isLoading = false; // Reset loading flag
                 images = null; // Clear previous images
@@ -374,6 +377,26 @@
                 }
             });
         }
+    }
+
+    private static string BuildSourceResolutionKey(ScanAssetResolution? resolution)
+    {
+        if (resolution == null)
+        {
+            return string.Empty;
+        }
+
+        return string.Join("|", new[]
+        {
+            resolution.AnalysisRecordId?.ToString() ?? string.Empty,
+            resolution.EffectiveSourceScanId ?? string.Empty,
+            resolution.ScanImageAssetId?.ToString() ?? string.Empty,
+            resolution.SplitJobId?.ToString() ?? string.Empty,
+            resolution.SplitResultId?.ToString() ?? string.Empty,
+            resolution.EffectiveSplitSide ?? string.Empty,
+            resolution.Status ?? string.Empty,
+            resolution.ResolutionReason ?? string.Empty
+        });
     }
     
     protected override async Task OnAfterRenderAsync(bool firstRender)
