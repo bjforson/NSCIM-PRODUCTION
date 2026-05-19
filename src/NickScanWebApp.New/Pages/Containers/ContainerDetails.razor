@@ -4,6 +4,7 @@
 @using NickScanWebApp.New.Components.ICUMS
 @using NickScanWebApp.New.Components.Containers
 @using NickScanWebApp.New.Components.CargoGroup
+@using NickScanWebApp.New.Components.Operations
 @using NickScanCentralImagingPortal.Core.DTOs.CargoGroup
 @using NickScanCentralImagingPortal.Core.Models
 @using NickScanWebApp.New.Models
@@ -19,6 +20,9 @@
 @inject NickScanWebApp.Shared.Services.ManualBoeClient ManualBoeClient
 @inject NickScanWebApp.New.Services.CargoGroupService CargoGroupService
 @inject NickScanWebApp.New.Services.ContainerViewPreloader ContainerViewPreloader
+@inject NickScanWebApp.New.Services.SignedImageUrlBuilder UrlBuilder
+@inject IDialogService DialogService
+@inject AuthenticationStateProvider AuthStateProvider
 @inject IJSRuntime JSRuntime
 @inject IConfiguration Configuration
 
@@ -429,6 +433,7 @@
     private CargoType? _cargoType;
     private bool _loadingGroupIdentifier = true;
     private NickScanWebApp.New.Models.ContainerViewContext? _containerContext;
+    private string _currentUser = "anon";
     
     private List<BreadcrumbItem> breadcrumbs = new();
     
@@ -440,6 +445,9 @@
             new BreadcrumbItem("Containers", href: "/containers", icon: Icons.Material.Outlined.Inventory),
             new BreadcrumbItem(ContainerNumber, href: null, disabled: true)
         };
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        _currentUser = authState.User?.Identity?.Name ?? "anon";
         
         // Check if we have a groupIdentifier query parameter (for direct navigation)
         var uri = new Uri(NavigationManager.Uri);
@@ -481,7 +489,7 @@
                 return;
             }
 
-            firstImageThumbnailUrl = _containerContext?.Images?.FirstOrDefault()?.ThumbnailUrl;
+            firstImageThumbnailUrl = SignImagePath(_containerContext?.Images?.FirstOrDefault()?.ThumbnailUrl);
 
             if (fullDetails != null)
             {
@@ -827,9 +835,60 @@
         NavigationManager.NavigateTo($"/images/viewer/{Uri.EscapeDataString(ContainerNumber)}");
     }
     
-    private void OpenFullscreenViewer()
+    private async Task OpenFullscreenViewer()
     {
-        NavigationManager.NavigateTo($"/images/viewer/{ContainerNumber}");
+        var image = _containerContext?.Images?.FirstOrDefault();
+        var imageUrl = SignImagePath(image?.FullImageUrl) ?? SignImagePath(image?.ThumbnailUrl);
+        if (image == null || string.IsNullOrWhiteSpace(imageUrl))
+        {
+            NavigationManager.NavigateTo($"/images/viewer/{ContainerNumber}");
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["ImageUrl"] = imageUrl,
+            ["ContainerNumber"] = ContainerNumber,
+            ["ScannerType"] = image.ImageType,
+            ["ScanDate"] = image.CreatedAt,
+            ["GroupIdentifier"] = _groupIdentifier,
+            ["IsConsolidated"] = _cargoType == CargoType.Consolidated,
+            ["SourceScanResolution"] = image.Resolution
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+            CloseOnEscapeKey = true
+        };
+
+        await DialogService.ShowAsync<ImageAnalysisViewer>(
+            $"Advanced Image Analysis - {image.ImageType} Scanner - {ContainerNumber}",
+            parameters,
+            options);
+    }
+
+    private string? SignImagePath(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("sig=", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        if (url.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(url, _currentUser);
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            return UrlBuilder.Build(uri.PathAndQuery, _currentUser);
+        }
+
+        return url;
     }
     
     private void AnnotateImage()
