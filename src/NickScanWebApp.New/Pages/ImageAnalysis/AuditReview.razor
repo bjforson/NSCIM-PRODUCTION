@@ -491,7 +491,7 @@
             // 2026-05-09 (Phase B / B7 UX): parallelize the three GETs via Task.WhenAll
             // so the post-action refresh takes ~max(call) instead of ~sum(call). Cuts
             // the perceived refresh time roughly 3x for users on slower links.
-            var settingsTask = ManagementClient.GetServiceStateAsync<AnalysisSettingsDto>();
+            var settingsTask = ManagementClient.TryGetServiceStateAsync<AnalysisSettingsDto>();
             var assignmentsTask = WorkflowClient.GetMyAssignmentsAsync<MyAssignmentDto>("Audit");
             // /available returns 400 outside UserClaim mode by design — wrap it so its
             // fault doesn't bubble through Task.WhenAll and abort the whole page-load.

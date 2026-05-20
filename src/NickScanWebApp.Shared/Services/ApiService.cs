@@ -64,6 +64,18 @@ namespace NickScanWebApp.Shared.Services
             };
         }
 
+        private static string BuildFailureMessage(string method, string endpoint, int status, string reason, string raw)
+        {
+            return status switch
+            {
+                401 => $"{method} {endpoint} failed: 401 Unauthorized. Please sign in again.",
+                403 => $"{method} {endpoint} failed: 403 Forbidden. Your account does not have permission for this action.",
+                _ => string.IsNullOrWhiteSpace(raw)
+                    ? $"{method} {endpoint} failed: {status} {reason}".TrimEnd()
+                    : $"{method} {endpoint} failed: {status} {reason}. Body: {raw}".TrimEnd()
+            };
+        }
+
         private async Task EnsureSuccessOrThrowAsync(HttpResponseMessage response, string method, string endpoint)
         {
             if (response.IsSuccessStatusCode)
@@ -88,11 +100,7 @@ namespace NickScanWebApp.Shared.Services
                 _logger.LogError("HTTP {Status} {Method} {Endpoint}. Body: {Body}", status, method, endpoint, raw);
             }
 
-            var message = string.IsNullOrWhiteSpace(raw)
-                ? $"{method} {endpoint} failed: {status} {reason}".TrimEnd()
-                : $"{method} {endpoint} failed: {status} {reason}. Body: {raw}".TrimEnd();
-
-            throw new ApiException(message, status, raw, method, endpoint);
+            throw new ApiException(BuildFailureMessage(method, endpoint, status, reason, raw), status, raw, method, endpoint);
         }
 
         /// <summary>
@@ -101,6 +109,51 @@ namespace NickScanWebApp.Shared.Services
         /// for legacy DI configurations that haven't registered IAuthTokenSource.
         /// </summary>
         private async Task<string?> GetTokenFromProviderAsync()
+        {
+            var token = await TryGetTokenFromProviderOnceAsync();
+            if (!string.IsNullOrEmpty(token))
+            {
+                return token;
+            }
+
+            if (!await IsUserAuthenticatedAsync())
+            {
+                return null;
+            }
+
+            // Blazor Server can render authorized pages before ProtectedSessionStorage
+            // is ready for the current circuit. Give the token source a short chance
+            // to hydrate instead of immediately dispatching a guaranteed 401.
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(150 * attempt));
+                token = await TryGetTokenFromProviderOnceAsync();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    _logger.LogDebug("✅ Token became available after hydration wait (attempt {Attempt})", attempt);
+                    return token;
+                }
+            }
+
+            _logger.LogWarning("Authenticated user state is present, but no API token is available after hydration wait");
+            return null;
+        }
+
+        private async Task<bool> IsUserAuthenticatedAsync()
+        {
+            try
+            {
+                var authState = await _authStateProvider.GetAuthenticationStateAsync();
+                return authState.User?.Identity?.IsAuthenticated == true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Unable to inspect authentication state before API token wait");
+                return false;
+            }
+        }
+
+        private async Task<string?> TryGetTokenFromProviderOnceAsync()
         {
             // 6.07: typed interface path
             if (_tokenSource != null)

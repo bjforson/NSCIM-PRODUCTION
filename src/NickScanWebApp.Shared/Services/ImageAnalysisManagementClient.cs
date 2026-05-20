@@ -25,6 +25,11 @@ public sealed class ImageAnalysisManagementClient
         return _apiService.GetAsync<TState>(ServiceStatePath);
     }
 
+    public Task<TState?> TryGetServiceStateAsync<TState>()
+    {
+        return _apiService.TryGetAsync<TState>(ServiceStatePath);
+    }
+
     public Task<TResponse?> UpdateServiceStateAsync<TRequest, TResponse>(TRequest request)
     {
         return _apiService.PostAsync<TRequest, TResponse>(ServiceStatePath, request);

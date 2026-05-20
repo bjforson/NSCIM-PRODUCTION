@@ -844,7 +844,7 @@
             // Keep settings + my-assignments parallel, then gate the available-groups
             // request on the resolved assignment mode. /available is only valid in
             // UserClaim mode, so avoid creating a guaranteed 400 in Manual/Auto.
-            var settingsTask = ManagementClient.GetServiceStateAsync<AnalysisSettingsDto>();
+            var settingsTask = ManagementClient.TryGetServiceStateAsync<AnalysisSettingsDto>();
             var assignmentsTask = WorkflowClient.GetMyAssignmentsAsync<MyAssignmentDto>(_userRole);
 
             var settings = await settingsTask;
