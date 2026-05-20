@@ -10,6 +10,7 @@
 @inject NickScanWebApp.Shared.Services.FS6000Client FS6000Client
 @inject NickScanWebApp.Shared.Services.AseClient AseClient
 @inject NickScanWebApp.Shared.Services.EagleA25Client EagleA25Client
+@inject NickScanWebApp.Shared.Services.HeimannSmithClient HeimannSmithClient
 
 <PageTitle>NICKSCAN ERP — NSCIS — Scanner Overview</PageTitle>
 
@@ -124,8 +125,8 @@
                             <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_fs6000LastScan)</MudText>
                         </MudStack>
                         <MudStack Row="true" Justify="Justify.SpaceBetween">
-                            <MudText Typo="Typo.body2">Uptime:</MudText>
-                            <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_fs6000Uptime)}")">@FormatUptime(_fs6000Uptime)</MudText>
+                            <MudText Typo="Typo.body2">Health:</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetNullableHealthColor(_fs6000Healthy)">@FormatNullableHealth(_fs6000Healthy)</MudChip>
                         </MudStack>
                     </MudStack>
                     
@@ -169,8 +170,8 @@
                             <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_aseLastScan)</MudText>
                         </MudStack>
                         <MudStack Row="true" Justify="Justify.SpaceBetween">
-                            <MudText Typo="Typo.body2">Uptime:</MudText>
-                            <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_aseUptime)}")">@FormatUptime(_aseUptime)</MudText>
+                            <MudText Typo="Typo.body2">Sync Config:</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetNullableHealthColor(_aseSyncConfigured)">@FormatSyncConfig(_aseSyncConfigured)</MudChip>
                         </MudStack>
                     </MudStack>
                     
@@ -214,8 +215,8 @@
                             <MudText Typo="Typo.body1" Style="font-weight: 500;">@FormatLastScanTime(_hsLastScan)</MudText>
                         </MudStack>
                         <MudStack Row="true" Justify="Justify.SpaceBetween">
-                            <MudText Typo="Typo.body2">Uptime:</MudText>
-                            <MudText Typo="Typo.body1" Style="@($"font-weight: 500; color: {GetUptimeColorString(_hsUptime)}")">@FormatUptime(_hsUptime)</MudText>
+                            <MudText Typo="Typo.body2">Data Source:</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="@GetNullableHealthColor(_hsDataAvailable)">@FormatDataSource(_hsDataAvailable)</MudChip>
                         </MudStack>
                     </MudStack>
                     
@@ -399,10 +400,10 @@
     private DateTime? _hsLastScan = null;
     private DateTime? _eagleA25LastScan = null;
     
-    // Uptime percentages
-    private double _fs6000Uptime = 0;
-    private double _aseUptime = 0;
-    private double _hsUptime = 0;
+    // Live telemetry health flags
+    private bool? _fs6000Healthy;
+    private bool? _aseSyncConfigured;
+    private bool? _hsDataAvailable;
     
     // Average processing time (in minutes)
     private double _avgProcessingTimeMinutes = 0;
@@ -449,8 +450,18 @@
             // Load FS6000 statistics directly
             try
             {
+                var fs6000Telemetry = await FS6000Client.GetTelemetryAsync<FS6000Telemetry>();
+                if (fs6000Telemetry != null)
+                {
+                    _totalFS6000Scans = fs6000Telemetry.TotalScans;
+                    _fs6000Scans = fs6000Telemetry.TodayScans;
+                    _fs6000LastScan = fs6000Telemetry.LastScanTime;
+                    _fs6000Healthy = fs6000Telemetry.SyncHealthy && fs6000Telemetry.IngestionHealthy;
+                    Console.WriteLine($"✅ Loaded FS6000 telemetry: Total={_totalFS6000Scans}, Today={_fs6000Scans}, Healthy={_fs6000Healthy}");
+                }
+
                 var fs6000Stats = await FS6000Client.GetStatisticsAsync<FS6000Statistics>();
-                if (fs6000Stats != null)
+                if (fs6000Stats != null && fs6000Telemetry == null)
                 {
                     _totalFS6000Scans = fs6000Stats.Scans?.Total ?? 0;
                     _fs6000Scans = fs6000Stats.Scans?.Today ?? 0; // Use actual today's scans
@@ -462,7 +473,7 @@
                 {
                     PageSize = 1
                 });
-                if (fs6000ScansResponse?.Data != null && fs6000ScansResponse.Data.Any())
+                if (!_fs6000LastScan.HasValue && fs6000ScansResponse?.Data != null && fs6000ScansResponse.Data.Any())
                 {
                     // API returns scans ordered by ScanTime descending, so First() is most recent
                     _fs6000LastScan = fs6000ScansResponse.Data.OrderByDescending(s => s.ScanTime).First().ScanTime;
@@ -482,12 +493,23 @@
             // Load ASE statistics directly
             try
             {
+                var aseTelemetry = await AseClient.GetTelemetryAsync<AseTelemetry>();
+                if (aseTelemetry != null)
+                {
+                    _totalAseScans = aseTelemetry.TotalScans;
+                    _aseScans = aseTelemetry.TodayScans;
+                    _aseLastScan = aseTelemetry.LastScanTime;
+                    _aseSyncConfigured = aseTelemetry.SyncConfigured;
+                    Console.WriteLine($"✅ Loaded ASE telemetry: Total={_totalAseScans}, Today={_aseScans}, SyncConfigured={_aseSyncConfigured}");
+                }
+
                 var aseStats = await AseClient.GetSyncStatusAsync<AseSyncStatus>();
-                if (aseStats != null)
+                if (aseStats != null && aseTelemetry == null)
                 {
                     _totalAseScans = aseStats.TotalScans;
                     _aseScans = aseStats.TodayScans ?? aseStats.RecentScans24h; // Use TodayScans if available
                     _aseLastScan = aseStats.LastSyncTime; // Use last sync time as proxy for last scan
+                    _aseSyncConfigured = aseStats.Configuration?.CanSync;
                     Console.WriteLine($"✅ Loaded ASE stats: Total={_totalAseScans}, Today={_aseScans}");
                 }
                 
@@ -500,7 +522,7 @@
                     {
                         PageSize = 1
                     });
-                    if (aseScansResponse?.Data != null && aseScansResponse.Data.Any())
+                    if (!_aseLastScan.HasValue && aseScansResponse?.Data != null && aseScansResponse.Data.Any())
                     {
                         // API returns scans ordered by ScanTime descending, so First() is most recent
                         // Ensure we get the most recent scan (in case API doesn't sort)
@@ -530,6 +552,24 @@
             catch (Exception ex)
             {
                 Console.WriteLine($"⚠️ Could not load ASE stats: {ex.Message}");
+            }
+
+            // Load Heimann Smith statistics from the live table when configured.
+            try
+            {
+                var hsStats = await HeimannSmithClient.GetStatisticsAsync();
+                if (hsStats != null)
+                {
+                    _totalHsScans = hsStats.TotalScans;
+                    _hsScans = hsStats.TodayScans;
+                    _hsLastScan = hsStats.LastScan?.ScanDateTime;
+                    _hsDataAvailable = hsStats.TotalScans > 0;
+                    Console.WriteLine($"✅ Loaded Heimann Smith stats: Total={_totalHsScans}, Today={_hsScans}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Could not load Heimann Smith stats: {ex.Message}");
             }
 
             // Load Eagle A25 statistics directly. This scanner is captured but assignment intake stays disabled by config.
@@ -568,11 +608,9 @@
             // Calculate average processing time from recent scans
             await CalculateAverageProcessingTime();
             
-            // Calculate uptime (simplified - would need service start times from API)
-            // For now, estimate based on scan activity
-            _fs6000Uptime = _fs6000Scans > 0 ? 99.5 : 0;
-            _aseUptime = _aseScans > 0 ? 99.5 : 0;
-            _hsUptime = _hsScans > 0 ? 98.0 : 0;
+            _fs6000Healthy ??= _fs6000LastScan.HasValue;
+            _aseSyncConfigured ??= _aseLastScan.HasValue;
+            _hsDataAvailable ??= _hsLastScan.HasValue;
             
             // Calculate yesterday's total scans
             var yesterday = DateTime.Today.AddDays(-1);
@@ -600,8 +638,16 @@
                     var yesterdayStat = aseStats.FirstOrDefault(s => s.Date.Date == yesterday.Date);
                     aseYesterdayCount = yesterdayStat?.Count ?? 0;
                 }
+
+                var hsYesterday = await HeimannSmithClient.GetScansAsync(new NickScanWebApp.Shared.Services.HeimannSmithScanQuery
+                {
+                    PageSize = 1,
+                    StartDate = yesterdayStart,
+                    EndDate = yesterdayEnd
+                });
+                var hsYesterdayCount = hsYesterday?.TotalCount ?? 0;
                 
-                _yesterdayTotalScans = fs6000YesterdayCount + aseYesterdayCount; // HS and Eagle A25 are excluded until daily stats endpoints exist
+                _yesterdayTotalScans = fs6000YesterdayCount + aseYesterdayCount + hsYesterdayCount;
                 Console.WriteLine($"✅ Calculated yesterday's total scans: {_yesterdayTotalScans}");
             }
             catch (Exception ex)
@@ -630,6 +676,31 @@
         public int RecentScans24h { get; set; }
         public int? TodayScans { get; set; } // Added: actual scans today
         public string? SyncStatus { get; set; }
+        public AseConfigurationStatus? Configuration { get; set; }
+    }
+
+    public class AseConfigurationStatus
+    {
+        public bool CanSync { get; set; }
+    }
+
+    public class AseTelemetry
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int RowsWithImages { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public DateTime? LastSyncTime { get; set; }
+        public int? LastSyncedInspectionId { get; set; }
+        public string? LastSyncStatus { get; set; }
+        public int? LastSyncRecordsProcessed { get; set; }
+        public int SuccessfulSyncsToday { get; set; }
+        public int FailedSyncsToday { get; set; }
+        public double? SyncSuccessRatePercent { get; set; }
+        public double? AverageSyncLatencySeconds { get; set; }
+        public bool SyncConfigured { get; set; }
     }
 
     public class EagleA25SyncStatus
@@ -735,6 +806,26 @@
         public DateTime Date { get; set; }
         public int Count { get; set; }
     }
+
+    public class FS6000Telemetry
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int ScansWithImages { get; set; }
+        public int CompletedScans { get; set; }
+        public int FailedScans { get; set; }
+        public double? SuccessRatePercent { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public double? AverageProcessingSeconds { get; set; }
+        public bool SyncHealthy { get; set; }
+        public bool IngestionHealthy { get; set; }
+        public int PendingSyncCount { get; set; }
+        public int FailedSyncCount { get; set; }
+        public int PendingIngestionCount { get; set; }
+        public int FailedIngestionCount { get; set; }
+    }
     
     public class FS6000ScanDto
     {
@@ -828,6 +919,42 @@
                     });
                 }
             }
+
+            var heimannScansResponse = await HeimannSmithClient.GetScansAsync(new NickScanWebApp.Shared.Services.HeimannSmithScanQuery
+            {
+                PageSize = 5
+            });
+            if (heimannScansResponse?.Data != null)
+            {
+                foreach (var scan in heimannScansResponse.Data.OrderByDescending(s => s.ScanDateTime).Take(5))
+                {
+                    _recentActivity.Add(new RecentActivityItem
+                    {
+                        ScannerName = "Heimann Smith Scanner",
+                        ContainerNumber = string.IsNullOrWhiteSpace(scan.ContainerId) ? "Unknown" : scan.ContainerId,
+                        ScanTime = scan.ScanDateTime,
+                        Color = Color.Warning
+                    });
+                }
+            }
+
+            var eagleScansResponse = await EagleA25Client.GetScansAsync(new NickScanWebApp.Shared.Services.EagleA25ScanQuery
+            {
+                PageSize = 5
+            });
+            if (eagleScansResponse?.Data != null)
+            {
+                foreach (var scan in eagleScansResponse.Data.OrderByDescending(s => s.ScanDateUtc).Take(5))
+                {
+                    _recentActivity.Add(new RecentActivityItem
+                    {
+                        ScannerName = "Eagle A25 Scanner",
+                        ContainerNumber = scan.CargoIdentifier ?? scan.AirWaybill ?? scan.Accession.ToString(),
+                        ScanTime = scan.ScanDateUtc,
+                        Color = Color.Secondary
+                    });
+                }
+            }
             
             // Sort by time and take most recent 10
             _recentActivity = _recentActivity
@@ -871,18 +998,18 @@
                 }
                 else
                 {
-                    _avgProcessingTimeMinutes = 2.3; // Default fallback
+                    _avgProcessingTimeMinutes = 0;
                 }
             }
             else
             {
-                _avgProcessingTimeMinutes = 2.3; // Default fallback
+                _avgProcessingTimeMinutes = 0;
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ Could not calculate average processing time: {ex.Message}");
-            _avgProcessingTimeMinutes = 2.3; // Default fallback
+            _avgProcessingTimeMinutes = 0;
         }
     }
     
@@ -910,16 +1037,50 @@
         return FormatRelativeTime(lastScan.Value);
     }
     
-    private string FormatUptime(double uptime)
+    private static string FormatNullableHealth(bool? value)
     {
-        if (uptime <= 0)
-            return "N/A";
-        
-        return $"{uptime:F1}%";
+        return value switch
+        {
+            true => "Healthy",
+            false => "Unhealthy",
+            _ => "Not reported"
+        };
     }
-    
+
+    private static string FormatSyncConfig(bool? value)
+    {
+        return value switch
+        {
+            true => "Configured",
+            false => "Config issue",
+            _ => "Not reported"
+        };
+    }
+
+    private static string FormatDataSource(bool? value)
+    {
+        return value switch
+        {
+            true => "Live",
+            false => "No data",
+            _ => "Not reported"
+        };
+    }
+
+    private static Color GetNullableHealthColor(bool? value)
+    {
+        return value switch
+        {
+            true => Color.Success,
+            false => Color.Error,
+            _ => Color.Default
+        };
+    }
+
     private string FormatProcessingTime(double minutes)
     {
+        if (minutes <= 0)
+            return "N/A";
         if (minutes < 1)
             return $"{(int)(minutes * 60)}s";
         if (minutes < 60)
@@ -927,18 +1088,6 @@
         
         var hours = minutes / 60;
         return $"{hours:F1} hr";
-    }
-    
-    private string GetUptimeColor(double uptime)
-    {
-        if (uptime >= 99.0) return "var(--mud-palette-success)";
-        if (uptime >= 95.0) return "var(--mud-palette-warning)";
-        return "var(--mud-palette-error)";
-    }
-    
-    private string GetUptimeColorString(double uptime)
-    {
-        return GetUptimeColor(uptime);
     }
     
     private string GetSystemStatusText()

@@ -8,6 +8,9 @@ public sealed class FS6000Client
     public const string StatisticsPath = BasePath + "/statistics";
     public const string ScansPath = BasePath + "/scans";
     public const string StatsPath = BasePath + "/stats";
+    public const string SyncStatusPath = BasePath + "/sync/status";
+    public const string IngestionStatusPath = BasePath + "/ingestion/status";
+    public const string TelemetryPath = BasePath + "/telemetry";
 
     private readonly ApiService _apiService;
 
@@ -29,6 +32,21 @@ public sealed class FS6000Client
     public Task<TStats?> GetStatsAsync<TStats>(ScannerDailyStatsQuery? query = null)
     {
         return _apiService.GetAsync<TStats>(BuildStatsPath(query));
+    }
+
+    public Task<TStatus?> GetSyncStatusAsync<TStatus>()
+    {
+        return _apiService.GetAsync<TStatus>(SyncStatusPath);
+    }
+
+    public Task<TStatus?> GetIngestionStatusAsync<TStatus>()
+    {
+        return _apiService.GetAsync<TStatus>(IngestionStatusPath);
+    }
+
+    public Task<TTelemetry?> GetTelemetryAsync<TTelemetry>()
+    {
+        return _apiService.GetAsync<TTelemetry>(TelemetryPath);
     }
 
     public static string BuildScansPath(FS6000ScanQuery? query = null)

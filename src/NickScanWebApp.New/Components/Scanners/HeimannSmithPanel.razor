@@ -1,6 +1,7 @@
-@using NickScanCentralImagingPortal.Core.Constants
 @using MudBlazor
-
+@using NickScanWebApp.Shared.Services
+@inject ISnackbar Snackbar
+@inject HeimannSmithClient HeimannSmithClient
 
 <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
     <MudBreadcrumbs Items="_breadcrumbs" Class="mb-4"></MudBreadcrumbs>
@@ -9,11 +10,16 @@
         <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
             <MudStack Spacing="1">
                 <MudText Typo="Typo.h4">Heimann Smith Scanner</MudText>
-                <MudText Typo="Typo.body2" Color="Color.Secondary">Scanner integration and monitoring</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Live scanner rows from the Heimann Smith data table</MudText>
             </MudStack>
-            <MudChip T="string" Size="Size.Large" Color="Color.Warning" Icon="@Icons.Material.Outlined.Pending">
-                Pending Integration
-            </MudChip>
+            <MudStack Row="true" Spacing="2">
+                <MudChip T="string" Size="Size.Large" Color="@GetStatusColor()" Icon="@GetStatusIcon()">
+                    @GetStatusText()
+                </MudChip>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Refresh" OnClick="LoadData">
+                    Refresh
+                </MudButton>
+            </MudStack>
         </MudStack>
     </MudPaper>
 
@@ -21,92 +27,294 @@
         <MudItem xs="12" md="3">
             <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-warning);">
                 <MudStack Spacing="2">
-                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.Today" Color="Color.Warning" />
-                    </MudStack>
-                    <MudText Typo="Typo.h3">--</MudText>
-                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Today's Scans</MudText>
+                    <MudText Typo="Typo.h3">@_todayScans.ToString("N0")</MudText>
+                    <MudText Typo="Typo.caption">Calendar day UTC</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="3">
-            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+            <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
-                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.Inventory" Color="Color.Info" />
-                    </MudStack>
-                    <MudText Typo="Typo.h3">--</MudText>
-                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Total Scans</MudText>
+                    <MudText Typo="Typo.h3">@_totalScans.ToString("N0")</MudText>
+                    <MudText Typo="Typo.caption">All time</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="3">
-            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+            <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
-                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.Speed" Color="Color.Info" />
-                    </MudStack>
-                    <MudText Typo="Typo.h3">--</MudText>
-                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Pending</MudText>
+                    <MudText Typo="Typo.h3">@_pendingScans.ToString("N0")</MudText>
+                    <MudText Typo="Typo.caption">Processing status</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
         <MudItem xs="12" md="3">
-            <MudPaper Elevation="2" Class="pa-4" Style="border-left: 4px solid var(--mud-palette-info);">
+            <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
-                    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Success Rate</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.CheckCircle" Color="Color.Info" />
-                    </MudStack>
-                    <MudText Typo="Typo.h3">--</MudText>
-                    <MudText Typo="Typo.caption">Awaiting connection</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Last Scan</MudText>
+                    <MudText Typo="Typo.h6">@FormatDateTime(_lastScan?.ScanDateTime)</MudText>
+                    <MudText Typo="Typo.caption">@Display(_lastScan?.ContainerId)</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
     </MudGrid>
 
-    <MudPaper Elevation="2" Class="pa-6" Style="text-align: center;">
-        <MudIcon Icon="@Icons.Material.Outlined.Sensors" Style="font-size: 4rem; opacity: 0.3;" Color="Color.Default" />
-        <MudText Typo="Typo.h5" Class="mt-4" Color="Color.Secondary">Heimann Smith Scanner Integration Pending</MudText>
-        <MudText Typo="Typo.body1" Class="mt-2" Style="max-width: 600px; margin: 0 auto;">
-            The Heimann Smith scanner backend is not yet connected to this portal. 
-            Once the scanner service is integrated, this page will display real-time scan data, 
-            statistics, and container image history.
-        </MudText>
-        <MudStack Row="true" Justify="Justify.Center" Spacing="3" Class="mt-4">
-            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
-                <MudStack Spacing="1" AlignItems="AlignItems.Center">
-                    <MudIcon Icon="@Icons.Material.Outlined.CloudQueue" Color="Color.Info" />
-                    <MudText Typo="Typo.caption">API Endpoint</MudText>
-                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
-                </MudStack>
+    <MudPaper Elevation="2" Class="pa-4">
+        <MudStack Spacing="3">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudText Typo="Typo.h6">All Heimann Smith Scans</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Total: @_totalRecords.ToString("N0") records</MudText>
+            </MudStack>
+
+            <MudPaper Elevation="1" Class="pa-3" Style="background-color: var(--mud-palette-background-grey);">
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="3">
+                        <MudTextField @bind-Value="_searchContainerNumber"
+                                      Label="Container Number"
+                                      Variant="Variant.Outlined"
+                                      Dense="true"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Outlined.Search" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudDatePicker @bind-Date="_startDate" Label="Start Date" Variant="Variant.Outlined" Dense="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudDatePicker @bind-Date="_endDate" Label="End Date" Variant="Variant.Outlined" Dense="true" />
+                    </MudItem>
+                    <MudItem xs="12" md="3">
+                        <MudSelect @bind-Value="_processingStatus" Label="Processing Status" Variant="Variant.Outlined" Dense="true">
+                            <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
+                            <MudSelectItem Value="@("Pending")">Pending</MudSelectItem>
+                            <MudSelectItem Value="@("Completed")">Completed</MudSelectItem>
+                            <MudSelectItem Value="@("Failed")">Failed</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudStack Row="true" Spacing="2">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Outlined.Search" OnClick="SearchScans">
+                                Search
+                            </MudButton>
+                            <MudButton Variant="Variant.Text" Color="Color.Default" StartIcon="@Icons.Material.Outlined.Clear" OnClick="ClearFilters">
+                                Clear Filters
+                            </MudButton>
+                        </MudStack>
+                    </MudItem>
+                </MudGrid>
             </MudPaper>
-            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
-                <MudStack Spacing="1" AlignItems="AlignItems.Center">
-                    <MudIcon Icon="@Icons.Material.Outlined.Storage" Color="Color.Warning" />
-                    <MudText Typo="Typo.caption">Data Pipeline</MudText>
-                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
-                </MudStack>
-            </MudPaper>
-            <MudPaper Elevation="0" Class="pa-3" Style="background: var(--mud-palette-background-grey); border-radius: 8px;">
-                <MudStack Spacing="1" AlignItems="AlignItems.Center">
-                    <MudIcon Icon="@Icons.Material.Outlined.Image" Color="Color.Warning" />
-                    <MudText Typo="Typo.caption">Image Processing</MudText>
-                    <MudText Typo="Typo.body2" Style="font-family: monospace;">Not configured</MudText>
-                </MudStack>
-            </MudPaper>
+
+            <MudDataGrid @ref="_dataGrid"
+                         T="HeimannScanRecord"
+                         Loading="@_isLoading"
+                         Dense="true"
+                         Hover="true"
+                         Striped="true"
+                         Height="600px"
+                         ServerData="@LoadServerData">
+                <Columns>
+                    <PropertyColumn Property="x => x.ContainerId" Title="Container Number" Sortable="true">
+                        <CellTemplate>
+                            <MudText Style="font-family: monospace; font-weight: 500;">@context.Item.ContainerId</MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.ScannerId" Title="Scanner ID" Sortable="true" />
+                    <PropertyColumn Property="x => x.ScanDateTime" Title="Scan Date" Format="yyyy-MM-dd HH:mm:ss" Sortable="true" InitialDirection="SortDirection.Descending" />
+                    <PropertyColumn Property="x => x.ImagePath" Title="Image Path" Sortable="true" />
+                    <TemplateColumn Title="Status">
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Color="@GetProcessingStatusColor(context.Item.ProcessingStatus)">
+                                @context.Item.ProcessingStatus
+                            </MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.ProcessedAt" Title="Processed At" Format="yyyy-MM-dd HH:mm:ss" Sortable="true" />
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="HeimannScanRecord" />
+                </PagerContent>
+            </MudDataGrid>
         </MudStack>
     </MudPaper>
 </MudContainer>
 
 @code {
-    private List<BreadcrumbItem> _breadcrumbs = new()
+    private MudDataGrid<HeimannScanRecord>? _dataGrid;
+    private readonly List<BreadcrumbItem> _breadcrumbs = new()
     {
         new BreadcrumbItem("Home", href: "/", icon: Icons.Material.Outlined.Home),
         new BreadcrumbItem("Scanners", href: "/scanners", icon: Icons.Material.Outlined.Scanner),
         new BreadcrumbItem("Heimann Smith", href: null, disabled: true)
     };
+
+    private bool _isLoading;
+    private int _todayScans;
+    private int _totalScans;
+    private int _pendingScans;
+    private int _totalRecords;
+    private HeimannSmithLastScan? _lastScan;
+
+    private string _searchContainerNumber = "";
+    private DateTime? _startDate = DateTime.Today.AddDays(-30);
+    private DateTime? _endDate = DateTime.Today;
+    private string? _processingStatus;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        _isLoading = true;
+
+        try
+        {
+            var stats = await HeimannSmithClient.GetStatisticsAsync();
+            if (stats != null)
+            {
+                _todayScans = stats.TodayScans;
+                _totalScans = stats.TotalScans;
+                _pendingScans = stats.PendingScans;
+                _lastScan = stats.LastScan;
+            }
+
+            if (_dataGrid != null)
+                await _dataGrid.ReloadServerData();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading Heimann Smith data: {ex.Message}");
+            Snackbar.Add($"Error loading Heimann Smith data: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task<GridData<HeimannScanRecord>> LoadServerData(GridState<HeimannScanRecord> state)
+    {
+        _isLoading = true;
+
+        try
+        {
+            var response = await HeimannSmithClient.GetScansAsync(new HeimannSmithScanQuery
+            {
+                Page = state.Page + 1,
+                PageSize = state.PageSize,
+                ContainerNumber = _searchContainerNumber,
+                ProcessingStatus = _processingStatus,
+                StartDate = _startDate,
+                EndDate = _endDate
+            });
+
+            _totalRecords = response?.TotalCount ?? 0;
+            var items = response?.Data?.Select(s => new HeimannScanRecord
+            {
+                ContainerId = Display(s.ContainerId),
+                ScannerId = Display(s.ScannerId),
+                ScanDateTime = s.ScanDateTime,
+                ImagePath = Display(s.ImagePath),
+                ProcessingStatus = Display(s.ProcessingStatus),
+                ProcessedAt = s.ProcessedAt
+            }).ToList() ?? new List<HeimannScanRecord>();
+
+            return new GridData<HeimannScanRecord> { Items = items, TotalItems = _totalRecords };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading Heimann Smith scans: {ex.Message}");
+            Snackbar.Add($"Error loading Heimann Smith scans: {ex.Message}", Severity.Error);
+            return new GridData<HeimannScanRecord> { Items = new List<HeimannScanRecord>(), TotalItems = 0 };
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SearchScans()
+    {
+        if (_dataGrid != null)
+            await _dataGrid.ReloadServerData();
+    }
+
+    private async Task ClearFilters()
+    {
+        _searchContainerNumber = "";
+        _startDate = DateTime.Today.AddDays(-30);
+        _endDate = DateTime.Today;
+        _processingStatus = null;
+
+        if (_dataGrid != null)
+            await _dataGrid.ReloadServerData();
+    }
+
+    private string GetStatusText()
+    {
+        if (_todayScans > 0 || IsRecent(_lastScan?.ScanDateTime, TimeSpan.FromHours(24)))
+            return "Online";
+        if (_lastScan != null)
+            return "Synced";
+        return "No Data";
+    }
+
+    private Color GetStatusColor()
+    {
+        if (_todayScans > 0 || IsRecent(_lastScan?.ScanDateTime, TimeSpan.FromHours(24)))
+            return Color.Success;
+        if (_lastScan != null)
+            return Color.Warning;
+        return Color.Error;
+    }
+
+    private string GetStatusIcon()
+    {
+        if (_lastScan != null)
+            return Icons.Material.Outlined.CheckCircle;
+        return Icons.Material.Outlined.Error;
+    }
+
+    private static Color GetProcessingStatusColor(string? status)
+    {
+        return status switch
+        {
+            "Completed" => Color.Success,
+            "Pending" => Color.Warning,
+            "Failed" => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "N/A" : value;
+    }
+
+    private static string FormatDateTime(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToString("yyyy-MM-dd HH:mm:ss") : "Not reported";
+    }
+
+    private static bool IsRecent(DateTime? value, TimeSpan window)
+    {
+        if (!value.HasValue)
+            return false;
+
+        var now = value.Value.Kind == DateTimeKind.Local ? DateTime.Now : DateTime.UtcNow;
+        return now - value.Value <= window;
+    }
+
+    private sealed class HeimannScanRecord
+    {
+        public string ContainerId { get; set; } = "";
+        public string ScannerId { get; set; } = "";
+        public DateTime ScanDateTime { get; set; }
+        public string ImagePath { get; set; } = "";
+        public string ProcessingStatus { get; set; } = "";
+        public DateTime? ProcessedAt { get; set; }
+    }
 }

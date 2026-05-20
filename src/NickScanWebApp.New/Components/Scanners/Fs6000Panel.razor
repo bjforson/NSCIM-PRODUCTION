@@ -13,7 +13,7 @@
             <MudStack Spacing="1">
                 <MudText Typo="Typo.h4">FS6000 X-Ray Scanner</MudText>
                 <MudText Typo="Typo.body2" Color="Color.Secondary">
-                    Enhanced monitoring with Month 2.3 fixes (continuous + real-time)
+                    Live scan history and service telemetry where reported by the API
                 </MudText>
             </MudStack>
             <MudStack Row="true" Spacing="2">
@@ -27,12 +27,12 @@
         </MudStack>
     </MudPaper>
 
-    <!-- Month 2.3 Enhancements Status -->
-    <MudAlert Severity="Severity.Success" Class="mb-4">
+    <!-- Live service telemetry -->
+    <MudAlert Severity="@GetServiceTelemetrySeverity()" Class="mb-4">
         <MudStack Spacing="1">
-            <MudText Typo="Typo.body1" Style="font-weight: 500;">✅ Month 2.3 Critical Fixes Active</MudText>
+            <MudText Typo="Typo.body1" Style="font-weight: 500;">FS6000 live service telemetry</MudText>
             <MudText Typo="Typo.body2">
-                Continuous ingestion loop running | FileSystemWatcher active (under 1 sec detection) | Circuit breaker enabled | Container caching optimized (100-1000x faster)
+                Ingestion: @FormatNullableHealth(_ingestionHealthy) | Sync: @FormatNullableHealth(_syncHealthy) | Pending ingestion: @_pendingIngestionCount | Failed ingestion: @_failedIngestionCount
             </MudText>
         </MudStack>
     </MudAlert>
@@ -46,8 +46,8 @@
                         <MudText Typo="Typo.body2" Color="Color.Secondary">Ingestion Service</MudText>
                         <MudIcon Icon="@Icons.Material.Outlined.Loop" Color="Color.Success" />
                     </MudStack>
-                    <MudChip T="string" Color="@(_ingestionRunning ? Color.Success : Color.Error)" Size="Size.Small" Icon="@(_ingestionRunning ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Error)">
-                        @(_ingestionRunning ? "Running Continuously" : "Stopped")
+                    <MudChip T="string" Color="@GetNullableHealthColor(_ingestionHealthy)" Size="Size.Small" Icon="@GetNullableHealthIcon(_ingestionHealthy)">
+                        @FormatNullableHealth(_ingestionHealthy)
                     </MudChip>
                     <MudText Typo="Typo.caption">Files processed: @_filesProcessed</MudText>
                 </MudStack>
@@ -57,13 +57,13 @@
             <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
                     <MudStack Row="true" Justify="Justify.SpaceBetween">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">FileSystemWatcher</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.RemoveRedEye" Color="Color.Success" />
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Watcher Telemetry</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.RemoveRedEye" Color="Color.Default" />
                     </MudStack>
-                    <MudChip T="string" Color="@(_fileWatcherActive ? Color.Success : Color.Error)" Size="Size.Small" Icon="@(_fileWatcherActive ? Icons.Material.Outlined.CheckCircle : Icons.Material.Outlined.Error)">
-                        @(_fileWatcherActive ? "Active (Real-Time)" : "Inactive")
+                    <MudChip T="string" Color="Color.Default" Size="Size.Small" Icon="@Icons.Material.Outlined.HelpOutline">
+                        Not reported
                     </MudChip>
-                    <MudText Typo="Typo.caption">Detection: @FormatDetectionTime(_fileWatcherDetectionTime)</MudText>
+                    <MudText Typo="Typo.caption">No live watcher endpoint available</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
@@ -71,13 +71,13 @@
             <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
                     <MudStack Row="true" Justify="Justify.SpaceBetween">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Circuit Breaker</MudText>
-                        <MudIcon Icon="@Icons.Material.Outlined.Shield" Color="Color.Success" />
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Sync Service</MudText>
+                        <MudIcon Icon="@Icons.Material.Outlined.Sync" Color="@GetNullableHealthColor(_syncHealthy)" />
                     </MudStack>
-                    <MudChip T="string" Color="@(_circuitBreakerClosed ? Color.Success : Color.Error)" Size="Size.Small">
-                        @(_circuitBreakerClosed ? "Closed (Healthy)" : "Open (Tripped)")
+                    <MudChip T="string" Color="@GetNullableHealthColor(_syncHealthy)" Size="Size.Small">
+                        @FormatNullableHealth(_syncHealthy)
                     </MudChip>
-                    <MudText Typo="Typo.caption">Failures: @_circuitBreakerFailures/10</MudText>
+                    <MudText Typo="Typo.caption">Pending: @_pendingSyncCount | Failed: @_failedSyncCount</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
@@ -143,9 +143,9 @@
         <MudItem xs="12" md="3">
             <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
-                    <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
-                    <MudText Typo="Typo.h3">@FormatUptime(_uptime)</MudText>
-                    <MudText Typo="Typo.caption">Last 30 days</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Success Rate</MudText>
+                    <MudText Typo="Typo.h3">@FormatPercent(_successRatePercent)</MudText>
+                    <MudText Typo="Typo.caption">Completed scans / total scans</MudText>
                 </MudStack>
             </MudPaper>
         </MudItem>
@@ -228,7 +228,17 @@
                             <MudText Style="font-family: monospace; font-weight: 500;">@context.Item.ContainerNumber</MudText>
                         </CellTemplate>
                     </PropertyColumn>
+                    <PropertyColumn Property="x => x.PicNumber" Title="Pic Number" Sortable="true" />
                     <PropertyColumn Property="x => x.ScanDate" Title="Scan Date" Format="yyyy-MM-dd HH:mm:ss" Sortable="true" InitialDirection="SortDirection.Descending" />
+                    <PropertyColumn Property="x => x.TruckPlate" Title="Truck Plate" Sortable="true" />
+                    <PropertyColumn Property="x => x.ScanResult" Title="Result" Sortable="true" />
+                    <TemplateColumn Title="Images">
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Color="@(context.Item.HasImage ? Color.Success : Color.Warning)">
+                                @(context.Item.HasImage ? $"{context.Item.ImageCount} image(s)" : "No image")
+                            </MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
                     <PropertyColumn Property="x => x.SyncStatus" Title="Sync Status" Sortable="true">
                         <CellTemplate>
                             <MudChip T="string" 
@@ -279,13 +289,14 @@
     private int _cachedContainers = 0;
     
     // Status and metrics
-    private double _uptime = 0;
     private double _avgDetectionTimeSeconds = 0;
-    private bool _ingestionRunning = true; // Default to true, will be updated from API
-    private bool _fileWatcherActive = true; // Default to true, will be updated from API
-    private double _fileWatcherDetectionTime = 0.5; // Default 0.5 seconds
-    private bool _circuitBreakerClosed = true; // Default to true
-    private int _circuitBreakerFailures = 0;
+    private double? _successRatePercent;
+    private bool? _ingestionHealthy;
+    private bool? _syncHealthy;
+    private int _pendingIngestionCount;
+    private int _failedIngestionCount;
+    private int _pendingSyncCount;
+    private int _failedSyncCount;
 
     protected override async Task OnInitializedAsync()
     {
@@ -315,6 +326,39 @@
                 _todayScans = stats.Scans?.Today ?? 0; // Use actual today's scans based on ScanTime
                 Console.WriteLine($"✅ Loaded FS6000 stats: Total={_totalScans}, Files={_filesProcessed}, Today={_todayScans}");
             }
+
+            var telemetry = await FS6000Client.GetTelemetryAsync<FS6000Telemetry>();
+            if (telemetry != null)
+            {
+                _totalScans = telemetry.TotalScans;
+                _todayScans = telemetry.TodayScans;
+                _cachedContainers = telemetry.TotalScans;
+                _lastScanTime = telemetry.LastScanTime;
+                _avgDetectionTimeSeconds = telemetry.AverageProcessingSeconds ?? 0;
+                _successRatePercent = telemetry.SuccessRatePercent;
+                _ingestionHealthy = telemetry.IngestionHealthy;
+                _syncHealthy = telemetry.SyncHealthy;
+                _pendingIngestionCount = telemetry.PendingIngestionCount;
+                _failedIngestionCount = telemetry.FailedIngestionCount;
+                _pendingSyncCount = telemetry.PendingSyncCount;
+                _failedSyncCount = telemetry.FailedSyncCount;
+            }
+
+            var ingestionStatus = await FS6000Client.GetIngestionStatusAsync<FS6000IngestionStatus>();
+            if (ingestionStatus != null && telemetry == null)
+            {
+                _ingestionHealthy = ingestionStatus.IsHealthy;
+                _pendingIngestionCount = ingestionStatus.PendingIngestionCount;
+                _failedIngestionCount = ingestionStatus.FailedIngestionCount;
+            }
+
+            var syncStatus = await FS6000Client.GetSyncStatusAsync<FS6000SyncStatus>();
+            if (syncStatus != null && telemetry == null)
+            {
+                _syncHealthy = syncStatus.IsHealthy;
+                _pendingSyncCount = syncStatus.PendingSyncCount;
+                _failedSyncCount = syncStatus.FailedSyncCount;
+            }
             
             // Load recent scans from FS6000 API
             var scansResponse = await FS6000Client.GetScansAsync<FS6000ScanResponse>(new NickScanWebApp.Shared.Services.FS6000ScanQuery
@@ -327,9 +371,12 @@
                 _recentScans = scansResponse.Data.Select(s => new Fs6000ScanRecord
                 {
                     ContainerNumber = s.ContainerNumber ?? "Unknown",
+                    PicNumber = Display(s.PicNumber),
                     ScanDate = s.ScanTime,
-                    Origin = s.Origin ?? "N/A",
-                    Destination = s.Destination ?? "N/A",
+                    TruckPlate = Display(s.TruckPlate),
+                    ScanResult = Display(s.ScanResult),
+                    HasImage = s.HasImage,
+                    ImageCount = s.ImageCount,
                     SyncStatus = s.SyncStatus ?? "Unknown"
                 }).ToList();
                 
@@ -340,10 +387,8 @@
             _cachedContainers = _totalScans;
             
             // Calculate average detection time from recent scans
-            await CalculateDetectionTime();
-            
-            // Calculate uptime (simplified - would need service start time from API)
-            _uptime = _todayScans > 0 ? 99.5 : 0;
+            if (telemetry == null)
+                await CalculateDetectionTime();
             
             // Calculate yesterday's scans
             var yesterday = DateTime.Today.AddDays(-1);
@@ -436,9 +481,12 @@
                 var items = response.Data?.Select(s => new Fs6000ScanRecord
                 {
                     ContainerNumber = s.ContainerNumber ?? "Unknown",
+                    PicNumber = Display(s.PicNumber),
                     ScanDate = s.ScanTime,
-                    Origin = s.Origin ?? "N/A",
-                    Destination = s.Destination ?? "N/A",
+                    TruckPlate = Display(s.TruckPlate),
+                    ScanResult = Display(s.ScanResult),
+                    HasImage = s.HasImage,
+                    ImageCount = s.ImageCount,
                     SyncStatus = s.SyncStatus ?? "Unknown"
                 }).ToList() ?? new List<Fs6000ScanRecord>();
                 
@@ -482,6 +530,7 @@
             
         return syncStatus switch
         {
+            "Completed" => Color.Success,
             "Synced" => Color.Success,
             "Pending" => Color.Warning,
             "Failed" => Color.Error,
@@ -493,9 +542,12 @@
     public class Fs6000ScanRecord
     {
         public string ContainerNumber { get; set; } = "";
+        public string PicNumber { get; set; } = "";
         public DateTime ScanDate { get; set; }
-        public string Origin { get; set; } = "";
-        public string Destination { get; set; } = "";
+        public string TruckPlate { get; set; } = "";
+        public string ScanResult { get; set; } = "";
+        public bool HasImage { get; set; }
+        public int ImageCount { get; set; }
         public string SyncStatus { get; set; } = "";
     }
     
@@ -513,9 +565,48 @@
         public Guid Id { get; set; }
         public string? ContainerNumber { get; set; }
         public DateTime ScanTime { get; set; }
-        public string? Origin { get; set; }
-        public string? Destination { get; set; }
+        public string? PicNumber { get; set; }
+        public string? TruckPlate { get; set; }
+        public string? OperatorId { get; set; }
+        public string? ScanResult { get; set; }
+        public string? GoodsDescription { get; set; }
+        public bool HasImage { get; set; }
+        public int ImageCount { get; set; }
         public string? SyncStatus { get; set; }
+    }
+
+    public class FS6000IngestionStatus
+    {
+        public bool IsHealthy { get; set; }
+        public int PendingIngestionCount { get; set; }
+        public int FailedIngestionCount { get; set; }
+    }
+
+    public class FS6000SyncStatus
+    {
+        public bool IsHealthy { get; set; }
+        public int PendingSyncCount { get; set; }
+        public int FailedSyncCount { get; set; }
+    }
+
+    public class FS6000Telemetry
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int ScansWithImages { get; set; }
+        public int CompletedScans { get; set; }
+        public int FailedScans { get; set; }
+        public double? SuccessRatePercent { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public double? AverageProcessingSeconds { get; set; }
+        public bool SyncHealthy { get; set; }
+        public bool IngestionHealthy { get; set; }
+        public int PendingSyncCount { get; set; }
+        public int FailedSyncCount { get; set; }
+        public int PendingIngestionCount { get; set; }
+        public int FailedIngestionCount { get; set; }
     }
     
     public class FS6000Statistics
@@ -604,18 +695,18 @@
                 }
                 else
                 {
-                    _avgDetectionTimeSeconds = 1.0; // Default fallback
+                    _avgDetectionTimeSeconds = 0;
                 }
             }
             else
             {
-                _avgDetectionTimeSeconds = 1.0; // Default fallback
+                _avgDetectionTimeSeconds = 0;
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ Could not calculate detection time: {ex.Message}");
-            _avgDetectionTimeSeconds = 1.0; // Default fallback
+            _avgDetectionTimeSeconds = 0;
         }
     }
     
@@ -640,15 +731,10 @@
         return Icons.Material.Outlined.Error;
     }
     
-    private string FormatUptime(double uptime)
-    {
-        if (uptime <= 0)
-            return "N/A";
-        return $"{uptime:F1}%";
-    }
-    
     private string FormatDetectionSpeed(double seconds)
     {
+        if (seconds <= 0)
+            return "N/A";
         if (seconds < 1)
             return $"< 1s";
         if (seconds < 60)
@@ -660,9 +746,62 @@
     
     private string FormatDetectionTime(double seconds)
     {
+        if (seconds <= 0)
+            return "Not reported";
         if (seconds < 1)
             return $"< 1 second";
         return $"< {(int)seconds} seconds";
+    }
+
+    private static string FormatPercent(double? value)
+    {
+        return value.HasValue ? $"{value.Value:F1}%" : "N/A";
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "N/A" : value;
+    }
+
+    private static string FormatNullableHealth(bool? value)
+    {
+        return value switch
+        {
+            true => "Healthy",
+            false => "Unhealthy",
+            _ => "Not reported"
+        };
+    }
+
+    private static Color GetNullableHealthColor(bool? value)
+    {
+        return value switch
+        {
+            true => Color.Success,
+            false => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private static string GetNullableHealthIcon(bool? value)
+    {
+        return value switch
+        {
+            true => Icons.Material.Outlined.CheckCircle,
+            false => Icons.Material.Outlined.Error,
+            _ => Icons.Material.Outlined.HelpOutline
+        };
+    }
+
+    private Severity GetServiceTelemetrySeverity()
+    {
+        if (_ingestionHealthy == false || _syncHealthy == false)
+            return Severity.Error;
+
+        if (_ingestionHealthy == true || _syncHealthy == true)
+            return Severity.Success;
+
+        return Severity.Info;
     }
     
     private DateTime? _lastScanTime = null;

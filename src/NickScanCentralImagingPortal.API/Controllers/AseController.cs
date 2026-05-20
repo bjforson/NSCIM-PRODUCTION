@@ -24,7 +24,7 @@ namespace NickScanCentralImagingPortal.API.Controllers
         }
 
         [HttpGet("scans")]
-        public async Task<ActionResult<IEnumerable<AseScan>>> GetScans(
+        public async Task<ActionResult<object>> GetScans(
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 50,
             [FromQuery] string? containerNumber = null,
@@ -56,6 +56,22 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     .OrderByDescending(s => s.ScanTime)
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
+                    .Select(s => new AseScanDto
+                    {
+                        Id = s.Id,
+                        InspectionId = s.InspectionId,
+                        ScanTime = s.ScanTime,
+                        InspectionUuid = s.InspectionUuid,
+                        ContainerNumber = s.ContainerNumber,
+                        TruckPlate = s.TruckPlate,
+                        ImageDisplayName = s.ImageDisplayName,
+                        SyncedAt = s.SyncedAt,
+                        CreatedAt = s.CreatedAt,
+                        UpdatedAt = s.UpdatedAt,
+                        OriginalScanRecordId = s.OriginalScanRecordId,
+                        HasImage = s.ScanImage != null,
+                        Status = s.ScanImage != null ? "Synced + image" : "Synced metadata"
+                    })
                     .ToListAsync();
 
                 return Ok(new
@@ -173,6 +189,86 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogError(ex, "Error retrieving ASE sync status");
                 return StatusCode(500, "Internal server error");
+            }
+        }
+
+        [HttpGet("telemetry")]
+        public async Task<ActionResult<AseTelemetryDto>> GetTelemetry()
+        {
+            try
+            {
+                var nowUtc = DateTime.UtcNow;
+                var todayStartUtc = DateTime.SpecifyKind(nowUtc.Date, DateTimeKind.Utc);
+                var todayEndUtc = todayStartUtc.AddDays(1);
+                var hourStartUtc = nowUtc.AddHours(-1);
+
+                var lastScan = await _context.AseScans
+                    .OrderByDescending(s => s.ScanTime)
+                    .Select(s => new { s.ScanTime, s.ContainerNumber })
+                    .FirstOrDefaultAsync();
+
+                var lastSync = await _context.AseSyncLogs
+                    .OrderByDescending(x => x.LastSyncTime)
+                    .FirstOrDefaultAsync();
+
+                var totalScans = await _context.AseScans.CountAsync();
+                var todayScans = await _context.AseScans
+                    .CountAsync(s => s.ScanTime >= todayStartUtc && s.ScanTime < todayEndUtc);
+                var scansThisHour = await _context.AseScans
+                    .CountAsync(s => s.ScanTime >= hourStartUtc);
+                var rowsWithImages = await _context.AseScans
+                    .CountAsync(s => s.ScanImage != null);
+
+                var syncLogsToday = await _context.AseSyncLogs
+                    .Where(s => s.LastSyncTime >= todayStartUtc && s.LastSyncTime < todayEndUtc)
+                    .Select(s => new { s.SyncStatus, s.RecordsProcessed })
+                    .ToListAsync();
+                var successfulSyncsToday = syncLogsToday.Count(s => string.Equals(s.SyncStatus, "Completed", StringComparison.OrdinalIgnoreCase));
+                var failedSyncsToday = syncLogsToday.Count - successfulSyncsToday;
+
+                var latencyRows = await _context.AseScans
+                    .Where(s => s.SyncedAt > s.ScanTime)
+                    .OrderByDescending(s => s.SyncedAt)
+                    .Take(100)
+                    .Select(s => new { s.ScanTime, s.SyncedAt })
+                    .ToListAsync();
+                var averageSyncLatencySeconds = latencyRows.Count == 0
+                    ? (double?)null
+                    : latencyRows.Average(s => (s.SyncedAt - s.ScanTime).TotalSeconds);
+
+                var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
+                var aseConfig = configuration.GetSection("ASE");
+                var connectionString = aseConfig["ConnectionString"] ?? "";
+                var enableRealTimeSync = aseConfig.GetValue<bool>("EnableRealTimeSync", true);
+                var hasPasswordEnvVar = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NICKSCAN_ASE_PASSWORD"));
+                var hasPasswordPlaceholder = connectionString.Contains("***USE_ENV_VAR") || connectionString.Contains("***USE_ENV");
+                var canSync = enableRealTimeSync && !hasPasswordPlaceholder && hasPasswordEnvVar && !string.IsNullOrWhiteSpace(connectionString);
+
+                return Ok(new AseTelemetryDto
+                {
+                    TotalScans = totalScans,
+                    TodayScans = todayScans,
+                    ScansThisHour = scansThisHour,
+                    RowsWithImages = rowsWithImages,
+                    LastScanTime = lastScan?.ScanTime,
+                    LastScanContainerNumber = lastScan?.ContainerNumber,
+                    LastSyncTime = lastSync?.LastSyncTime,
+                    LastSyncedInspectionId = lastSync?.LastSyncedInspectionId,
+                    LastSyncStatus = lastSync?.SyncStatus,
+                    LastSyncRecordsProcessed = lastSync?.RecordsProcessed,
+                    SuccessfulSyncsToday = successfulSyncsToday,
+                    FailedSyncsToday = failedSyncsToday,
+                    SyncSuccessRatePercent = syncLogsToday.Count > 0
+                        ? successfulSyncsToday / (double)syncLogsToday.Count * 100
+                        : null,
+                    AverageSyncLatencySeconds = averageSyncLatencySeconds,
+                    SyncConfigured = canSync
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving ASE telemetry");
+                return StatusCode(500, new { error = "Failed to load ASE telemetry" });
             }
         }
 
@@ -493,6 +589,42 @@ namespace NickScanCentralImagingPortal.API.Controllers
                 return StatusCode(500, new { error = "Failed to load ASE stats" });
             }
         }
+    }
+
+    public class AseScanDto
+    {
+        public Guid Id { get; set; }
+        public int InspectionId { get; set; }
+        public DateTime ScanTime { get; set; }
+        public string InspectionUuid { get; set; } = string.Empty;
+        public string? ContainerNumber { get; set; }
+        public string? TruckPlate { get; set; }
+        public string? ImageDisplayName { get; set; }
+        public DateTime SyncedAt { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+        public int? OriginalScanRecordId { get; set; }
+        public bool HasImage { get; set; }
+        public string Status { get; set; } = "Synced metadata";
+    }
+
+    public class AseTelemetryDto
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int RowsWithImages { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public DateTime? LastSyncTime { get; set; }
+        public int? LastSyncedInspectionId { get; set; }
+        public string? LastSyncStatus { get; set; }
+        public int? LastSyncRecordsProcessed { get; set; }
+        public int SuccessfulSyncsToday { get; set; }
+        public int FailedSyncsToday { get; set; }
+        public double? SyncSuccessRatePercent { get; set; }
+        public double? AverageSyncLatencySeconds { get; set; }
+        public bool SyncConfigured { get; set; }
     }
 }
 

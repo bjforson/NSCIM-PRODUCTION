@@ -8,6 +8,7 @@ public sealed class AseClient
     public const string SyncStatusPath = BasePath + "/sync-status";
     public const string ScansPath = BasePath + "/scans";
     public const string StatsPath = BasePath + "/stats";
+    public const string TelemetryPath = BasePath + "/telemetry";
 
     private readonly ApiService _apiService;
 
@@ -29,6 +30,11 @@ public sealed class AseClient
     public Task<TStats?> GetStatsAsync<TStats>()
     {
         return _apiService.GetAsync<TStats>(StatsPath);
+    }
+
+    public Task<TTelemetry?> GetTelemetryAsync<TTelemetry>()
+    {
+        return _apiService.GetAsync<TTelemetry>(TelemetryPath);
     }
 
     public static string BuildScansPath(AseScanQuery? query = null)

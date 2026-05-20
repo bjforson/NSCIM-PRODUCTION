@@ -74,10 +74,10 @@
             <MudPaper Elevation="2" Class="pa-4">
                 <MudStack Spacing="2">
                     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
-                        <MudText Typo="Typo.body2" Color="Color.Secondary">Uptime</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Avg Sync Latency</MudText>
                         <MudIcon Icon="@Icons.Material.Outlined.Speed" Color="Color.Info" />
                     </MudStack>
-                    <MudText Typo="Typo.h3">@FormatUptime(_uptime)</MudText>
+                    <MudText Typo="Typo.h3">@FormatProcessingTime(_avgProcessingTimeMinutes)</MudText>
                     <MudText Typo="Typo.caption">Last 30 days</MudText>
                 </MudStack>
             </MudPaper>
@@ -104,20 +104,20 @@
                 <MudSimpleTable Dense="true" Hover="true">
                     <tbody>
                         <tr>
-                            <td style="font-weight: 500; width: 200px;">Database Connection</td>
-                            <td><MudChip T="string" Size="Size.Small" Color="Color.Success">Connected</MudChip></td>
+                            <td style="font-weight: 500; width: 200px;">API Data Source</td>
+                            <td><MudChip T="string" Size="Size.Small" Color="@(_apiDataAvailable ? Color.Success : Color.Error)">@(_apiDataAvailable ? "Live" : "Unavailable")</MudChip></td>
                         </tr>
                         <tr>
-                            <td style="font-weight: 500;">Sync Service</td>
-                            <td><MudChip T="string" Size="Size.Small" Color="@(_syncServiceRunning ? Color.Success : Color.Error)">@(_syncServiceRunning ? "Running" : "Stopped")</MudChip></td>
+                            <td style="font-weight: 500;">Sync Configuration</td>
+                            <td><MudChip T="string" Size="Size.Small" Color="@GetSyncConfiguredColor(_syncConfigured)">@FormatSyncConfigured(_syncConfigured)</MudChip></td>
                         </tr>
                         <tr>
                             <td style="font-weight: 500;">Last Sync</td>
-                            <td>@_lastSync.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@FormatDateTime(_lastSync)</td>
                         </tr>
                         <tr>
                             <td style="font-weight: 500;">Last Scan</td>
-                            <td>@_lastScan.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@FormatDateTime(_lastScan)</td>
                         </tr>
                     </tbody>
                 </MudSimpleTable>
@@ -126,19 +126,19 @@
                 <MudSimpleTable Dense="true" Hover="true">
                     <tbody>
                         <tr>
-                            <td style="font-weight: 500; width: 200px;">Service Uptime</td>
-                            <td>@_serviceUptime hours</td>
+                            <td style="font-weight: 500; width: 200px;">Sync Status</td>
+                            <td>@Display(_syncStatus)</td>
                         </tr>
                         <tr>
                             <td style="font-weight: 500;">Scans This Hour</td>
                             <td>@_scansThisHour</td>
                         </tr>
                         <tr>
-                            <td style="font-weight: 500;">Failed Scans Today</td>
-                            <td><MudText Color="@(_failedToday > 0 ? Color.Error : Color.Success)">@_failedToday</MudText></td>
+                            <td style="font-weight: 500;">Rows With Images</td>
+                            <td>@_imageRows.ToString("N0")</td>
                         </tr>
                         <tr>
-                            <td style="font-weight: 500;">Success Rate</td>
+                            <td style="font-weight: 500;">Sync Success Rate</td>
                             <td><MudText Color="@GetSuccessRateColor(_successRate)" Style="font-weight: 500;">@FormatSuccessRate(_successRate)</MudText></td>
                         </tr>
                     </tbody>
@@ -213,13 +213,16 @@
                             <MudText Style="font-family: monospace; font-weight: 500;">@context.Item.ContainerNumber</MudText>
                         </CellTemplate>
                     </PropertyColumn>
+                    <PropertyColumn Property="x => x.InspectionId" Title="Inspection ID" Sortable="true" />
                     <PropertyColumn Property="x => x.ScanDate" Title="Scan Date" Format="yyyy-MM-dd HH:mm:ss" Sortable="true" InitialDirection="SortDirection.Descending" />
-                    <PropertyColumn Property="x => x.Origin" Title="Origin" Sortable="true" />
-                    <PropertyColumn Property="x => x.Destination" Title="Destination" Sortable="true" />
-                    <PropertyColumn Property="x => x.TruckId" Title="Truck ID" Sortable="true" />
+                    <PropertyColumn Property="x => x.TruckPlate" Title="Truck Plate" Sortable="true" />
+                    <PropertyColumn Property="x => x.ImageDisplayName" Title="Image" Sortable="true" />
+                    <PropertyColumn Property="x => x.SyncedAt" Title="Synced At" Format="yyyy-MM-dd HH:mm:ss" Sortable="true" />
                     <TemplateColumn Title="Status">
                         <CellTemplate>
-                            <MudChip T="string" Size="Size.Small" Color="Color.Success">Completed</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="@GetScanStatusColor(context.Item)">
+                                @context.Item.Status
+                            </MudChip>
                         </CellTemplate>
                     </TemplateColumn>
                     <TemplateColumn Title="Actions">
@@ -271,17 +274,20 @@
     private int _todayScans = 0;
     private int _yesterdayScans = 0;
     private int _totalScans = 0;
-    private DateTime _lastSync = DateTime.Now;
-    private DateTime _lastScan = DateTime.Now;
-    private int _serviceUptime = 0;
+    private DateTime? _lastSync;
+    private DateTime? _lastScan;
     private int _scansThisHour = 0;
     private int _failedToday = 0;
+    private int _imageRows = 0;
+    private bool _telemetryLoaded = false;
     
     // Metrics
-    private double _uptime = 0;
     private double _avgProcessingTimeMinutes = 0;
     private double _successRate = 0;
-    private bool _syncServiceRunning = true; // Default to true
+    private bool _apiDataAvailable = false;
+    private bool? _syncServiceRunning;
+    private bool? _syncConfigured;
+    private string? _syncStatus;
     
     // Chart data
     private List<ChartSeries> _chartSeries = new();
@@ -305,14 +311,41 @@
         try
         {
             Console.WriteLine("🔍 Loading ASE scanner data from API...");
-            
+
+            var telemetry = await AseClient.GetTelemetryAsync<AseTelemetry>();
+            if (telemetry != null)
+            {
+                _telemetryLoaded = true;
+                _apiDataAvailable = true;
+                _totalScans = telemetry.TotalScans;
+                _todayScans = telemetry.TodayScans;
+                _lastScan = telemetry.LastScanTime;
+                _lastSync = telemetry.LastSyncTime;
+                _syncStatus = telemetry.LastSyncStatus;
+                _syncConfigured = telemetry.SyncConfigured;
+                _scansThisHour = telemetry.ScansThisHour;
+                _imageRows = telemetry.RowsWithImages;
+                _failedToday = telemetry.FailedSyncsToday;
+                _successRate = telemetry.SyncSuccessRatePercent ?? (telemetry.LastSyncStatus == "Completed" ? 100 : 0);
+                _avgProcessingTimeMinutes = telemetry.AverageSyncLatencySeconds.HasValue
+                    ? telemetry.AverageSyncLatencySeconds.Value / 60
+                    : 0;
+            }
+
             // Load ASE sync status and statistics
             var syncStatus = await AseClient.GetSyncStatusAsync<AseSyncStatus>();
             if (syncStatus != null)
             {
-                _totalScans = syncStatus.TotalScans;
-                _todayScans = syncStatus.TodayScans ?? syncStatus.RecentScans24h; // Use TodayScans (actual scans today)
-                _lastSync = syncStatus.LastSyncTime ?? DateTime.Now;
+                _apiDataAvailable = true;
+                if (!_telemetryLoaded)
+                {
+                    _totalScans = syncStatus.TotalScans;
+                    _todayScans = syncStatus.TodayScans ?? syncStatus.RecentScans24h; // Use TodayScans (actual scans today)
+                    _lastSync = syncStatus.LastSyncTime;
+                    _syncStatus = syncStatus.SyncStatus;
+                    _syncConfigured = syncStatus.Configuration?.CanSync;
+                }
+                _syncServiceRunning = syncStatus.Configuration?.CanSync == true || IsRecent(_lastSync, TimeSpan.FromHours(2));
                 Console.WriteLine($"✅ Loaded ASE sync status: Total={_totalScans}, Today={_todayScans}");
             }
             
@@ -325,16 +358,23 @@
             {
                 _recentScans = scansResponse.Data.Select(s => new AseScanRecord
                 {
+                    InspectionId = s.InspectionId,
                     ContainerNumber = s.ContainerNumber ?? "Unknown",
                     ScanDate = s.ScanTime,
-                    Origin = s.Origin ?? "N/A",
-                    Destination = s.Destination ?? "N/A",
-                    TruckId = s.TruckID ?? "N/A"
+                    TruckPlate = Display(s.TruckPlate),
+                    ImageDisplayName = Display(s.ImageDisplayName),
+                    SyncedAt = s.SyncedAt,
+                    HasImage = s.HasImage,
+                    Status = Display(s.Status)
                 }).ToList();
                 
                 if (_recentScans.Any())
                 {
-                    _lastScan = _recentScans.Max(s => s.ScanDate);
+                    _lastScan ??= _recentScans.Max(s => s.ScanDate);
+                    if (!_telemetryLoaded)
+                    {
+                        _imageRows = _recentScans.Count(s => s.HasImage);
+                    }
                 }
                 
                 Console.WriteLine($"✅ Loaded {_recentScans.Count} recent ASE scans");
@@ -434,11 +474,14 @@
                 _totalRecords = response.TotalCount;
                 _allScans = response.Data?.Select(s => new AseScanRecord
                 {
+                    InspectionId = s.InspectionId,
                     ContainerNumber = s.ContainerNumber ?? "Unknown",
                     ScanDate = s.ScanTime,
-                    Origin = s.Origin ?? "N/A",
-                    Destination = s.Destination ?? "N/A",
-                    TruckId = s.TruckID ?? "N/A"
+                    TruckPlate = Display(s.TruckPlate),
+                    ImageDisplayName = Display(s.ImageDisplayName),
+                    SyncedAt = s.SyncedAt,
+                    HasImage = s.HasImage,
+                    Status = Display(s.Status)
                 }).ToList() ?? new List<AseScanRecord>();
                 
                 return new GridData<AseScanRecord> { Items = _allScans, TotalItems = _totalRecords };
@@ -476,11 +519,14 @@
     // DTOs
     public class AseScanRecord
     {
+        public int InspectionId { get; set; }
         public string ContainerNumber { get; set; } = "";
         public DateTime ScanDate { get; set; }
-        public string Origin { get; set; } = "";
-        public string Destination { get; set; } = "";
-        public string TruckId { get; set; } = "";
+        public string TruckPlate { get; set; } = "";
+        public string ImageDisplayName { get; set; } = "";
+        public DateTime SyncedAt { get; set; }
+        public bool HasImage { get; set; }
+        public string Status { get; set; } = "";
     }
     
     public class AseSyncStatus
@@ -491,6 +537,16 @@
         public int RecentScans24h { get; set; }
         public int? TodayScans { get; set; } // Added: actual scans today
         public string? SyncStatus { get; set; }
+        public AseConfigurationStatus? Configuration { get; set; }
+    }
+
+    public class AseConfigurationStatus
+    {
+        public bool EnableRealTimeSync { get; set; }
+        public bool HasPasswordEnvironmentVariable { get; set; }
+        public bool HasPasswordPlaceholder { get; set; }
+        public bool ConnectionStringConfigured { get; set; }
+        public bool CanSync { get; set; }
     }
     
     public class AseScanResponse
@@ -501,16 +557,36 @@
         public int PageSize { get; set; }
         public int TotalPages { get; set; }
     }
+
+    public class AseTelemetry
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int RowsWithImages { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public DateTime? LastSyncTime { get; set; }
+        public int? LastSyncedInspectionId { get; set; }
+        public string? LastSyncStatus { get; set; }
+        public int? LastSyncRecordsProcessed { get; set; }
+        public int SuccessfulSyncsToday { get; set; }
+        public int FailedSyncsToday { get; set; }
+        public double? SyncSuccessRatePercent { get; set; }
+        public double? AverageSyncLatencySeconds { get; set; }
+        public bool SyncConfigured { get; set; }
+    }
     
     public class AseScanDto
     {
         public int InspectionId { get; set; }
         public DateTime ScanTime { get; set; }
         public string? ContainerNumber { get; set; }
-        public string? TruckID { get; set; }
-        public string? Origin { get; set; }
-        public string? Destination { get; set; }
-        public string? TransitType { get; set; }
+        public string? TruckPlate { get; set; }
+        public string? ImageDisplayName { get; set; }
+        public DateTime SyncedAt { get; set; }
+        public bool HasImage { get; set; }
+        public string? Status { get; set; }
     }
     
     public class AseDailyStats
@@ -525,9 +601,9 @@
     {
         try
         {
-            // Calculate uptime (simplified - would need service start time from API)
-            _uptime = _todayScans > 0 ? 99.5 : 0;
-            
+            if (_telemetryLoaded)
+                return;
+
             // Calculate average processing time from recent scans
             if (_recentScans != null && _recentScans.Count > 1)
             {
@@ -549,70 +625,53 @@
                 }
                 else
                 {
-                    _avgProcessingTimeMinutes = 1.8; // Default fallback
+                    _avgProcessingTimeMinutes = 0;
                 }
             }
             else
             {
-                _avgProcessingTimeMinutes = 1.8; // Default fallback
+                _avgProcessingTimeMinutes = 0;
             }
-            
-            // Calculate success rate (simplified - would need actual success/failure counts)
-            if (_totalScans > 0)
-            {
-                var failedCount = _failedToday; // Use today's failed count as estimate
-                var successCount = _totalScans - failedCount;
-                _successRate = _totalScans > 0 ? (double)successCount / _totalScans * 100 : 0;
-            }
-            else
-            {
-                _successRate = 99.2; // Default fallback
-            }
-            
-            // Determine if sync service is running (based on recent activity)
-            _syncServiceRunning = _lastSync > DateTime.Now.AddHours(-2); // If last sync was within 2 hours, consider it running
+
+            _successRate = _totalScans > 0 ? 100 : 0;
+            _scansThisHour = _recentScans.Count(s => s.ScanDate >= DateTime.UtcNow.AddHours(-1));
+
+            _syncConfigured ??= _syncServiceRunning;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ Could not calculate metrics: {ex.Message}");
-            // Use defaults
-            _uptime = 0;
-            _avgProcessingTimeMinutes = 1.8;
-            _successRate = 99.2;
-            _syncServiceRunning = true;
+            _avgProcessingTimeMinutes = 0;
+            _successRate = 0;
+            _syncConfigured = null;
         }
     }
     
     private string GetStatusText()
     {
-        if (_todayScans > 0 || (_lastScan > DateTime.Now.AddHours(-24)))
+        if (_todayScans > 0 || IsRecent(_lastScan, TimeSpan.FromHours(24)))
             return "Online";
         return "Offline";
     }
     
     private Color GetStatusColor()
     {
-        if (_todayScans > 0 || (_lastScan > DateTime.Now.AddHours(-24)))
+        if (_todayScans > 0 || IsRecent(_lastScan, TimeSpan.FromHours(24)))
             return Color.Success;
         return Color.Error;
     }
     
     private string GetStatusIcon()
     {
-        if (_todayScans > 0 || (_lastScan > DateTime.Now.AddHours(-24)))
+        if (_todayScans > 0 || IsRecent(_lastScan, TimeSpan.FromHours(24)))
             return Icons.Material.Outlined.CheckCircle;
         return Icons.Material.Outlined.Error;
     }
     
-    private string FormatUptime(double uptime)
-    {
-        if (uptime <= 0)
-            return "N/A";
-        return $"{uptime:F1}%";
-    }
-    
     private string FormatProcessingTime(double minutes)
     {
+        if (minutes <= 0)
+            return "N/A";
         if (minutes < 1)
             return $"{(int)(minutes * 60)}s";
         if (minutes < 60)
@@ -632,5 +691,49 @@
         if (rate >= 99.0) return Color.Success;
         if (rate >= 95.0) return Color.Warning;
         return Color.Error;
+    }
+
+    private static string Display(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "N/A" : value;
+    }
+
+    private static string FormatDateTime(DateTime? value)
+    {
+        return value.HasValue ? value.Value.ToString("yyyy-MM-dd HH:mm:ss") : "Not reported";
+    }
+
+    private static bool IsRecent(DateTime? value, TimeSpan window)
+    {
+        if (!value.HasValue)
+            return false;
+
+        var now = value.Value.Kind == DateTimeKind.Local ? DateTime.Now : DateTime.UtcNow;
+        return now - value.Value <= window;
+    }
+
+    private static string FormatSyncConfigured(bool? value)
+    {
+        return value switch
+        {
+            true => "Configured",
+            false => "Config issue",
+            _ => "Not reported"
+        };
+    }
+
+    private static Color GetSyncConfiguredColor(bool? value)
+    {
+        return value switch
+        {
+            true => Color.Success,
+            false => Color.Error,
+            _ => Color.Default
+        };
+    }
+
+    private static Color GetScanStatusColor(AseScanRecord record)
+    {
+        return record.HasImage ? Color.Success : Color.Warning;
     }
 }

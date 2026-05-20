@@ -82,9 +82,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
                     Id = s.Id,
                     ContainerNumber = s.ContainerNumber,
                     ScanTime = s.ScanTime,
-                    Origin = null, // FS6000 entity doesn't have Origin/Destination - these may come from ICUMS
-                    Destination = null, // FS6000 entity doesn't have Origin/Destination - these may come from ICUMS
-                    SyncStatus = s.SyncStatus
+                    PicNumber = s.PicNumber,
+                    TruckPlate = s.TruckPlate,
+                    OperatorId = s.OperatorId,
+                    ScanResult = s.ScanResult,
+                    GoodsDescription = s.GoodsDescription,
+                    HasImage = s.HasImage,
+                    ImageCount = s.ImageCount,
+                    SyncStatus = s.SyncStatus,
+                    CreatedAt = s.CreatedAt,
+                    ProcessedAt = s.ProcessedAt,
+                    OriginalScanRecordId = s.OriginalScanRecordId
                 }).ToList();
 
                 return Ok(new FS6000ScanResponse
@@ -188,6 +196,77 @@ namespace NickScanCentralImagingPortal.API.Controllers
             {
                 _logger.LogError(ex, "Error retrieving ingestion status");
                 return StatusCode(500, "Internal server error");
+            }
+        }
+
+        [HttpGet("telemetry")]
+        public async Task<ActionResult<FS6000TelemetryDto>> GetTelemetry()
+        {
+            try
+            {
+                var nowUtc = DateTime.UtcNow;
+                var todayStartUtc = DateTime.SpecifyKind(nowUtc.Date, DateTimeKind.Utc);
+                var todayEndUtc = todayStartUtc.AddDays(1);
+                var hourStartUtc = nowUtc.AddHours(-1);
+
+                var syncHealthy = await _fileSyncService.IsHealthyAsync();
+                var ingestionHealthy = await _ingestionService.IsHealthyAsync();
+                var pendingSyncCount = await _fileSyncService.GetPendingSyncCountAsync();
+                var failedSyncCount = await _fileSyncService.GetFailedSyncCountAsync();
+                var pendingIngestionCount = await _ingestionService.GetPendingIngestionCountAsync();
+                var failedIngestionCount = await _ingestionService.GetFailedIngestionCountAsync();
+
+                var totalScans = await _context.FS6000Scans.CountAsync();
+                var todayScans = await _context.FS6000Scans
+                    .CountAsync(s => s.ScanTime >= todayStartUtc && s.ScanTime < todayEndUtc);
+                var scansThisHour = await _context.FS6000Scans
+                    .CountAsync(s => s.ScanTime >= hourStartUtc);
+                var scansWithImages = await _context.FS6000Scans
+                    .CountAsync(s => s.HasImage || s.ImageCount > 0);
+                var completedScans = await _context.FS6000Scans
+                    .CountAsync(s => s.SyncStatus == "Completed" || s.SyncStatus == "Synced");
+                var failedScans = await _context.FS6000Scans
+                    .CountAsync(s => s.SyncStatus == "Failed");
+
+                var lastScan = await _context.FS6000Scans
+                    .OrderByDescending(s => s.ScanTime)
+                    .Select(s => new { s.ScanTime, s.ContainerNumber })
+                    .FirstOrDefaultAsync();
+
+                var processingRows = await _context.FS6000Scans
+                    .Where(s => s.ProcessedAt.HasValue && s.ProcessedAt > s.CreatedAt)
+                    .OrderByDescending(s => s.ProcessedAt)
+                    .Take(100)
+                    .Select(s => new { s.CreatedAt, s.ProcessedAt })
+                    .ToListAsync();
+                var averageProcessingSeconds = processingRows.Count == 0
+                    ? (double?)null
+                    : processingRows.Average(s => (s.ProcessedAt!.Value - s.CreatedAt).TotalSeconds);
+
+                return Ok(new FS6000TelemetryDto
+                {
+                    TotalScans = totalScans,
+                    TodayScans = todayScans,
+                    ScansThisHour = scansThisHour,
+                    ScansWithImages = scansWithImages,
+                    CompletedScans = completedScans,
+                    FailedScans = failedScans,
+                    SuccessRatePercent = totalScans > 0 ? completedScans / (double)totalScans * 100 : null,
+                    LastScanTime = lastScan?.ScanTime,
+                    LastScanContainerNumber = lastScan?.ContainerNumber,
+                    AverageProcessingSeconds = averageProcessingSeconds,
+                    SyncHealthy = syncHealthy,
+                    IngestionHealthy = ingestionHealthy,
+                    PendingSyncCount = pendingSyncCount,
+                    FailedSyncCount = failedSyncCount,
+                    PendingIngestionCount = pendingIngestionCount,
+                    FailedIngestionCount = failedIngestionCount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving FS6000 telemetry");
+                return StatusCode(500, new { error = "Failed to load FS6000 telemetry" });
             }
         }
 
@@ -414,9 +493,17 @@ namespace NickScanCentralImagingPortal.API.Controllers
         public Guid Id { get; set; }
         public string? ContainerNumber { get; set; }
         public DateTime ScanTime { get; set; }
-        public string? Origin { get; set; }
-        public string? Destination { get; set; }
+        public string? PicNumber { get; set; }
+        public string? TruckPlate { get; set; }
+        public string? OperatorId { get; set; }
+        public string? ScanResult { get; set; }
+        public string? GoodsDescription { get; set; }
+        public bool HasImage { get; set; }
+        public int ImageCount { get; set; }
         public string? SyncStatus { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public int? OriginalScanRecordId { get; set; }
     }
 
     // Paginated response DTO
@@ -427,6 +514,26 @@ namespace NickScanCentralImagingPortal.API.Controllers
         public int Page { get; set; }
         public int PageSize { get; set; }
         public int TotalPages { get; set; }
+    }
+
+    public class FS6000TelemetryDto
+    {
+        public int TotalScans { get; set; }
+        public int TodayScans { get; set; }
+        public int ScansThisHour { get; set; }
+        public int ScansWithImages { get; set; }
+        public int CompletedScans { get; set; }
+        public int FailedScans { get; set; }
+        public double? SuccessRatePercent { get; set; }
+        public DateTime? LastScanTime { get; set; }
+        public string? LastScanContainerNumber { get; set; }
+        public double? AverageProcessingSeconds { get; set; }
+        public bool SyncHealthy { get; set; }
+        public bool IngestionHealthy { get; set; }
+        public int PendingSyncCount { get; set; }
+        public int FailedSyncCount { get; set; }
+        public int PendingIngestionCount { get; set; }
+        public int FailedIngestionCount { get; set; }
     }
 
     // Diagnostic report DTO

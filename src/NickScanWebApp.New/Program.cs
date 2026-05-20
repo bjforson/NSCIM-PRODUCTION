@@ -294,6 +294,7 @@ builder.Services.AddScoped<NickScanWebApp.Shared.Services.MonitoringClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.LogManagementClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.FS6000Client>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AseClient>();
+builder.Services.AddScoped<NickScanWebApp.Shared.Services.HeimannSmithClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.IngestionClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.Fs6000CompletenessClient>();
 builder.Services.AddScoped<NickScanWebApp.Shared.Services.AseSyncClient>();
